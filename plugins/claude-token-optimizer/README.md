@@ -62,3 +62,6 @@ claude-token-delegate disable
 ```
 
 Only delegate context you are allowed to share with that external provider. The helper prints a bounded preview to Claude and saves the full auxiliary response locally.
+
+
+Delegation blocks obvious secret-like context paths by default and creates a private `.gitignore` under `.claude-token-optimizer/` for saved responses. Use `--allow-sensitive-context` only when your policy allows sending that file to the selected provider.

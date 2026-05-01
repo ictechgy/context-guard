@@ -36,3 +36,6 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 ```
 
 외부 provider로 파일 내용이 전송될 수 있으므로 secrets/private data는 보내지 마세요.
+
+
+보조 AI 위임은 `.env*`, key 파일, token/secret 이름 파일 같은 secret-like context paths를 기본 차단합니다. 정말 필요한 경우에만 `--allow-sensitive-context`를 명시하세요. 전체 보조 AI 응답은 `.claude-token-optimizer/` 아래에 저장되며, 도구가 해당 디렉터리에 private `.gitignore`를 자동 생성합니다.

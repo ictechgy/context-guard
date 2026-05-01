@@ -71,6 +71,39 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("FAILED sample", proc.stdout)
         self.assertLess(len(proc.stdout.splitlines()), 40)
 
+    def test_trim_caps_single_huge_line(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_DIR / "trim_command_output.py"),
+                "--max-lines",
+                "20",
+                "--max-chars",
+                "1000",
+                "--max-line-chars",
+                "120",
+                "--",
+                sys.executable,
+                "-c",
+                "print('A' * 5000)",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertLess(len(proc.stdout), 1200)
+        self.assertIn("line trimmed", proc.stdout)
+
+    def test_trim_missing_command_returns_clean_127(self):
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "trim_command_output.py"), "--", "definitely-not-a-real-command"],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(proc.returncode, 127)
+        self.assertIn("command failed to start", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
     def test_rewrite_hook_wraps_safe_pytest_for_kit_and_plugin(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
             with self.subTest(script=script):
@@ -89,6 +122,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for command in ["npm --prefix app test", "npm run test:unit", "make -C src test", "vitest run", "python -m unittest"]:
             with self.subTest(command=command):
                 self.assertIn("hookSpecificOutput", hook_json(KIT_REWRITE, command))
+
+    def test_rewrite_hook_rejects_npm_false_positives(self):
+        for command in ["npm install test", "npm ci test", "pnpm add test", "yarn add test", "bun add test"]:
+            with self.subTest(command=command):
+                self.assertEqual(hook_json(KIT_REWRITE, command), {})
 
     def test_rewrite_hook_rejects_compound_shell_commands(self):
         for command in [
@@ -156,6 +194,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(data["tokens"]["cache_read"], 3)
         self.assertEqual(data["cost_usd_observed"], 2.0)
         self.assertTrue(data["parse_errors"])
+
+    def test_transcript_audit_uses_stable_model_key_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(json.dumps({
+                "model": "preferred-model",
+                "model_id": "secondary-model",
+                "query_source": "main",
+                "querySource": "secondary",
+                "usage": {"input_tokens": 1},
+            }) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        data = json.loads(proc.stdout)
+        self.assertIn("preferred-model", data["by_model"])
+        self.assertIn("main", data["by_query_source"])
 
     def test_transcript_audit_handles_deep_json_iteratively(self):
         obj = {"usage": {"input_tokens": 1}}
@@ -274,6 +332,100 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(saved_path.exists())
                     self.assertEqual(saved_path.parents[1], Path(tmp).resolve())
                     self.assertIn("## Stdout", saved_path.read_text(encoding="utf-8"))
+
+    def test_aux_delegate_config_env_inside_state_dir_uses_project_root(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(state / "config.json")
+            try:
+                self.assertEqual(aux.find_project_root(), root.resolve())
+                self.assertEqual(aux.safe_delegation_dir(aux.DEFAULT_CONFIG), (state / "delegations").resolve())
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+
+    def test_aux_delegate_blocks_sensitive_context_by_default(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / ".env"
+            secret.write_text("TOKEN=secret", encoding="utf-8")
+            contexts, warnings = aux.read_contexts([str(secret)], 1000)
+            self.assertEqual(contexts, [])
+            self.assertIn("blocked sensitive context", warnings[0])
+            contexts, warnings = aux.read_contexts([str(secret)], 1000, allow_sensitive_context=True)
+            self.assertEqual(len(contexts), 1)
+
+    def test_aux_delegate_rejects_custom_provider_without_prompt_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "providers": {"bad": {"enabled": True, "command": [sys.executable, "-c", "print('no input')"], "stdin": False}},
+            }), encoding="utf-8")
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "aux_ai_delegate.py"), "ask", "--provider", "bad", "--prompt", "hello"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("stdin=true or include {prompt}", proc.stderr)
+
+    def test_aux_delegate_includes_stderr_preview_on_provider_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "max_output_chars": 1000,
+                "delegation_dir": "delegations",
+                "providers": {
+                    "bad": {
+                        "enabled": True,
+                        "command": [sys.executable, "-c", "import sys; print('AUTH FAIL', file=sys.stderr); sys.exit(9)"],
+                        "stdin": True,
+                    }
+                },
+            }), encoding="utf-8")
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "aux_ai_delegate.py"), "ask", "--provider", "bad", "--prompt", "hello"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(proc.returncode, 9)
+            self.assertIn("AUTH FAIL", proc.stdout)
+
+    def test_aux_delegate_writes_private_gitignore_for_responses(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(root / ".claude-token-optimizer" / "config.json")
+            try:
+                config = aux.json_clone(aux.DEFAULT_CONFIG)
+                path = aux.save_response(config, "gemini", "out", "", "task", 0)
+                self.assertTrue((path.parent / ".gitignore").exists())
+                self.assertTrue((path.parent.parent / ".gitignore").exists())
+                self.assertIn("*", (path.parent.parent / ".gitignore").read_text(encoding="utf-8"))
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
         aux = load_aux_module()

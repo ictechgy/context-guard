@@ -22,8 +22,8 @@ TOKEN_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cache_read", ("cache_read_input_tokens", "cacheRead")),
 )
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
-MODEL_KEYS = {"model", "model_id", "modelId"}
-QUERY_SOURCE_KEYS = {"query_source", "querySource"}
+MODEL_KEYS = ("model", "model_id", "modelId")
+QUERY_SOURCE_KEYS = ("query_source", "querySource")
 MAX_ERROR_EXAMPLES = 20
 
 
@@ -78,7 +78,7 @@ def walk(obj: Any) -> Iterable[dict[str, Any]]:
             stack.extend(current)
 
 
-def first_string(obj: dict[str, Any], keys: set[str]) -> str | None:
+def first_string(obj: dict[str, Any], keys: Iterable[str]) -> str | None:
     for key in keys:
         val = obj.get(key)
         if isinstance(val, str):

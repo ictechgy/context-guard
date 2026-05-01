@@ -27,6 +27,21 @@ DEFAULT_CONFIG_PATH = Path(".claude-token-optimizer/config.json")
 DEFAULT_DELEGATION_DIR = Path(".claude-token-optimizer/delegations")
 PROMPT_ARG_MAX_CHARS = 100_000
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+SENSITIVE_CONTEXT_NAMES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    "credentials.json",
+    "application_default_credentials.json",
+}
+SENSITIVE_CONTEXT_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
+SENSITIVE_CONTEXT_RE = re.compile(
+    r"(?i)(api[_-]?key|token|secret|password|private[_-]?key|access[_-]?key|client[_-]?secret)"
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "aux_ai_enabled": False,
@@ -73,7 +88,10 @@ def truthy_env(name: str) -> bool:
 def find_project_root(start: Path | None = None) -> Path:
     raw_config = os.environ.get(CONFIG_ENV)
     if raw_config:
-        return Path(raw_config).expanduser().resolve().parent
+        config_file = Path(raw_config).expanduser().resolve()
+        if config_file.parent.name == DEFAULT_CONFIG_PATH.parent.name:
+            return config_file.parent.parent
+        return config_file.parent
     current = (start or Path.cwd()).resolve()
     for candidate in [current, *current.parents]:
         if (candidate / DEFAULT_CONFIG_PATH).exists() or (candidate / ".git").exists():
@@ -129,6 +147,10 @@ def normalize_config(loaded: dict[str, Any], allow_custom_provider: bool = False
     # Default path: only allow non-executable metadata toggles for known providers.
     for name, value in loaded_providers.items():
         if name not in config["providers"] or not isinstance(value, dict):
+            print(
+                f"warning: ignoring custom provider '{name}' without {CUSTOM_PROVIDER_ENV}=1",
+                file=sys.stderr,
+            )
             continue
         for provider_key in SAFE_PROVIDER_OVERRIDE_KEYS:
             if provider_key in value:
@@ -150,13 +172,29 @@ def load_config() -> dict[str, Any]:
     return normalize_config(loaded, allow_custom_provider=truthy_env(CUSTOM_PROVIDER_ENV))
 
 
+def write_private_gitignore(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    gitignore = directory / ".gitignore"
+    desired = "*\n!.gitignore\n"
+    if not gitignore.exists() or gitignore.read_text(encoding="utf-8", errors="replace") != desired:
+        gitignore.write_text(desired, encoding="utf-8")
+
+
 def save_config(config: dict[str, Any]) -> Path:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.name == DEFAULT_CONFIG_PATH.parent.name:
+        write_private_gitignore(path.parent)
+    for stale in path.parent.glob(f".{path.name}.*.tmp"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     with tmp_path.open("w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, sort_keys=True)
         f.write("\n")
+    os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, path)
     return path
 
@@ -233,13 +271,32 @@ def build_aux_prompt(task: str, contexts: list[tuple[str, str]], max_output_char
     return "\n".join(parts).strip() + "\n"
 
 
-def read_contexts(paths: list[str], context_max_chars: int) -> tuple[list[tuple[str, str]], list[str]]:
+def is_sensitive_context_path(path: Path) -> bool:
+    name = path.name
+    lowered = name.lower()
+    if lowered == ".env" or lowered.startswith(".env."):
+        return True
+    if lowered in SENSITIVE_CONTEXT_NAMES:
+        return True
+    if path.suffix.lower() in SENSITIVE_CONTEXT_SUFFIXES:
+        return True
+    return bool(SENSITIVE_CONTEXT_RE.search(name))
+
+
+def read_contexts(
+    paths: list[str],
+    context_max_chars: int,
+    allow_sensitive_context: bool = False,
+) -> tuple[list[tuple[str, str]], list[str]]:
     contexts: list[tuple[str, str]] = []
     warnings: list[str] = []
     remaining = max(0, context_max_chars)
     marker = "\n[truncated by claude-token-delegate]\n"
     for raw in paths:
         path = Path(raw).expanduser()
+        if is_sensitive_context_path(path) and not allow_sensitive_context:
+            warnings.append(f"blocked sensitive context {raw}; pass --allow-sensitive-context to override")
+            continue
         try:
             original = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -278,6 +335,9 @@ def save_response(config: dict[str, Any], provider: str, stdout: str, stderr: st
         raise SystemExit(f"Invalid provider name '{provider}'; use letters, numbers, dot, dash, or underscore")
     out_dir = safe_delegation_dir(config)
     out_dir.mkdir(parents=True, exist_ok=True)
+    write_private_gitignore(out_dir)
+    if out_dir.parent.name == DEFAULT_CONFIG_PATH.parent.name:
+        write_private_gitignore(out_dir.parent)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = out_dir / f"{stamp}-{os.getpid()}-{provider}.md"
     content = [
@@ -329,8 +389,14 @@ def cmd_enable(args: argparse.Namespace) -> int:
     config = load_config()
     config["aux_ai_enabled"] = True
     if args.provider:
-        provider_config(config, args.provider)
+        _, selected_provider = provider_config(config, args.provider)
         config["default_provider"] = args.provider
+        command = selected_provider.get("command") or []
+        if isinstance(command, list) and not executable_available(command):
+            print(
+                f"warning: provider '{args.provider}' executable not found on PATH; ask will fail until installed",
+                file=sys.stderr,
+            )
     if args.max_output_chars is not None:
         config["max_output_chars"] = args.max_output_chars
     if args.timeout_seconds is not None:
@@ -353,8 +419,14 @@ def cmd_disable(_: argparse.Namespace) -> int:
 def cmd_init(args: argparse.Namespace) -> int:
     config = load_config()
     if args.provider:
-        provider_config(config, args.provider)
+        _, selected_provider = provider_config(config, args.provider)
         config["default_provider"] = args.provider
+        command = selected_provider.get("command") or []
+        if isinstance(command, list) and not executable_available(command):
+            print(
+                f"warning: provider '{args.provider}' executable not found on PATH; ask will fail until installed",
+                file=sys.stderr,
+            )
     path = save_config(config)
     print(f"wrote config template to {path}")
     print("aux_ai_enabled=false")
@@ -418,8 +490,15 @@ def cmd_ask(args: argparse.Namespace) -> int:
     timeout_seconds = (
         args.timeout_seconds if args.timeout_seconds is not None else int(config.get("timeout_seconds") or 180)
     )
-    contexts, warnings = read_contexts(args.context or [], context_max_chars)
+    contexts, warnings = read_contexts(args.context or [], context_max_chars, args.allow_sensitive_context)
     prompt = build_aux_prompt(task, contexts, max_output_chars)
+    uses_prompt_arg = any("{prompt}" in part for part in command_template)
+    if not item.get("stdin", False) and not uses_prompt_arg:
+        print(
+            "provider command must either set stdin=true or include {prompt} in the command template",
+            file=sys.stderr,
+        )
+        return 2
     try:
         command = render_command(command_template, prompt)
     except ValueError as exc:
@@ -447,8 +526,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
     )
 
     saved = save_response(config, provider, stdout, stderr, task, returncode)
-    preview_note = "\n[stderr captured; see saved response]\n" if stderr.strip() else ""
-    preview, trimmed = trim_for_stdout(stdout + preview_note, max_output_chars)
+    if returncode != 0 and stderr.strip() and not stdout.strip():
+        preview_source = "[stderr]\n" + stderr
+    else:
+        preview_note = "\n[stderr captured; see saved response]\n" if stderr.strip() else ""
+        preview_source = stdout + preview_note
+    preview, trimmed = trim_for_stdout(preview_source, max_output_chars)
 
     print(f"provider={provider}")
     print(f"exit_code={returncode}")
@@ -493,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-output-chars", type=int, help="Preview char budget printed back to Claude")
     p.add_argument("--context-max-chars", type=int, help="Total context chars sent to auxiliary AI")
     p.add_argument("--timeout-seconds", type=int, help="External CLI timeout in seconds")
+    p.add_argument(
+        "--allow-sensitive-context",
+        action="store_true",
+        help="Allow obvious secret-like context paths such as .env or key files",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print rendered command metadata without executing")
     p.set_defaults(func=cmd_ask)
     return parser

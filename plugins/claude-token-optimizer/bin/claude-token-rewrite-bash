@@ -16,7 +16,7 @@ import sys
 
 # Reject shell control syntax before wrapping. The wrapper is intended only for a
 # single safe argv-style test/build/lint command, not arbitrary shell programs.
-SHELL_META_RE = re.compile(r"[;&|<>`$()\n]")
+SHELL_META_RE = re.compile(r"[;&|<>`$()\n\r\t]")
 WRAPPER_MARKERS = ("trim_command_output.py", "claude-trim-output")
 
 
@@ -48,6 +48,21 @@ def split_single_safe_command(command: str) -> list[str] | None:
     return argv or None
 
 
+def npm_script_args(rest: list[str]) -> list[str]:
+    value_options = {"--prefix", "--workspace", "-w", "--filter", "--cwd", "-C"}
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg in value_options:
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        break
+    return rest[i:]
+
+
 def is_noisy_command(argv: list[str]) -> bool:
     if not argv:
         return False
@@ -55,13 +70,16 @@ def is_noisy_command(argv: list[str]) -> bool:
     rest = argv[1:]
 
     if first in {"npm", "pnpm", "yarn", "bun"}:
-        if "test" in rest:
+        script_args = npm_script_args(rest)
+        if not script_args:
+            return False
+        command = script_args[0]
+        if command == "test":
             return True
-        if "run" in rest:
-            run_index = rest.index("run")
-            scripts = rest[run_index + 1 :]
-            return any(script == "build" or script == "lint" or script.startswith("test") for script in scripts)
-        return any(arg in {"build", "lint"} for arg in rest)
+        if command in {"run", "run-script"} and len(script_args) > 1:
+            script = script_args[1]
+            return script == "build" or script == "lint" or script.startswith("test")
+        return command in {"build", "lint"}
     if first in {"pytest", "tox", "jest", "vitest"}:
         return True
     if first == "npx" and any(arg in {"jest", "vitest"} for arg in rest):
