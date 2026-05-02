@@ -1,4 +1,7 @@
-# Local orchestration/runtime state
+# Local Claude/OMC orchestration and runtime state
+.claude/
+.omc/
+.remember/
 .omx/
 .claude-token-optimizer/
 .serena/

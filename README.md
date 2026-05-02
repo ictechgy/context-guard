@@ -1,26 +1,29 @@
 # Claude Code Token Reduction Research
 
-조사일: 2026-05-01
+Research date: 2026-05-01
 
-이 폴더는 Claude Code CLI의 토큰 사용량을 줄이기 위한 리서치/실험 워크스페이스입니다.
+This repository is a research and experiment workspace for reducing Claude Code CLI token usage and context waste.
 
-## 산출물
+Korean documentation is available in [`README.ko.md`](README.ko.md).
 
-- `research/claude-code-token-reduction.md` — 핵심 리서치 보고서와 우선순위별 실행안
-- `research/benchmark-plan.md` — 절감 효과를 검증하기 위한 벤치마크 설계
-- `claude-token-kit/` — 바로 적용/변형 가능한 상태바, 출력 절단 훅, transcript 감사/설정 스캔 스크립트
+## Artifacts
 
-## 5분 적용 요약
+- `research/claude-code-token-reduction.md` — core research report and prioritized action plan
+- `research/benchmark-plan.md` — benchmark design for validating token savings
+- `claude-token-kit/` — statusline, output trim/sanitize, transcript audit, settings scan, large Read guard, and auxiliary AI delegation tools
+- `plugins/claude-token-optimizer/` — Claude Code plugin distribution package
 
-1. Claude Code 안에서 `/usage`, `/context`, `/model`, `/effort`를 먼저 확인한다.
-2. 서로 다른 작업으로 넘어갈 때는 `/clear`; 긴 작업은 `/compact <보존할 내용>`로 요약한다.
-3. 기본은 `sonnet`, 설계만 `opusplan`, 단순 작업은 낮은 `/effort`를 쓴다.
-4. `CLAUDE.md`는 핵심만 남기고, 긴 워크플로 지침은 skills/custom commands로 분리한다.
-5. MCP 서버를 최소화하고, `gh`, `rg`, `jq`, `aws`, `gcloud` 같은 CLI를 우선 사용한다.
-6. 테스트/빌드 로그는 훅이나 wrapper로 실패 주변만 Claude에게 돌려준다.
-7. subagent는 noisy research/log 분석 격리에 쓰되, agent team은 토큰 배수 효과가 있으므로 작게 유지한다.
+## 5-minute application summary
 
-자세한 근거와 안전한/비추천 방법 구분은 `research/claude-code-token-reduction.md`를 참고하세요.
+1. In Claude Code, check `/usage`, `/context`, `/model`, and `/effort` first.
+2. Use `/clear` when switching unrelated tasks; for long tasks, use `/compact <what to preserve>`.
+3. Default to `sonnet`, reserve `opusplan` for design or difficult reasoning, and use lower `/effort` for simple work.
+4. Keep `CLAUDE.md` short; move long workflow instructions into skills or custom commands.
+5. Minimize MCP servers and prefer CLI tools such as `gh`, `rg`, `jq`, `aws`, and `gcloud` where possible.
+6. Return only failure-focused slices of test/build logs to Claude through hooks or wrappers.
+7. Use subagents to isolate noisy research/log analysis, but keep agent teams small because each agent multiplies token usage.
+
+For the rationale and the safe-vs-not-recommended distinction, see `research/claude-code-token-reduction.md`.
 
 ## Claude Code plugin distribution
 
@@ -78,6 +81,8 @@ claude-token-setup --plan
 
 The wizard lets you choose deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort defaults, and optional Gemini/Codex delegation. It merges project-local `.claude/settings.json`; it does not modify global Claude settings.
 
+Note: this plugin source repository ignores local Claude runtime state, including `.claude/`, because setup runs here are test-local. In your own project, decide whether team-wide `.claude/settings.json` should be committed or kept local according to your policy.
+
 For local project hygiene, run:
 
 ```bash
@@ -93,6 +98,12 @@ For large files, prefer symbol-sized context:
 ```
 
 The example settings can also enable `claude-token-guard-read`, which blocks accidental whole-file reads above the guard threshold and points Claude to `rg` plus symbol/line-range reads.
+
+For long test/build logs, trim output before sending it back to Claude:
+
+```bash
+./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
+```
 
 For search or diff output that may contain secrets, sanitize before sending it back to Claude:
 
