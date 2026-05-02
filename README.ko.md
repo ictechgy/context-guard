@@ -137,4 +137,4 @@ Claude Code 안에서:
 
 ## 라이선스
 
-Apache License 2.0입니다. 자세한 내용은 [LICENSE](LICENSE)를 참고하세요.
+Copyright 2026 jinhongan. Apache License 2.0으로 배포됩니다. 자세한 내용은 [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 참고하세요.

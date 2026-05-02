@@ -155,4 +155,4 @@ Delegation은 기본적으로 project root 아래 context file만 허용하며, 
 
 ## 라이선스
 
-Apache License 2.0입니다. 저장소 [LICENSE](../../LICENSE)를 참고하세요.
+Copyright 2026 jinhongan. Apache License 2.0으로 배포됩니다. [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 참고하세요.

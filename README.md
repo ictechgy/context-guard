@@ -131,4 +131,4 @@ Automatic delegation is a separate provider-bound opt-in. After manual delegatio
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

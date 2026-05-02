@@ -102,4 +102,4 @@ Provider CLIs run with a sanitized environment and isolated `HOME`/XDG/TMP direc
 
 ## License
 
-Apache License 2.0. See the repository [LICENSE](../../LICENSE).
+Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -70,4 +70,4 @@ Provider CLI는 임시 작업 디렉터리, isolated `HOME`/XDG/TMP, allowlisted
 
 ## License
 
-Apache License 2.0. See the repository [LICENSE](../LICENSE).
+Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See the repository [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
