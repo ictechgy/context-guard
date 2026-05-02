@@ -89,7 +89,7 @@ def is_noisy_command(argv: list[str]) -> bool:
         return True
     if first == "npx" and any(arg in {"jest", "vitest"} for arg in rest):
         return True
-    if first == "python" and len(argv) > 2 and argv[1] == "-m" and argv[2] in {"pytest", "unittest"}:
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", first) and len(argv) > 2 and argv[1] == "-m" and argv[2] in {"pytest", "unittest"}:
         return True
     if first == "go" and "test" in rest:
         return True
@@ -151,7 +151,13 @@ def main() -> int:
         print("{}")
         return 0
 
+    if not isinstance(payload, dict):
+        print("{}")
+        return 0
     tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
+    if not isinstance(tool_input, dict):
+        print("{}")
+        return 0
     command = tool_input.get("command") or ""
 
     if not command or any(marker in command for marker in WRAPPER_MARKERS):

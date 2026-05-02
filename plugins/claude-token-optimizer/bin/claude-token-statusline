@@ -19,7 +19,7 @@ jq_get() {
 
 sanitize_status() {
   # Statusline values may come from untrusted workspace metadata; keep one-line printable text.
-  LC_ALL=C tr -d '\033\r\n' <<<"$1" | cut -c 1-160
+  LC_ALL=C tr -cd '[:print:]' <<<"$1" | cut -c 1-160
 }
 
 model=$(jq_get '.model.display_name')
@@ -29,14 +29,14 @@ model=$(sanitize_status "$model")
 
 context_pct=$(jq_get '.context_window.used_percentage')
 if [[ -n "$context_pct" ]]; then
-  context_pct=$(printf '%.0f' "$context_pct" 2>/dev/null || echo "$context_pct")
+  context_pct=$(printf '%.0f' "$context_pct" 2>/dev/null || sanitize_status "$context_pct")
 else
   context_pct="?"
 fi
 
 cost=$(jq_get '.cost.total_cost_usd')
 if [[ -n "$cost" ]]; then
-  cost=$(printf '$%.3f' "$cost" 2>/dev/null || echo "$cost")
+  cost=$(printf '$%.3f' "$cost" 2>/dev/null || sanitize_status "$cost")
 else
   cost='n/a'
 fi

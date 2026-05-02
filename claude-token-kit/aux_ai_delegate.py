@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -29,6 +31,7 @@ DEFAULT_CONFIG_PATH = Path(".claude-token-optimizer/config.json")
 DEFAULT_DELEGATION_DIR = Path(".claude-token-optimizer/delegations")
 PROMPT_ARG_MAX_CHARS = 100_000
 AUTO_PROMPT_MAX_CHARS = 2_000
+PROVIDER_OUTPUT_MAX_CHARS = 1_000_000
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 SENSITIVE_CONTEXT_NAMES = {
@@ -60,7 +63,9 @@ SENSITIVE_CONTENT_RE = re.compile(
     r"-----BEGIN OPENSSH PRIVATE KEY-----|"
     r"-----BEGIN PGP PRIVATE KEY BLOCK-----|"
     r"AKIA[0-9A-Z]{16}|"
-    r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])|"
+    # Generic opaque base64-like secrets should not block plain hex commit hashes.
+    r"(?<![A-Za-z0-9/+=])(?=[A-Za-z0-9/+=]{40,}(?![A-Za-z0-9/+=]))"
+    r"(?=[A-Za-z0-9/+=]*[+/=G-Zg-z])[A-Za-z0-9/+=]{40,}(?![A-Za-z0-9/+=])|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
     r"(?:sk|pk|rk)_live_[A-Za-z0-9]{16,}|"
@@ -374,11 +379,87 @@ def provider_config(config: dict[str, Any], provider: str | None) -> tuple[str, 
 
 
 def executable_available(command: list[str]) -> bool:
-    return bool(command and shutil.which(command[0]))
+    if not command:
+        return False
+    executable = command[0]
+    if Path(executable).expanduser().is_absolute():
+        return Path(executable).exists() and os.access(Path(executable), os.X_OK)
+    return bool(shutil.which(executable, path=safe_path_env()))
 
 
 def require_command_pair(command: list[str], option: str, expected: str) -> bool:
     return any(part == option and i + 1 < len(command) and command[i + 1] == expected for i, part in enumerate(command))
+
+
+def is_under_any(path: Path, roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def safe_path_entries() -> list[str]:
+    project_root = find_project_root()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    entries: list[str] = []
+    for raw in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            continue
+        try:
+            resolved = path.resolve()
+            st = resolved.stat()
+        except OSError:
+            continue
+        if not resolved.is_dir():
+            continue
+        if stat.S_IMODE(st.st_mode) & 0o022:
+            continue
+        if is_under_any(resolved, [project_root, temp_root]):
+            continue
+        entries.append(str(resolved))
+    return entries or os.defpath.split(os.pathsep)
+
+
+def safe_path_env() -> str:
+    return os.pathsep.join(safe_path_entries())
+
+
+def validate_provider_executable(path: Path, provider: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.exists() or not os.access(resolved, os.X_OK):
+        raise SystemExit(f"Provider '{provider}' executable not found or not executable: {path}")
+    project_root = find_project_root()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if is_under_any(resolved, [project_root, temp_root]):
+        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved}")
+    try:
+        parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
+    except OSError as exc:
+        raise SystemExit(f"Provider '{provider}' executable parent cannot be checked: {resolved.parent}") from exc
+    if parent_mode & 0o022:
+        raise SystemExit(f"Provider '{provider}' executable parent is group/world writable: {resolved.parent}")
+    return resolved
+
+
+def resolve_provider_command(provider: str, command: list[str]) -> list[str]:
+    if not command:
+        raise SystemExit(f"Provider '{provider}' has empty command template")
+    executable = command[0]
+    if Path(executable).expanduser().is_absolute():
+        resolved = validate_provider_executable(Path(executable), provider)
+    else:
+        found = shutil.which(executable, path=safe_path_env())
+        if not found:
+            raise SystemExit(f"Provider '{provider}' executable not found on safe PATH: {executable}")
+        resolved = validate_provider_executable(Path(found), provider)
+    return [str(resolved), *command[1:]]
 
 
 def validate_provider_security(name: str, item: dict[str, Any]) -> None:
@@ -410,11 +491,11 @@ def isolated_provider_env(sandbox_root: Path, provider: str) -> dict[str, str]:
         ensure_private_dir(directory)
     env: dict[str, str] = {}
     auth_keys = PROVIDER_AUTH_ENV_KEYS.get(provider, set())
-    for key in SAFE_ENV_KEYS | auth_keys:
+    for key in (SAFE_ENV_KEYS - {"PATH"}) | auth_keys:
         value = os.environ.get(key)
         if value is not None:
             env[key] = value
-    env.setdefault("PATH", os.defpath)
+    env["PATH"] = safe_path_env()
     env["HOME"] = str(home)
     env["TMPDIR"] = str(tmp)
     env["TEMP"] = str(tmp)
@@ -569,6 +650,20 @@ def read_delegated_file(
     return resolved, content, None
 
 
+def context_label_for_path(path: Path, root: Path | None = None) -> str:
+    base = (root or find_project_root()).resolve()
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(base).as_posix()
+    except ValueError:
+        digest = hashlib.sha256(str(resolved).encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"{resolved.name or 'outside'}#path:{digest}"
+
+
+def is_blocking_context_warning(warning: str) -> bool:
+    return not warning.startswith("truncated ")
+
+
 def read_contexts(
     paths: list[str],
     context_max_chars: int,
@@ -596,7 +691,7 @@ def read_contexts(
             take = remaining - marker_budget
             warnings.append(f"truncated {raw}: {len(original)} -> {take} chars plus marker")
             content = original[:take] + (marker if marker_budget else "")
-        contexts.append((str(resolved), content))
+        contexts.append((context_label_for_path(resolved), content))
         remaining -= len(content)
     return contexts, warnings
 
@@ -818,28 +913,98 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_provider(provider: str, command: list[str], prompt: str | None, timeout_seconds: int) -> tuple[int, str, str]:
+def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
+    data = path.read_bytes() if path.exists() else b""
+    truncated = len(data) > limit
+    if truncated:
+        data = data[:limit]
+    text = data.decode(errors="replace")
+    return text, truncated
+
+
+def run_provider(
+    provider: str,
+    command: list[str],
+    prompt: str | None,
+    timeout_seconds: int,
+    output_max_chars: int = PROVIDER_OUTPUT_MAX_CHARS,
+) -> tuple[int, str, str]:
+    output_limit = max(1, int(output_max_chars))
     with tempfile.TemporaryDirectory(prefix="claude-token-delegate-") as tmp_raw:
         tmp = Path(tmp_raw)
         work_dir = tmp / "work"
         ensure_private_dir(work_dir)
         env = isolated_provider_env(tmp, provider)
+        stdout_path = tmp / "provider.stdout"
+        stderr_path = tmp / "provider.stderr"
+        stdin_path = tmp / "provider.stdin"
+        stdin_file = None
+        if prompt is not None:
+            stdin_path.write_text(prompt, encoding="utf-8")
+            stdin_file = stdin_path.open("rb")
+        start = _dt.datetime.now()
+        killed_for_output = False
         try:
-            proc = subprocess.run(
-                command,
-                input=prompt,
-                text=True,
-                capture_output=True,
-                cwd=work_dir,
-                env=env,
-                timeout=timeout_seconds,
-            )
-            return proc.returncode, proc.stdout or "", proc.stderr or ""
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-            stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace")
+            with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+                proc = subprocess.Popen(
+                    command,
+                    stdin=stdin_file if stdin_file is not None else subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    cwd=work_dir,
+                    env=env,
+                    start_new_session=True,
+                )
+                while proc.poll() is None:
+                    elapsed = (_dt.datetime.now() - start).total_seconds()
+                    try:
+                        current_size = stdout_path.stat().st_size + stderr_path.stat().st_size
+                    except OSError:
+                        current_size = 0
+                    if current_size > output_limit:
+                        killed_for_output = True
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except (OSError, AttributeError):
+                            proc.terminate()
+                        break
+                    if elapsed > timeout_seconds:
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except (OSError, AttributeError):
+                            proc.terminate()
+                        break
+                    try:
+                        proc.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        pass
+                try:
+                    returncode = proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (OSError, AttributeError):
+                        proc.kill()
+                    returncode = proc.wait()
+        finally:
+            if stdin_file is not None:
+                stdin_file.close()
+        stdout, stdout_truncated = read_limited_output(stdout_path, output_limit)
+        stderr, stderr_truncated = read_limited_output(stderr_path, output_limit)
+        elapsed = (_dt.datetime.now() - start).total_seconds()
+        if elapsed > timeout_seconds and returncode == 0:
+            returncode = 124
+        if elapsed > timeout_seconds:
             stderr = (stderr.rstrip() + f"\n[TIMEOUT after {timeout_seconds}s]\n").lstrip()
-            return 124, stdout, stderr
+            returncode = 124
+        if killed_for_output or stdout_truncated or stderr_truncated:
+            stderr = (
+                stderr.rstrip()
+                + f"\n[OUTPUT_LIMIT exceeded; captured first {output_limit} chars per stream]\n"
+            ).lstrip()
+            if returncode == 0:
+                returncode = 125
+        return returncode, stdout, stderr
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -880,7 +1045,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print(f"provider '{provider}' has invalid command template", file=sys.stderr)
         return 2
 
+    if args.auto and (args.prompt_file or not args.prompt):
+        print("automatic delegation requires a short --prompt instruction, not stdin or --prompt-file", file=sys.stderr)
+        return 2
+
     allow_sensitive, allow_outside = context_policy_overrides(config)
+    if args.auto:
+        allow_sensitive, allow_outside = [], []
 
     task = args.prompt or ""
     warnings: list[str] = []
@@ -901,22 +1072,19 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if not task.strip():
         print("missing prompt; use --prompt, --prompt-file, or stdin", file=sys.stderr)
         return 2
-    if contains_sensitive_content(task):
-        print(
-            "blocked sensitive prompt content; keep --prompt to a short instruction and pass files/logs via --context",
-            file=sys.stderr,
-        )
-        return 2
     if args.auto:
-        if args.prompt_file or not args.prompt:
-            print("automatic delegation requires a short --prompt instruction, not stdin or --prompt-file", file=sys.stderr)
-            return 2
         if len(task) > AUTO_PROMPT_MAX_CHARS:
             print(f"automatic delegation prompt must be <= {AUTO_PROMPT_MAX_CHARS} characters", file=sys.stderr)
             return 2
         if not args.context:
             print("automatic delegation requires at least one helper-validated --context file", file=sys.stderr)
             return 2
+    if contains_sensitive_content(task):
+        print(
+            "blocked sensitive prompt content; keep --prompt to a short instruction and pass files/logs via --context",
+            file=sys.stderr,
+        )
+        return 2
 
     max_output_chars = (
         args.max_output_chars if args.max_output_chars is not None else int(config.get("max_output_chars") or 4000)
@@ -930,12 +1098,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
     contexts, context_warnings = read_contexts(args.context or [], context_max_chars, allow_sensitive, allow_outside)
     warnings.extend(context_warnings)
     if args.auto:
-        if context_warnings:
+        blocking_warnings = [warning for warning in context_warnings if is_blocking_context_warning(warning)]
+        if blocking_warnings:
             print(
                 "automatic delegation refused blocked context; review policy or delegate explicitly after verification",
                 file=sys.stderr,
             )
-            for warning in context_warnings:
+            for warning in blocking_warnings:
                 print(f"warning: {warning}", file=sys.stderr)
             return 2
         if not contexts:
@@ -966,13 +1135,15 @@ def cmd_ask(args: argparse.Namespace) -> int:
             print(f"warning={warning}")
         return 0
 
-    if not executable_available(command_template):
-        print(f"provider '{provider}' executable not found: {command_template[0]}", file=sys.stderr)
+    try:
+        resolved_command = resolve_provider_command(provider, command)
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
         return 127
 
     returncode, stdout, stderr = run_provider(
         provider,
-        command,
+        resolved_command,
         prompt if item.get("stdin", False) else None,
         timeout_seconds,
     )

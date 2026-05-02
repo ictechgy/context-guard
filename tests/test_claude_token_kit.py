@@ -313,7 +313,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
                     self.assertEqual(settings["model"], "sonnet")
                     self.assertEqual(settings["effortLevel"], "medium")
-                    self.assertEqual(settings["statusLine"]["command"], "claude-token-statusline")
+                    self.assertIn("claude-token-statusline", settings["statusLine"]["command"])
                     deny = settings["permissions"]["deny"]
                     self.assertIn("Read(./node_modules/**)", deny)
                     self.assertIn("Read(./.env)", deny)
@@ -563,7 +563,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "hooks": {
                         "PreToolUse": [
                             {
-                                "matcher": "Read",
+                                "matcher": "Bash|Read",
                                 "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
                             },
                             {
@@ -582,6 +582,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 check=True,
             )
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            all_commands = [
+                hook["command"]
+                for entry in settings["hooks"]["PreToolUse"]
+                for hook in entry.get("hooks", [])
+                if isinstance(hook, dict) and "command" in hook
+            ]
             bash_commands = [
                 hook["command"]
                 for entry in settings["hooks"]["PreToolUse"]
@@ -590,7 +596,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 if isinstance(hook, dict) and "command" in hook
             ]
             self.assertIn("claude-token-rewrite-bash-v2", bash_commands)
-            self.assertIn("claude-token-rewrite-bash", bash_commands)
+            self.assertEqual(sum(command.endswith("claude-token-rewrite-bash") for command in all_commands), 1)
 
     def test_setup_wizard_merges_aux_config_and_creates_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -630,6 +636,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(config["default_provider"], "codex")
             self.assertEqual(config["context_policy"]["allow_sensitive_paths"], ["approved.log"])
             self.assertEqual(config["custom_note"], "keep me")
+            self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+
+    def test_setup_wizard_resets_untrusted_aux_context_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            config_path = state / "config.json"
+            config_path.write_text(
+                json.dumps({
+                    "context_policy": {
+                        "allow_sensitive_paths": [".env"],
+                        "allow_outside_project_paths": ["/tmp/secret.log"],
+                    },
+                    "custom_note": "drop me",
+                }),
+                encoding="utf-8",
+            )
+            os.chmod(config_path, 0o644)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--yes",
+                    "--no-backup",
+                    "--aux-provider",
+                    "gemini",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("reset untrusted auxiliary config", "\n".join(json.loads(proc.stdout)["actions"]))
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(config["context_policy"], {"allow_sensitive_paths": [], "allow_outside_project_paths": []})
+            self.assertNotIn("custom_note", config)
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
@@ -774,7 +819,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(wrapper.exists())
 
     def test_rewrite_hook_wraps_common_aliases(self):
-        for command in ["npm --prefix app test", "npm run test:unit", "make -C src test", "vitest run", "python -m unittest"]:
+        for command in [
+            "npm --prefix app test",
+            "npm run test:unit",
+            "make -C src test",
+            "vitest run",
+            "python -m unittest",
+            "python3 -m pytest -q",
+            "python3.14 -m unittest",
+        ]:
             with self.subTest(command=command):
                 self.assertIn("hookSpecificOutput", hook_json(KIT_REWRITE, command))
 
@@ -923,6 +976,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("def target", data["content"])
             self.assertNotIn("def after", data["content"])
             self.assertRegex(data["path"], r"sample\.py#path:[0-9a-f]{12}")
+
+            commented = root / "commented.py"
+            commented.write_text("def foo():\n    return 1\n\n# next section\ndef bar():\n    return 2\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(commented), "foo", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("def foo", data["content"])
+            self.assertNotIn("# next section", data["content"])
 
             ts = root / "sample.ts"
             ts.write_text(
@@ -1734,6 +1799,131 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertIn("provider=gemini", ok.stdout)
 
+    def test_aux_delegate_auto_ignores_manual_context_policy_overrides(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "config.json"
+                    secret_context = Path(tmp) / ".env"
+                    secret_context.write_text("TOKEN=secret", encoding="utf-8")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "auto_delegate_enabled": True,
+                        "auto_delegate_provider": "gemini",
+                        "default_provider": "gemini",
+                        "context_policy": {"allow_sensitive_paths": [str(secret_context)], "allow_outside_project_paths": []},
+                    })
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(secret_context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("automatic delegation refused blocked context", proc.stderr)
+
+    def test_aux_delegate_auto_allows_truncated_context_warning(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "config.json"
+                    context = Path(tmp) / "large.log"
+                    context.write_text("plain log line\n" * 100, encoding="utf-8")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "auto_delegate_enabled": True,
+                        "auto_delegate_provider": "gemini",
+                        "default_provider": "gemini",
+                        "context_max_chars": 40,
+                    })
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--auto",
+                            "--prompt",
+                            "Read-only: summarize",
+                            "--context",
+                            str(context),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("provider=gemini", proc.stdout)
+                    self.assertIn("warning=truncated", proc.stdout)
+
+    def test_aux_delegate_allows_commit_hash_but_blocks_real_secret_shapes(self):
+        aux = load_aux_module()
+        self.assertFalse(aux.contains_sensitive_content("commit abc123def456abc123def456abc123def456abc1"))
+        self.assertFalse(aux.contains_sensitive_content("sha " + ("a" * 40)))
+        self.assertTrue(aux.contains_sensitive_content("AWS key AKIA" + ("A" * 16)))
+        self.assertTrue(aux.contains_sensitive_content("token=ghp_" + ("A" * 36)))
+
+    def test_aux_delegate_context_labels_hide_absolute_paths(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            context = root / "logs" / "app.log"
+            context.parent.mkdir()
+            context.write_text("plain log", encoding="utf-8")
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(root / ".claude-token-optimizer" / "config.json")
+            try:
+                contexts, warnings = aux.read_contexts(["logs/app.log"], 1000)
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+            self.assertEqual(warnings, [])
+            self.assertEqual(contexts[0][0], "logs/app.log")
+            prompt = aux.build_aux_prompt("task", contexts, 1000)
+            self.assertIn("logs/app.log", prompt)
+            self.assertNotIn(str(root), prompt)
+
+    def test_aux_delegate_rejects_project_local_provider_executable_on_real_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake = bin_dir / "gemini"
+            fake.write_text("#!/usr/bin/env bash\necho fake provider\n", encoding="utf-8")
+            fake.chmod(0o700)
+            config_path = root / ".claude-token-optimizer" / "config.json"
+            write_private_config(config_path, {"aux_ai_enabled": True, "default_provider": "gemini"})
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            env["PATH"] = str(bin_dir)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "aux_ai_delegate.py"), "ask", "--prompt", "hello"],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=root,
+            )
+            self.assertEqual(proc.returncode, 127)
+            self.assertIn("safe PATH", proc.stderr)
+            self.assertNotIn("fake provider", proc.stdout)
+
     def test_aux_delegate_blocks_sensitive_prompt_text_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -2150,7 +2340,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ctx.txt"
-            path.write_text("x" * 100, encoding="utf-8")
+            path.write_text("plain log\n" * 20, encoding="utf-8")
             contexts, warnings = aux.read_contexts([str(path)], 10, allow_outside_project=[str(path)])
         self.assertEqual(len(contexts[0][1]), 10)
         self.assertTrue(warnings)

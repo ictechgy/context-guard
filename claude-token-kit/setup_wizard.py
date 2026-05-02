@@ -12,7 +12,10 @@ import copy
 import datetime as _dt
 import json
 import os
+import shlex
 import shutil
+import stat
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -46,9 +49,9 @@ RECOMMENDED_DENIES = [
     "Read(~/.kube/**)",
     "Read(~/.docker/**)",
 ]
-STATUSLINE = {"type": "command", "command": "claude-token-statusline"}
-BASH_HOOK = {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]}
-READ_HOOK = {"matcher": "Read", "hooks": [{"type": "command", "command": "claude-token-guard-read"}]}
+HELPER_STATUSLINE = "claude-token-statusline"
+HELPER_REWRITE_BASH = "claude-token-rewrite-bash"
+HELPER_GUARD_READ = "claude-token-guard-read"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 
@@ -178,11 +181,64 @@ def command_values(value: Any) -> list[str]:
     return found
 
 
+def matcher_covers(existing: Any, desired: str) -> bool:
+    if not isinstance(existing, str):
+        return False
+    parts = {part.strip().lower() for part in existing.split("|") if part.strip()}
+    return not parts or "*" in parts or desired.lower() in parts
+
+
+def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
+    found = shutil.which(helper_name)
+    if found:
+        return helper_name
+    script_dir = Path(__file__).resolve().parent
+    colocated = script_dir / helper_name
+    if colocated.exists() and os.access(colocated, os.X_OK):
+        return str(colocated)
+    repo_plugin = script_dir.parent / "plugins" / "claude-token-optimizer" / "bin" / helper_name
+    if repo_plugin.exists() and os.access(repo_plugin, os.X_OK):
+        return str(repo_plugin)
+    kit_path = script_dir / kit_script
+    if kit_path.exists():
+        prefix = [shell] if shell else [sys.executable]
+        return shlex.join([*prefix, str(kit_path)])
+    return helper_name
+
+
+def statusline_setting() -> dict[str, str]:
+    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline.sh", shell="bash")}
+
+
+def bash_hook_setting() -> dict[str, Any]:
+    return {
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py")}],
+    }
+
+
+def read_hook_setting() -> dict[str, Any]:
+    return {
+        "matcher": "Read",
+        "hooks": [{"type": "command", "command": helper_command(HELPER_GUARD_READ, "guard_large_read.py")}],
+    }
+
+
+def command_matches(existing: str, desired: str) -> bool:
+    if existing == desired:
+        return True
+    existing_parts = shlex.split(existing) if existing else []
+    desired_parts = shlex.split(desired) if desired else []
+    if not existing_parts or not desired_parts:
+        return False
+    return Path(existing_parts[-1]).name == Path(desired_parts[-1]).name
+
+
 def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> bool:
     for entry in pre_tool_use:
-        if not isinstance(entry, dict) or entry.get("matcher") != matcher:
+        if not isinstance(entry, dict) or not matcher_covers(entry.get("matcher"), matcher):
             continue
-        if any(value == command for value in command_values(entry)):
+        if any(command_matches(value, command) for value in command_values(entry)):
             return True
     return False
 
@@ -217,17 +273,22 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
             settings["effortLevel"] = DEFAULT_EFFORT
             actions.append(f"set default effortLevel to {DEFAULT_EFFORT}")
     if choices.statusline:
+        statusline = statusline_setting()
         if "statusLine" not in settings:
-            settings["statusLine"] = dict(STATUSLINE)
+            settings["statusLine"] = statusline
             actions.append("enabled token statusline")
-        elif settings.get("statusLine") != STATUSLINE:
+        elif settings.get("statusLine") != statusline:
             actions.append("kept existing statusLine; add claude-token-statusline manually if desired")
     if choices.denies:
         ensure_permissions(settings, actions)
     if choices.bash_hook:
-        ensure_pre_tool_hook(settings, BASH_HOOK, "claude-token-rewrite-bash", "Bash trim/sanitize", actions)
+        bash_hook = bash_hook_setting()
+        bash_command = bash_hook["hooks"][0]["command"]
+        ensure_pre_tool_hook(settings, bash_hook, bash_command, "Bash trim/sanitize", actions)
     if choices.read_guard:
-        ensure_pre_tool_hook(settings, READ_HOOK, "claude-token-guard-read", "large Read guard", actions)
+        read_hook = read_hook_setting()
+        read_command = read_hook["hooks"][0]["command"]
+        ensure_pre_tool_hook(settings, read_hook, read_command, "large Read guard", actions)
     return actions
 
 
@@ -286,6 +347,59 @@ def load_aux_config(path: Path) -> dict[str, Any]:
     return data
 
 
+def git_root_for(path: Path) -> Path | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    root = proc.stdout.strip()
+    return Path(root).resolve() if root else None
+
+
+def is_git_tracked(path: Path) -> bool:
+    root = git_root_for(path)
+    if root is None:
+        return False
+    try:
+        rel = path.resolve().relative_to(root)
+    except ValueError:
+        return False
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(rel)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def has_private_file_mode(path: Path) -> bool:
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if hasattr(os, "getuid") and st.st_uid != os.getuid():
+        return False
+    return stat.S_IMODE(st.st_mode) & 0o077 == 0
+
+
+def aux_config_trust_error(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if is_git_tracked(path):
+        return f"tracked by git: {path}"
+    if not has_private_file_mode(path):
+        return f"not owner-only 0600: {path}"
+    return None
+
+
 def write_aux_config(
     root: Path,
     provider: str,
@@ -301,12 +415,18 @@ def write_aux_config(
     actions.append(f"enabled auxiliary AI delegation default_provider={provider}")
     if auto_delegate:
         actions.append("enabled automatic safe delegation for plugin skills")
+    trust_error = aux_config_trust_error(config_path)
+    if trust_error:
+        actions.append(f"reset untrusted auxiliary config instead of preserving it ({trust_error})")
     if dry_run:
         return config_path, None
     if config_path.parent.exists() and config_path.parent.is_symlink():
         raise SystemExit(f"Refusing to use symlinked optimizer state directory: {config_path.parent}")
     write_private_gitignore(config_path.parent)
-    config = load_aux_config(config_path)
+    if trust_error:
+        config: dict[str, Any] = {}
+    else:
+        config = load_aux_config(config_path)
     policy = config.get("context_policy")
     if policy is None:
         config["context_policy"] = {"allow_sensitive_paths": [], "allow_outside_project_paths": []}

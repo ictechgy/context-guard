@@ -113,16 +113,23 @@ def find_start(lines: list[str], symbol: str, language: str) -> int | None:
 def python_block_end(lines: list[str], start: int) -> int:
     indent = len(lines[start]) - len(lines[start].lstrip())
     end = start + 1
+    pending_blank_or_comment_end = end
     for index in range(start + 1, len(lines)):
         line = lines[index]
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            end = index + 1
+        if not stripped:
+            pending_blank_or_comment_end = index + 1
             continue
         current_indent = len(line) - len(line.lstrip())
+        if stripped.startswith("#"):
+            if current_indent > indent:
+                end = index + 1
+            else:
+                pending_blank_or_comment_end = index + 1
+            continue
         if current_indent <= indent:
             break
-        end = index + 1
+        end = max(index + 1, pending_blank_or_comment_end)
     return max(end, start + 1)
 
 
