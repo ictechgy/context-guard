@@ -18,11 +18,13 @@ AUX_SCRIPTS = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delega
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"),
+    (KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"),
     (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "claude-token-rewrite-bash"),
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
+DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -45,6 +47,15 @@ def load_aux_module():
     spec = importlib.util.spec_from_file_location("aux_ai_delegate", KIT_DIR / "aux_ai_delegate.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_module_from_path(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -516,6 +527,249 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         check=True,
                     )
                     self.assertIn(str(sample), shown.stdout)
+
+    def test_token_diet_scan_reports_missing_denies_and_context_bloat(self):
+        for script in DIET_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".claude").mkdir()
+                    (root / ".claude" / "settings.json").write_text(
+                        json.dumps({
+                            "model": "opus",
+                            "effortLevel": "high",
+                            "permissions": {"allow": ["Read(./**)"], "deny": ["Read(./dist/**)"]},
+                            "mcpServers": {f"server{i}": {} for i in range(6)},
+                        }),
+                        encoding="utf-8",
+                    )
+                    (root / "node_modules").mkdir()
+                    (root / ".env").write_text("TOKEN=secret", encoding="utf-8")
+                    (root / "CLAUDE.md").write_text(("Important instructions\n" * 1200), encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "scan", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    finding_ids = {item["id"] for item in data["findings"]}
+                    rule_ids = {item["rule_id"] for item in data["findings"]}
+                    self.assertIn("missing-deny-node-modules", finding_ids)
+                    self.assertIn("missing-sensitive-deny-env", finding_ids)
+                    self.assertIn("large-context-file", rule_ids)
+                    self.assertIn("missing-bash-trim-hook", finding_ids)
+                    self.assertIn("broad-read-allow", finding_ids)
+                    self.assertIn("opus-default-model", finding_ids)
+                    self.assertEqual(data["settings"]["mcp_server_count"], 6)
+                    self.assertRegex(data["root"], r"#path:[0-9a-f]{12}")
+                    self.assertNotIn(str(root), proc.stdout)
+
+    def test_token_diet_scan_accepts_hardened_settings_and_show_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            deny = [
+                "Read(./node_modules/**)",
+                "Read(./dist/**)",
+                "Read(./build/**)",
+                "Read(./coverage/**)",
+                "Read(./logs/**)",
+                "Read(./tmp/**)",
+                "Read(./target/**)",
+                "Read(./.next/**)",
+                "Read(./.venv/**)",
+                "Read(./vendor/**)",
+                "Read(./.claude-token-optimizer/**)",
+                "Read(./.env)",
+                "Read(./.env.*)",
+                "Read(./.npmrc)",
+                "Read(./.pypirc)",
+                "Read(./.netrc)",
+                "Read(~/.ssh/**)",
+                "Read(~/.aws/**)",
+                "Read(~/.gnupg/**)",
+                "Read(~/.kube/**)",
+                "Read(~/.docker/**)",
+            ]
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({
+                    "model": "sonnet",
+                    "effortLevel": "medium",
+                    "statusLine": {"type": "command", "command": "claude-token-statusline"},
+                    "permissions": {"deny": deny},
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
+                            }
+                        ]
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (root / "CLAUDE.md").write_text("short\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json", "--show-paths"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            finding_ids = {item["id"] for item in data["findings"]}
+            rule_ids = {item["rule_id"] for item in data["findings"]}
+            self.assertEqual(data["root"], str(root.resolve()))
+            self.assertTrue(data["settings"]["has_bash_trim_hook"])
+            self.assertTrue(data["settings"]["has_statusline"])
+            self.assertNotIn("missing-bash-trim-hook", finding_ids)
+            self.assertNotIn("large-context-file", rule_ids)
+
+    def test_token_diet_scan_reports_invalid_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text("{bad json\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("settings-unreadable", {item["id"] for item in data["findings"]})
+
+    def test_token_diet_scan_does_not_treat_env_glob_as_exact_env_deny(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".env").write_text("SECRET=1", encoding="utf-8")
+            (root / ".env.local").write_text("SECRET=2", encoding="utf-8")
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"permissions": {"deny": ["Read(./.env.*)"]}}),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            finding_ids = {item["id"] for item in json.loads(proc.stdout)["findings"]}
+            self.assertIn("missing-sensitive-deny-env", finding_ids)
+            self.assertNotIn("missing-sensitive-deny-env-star", finding_ids)
+
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"permissions": {"deny": ["Read(./.env)"]}}),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            finding_ids = {item["id"] for item in json.loads(proc.stdout)["findings"]}
+            self.assertIn("missing-sensitive-deny-env-star", finding_ids)
+            self.assertNotIn("missing-sensitive-deny-env", finding_ids)
+
+    def test_token_diet_scan_requires_bash_matcher_for_trim_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Read",
+                                "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
+                            }
+                        ]
+                    }
+                }),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("missing-bash-trim-hook", {item["id"] for item in json.loads(proc.stdout)["findings"]})
+
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Read | bash",
+                                "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}],
+                            }
+                        ]
+                    }
+                }),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertNotIn("missing-bash-trim-hook", {item["id"] for item in json.loads(proc.stdout)["findings"]})
+
+    def test_token_diet_scan_uses_bounded_context_prefix_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "CLAUDE.md").write_text("A" * 700_000, encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_token_diet.py"),
+                    "scan",
+                    str(root),
+                    "--json",
+                    "--large-context-bytes",
+                    "1",
+                    "--long-context-lines",
+                    "999999",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            context = data["context_files"][0]
+            self.assertEqual(context["bytes"], 700_000)
+            self.assertEqual(context["sampled_lines"], 1)
+            self.assertIn("huge-context-file", {item["rule_id"] for item in data["findings"]})
+
+    def test_token_diet_context_finding_ids_are_unique_per_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "CLAUDE.md").write_text("A" * 20_000, encoding="utf-8")
+            (root / "AGENTS.md").write_text("B" * 20_000, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            large_findings = [item for item in data["findings"] if item["rule_id"] == "large-context-file"]
+            self.assertEqual(len(large_findings), 2)
+            self.assertEqual(len({item["id"] for item in large_findings}), 2)
+            self.assertEqual(len({item["instance_id"] for item in large_findings}), 2)
+
+    def test_token_diet_scan_sanitizes_os_error_paths(self):
+        diet = load_module_from_path(KIT_DIR / "claude_token_diet.py", "claude_token_diet_for_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_path = root / "CLAUDE.md"
+            error = PermissionError(13, "Permission denied", str(secret_path))
+            self.assertEqual(diet.format_os_error(error), "Permission denied (errno 13)")
+            self.assertNotIn(str(root), diet.format_os_error(error))
 
     def test_aux_delegate_enable_disable_and_disabled_ask(self):
         for script in AUX_SCRIPTS:

@@ -1,6 +1,6 @@
 {
   "name": "claude-token-optimizer",
-  "description": "Claude Code token reduction skills and local helper commands for context hygiene, usage auditing, and output trimming.",
+  "description": "Claude Code token reduction skills and local helper commands for context hygiene, usage auditing, settings scanning, and output trimming.",
   "author": {
     "name": "jinhongan"
   },
@@ -10,6 +10,8 @@
     "tokens",
     "cost",
     "context",
+    "settings",
+    "diet",
     "statusline",
     "hooks",
     "gemini",

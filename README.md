@@ -8,7 +8,7 @@
 
 - `research/claude-code-token-reduction.md` — 핵심 리서치 보고서와 우선순위별 실행안
 - `research/benchmark-plan.md` — 절감 효과를 검증하기 위한 벤치마크 설계
-- `claude-token-kit/` — 바로 적용/변형 가능한 상태바, 출력 절단 훅, transcript 감사 스크립트
+- `claude-token-kit/` — 바로 적용/변형 가능한 상태바, 출력 절단 훅, transcript 감사/설정 스캔 스크립트
 
 ## 5분 적용 요약
 
@@ -54,6 +54,14 @@ After publishing to GitHub, users can add the marketplace with:
 
 This plugin intentionally does not auto-enable hooks globally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an opt-in project settings example.
 
+For local project hygiene, run:
+
+```bash
+claude-token-diet scan .
+```
+
+It reports missing `permissions.deny` guardrails, noisy-output hook/statusline gaps, broad reads, expensive defaults, many MCP servers, and large/secret-like context files.
+
 ### Optional: auxiliary AI delegation
 
 If you also have Gemini CLI or Codex CLI access, the plugin can use them as an opt-in read-only assistant to save Claude tokens on broad exploration or long logs:
@@ -65,4 +73,3 @@ If you also have Gemini CLI or Codex CLI access, the plugin can use them as an o
 ```
 
 The underlying command is `claude-token-delegate`. It is OFF by default, stores local state in `.claude-token-optimizer/`, prints only a bounded preview back to Claude, and saves full auxiliary responses locally. Do not delegate secrets or private data to another AI provider unless your policy allows it.
-
