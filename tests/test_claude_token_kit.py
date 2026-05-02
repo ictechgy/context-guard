@@ -23,10 +23,12 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"),
     (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"),
     (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "claude-token-rewrite-bash"),
+    (KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"),
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
+SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"]
 DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"]
 READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"]
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"]
@@ -140,6 +142,135 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 127)
         self.assertIn("command failed to start", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
+
+    def test_sanitize_output_redacts_secrets_from_stdin_and_anonymizes_paths(self):
+        raw = (
+            "/Users/alice/project/app.py:12:API_TOKEN=ghp_" + ("A" * 36) + "\n"
+            "+Authorization: Bearer sk-ant-" + ("B" * 24) + "\n"
+            "postgres://user:pass@example.invalid/db\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED]", proc.stdout)
+                self.assertRegex(proc.stdout, r"app\.py#path:[0-9a-f]{12}:12")
+                self.assertNotIn("/Users/alice", proc.stdout)
+                self.assertNotIn("ghp_", proc.stdout)
+                self.assertNotIn("sk-ant-", proc.stdout)
+                self.assertNotIn("user:pass", proc.stdout)
+
+    def test_sanitize_output_preserves_wrapped_exit_code_and_diff_anchors(self):
+        code = (
+            "import sys; "
+            "print('diff --git a/.env b/.env'); "
+            "print('@@ -1 +1 @@'); "
+            "print('+PASSWORD=super-secret-value'); "
+            "[print(f'noise {i}') for i in range(80)]; "
+            "sys.exit(5)"
+        )
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_DIR / "sanitize_output.py"),
+                "--max-lines",
+                "18",
+                "--",
+                sys.executable,
+                "-c",
+                code,
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(proc.returncode, 5)
+        self.assertIn("sanitized output trimmed", proc.stdout)
+        self.assertIn("diff --git a/.env b/.env", proc.stdout)
+        self.assertIn("@@ -1 +1 @@", proc.stdout)
+        self.assertIn("+PASSWORD=[REDACTED]", proc.stdout)
+        self.assertNotIn("super-secret-value", proc.stdout)
+
+    def test_sanitize_output_private_key_block_is_redacted(self):
+        private_key = (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAA\n"
+            "-----END OPENSSH PRIVATE KEY-----\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "sanitize_output.py")],
+            input=private_key,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("[REDACTED PRIVATE KEY BLOCK]", proc.stdout)
+        self.assertNotIn("b3BlbnNzaC1", proc.stdout)
+
+    def test_sanitize_output_redacts_inline_object_secret_literals_without_corrupting_expressions(self):
+        raw = (
+            '+const cfg = { apiKey: "real-secret", password: "hunter2" };\n'
+            '+settings = {"client_secret": "abc123", "token": "short"}\n'
+            '+api_key = os.getenv("API_KEY")\n'
+            '+apiKey = process.env.API_KEY;\n'
+            '+token = settings.token;\n'
+            '+TOKEN=abc;\n'
+            '+SECRET_WORD_RE = re.compile(r"secret|password")\n'
+        )
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "sanitize_output.py")],
+            input=raw,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn('apiKey: "[REDACTED]"', proc.stdout)
+        self.assertIn('password: "[REDACTED]"', proc.stdout)
+        self.assertIn('"client_secret": "[REDACTED]"', proc.stdout)
+        self.assertIn('"token": "[REDACTED]"', proc.stdout)
+        self.assertIn('api_key = os.getenv("API_KEY")', proc.stdout)
+        self.assertIn('apiKey = process.env.API_KEY;', proc.stdout)
+        self.assertIn('token = settings.token;', proc.stdout)
+        self.assertIn('TOKEN=[REDACTED];', proc.stdout)
+        self.assertIn('SECRET_WORD_RE = re.compile', proc.stdout)
+        self.assertNotIn("real-secret", proc.stdout)
+        self.assertNotIn("hunter2", proc.stdout)
+        self.assertNotIn("abc123", proc.stdout)
+
+    def test_sanitize_output_path_anonymization_does_not_corrupt_code_syntax(self):
+        raw = (
+            'root = "/"\n'
+            "remaining = total // 3\n"
+            "url = 'https://example.invalid/path'\n"
+            "/Users/alice/project/app.py:12: error\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "sanitize_output.py")],
+            input=raw,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn('root = "/"', proc.stdout)
+        self.assertIn("remaining = total // 3", proc.stdout)
+        self.assertIn("https://example.invalid/path", proc.stdout)
+        self.assertRegex(proc.stdout, r"app\.py#path:[0-9a-f]{12}:12")
+        self.assertNotIn("/Users/alice", proc.stdout)
+
+    def test_sanitize_output_stdin_mode_cannot_preserve_producer_exit_code(self):
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "sanitize_output.py")],
+            input="TOKEN=secret\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("TOKEN=[REDACTED]", proc.stdout)
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
@@ -287,6 +418,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn("hookSpecificOutput", hook_json(KIT_REWRITE, command))
 
+    def test_rewrite_hook_wraps_search_and_diff_with_sanitizer(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in ["rg -n token src", "grep -R password src", "git diff", "git show HEAD"]:
+                with self.subTest(script=script, command=command):
+                    out = hook_json(script, command)
+                    wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertIn(command.split()[0], wrapped)
+                    self.assertTrue("sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped)
+                    self.assertNotIn("trim_command_output.py", wrapped)
+
     def test_rewrite_hook_rejects_npm_false_positives(self):
         for command in ["npm install test", "npm ci test", "pnpm add test", "yarn add test", "bun add test"]:
             with self.subTest(command=command):
@@ -307,6 +448,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
             with self.subTest(script=script):
                 self.assertEqual(hook_json(script, "claude-trim-output --max-lines 10 -- pytest"), {})
+                self.assertEqual(hook_json(script, "claude-sanitize-output --max-lines 10 -- git diff"), {})
 
     def test_rewrite_hook_noops_when_wrapper_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,6 +458,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
             proc = run_hook(script, "pytest tests -q", cwd=tmp_path)
             self.assertEqual(json.loads(proc.stdout), {})
             self.assertIn("trim wrapper not found", proc.stderr)
+
+    def test_rewrite_hook_blocks_search_when_sanitizer_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            script = tmp_path / "claude-token-rewrite-bash"
+            script.write_bytes(KIT_REWRITE.read_bytes())
+            proc = run_hook(script, "rg -n token .", cwd=tmp_path)
+            data = json.loads(proc.stdout)
+            hook = data["hookSpecificOutput"]
+            self.assertEqual(hook["permissionDecision"], "deny")
+            self.assertIn("claude-sanitize-output is not installed", hook["permissionDecisionReason"])
+            self.assertIn("Search/diff command blocked", proc.stderr)
 
     def test_large_read_guard_blocks_large_whole_file_reads(self):
         for script in READ_GUARD_SCRIPTS:

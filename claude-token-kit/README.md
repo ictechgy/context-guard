@@ -11,6 +11,7 @@ Claude Code CLI token 절감을 위한 실험용 도구 모음입니다. 전부 
 - `claude_token_diet.py` — project `.claude/settings.json` deny/hook/statusline과 `CLAUDE.md`/`AGENTS.md` context bloat를 스캔
 - `guard_large_read.py` — Claude Code `PreToolUse` Read hook에서 큰 파일 전체 읽기를 막고 symbol/line-range 읽기로 유도
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
+- `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redaction하고 head/anchor/tail로 축약
 - `settings.example.json` — project `.claude/settings.json` 예시
 - `aux_ai_delegate.py` — Gemini/Codex 같은 보조 AI CLI를 opt-in으로 호출해 Claude context를 절약
 
@@ -22,6 +23,8 @@ python3 claude-token-kit/trim_command_output.py --max-lines 80 -- pytest tests -
 python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
 python3 claude-token-kit/claude_token_diet.py scan . --json
 python3 claude-token-kit/read_symbol.py path/to/file.py TargetSymbol
+python3 claude-token-kit/sanitize_output.py -- rg -n "TOKEN|SECRET" .
+python3 claude-token-kit/sanitize_output.py -- git diff
 python3 claude-token-kit/aux_ai_delegate.py status
 python3 claude-token-kit/aux_ai_delegate.py enable --provider gemini
 python3 claude-token-kit/aux_ai_delegate.py ask --provider gemini --prompt "Summarize this log" --context ./log.txt
@@ -35,6 +38,8 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 `claude_token_diet.py scan`은 항상 로컬에서만 읽는 read-only scanner입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
 
 `guard_large_read.py`는 opt-in Read hook입니다. 큰 파일을 통째로 Claude context에 넣기 전에 `rg -n`으로 symbol 후보를 찾고 `read_symbol.py`로 필요한 함수/클래스 주변만 읽도록 안내합니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
+
+`sanitize_output.py`는 grep/diff output을 Claude에게 보여주기 전에 secret-like line, Authorization header, private key block, API token, credential URL을 `[REDACTED]`로 바꾸고 긴 결과를 head / grep·diff·security anchor / tail만 남깁니다. 명령을 감싸는 wrapper mode는 원래 exit code를 보존합니다. stdin pipe도 지원하지만 producer exit code는 shell `pipefail` 없이는 알 수 없으므로 자동화에는 `python3 .../sanitize_output.py -- rg ...`처럼 wrapper mode를 선호하세요. 절대경로는 기본 익명화되고 로컬 디버깅에서만 `--show-paths`를 쓰세요. `rewrite_bash_for_token_budget.py` hook은 단일 argv 형태의 `rg`, `grep`, `git grep`, `git diff`, `git show`, `git log -p`를 자동으로 이 sanitizer에 감쌉니다.
 
 Claude Code에 적용하려면 `settings.example.json`을 `.claude/settings.json`으로 복사하되, 먼저 작은 repo에서 quoting/exit code를 확인하세요.
 

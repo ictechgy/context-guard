@@ -8,7 +8,7 @@
     {
       "name": "claude-token-optimizer",
       "source": "./plugins/claude-token-optimizer",
-      "description": "Skills and local helper commands for reducing Claude Code token usage, including settings/context scanning, large-read guards, and opt-in Gemini/Codex delegation for noisy read-only analysis.",
+      "description": "Skills and local helper commands for reducing Claude Code token usage, including settings/context scanning, large-read guards, and opt-in Gemini/Codex delegation for noisy read-only analysis, and grep/diff sanitizing before Claude sees secrets.",
       "license": "MIT",
       "keywords": [
         "claude-code",
@@ -22,7 +22,11 @@
         "hooks",
         "gemini",
         "codex",
-        "auxiliary-ai"
+        "auxiliary-ai",
+        "sanitize-output",
+        "grep-sanitizer",
+        "diff-sanitizer",
+        "secret-redaction"
       ],
       "category": "developer-tools",
       "tags": [
@@ -33,7 +37,9 @@
         "read-guard",
         "auxiliary-ai",
         "gemini",
-        "codex"
+        "codex",
+        "output-sanitizer",
+        "secret-redaction"
       ],
       "version": "0.1.0"
     }

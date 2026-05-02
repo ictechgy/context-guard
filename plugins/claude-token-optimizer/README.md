@@ -21,6 +21,8 @@ claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-token-diet scan . --json
 claude-trim-output --max-lines 120 -- npm test
 claude-read-symbol path/to/file.py TargetSymbol
+claude-sanitize-output -- rg -n "TOKEN|SECRET" .
+claude-sanitize-output -- git diff
 claude-token-guard-read
 claude-token-statusline
 claude-token-rewrite-bash
@@ -37,6 +39,8 @@ claude-token-delegate disable
 `claude-token-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and suggests `rg -n` plus `claude-read-symbol` or small line-range reads. `claude-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
 
 `claude-trim-output` preserves the wrapped command exit code and, when output is trimmed, adds a runner-aware failure summary for common test runners: pytest node ids, Jest/Vitest failing files/tests, `go test` failures, and `cargo test` panic locations. This usually gives Claude the actionable file/test target without sending the full log. ANSI color codes are stripped and absolute paths are anonymized by default as `basename#path:<hash>`; add `--show-paths` only for local/private debugging.
+
+`claude-sanitize-output` is for `rg`/`grep`/`git diff` style output. It redacts common credential patterns, private key blocks, auth headers, and credential URLs, preserves wrapped command exit codes in wrapper mode, and trims large results to head / grep-diff-security anchors / tail. Stdin pipeline mode is supported for ad-hoc cleanup, but it cannot preserve the producer command's exit code unless your shell uses `pipefail`. Absolute paths are anonymized by default; add `--show-paths` only for local/private debugging. The example Bash hook rewrites single safe search/diff commands to use this sanitizer automatically.
 
 ## Local test before publishing
 

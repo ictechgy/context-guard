@@ -70,6 +70,15 @@ claude-read-symbol path/to/file.py TargetSymbol
 
 The example settings can also enable `claude-token-guard-read`, which blocks accidental whole-file reads above the guard threshold and points Claude to `rg` plus symbol/line-range reads.
 
+For search or diff output that may contain secrets, sanitize before sending it back to Claude:
+
+```bash
+claude-sanitize-output -- rg -n "TOKEN|SECRET" .
+claude-sanitize-output -- git diff
+```
+
+Wrapper mode preserves the wrapped command exit code. Pipeline mode such as `git diff | claude-sanitize-output` is still useful for ad-hoc cleanup, but the sanitizer cannot know the producer's exit code unless your shell uses `pipefail`. The same Bash hook that trims test/build logs can also auto-wrap single safe `rg`/`grep`/`git diff` commands with the sanitizer.
+
 ### Optional: auxiliary AI delegation
 
 If you also have Gemini CLI or Codex CLI access, the plugin can use them as an opt-in read-only assistant to save Claude tokens on broad exploration or long logs:

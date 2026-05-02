@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook: wrap noisy Bash test/build/lint commands.
+"""Claude Code PreToolUse hook: wrap noisy Bash commands.
 
 Reads hook JSON from stdin and prints a JSON response understood by Claude Code.
 Install via `.claude/settings.json` hooks. Keep this script project-local during
@@ -14,17 +14,29 @@ import shlex
 import sys
 
 # Reject shell control syntax before wrapping. The wrapper is intended only for a
-# single safe argv-style test/build/lint command, not arbitrary shell programs.
+# single safe argv-style command, not arbitrary shell programs.
 SHELL_META_RE = re.compile(r"[;&|<>`$()\n\r\t]")
-WRAPPER_MARKERS = ("trim_command_output.py", "claude-trim-output")
+WRAPPER_MARKERS = (
+    "trim_command_output.py",
+    "claude-trim-output",
+    "sanitize_output.py",
+    "claude-sanitize-output",
+)
+FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
 
 
-def find_wrapper() -> str | None:
+def find_wrapper(kind: str) -> str | None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(script_dir, "claude-trim-output"),
-        os.path.join(script_dir, "trim_command_output.py"),
-    ]
+    if kind == "sanitize":
+        candidates = [
+            os.path.join(script_dir, "claude-sanitize-output"),
+            os.path.join(script_dir, "sanitize_output.py"),
+        ]
+    else:
+        candidates = [
+            os.path.join(script_dir, "claude-trim-output"),
+            os.path.join(script_dir, "trim_command_output.py"),
+        ]
     for path in candidates:
         if os.path.exists(path):
             return path
@@ -92,7 +104,37 @@ def is_noisy_command(argv: list[str]) -> bool:
     return False
 
 
+def is_sanitizable_output_command(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    first = argv[0]
+    rest = argv[1:]
+
+    if first in {"rg", "grep", "egrep", "fgrep"}:
+        # `rg --files` is path listing rather than content search; the large
+        # read/diet guards are better fits there.
+        return not any(arg == "--files" for arg in rest)
+    if first == "git" and rest:
+        subcommand = rest[0]
+        if subcommand == "grep":
+            return True
+        if subcommand in {"diff", "show"}:
+            return True
+        if subcommand == "log" and any(arg == "-p" or arg.startswith("--patch") for arg in rest[1:]):
+            return True
+    return False
+
+
 def build_wrapped_command(wrapper: str, argv: list[str]) -> str:
+    if wrapper.endswith(".py"):
+        prefix = ["python3", wrapper]
+    else:
+        prefix = [wrapper]
+    wrapped_argv = prefix + ["--max-lines", "220", "--"] + argv
+    return shlex.join(wrapped_argv)
+
+
+def build_sanitized_command(wrapper: str, argv: list[str]) -> str:
     if wrapper.endswith(".py"):
         prefix = ["python3", wrapper]
     else:
@@ -117,16 +159,41 @@ def main() -> int:
         return 0
 
     argv = split_single_safe_command(command)
-    if not argv or not is_noisy_command(argv):
+    if not argv:
         print("{}")
         return 0
 
-    wrapper = find_wrapper()
-    if wrapper is None:
-        print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
+    if is_noisy_command(argv):
+        wrapper = find_wrapper("trim")
+        if wrapper is None:
+            print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
+            print("{}")
+            return 0
+        wrapped = build_wrapped_command(wrapper, argv)
+    elif is_sanitizable_output_command(argv):
+        wrapper = find_wrapper("sanitize")
+        if wrapper is None:
+            reason = (
+                "Search/diff command blocked because claude-sanitize-output is not installed next to "
+                "claude-token-rewrite-bash. Install the sanitizer or set "
+                f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
+            )
+            print(f"claude-token-rewrite-bash: {reason}", file=sys.stderr)
+            if os.environ.get(FAIL_OPEN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+                print("{}")
+                return 0
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }, ensure_ascii=False))
+            return 0
+        wrapped = build_sanitized_command(wrapper, argv)
+    else:
         print("{}")
         return 0
-    wrapped = build_wrapped_command(wrapper, argv)
 
     response = {
         "hookSpecificOutput": {
