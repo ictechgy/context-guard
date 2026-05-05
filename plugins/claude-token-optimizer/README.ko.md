@@ -74,6 +74,8 @@ claude-token-delegate disable
 
 기본 출력은 공유 안전성을 위해 transcript 경로와 command string을 익명화합니다. 로컬 비공개 디버깅에서만 `--show-paths`, `--show-commands`를 사용하세요.
 
+JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, 원본 cache_read/cache_creation/input 토큰)을 포함합니다. prompt cache가 write 비용을 회수하고 있는지 한눈에 보기 위한 것입니다. `improve-prompt-cache-reuse` 권장 사항은 amortization(`cache_read / cache_creation`)이 1.0 미만이고 cache write가 충분히 큰 경우에 발생하며, `evaluate-1h-ttl-cache`는 write는 크지만 재사용이 보통 수준일 때 — 즉 기본 5분 TTL보다 1h TTL 베타가 amortize에 유리한 구간을 가리킬 때 — 발생합니다.
+
 ### 설정/컨텍스트 스캔
 
 ```bash
@@ -86,7 +88,7 @@ claude-token-delegate disable
 
 `claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n`과 `claude-read-symbol`을 사용하도록 안내합니다.
 
-`claude-token-statusline`은 project settings로 활성화했을 때 token/cost/model 정보를 짧은 statusline으로 출력합니다.
+`claude-token-statusline`은 project settings로 활성화했을 때 token/cost/model 정보를 짧은 statusline으로 출력합니다. Claude Code statusline payload에 읽기 가능한 `transcript_path`가 포함되면 `cache <N>%`도 함께 표시됩니다 — 이는 transcript 끝부분에서 계산한 cache_read 비중입니다. transcript가 없거나 읽을 수 없거나 `python3`가 없으면 cache 라벨만 빠지고 나머지 statusline은 그대로 동작합니다.
 
 `claude-token-rewrite-bash`는 예시 settings에서 사용하는 opt-in `PreToolUse` Bash hook입니다. 안전한 단일 test/build/lint 명령은 `claude-trim-output`으로, 안전한 단일 `rg`/`grep`/`git diff` 계열 명령은 `claude-sanitize-output`으로 감쌉니다.
 

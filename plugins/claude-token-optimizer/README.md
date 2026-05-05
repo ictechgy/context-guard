@@ -41,7 +41,7 @@ claude-token-delegate ask --provider gemini --prompt "Summarize this log" --cont
 claude-token-delegate disable
 ```
 
-`claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
+`claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports. The JSON output includes a `cache_metrics` block (`cache_hit_rate`, `cache_amortization`, raw cache_read/cache_creation/input tokens) so you can tell whether the prompt cache is paying back its write cost. The `improve-prompt-cache-reuse` recommendation triggers when amortization (`cache_read / cache_creation`) drops below 1.0 with non-trivial cache writes; `evaluate-1h-ttl-cache` flags sessions where writes are large but reuse is moderate, which is where the 1h TTL cache beta tends to amortize better than the default 5-minute TTL.
 
 `claude-token-setup` is the post-install wizard. Prefer `/claude-token-optimizer:setup` inside Claude Code. In a normal terminal, run `./plugins/claude-token-optimizer/bin/claude-token-setup --plan` from this repository root, or use `claude-token-setup --plan` only after adding the plugin bin directory to `PATH`. It merges `.claude/settings.json` instead of replacing it, never enables manual Gemini/Codex delegation unless selected explicitly with `--aux-provider gemini|codex`, and only enables automatic delegation for that provider when `--auto-delegate` is also provided. Rerunning setup with `--aux-provider` but without `--auto-delegate` clears prior automatic-delegation consent.
 
@@ -49,7 +49,7 @@ claude-token-delegate disable
 
 `claude-token-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and suggests `rg -n` plus `claude-read-symbol` or small line-range reads. `claude-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
 
-`claude-token-statusline` prints a compact token/cost/model statusline when enabled through project settings.
+`claude-token-statusline` prints a compact token/cost/model statusline when enabled through project settings. When the Claude Code statusline payload includes a readable `transcript_path`, the line also appends `cache <N>%` — the cache-read share of input-side tokens computed from the transcript tail. The cache label is omitted (rather than failing) when the transcript is missing, unreadable, or `python3` is unavailable, so the statusline never breaks.
 
 `claude-token-rewrite-bash` is the opt-in `PreToolUse` Bash hook used by the example settings. It rewrites single safe test/build/lint commands through `claude-trim-output`, and single safe `rg`/`grep`/`git diff` style commands through `claude-sanitize-output`.
 
