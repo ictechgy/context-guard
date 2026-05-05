@@ -96,6 +96,68 @@ export CLAUDE_CODE_DISABLE_1M_CONTEXT=1
 
 Claude Code는 prompt caching을 자동 사용한다. 디버깅 목적이 아니면 `DISABLE_PROMPT_CACHING*` 환경변수를 설정하지 않는다.
 
+### 2.7 1h TTL prompt cache 베타 — 언제 켜고, 언제 끄는가
+
+Claude API의 prompt cache는 기본 5분 TTL이다. 베타 옵션으로 1시간 TTL을 명시할 수 있다 (`cache_control: { type: "ephemeral", ttl: "1h" }`, `extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"}`). 가격 멘탈 모델만 명확히 하면 언제 켤지가 단순해진다.
+
+**가격 (Sonnet 기준 비례)**:
+
+| 항목 | 5분 기본 | 1시간 베타 |
+|---|---:|---:|
+| 일반 input | 1.0x | 1.0x |
+| Cache write | 1.25x | **2.0x** |
+| Cache read | 0.1x | 0.1x |
+
+즉 1h TTL은 **write 한 번에 0.75x를 추가로 더 낸다**. 이 추가 write 비용을 회수하려면 5분 윈도우를 넘긴 시점에서도 캐시를 한 번 더 read 해야 한다.
+
+**손익분기**:
+
+- 5분 윈도우 안에서만 reuse가 발생하는 세션: 5분 TTL이 항상 더 싸다 (write 1.25x vs 2.0x). 1h TTL을 켤 이유 없음.
+- 5분 윈도우를 넘기는 reuse가 한 번이라도 일어나는 세션: 1h TTL이 그 한 번의 read에서 5분 TTL의 “재워밍 시 추가 1.25x write”를 절약한다. 즉 **추가 0.75x write가 절약된 0.9x read 가치를 만들어내는지**가 손익분기. 거칠게 말해 5분을 넘긴 reuse가 1회만 있어도 손익분기 근처, 2회 이상이면 명확히 이득.
+
+**`/oh-my-claudecode:audit --recommend` 의 `evaluate-1h-ttl-cache` 권고와의 관계**:
+
+이 PR 시리즈에서 추가된 audit 권고는 다음 조건에서 발화한다.
+
+- `cache_creation >= 50_000` 토큰
+- `1.0 <= cache_amortization < 5.0`
+
+amortization이 1~5x인 “보통 정도” 재사용 세션에서 cache write가 누적해서 50k 이상으로 큰 경우, write 비용을 더 잘 분산할 가능성이 있다는 신호다. **단 audit는 timestamp를 보지 않으므로 reuse가 5분 안에서만 일어났는지 1시간 단위로 일어났는지 알 수 없다**. 권고 메시지 본문에도 `Heuristic only — confirm reuse spans >5min` 단서를 명시한다.
+
+**활성화 전 체크리스트**:
+
+1. 동일 prefix를 5분 이상 떨어진 시점에서도 다시 read하는 패턴인가?
+   - long-running planning 세션, 다단계 implementation 등에서 흔하다.
+   - Claude Code interactive에서는 사용자가 한 번 결정하고 5~30분 뒤 같은 토픽으로 돌아오는 경우.
+2. prefix가 1시간 안에 자주 바뀌지 않는가?
+   - CLAUDE.md를 자주 편집하거나 MCP를 on/off 하면 1h TTL이라도 매번 무효 → 추가 write 비용만 손해.
+3. `cache_creation` 비용이 절대값으로 의미 있는 수준인가?
+   - 작은 세션에는 5분 TTL로 충분하다.
+
+**활성화 방법 (API 직접 사용 시)**:
+
+```python
+client.messages.create(
+    model="claude-opus-4-7",
+    extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+    system=[{
+        "type": "text",
+        "text": "...long stable prompt...",
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+    }],
+    messages=[...],
+)
+```
+
+Claude Code 자체는 `cache_control` TTL을 사용자가 직접 지정하지 않지만, 본 권고는 **API/SDK 사용자 또는 사용자 정의 background agent**가 long planning 세션을 자동화할 때 의사결정 기준이 된다.
+
+**비활성화/회귀 신호**:
+
+- 활성화 후 audit 결과의 `cache_amortization`이 오히려 떨어졌다면 1시간 안에 prefix가 무효화되는 패턴이라는 뜻 — 5분 TTL로 돌아간다.
+- `cache_creation` 비용이 활성화 전후로 크게 변하지 않으면 reuse가 5분 윈도우 안에 다 끝나고 있다는 뜻 → 베타 비용을 낭비하고 있다.
+
+요약: 1h TTL 베타는 **장시간 재사용 세션**의 안전장치이지 기본값이 아니다. audit의 amortization 메트릭이 시계열 진단 자료가 되도록, 활성화 전후의 같은 task class에서 비교 측정한다.
+
 ## 3. P1: 컨텍스트 diet 설계
 
 ### 3.1 `CLAUDE.md`를 “항상 필요한 200줄 이하”로 유지

@@ -74,7 +74,7 @@ claude-token-delegate disable
 
 기본 출력은 공유 안전성을 위해 transcript 경로와 command string을 익명화합니다. 로컬 비공개 디버깅에서만 `--show-paths`, `--show-commands`를 사용하세요.
 
-JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, 원본 cache_read/cache_creation/input 토큰)을 포함합니다. prompt cache가 write 비용을 회수하고 있는지 한눈에 보기 위한 것입니다. `improve-prompt-cache-reuse` 권장 사항은 amortization(`cache_read / cache_creation`)이 1.0 미만이고 cache write가 충분히 큰 경우에 발생하며, `evaluate-1h-ttl-cache`는 write는 크지만 재사용이 보통 수준일 때 — 즉 기본 5분 TTL보다 1h TTL 베타가 amortize에 유리한 구간을 가리킬 때 — 발생합니다.
+JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `cache_amortization_defined`, 원본 cache_read/cache_creation/input 토큰)을 포함합니다. prompt cache가 write 비용을 회수하고 있는지 한눈에 보기 위한 것입니다. `improve-prompt-cache-reuse` 권장 사항은 amortization(`cache_read / cache_creation`)이 0.5 미만이고 cache write 가 의미 있는 규모(≥10k 작성 토큰 + ≥1 read)일 때만 발화하므로 baseline / cache-cold 세션의 false-positive 를 차단합니다. `evaluate-1h-ttl-cache`는 휴리스틱입니다 — write 는 크지만 재사용이 보통 수준인 세션을 표시하고, 실제로 1h TTL prompt cache 베타를 켤지는 재사용이 5분 윈도우를 넘는지에 달려 있습니다. 가격 계산, 손익분기 분석, 활성화 전 체크리스트는 [`research/claude-code-token-reduction.md` §2.7](../../research/claude-code-token-reduction.md) 을 참고하세요.
 
 ### 설정/컨텍스트 스캔
 
