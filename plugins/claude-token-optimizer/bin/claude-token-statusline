@@ -55,8 +55,10 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
   fi
 fi
 
-# Cache hit rate from the transcript tail (best-effort, fast — reads only the last 256KB).
+# Cache hit rate from the transcript tail (best-effort, fast — reads only the last 1MB).
 # Stays empty when transcript is unavailable or python3 fails so the status line never breaks.
+# NOTE: keep the token-key list and usage-extraction shape in sync with claude_transcript_cost_audit.py
+# so the statusline metric matches the audit metric for the same transcript.
 cache_label=''
 transcript_path=$(jq_get '.transcript_path')
 if [[ -n "$transcript_path" && -r "$transcript_path" ]] && command -v python3 >/dev/null 2>&1; then
@@ -69,10 +71,43 @@ path = sys.argv[1] if len(sys.argv) > 1 else ""
 if not path or not os.path.isfile(path):
     sys.exit(0)
 
-input_tokens = cache_read = cache_creation = 0
-TAIL_BYTES = 256 * 1024
+# Bounded tail read so the statusline never stalls on huge transcripts.
+TAIL_BYTES = 1024 * 1024
 MAX_RECORDS = 300
-WALK_BUDGET = 5000
+
+
+def _int_or_zero(value):
+    """transcript usage 토큰값을 정수로 강제. bool은 int 서브클래스이므로 별도 차단."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    return 0
+
+
+def _extract_usage(record):
+    """transcript record에서 알려진 usage 객체 1개만 꺼낸다.
+
+    Claude Code transcript JSONL은 record 당 한 번의 LLM 호출 usage를 다음 중 한 자리에
+    넣는 것이 일반적이다 — top-level "usage", "message.usage", "response.usage".
+    재귀 walk 대신 알려진 경로만 보아야 동일 값이 여러 nested 사본으로 들어왔을 때
+    이중 합산되는 문제를 피할 수 있다.
+    """
+    if not isinstance(record, dict):
+        return None
+    for path_keys in (("usage",), ("message", "usage"), ("response", "usage")):
+        cur = record
+        for key in path_keys:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(key)
+        if isinstance(cur, dict):
+            return cur
+    return None
+
+
+input_tokens = cache_read = cache_creation = 0
 
 try:
     size = os.path.getsize(path)
@@ -92,32 +127,25 @@ try:
             obj = json.loads(raw)
         except Exception:
             continue
-        stack = [obj]
-        steps = 0
-        while stack and steps < WALK_BUDGET:
-            steps += 1
-            cur = stack.pop()
-            if isinstance(cur, dict):
-                v = cur.get("input_tokens")
-                if isinstance(v, int) and not isinstance(v, bool):
-                    input_tokens += v
-                for k in ("cache_read_input_tokens", "cacheRead"):
-                    v = cur.get(k)
-                    if isinstance(v, int) and not isinstance(v, bool):
-                        cache_read += v
-                        break
-                for k in ("cache_creation_input_tokens", "cacheCreation"):
-                    v = cur.get(k)
-                    if isinstance(v, int) and not isinstance(v, bool):
-                        cache_creation += v
-                        break
-                stack.extend(cur.values())
-            elif isinstance(cur, list):
-                stack.extend(cur)
+        usage = _extract_usage(obj)
+        if not usage:
+            continue
+        input_tokens += _int_or_zero(usage.get("input_tokens"))
+        cr = usage.get("cache_read_input_tokens")
+        if cr is None:
+            cr = usage.get("cacheRead")
+        cache_read += _int_or_zero(cr)
+        cc = usage.get("cache_creation_input_tokens")
+        if cc is None:
+            cc = usage.get("cacheCreation")
+        cache_creation += _int_or_zero(cc)
     denom = input_tokens + cache_read + cache_creation
-    if denom <= 0:
+    # Skip the label entirely on empty / cache-cold sessions so the user does not see a
+    # confusing "cache 0%" before the cache has had a chance to warm up.
+    if denom <= 0 or cache_read <= 0:
         sys.exit(0)
-    print(f"{cache_read / denom * 100:.0f}")
+    pct = max(0.0, min(100.0, cache_read / denom * 100))
+    print(f"{pct:.0f}")
 except Exception:
     sys.exit(0)
 PYEOF

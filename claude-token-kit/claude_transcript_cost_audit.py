@@ -72,7 +72,12 @@ class UsageSummary:
 
     @property
     def cache_hit_rate(self) -> float:
-        """cache_read의 입력 측 비중. 1에 가까울수록 캐시가 재활용되고 있음."""
+        """cache_read의 입력 측 비중 = cache_read / (input + cache_read + cache_creation).
+
+        cache_creation이 분모에 포함되므로 신규 prefix를 막 만든 세션에서는 비율이 낮게
+        나타날 수 있다. 고전적 hit-rate(cache 가능 풀 대비 hit)가 아니라 입력 비용 절감
+        지표로 해석해야 한다. denom == 0이면 0.0.
+        """
         cr = self.tokens.get("cache_read", 0)
         cc = self.tokens.get("cache_creation", 0)
         inp = self.tokens.get("input", 0)
@@ -81,10 +86,21 @@ class UsageSummary:
 
     @property
     def cache_amortization(self) -> float:
-        """cache_read / cache_creation. 캐시에 한 번 쓴 prefix가 평균 몇 번 재사용되었는지의 근사값."""
+        """cache_read / cache_creation. 토큰 단위로 본 평균 재사용 배수의 근사.
+
+        cache_creation == 0인 경우 의미가 정의되지 않으므로 0.0을 반환한다 (정의되지 않음을
+        표현하기 위해 cache_amortization_defined 플래그를 함께 노출한다). 같은 prefix가
+        길이 변화 없이 N회 재사용되면 토큰 비도 약 N배가 되지만, prefix 길이가 변하는
+        세션에서는 정확히 호출 횟수가 아닌 토큰 비율로 본 근사값임에 주의.
+        """
         cc = self.tokens.get("cache_creation", 0)
         cr = self.tokens.get("cache_read", 0)
         return (cr / cc) if cc > 0 else 0.0
+
+    @property
+    def cache_amortization_defined(self) -> bool:
+        """cache_amortization이 의미를 갖는지 여부. cache_creation > 0일 때만 True."""
+        return self.tokens.get("cache_creation", 0) > 0
 
     def note_error(self, message: str) -> None:
         if len(self.parse_errors) < MAX_ERROR_EXAMPLES:
@@ -361,7 +377,11 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             "P0",
             {"input_tokens": input_tokens, "total_tokens": total},
         ))
-    if cache_creation >= 2_000 and summary.cache_amortization < 1.0:
+    if (
+        cache_creation >= 10_000
+        and cache_read >= 1
+        and summary.cache_amortization < 0.5
+    ):
         recs.append(recommendation(
             "improve-prompt-cache-reuse",
             "Prompt cache reuse looks low",
@@ -378,13 +398,15 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 "cache_hit_rate": round(summary.cache_hit_rate, 4),
             },
         ))
-    elif cache_creation >= 50_000 and 1.0 <= summary.cache_amortization < 5.0:
+    if cache_creation >= 50_000 and 1.0 <= summary.cache_amortization < 5.0:
         recs.append(recommendation(
             "evaluate-1h-ttl-cache",
             "Cache writes are large; evaluate the 1h TTL cache beta",
             (
-                f"Cache amortization {summary.cache_amortization:.2f}x with {cache_creation} write tokens; "
-                "absolute write cost is high and reuse is moderate."
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens; absolute write cost is high and reuse is moderate. "
+                "This metric does not inspect timestamps, so confirm reuse spans >5min in a sample "
+                "session before enabling 1h TTL."
             ),
             (
                 "If sessions reuse the same prefix beyond the 5-minute default TTL, evaluate the 1h prompt cache "
@@ -396,6 +418,7 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 "cache_read": cache_read,
                 "cache_amortization": round(summary.cache_amortization, 4),
                 "cache_hit_rate": round(summary.cache_hit_rate, 4),
+                "heuristic": True,
             },
         ))
 
@@ -462,6 +485,7 @@ def summary_json(summary: UsageSummary, top: int = 15, include_recommendations: 
         "cache_metrics": {
             "cache_hit_rate": round(summary.cache_hit_rate, 4),
             "cache_amortization": round(summary.cache_amortization, 4),
+            "cache_amortization_defined": summary.cache_amortization_defined,
             "cache_read_tokens": summary.tokens.get("cache_read", 0),
             "cache_creation_tokens": summary.tokens.get("cache_creation", 0),
             "input_tokens": summary.tokens.get("input", 0),
@@ -520,7 +544,10 @@ def main() -> int:
 
     print("\nCache reuse")
     print(f"  cache_hit_rate           {summary.cache_hit_rate:.2%}")
-    print(f"  cache_amortization       {summary.cache_amortization:.2f}x")
+    if summary.cache_amortization_defined:
+        print(f"  cache_amortization       {summary.cache_amortization:.2f}x")
+    else:
+        print("  cache_amortization       n/a (no cache writes observed)")
     print(f"  cache_read_tokens        {summary.tokens.get('cache_read', 0):12d}")
     print(f"  cache_creation_tokens    {summary.tokens.get('cache_creation', 0):12d}")
 
