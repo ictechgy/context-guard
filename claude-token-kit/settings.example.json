@@ -3,7 +3,7 @@
   "effortLevel": "medium",
   "statusLine": {
     "type": "command",
-    "command": "bash claude-token-kit/statusline.sh"
+    "command": "bash claude-token-kit/statusline_merged.sh"
   },
   "permissions": {
     "deny": [

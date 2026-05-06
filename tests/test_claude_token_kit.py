@@ -30,6 +30,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "claude-token-setup"),
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
+    (KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"]
@@ -3041,12 +3042,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
         example = json.loads((ROOT / "plugins" / "claude-token-optimizer" / "examples" / "settings.example.json").read_text())
         status_cmd = example["statusLine"]["command"]
         hook_cmd = example["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertEqual(status_cmd, "claude-token-statusline")
+        # Default statusline is the OMC-aware merged wrapper. It auto-falls-back to
+        # `claude-token-statusline` when OMC HUD is absent, so non-OMC users still
+        # get the same compact line.
+        self.assertEqual(status_cmd, "claude-token-statusline-merged")
         self.assertEqual(hook_cmd, "claude-token-rewrite-bash")
         self.assertTrue((PLUGIN_BIN / status_cmd).exists())
         self.assertTrue((PLUGIN_BIN / hook_cmd).exists())
         self.assertTrue(os.access(PLUGIN_BIN / status_cmd, os.X_OK))
         self.assertTrue(os.access(PLUGIN_BIN / hook_cmd, os.X_OK))
+        # The plain (non-merged) statusline must still ship in bin/ so the wrapper
+        # can locate it as a sibling and so users can opt out of the OMC integration
+        # by switching the example back to "claude-token-statusline".
+        self.assertTrue((PLUGIN_BIN / "claude-token-statusline").exists())
+        self.assertTrue(os.access(PLUGIN_BIN / "claude-token-statusline", os.X_OK))
 
 
 BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "claude-token-bench"]
@@ -3359,6 +3368,116 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(tokens["cache_read"], 800)
         self.assertEqual(tokens["cache_creation"], 50)
         self.assertAlmostEqual(cost, 0.05, places=6)
+
+
+class StatuslineMergedWrapperTests(unittest.TestCase):
+    """결합 wrapper 의 4 분기 출력 시나리오 검증.
+
+    OMC HUD 와 claude-token-statusline 의 존재 조합에 따라 출력이 달라진다:
+      - 둘 다 있음: OMC HUD 라인 뒤에 cost/cache 만 추출해 결합
+      - OMC 만:    OMC HUD 단독
+      - token 만:  token-statusline 단독
+      - 둘 다 없음: 진단 메시지
+    """
+
+    SAMPLE_PAYLOAD = json.dumps({
+        "model": {"display_name": "Opus 4.7", "id": "claude-opus-4-7"},
+        "workspace": {"current_dir": "/tmp/wrapper-test"},
+        "context_window": {"used_percentage": 47},
+        "cost": {"total_cost_usd": 0.123},
+        "transcript_path": "",
+        "session_id": "wrapper-test",
+    })
+
+    def _run_wrapper(self, *, omc_script: Path | None, tok_bin: Path | None) -> str:
+        """Run the merged wrapper with explicit OMC HUD and token-statusline overrides."""
+        env = os.environ.copy()
+        # 항상 명시적으로 set/unset 하여 실제 사용자 머신의 OMC HUD가 끼어들지 않도록 한다.
+        if omc_script is None:
+            env["OMC_HUD_SCRIPT"] = "/nonexistent/__missing_omc_hud__.mjs"
+        else:
+            env["OMC_HUD_SCRIPT"] = str(omc_script)
+        if tok_bin is None:
+            # PATH에서 실제 claude-token-statusline 도 못 찾도록 PATH 를 비운다.
+            # node 는 OMC HUD 실행에 필요하므로 시스템 경로는 유지.
+            env["CLAUDE_TOKEN_STATUSLINE_BIN"] = "/nonexistent/__missing_token_statusline__"
+        else:
+            env["CLAUDE_TOKEN_STATUSLINE_BIN"] = str(tok_bin)
+        proc = subprocess.run(
+            ["bash", str(KIT_DIR / "statusline_merged.sh")],
+            input=self.SAMPLE_PAYLOAD,
+            text=True,
+            capture_output=True,
+            env=env,
+            check=True,
+        )
+        return proc.stdout.rstrip("\n")
+
+    def _make_fake_omc_hud(self, tmp: Path, line: str) -> Path:
+        """tmp/omc-hud.mjs 를 생성: stdin 을 무시하고 line 한 줄을 stdout 으로 흘린다."""
+        path = tmp / "omc-hud.mjs"
+        # node 가 stdin 을 읽지 않으면 wrapper 의 printf "$input" | node ... 에서
+        # EPIPE 가 날 수 있으므로 명시적으로 stdin 을 drain 한 뒤 출력한다.
+        path.write_text(
+            "process.stdin.resume();\n"
+            "process.stdin.on('data', () => {});\n"
+            "process.stdin.on('end', () => {\n"
+            f"  process.stdout.write({json.dumps(line)});\n"
+            "});\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _make_fake_token_statusline(self, tmp: Path, line: str) -> Path:
+        """tmp/fake-token-statusline 을 생성: stdin 을 무시하고 line 한 줄을 출력한다."""
+        path = tmp / "fake-token-statusline"
+        path.write_text(
+            "#!/usr/bin/env bash\n"
+            "cat >/dev/null\n"
+            f"printf '%s\\n' {shlex.quote(line)}\n",
+            encoding="utf-8",
+        )
+        os.chmod(path, stat.S_IRWXU)
+        return path
+
+    def test_merges_omc_hud_with_cost_and_cache_when_both_available(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            omc = self._make_fake_omc_hud(tmp, "[OMC#test] | 5h:10% | session:5m | ctx:47%")
+            tok = self._make_fake_token_statusline(
+                tmp,
+                "[Opus 4.7] dir | main | ctx 47% | cost $0.123 | cache 27%",
+            )
+            out = self._run_wrapper(omc_script=omc, tok_bin=tok)
+        # OMC HUD 라인이 그대로 보존되고 cost/cache 만 뒤에 붙는다.
+        self.assertTrue(out.startswith("[OMC#test] | 5h:10% | session:5m | ctx:47%"), out)
+        self.assertIn(" | cost $0.123", out)
+        self.assertIn(" | cache 27%", out)
+        # token 출력의 model/dir/branch/ctx 는 OMC HUD 와 중복이라 결합 시 제거되어야 한다.
+        self.assertNotIn("[Opus 4.7]", out)
+        self.assertNotIn(" | main ", out)
+
+    def test_omc_hud_alone_when_token_statusline_unavailable(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            omc = self._make_fake_omc_hud(tmp, "[OMC#test] | session:9m | ctx:33%")
+            out = self._run_wrapper(omc_script=omc, tok_bin=None)
+        self.assertEqual(out, "[OMC#test] | session:9m | ctx:33%")
+
+    def test_token_statusline_alone_when_omc_hud_unavailable(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            tok = self._make_fake_token_statusline(
+                tmp,
+                "[Opus 4.7] dir | main | ctx 47% | cost $0.001 | cache 5%",
+            )
+            out = self._run_wrapper(omc_script=None, tok_bin=tok)
+        # OMC HUD 가 없으면 token-statusline 출력이 그대로 (cost/cache 추출하지 않고 원본).
+        self.assertEqual(out, "[Opus 4.7] dir | main | ctx 47% | cost $0.001 | cache 5%")
+
+    def test_diagnostic_fallback_when_neither_available(self):
+        out = self._run_wrapper(omc_script=None, tok_bin=None)
+        self.assertEqual(out, "[hud unavailable]")
 
 
 if __name__ == "__main__":

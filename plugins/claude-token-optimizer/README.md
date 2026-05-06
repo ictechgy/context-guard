@@ -34,6 +34,7 @@ claude-sanitize-output -- rg -n "TOKEN|SECRET" .
 claude-sanitize-output -- git diff
 claude-token-guard-read
 claude-token-statusline
+claude-token-statusline-merged
 claude-token-rewrite-bash
 claude-token-delegate status
 claude-token-delegate enable --provider gemini
@@ -55,6 +56,8 @@ The JSON output includes a `cache_metrics` block (`cache_hit_rate`, `cache_amort
 `claude-token-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and suggests `rg -n` plus `claude-read-symbol` or small line-range reads. `claude-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
 
 `claude-token-statusline` prints a compact token/cost/model statusline when enabled through project settings. When the Claude Code statusline payload includes a readable `transcript_path`, the line also appends `cache <N>%` — the cache-read share of input-side tokens computed from the transcript tail. The cache label is omitted (rather than failing) when the transcript is missing, unreadable, or `python3` is unavailable, so the statusline never breaks.
+
+`claude-token-statusline-merged` is the default in `examples/settings.example.json` and combines `claude-token-statusline` with the [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode) HUD when both are installed. The wrapper auto-detects OMC's HUD at `~/.claude/hud/omc-hud.mjs`: if it is present, the line shows OMC's 5h/week/session usage plus `cost`/`cache` from this plugin; if OMC is not installed, the wrapper falls back to plain `claude-token-statusline` so non-OMC users see no behavior change. Override paths via `OMC_HUD_SCRIPT` and `CLAUDE_TOKEN_STATUSLINE_BIN` if your install layout differs.
 
 `claude-token-failed-nudge` is an optional `PostToolUse` hook on `Bash` that suggests `/clear` (or `/compact focus on …`) when the same Bash command direction fails twice in a row in the same session. Failed attempts pollute the conversation context and force prompt cache rewarming on every retry; nudging Claude to step out and rephrase reduces both. The hook is **off by default** — opt in with `claude-token-setup --failed-attempt-nudge` (or pick "yes" in the interactive wizard). State is project-local under `.claude-token-optimizer/failures-<session>.json` (file mode `0o600`).
 

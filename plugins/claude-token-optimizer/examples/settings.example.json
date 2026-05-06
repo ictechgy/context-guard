@@ -3,7 +3,7 @@
   "effortLevel": "medium",
   "statusLine": {
     "type": "command",
-    "command": "claude-token-statusline"
+    "command": "claude-token-statusline-merged"
   },
   "permissions": {
     "deny": [

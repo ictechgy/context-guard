@@ -44,6 +44,7 @@ claude-sanitize-output -- rg -n "TOKEN|SECRET" .
 claude-sanitize-output -- git diff
 claude-token-guard-read
 claude-token-statusline
+claude-token-statusline-merged
 claude-token-rewrite-bash
 claude-token-delegate status
 claude-token-delegate enable --provider gemini
@@ -92,6 +93,8 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 `claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n`과 `claude-read-symbol`을 사용하도록 안내합니다.
 
 `claude-token-statusline`은 project settings로 활성화했을 때 token/cost/model 정보를 짧은 statusline으로 출력합니다. Claude Code statusline payload에 읽기 가능한 `transcript_path`가 포함되면 `cache <N>%`도 함께 표시됩니다 — 이는 transcript 끝부분에서 계산한 cache_read 비중입니다. transcript가 없거나 읽을 수 없거나 `python3`가 없으면 cache 라벨만 빠지고 나머지 statusline은 그대로 동작합니다.
+
+`claude-token-statusline-merged`는 `examples/settings.example.json`의 default statusline이며, [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode)가 함께 설치되어 있으면 OMC HUD와 자동으로 결합됩니다. wrapper는 `~/.claude/hud/omc-hud.mjs`의 OMC HUD를 자동 감지합니다 — 있으면 OMC의 5h/week/session 사용량 뒤에 본 플러그인의 `cost`/`cache`가 붙고, 없으면 평소 `claude-token-statusline`처럼만 동작하므로 OMC를 쓰지 않는 사용자에게는 동작 변화가 없습니다. 설치 레이아웃이 다르면 `OMC_HUD_SCRIPT`, `CLAUDE_TOKEN_STATUSLINE_BIN` 환경변수로 경로를 지정하세요.
 
 `claude-token-failed-nudge`는 같은 Bash 명령이 같은 세션에서 연속 두 번 실패하면 `/clear` (또는 `/compact focus on …`)을 권유하는 선택적 `PostToolUse` hook 입니다. 실패 시도가 누적되면 대화 컨텍스트가 오염되고 prompt cache 가 매 retry 마다 재워밍되어 토큰 비용이 급증합니다. 본 hook 은 두 번째 실패 시 짧은 추가 컨텍스트만 주입해 방향 전환을 유도합니다 (실행은 막지 않습니다). 기본 OFF이며 `claude-token-setup --failed-attempt-nudge` (또는 대화형 마법사의 "yes")로 명시적으로 켤 때만 활성화됩니다. 상태는 프로젝트 로컬 `.claude-token-optimizer/failures-<session>.json` (파일 모드 `0o600`)에 저장됩니다.
 
