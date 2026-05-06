@@ -192,16 +192,21 @@ def matcher_covers(existing: Any, desired: str) -> bool:
 
 
 def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
+    """hook 에 기록할 단일 셸 명령 문자열을 반환한다.
+
+    경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
+    quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
+    """
     found = shutil.which(helper_name)
     if found:
         return helper_name
     script_dir = Path(__file__).resolve().parent
     colocated = script_dir / helper_name
     if colocated.exists() and os.access(colocated, os.X_OK):
-        return str(colocated)
+        return shlex.join([str(colocated)])
     repo_plugin = script_dir.parent / "plugins" / "claude-token-optimizer" / "bin" / helper_name
     if repo_plugin.exists() and os.access(repo_plugin, os.X_OK):
-        return str(repo_plugin)
+        return shlex.join([str(repo_plugin)])
     kit_path = script_dir / kit_script
     if kit_path.exists():
         prefix = [shell] if shell else [sys.executable]
