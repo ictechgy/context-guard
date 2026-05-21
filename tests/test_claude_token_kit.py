@@ -2064,6 +2064,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     # 다른 fingerprint 라 consecutive 카운트가 1로 리셋됨 → noop
                     self.assertEqual(json.loads(proc_b.stdout), {})
 
+    def test_failed_attempt_nudge_fingerprint_includes_test_selectors(self):
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_selectors_{index}")
+                self.assertEqual(
+                    module.normalize_command("pytest tests/auth.py -v"),
+                    "pytest tests/auth.py",
+                )
+                self.assertNotEqual(
+                    module.normalize_command("pytest tests/auth.py -k login"),
+                    module.normalize_command("pytest tests/auth.py -k logout"),
+                )
+                self.assertEqual(
+                    module.normalize_command("pytest -k login tests/auth.py"),
+                    "pytest tests/auth.py -k=login",
+                )
+                self.assertEqual(
+                    module.normalize_command("npm test -- --testNamePattern=login"),
+                    "npm test --testNamePattern=login",
+                )
+
     def test_failed_attempt_nudge_skips_success_and_non_bash_tools(self):
         """success Bash 호출과 non-Bash tool 모두 nudge 가 발화하지 않아야 한다.
 

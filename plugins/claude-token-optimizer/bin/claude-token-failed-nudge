@@ -32,6 +32,7 @@ STATE_DIR = Path(".claude-token-optimizer")
 STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
+FINGERPRINT_SELECTOR_FLAGS = {"-k", "-m", "--grep", "--testNamePattern", "--test-name-pattern"}
 UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 UNSAFE_STATE_PATH_ERRNOS = {
     errno.ELOOP,
@@ -71,9 +72,9 @@ def normalize_command(command: str) -> str:
     """명령을 stable fingerprint 텍스트로 축약한다.
 
     "방향" 만 보존하기 위해 모든 `-`/`--` 옵션을 제거하고 positional 토큰 중 처음
-    2 개(보통 `command primary_target`)만 남긴다. 예:
-    - `pytest tests/auth.py`, `pytest tests/auth.py -v`,
-      `pytest tests/auth.py -k login` 모두 같은 fingerprint = "pytest tests/auth.py".
+    2 개(보통 `command primary_target`)와 대표 selector 옵션을 남긴다. 예:
+    - `pytest tests/auth.py`, `pytest tests/auth.py -v` 는 같은 fingerprint.
+    - `pytest tests/auth.py -k login` 과 `pytest tests/auth.py -k logout` 은 다른 fingerprint.
     - `pytest tests/billing.py` 는 다른 fingerprint.
 
     한계:
@@ -86,8 +87,23 @@ def normalize_command(command: str) -> str:
         argv = shlex.split(command)
     except ValueError:
         argv = command.split()
-    positional = [tok for tok in argv if not tok.startswith("-")]
-    return " ".join(positional[:2])
+    positional: list[str] = []
+    selectors: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        flag, sep, inline_value = token.partition("=")
+        if flag in FINGERPRINT_SELECTOR_FLAGS:
+            value = inline_value if sep else (argv[index + 1] if index + 1 < len(argv) else "")
+            if value:
+                selectors.append(f"{flag}={value}")
+                if not sep:
+                    index += 1
+        elif token != "--" and not token.startswith("-"):
+            positional.append(token)
+        index += 1
+    normalized = positional[:2]
+    return " ".join([*normalized, *selectors])
 
 
 def fingerprint(normalized: str) -> str:
