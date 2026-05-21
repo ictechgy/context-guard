@@ -85,6 +85,19 @@ SENSITIVE_CONTENT_RE = re.compile(
 )
 SENSITIVE_HEX_RE = re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b[^\n]{0,40}\b[0-9a-f]{32,}\b")
 URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+PATH_LABEL_SECRET_RE = re.compile(
+    r"(?i)("
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|"
+    r"xox[abprs]-[A-Za-z0-9-]{10,}|"
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
+    r"AIza[0-9A-Za-z_\-]{20,}|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^/\s]+"
+    r")"
+)
 SAFE_ENV_KEYS = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
 PROVIDER_AUTH_ENV_KEYS = {
     "codex": {"CODEX_API_KEY", "OPENAI_API_KEY"},
@@ -181,6 +194,23 @@ def redact_sensitive_output(value: str) -> str:
     redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", value)
     redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
     return URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+
+
+def path_label_has_sensitive_evidence(label: str) -> bool:
+    return (
+        bool(URL_USERINFO_RE.search(label))
+        or bool(PATH_LABEL_SECRET_RE.search(label))
+        or is_sensitive_context_path(Path(label))
+    )
+
+
+def compact_path_label_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
+    compact = " ".join(value.strip().split())
+    compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = PATH_LABEL_SECRET_RE.sub("[REDACTED]", compact)
+    if len(compact) > limit:
+        compact = compact[: limit - 15].rstrip() + " ...[truncated]"
+    return compact
 
 
 def os_error_summary(exc: OSError) -> str:
@@ -664,7 +694,10 @@ def safe_path_env() -> str:
 
 def validate_provider_executable(path: Path, provider: str) -> Path:
     original_label = response_path_label(str(path))
-    resolved = path.expanduser().resolve()
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"Provider '{provider}' executable cannot be resolved: {original_label}") from exc
     resolved_label = response_path_label(str(resolved))
     if not resolved.exists() or not os.access(resolved, os.X_OK):
         raise SystemExit(f"Provider '{provider}' executable not found or not executable: {original_label}")
@@ -1041,10 +1074,9 @@ def response_path_label(raw_path: str) -> str:
         label = context_label_for_path(resolved, root)
     except (OSError, RuntimeError, ValueError):
         label = raw_path
-    sanitized = redact_sensitive_output(label)
-    if sanitized != label:
+    if path_label_has_sensitive_evidence(label):
         return "redacted-path"
-    return compact_warning_text(label) or "path"
+    return compact_path_label_text(label) or "path"
 
 
 def response_override_summary(paths: list[str] | None) -> str:

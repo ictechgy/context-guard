@@ -5945,6 +5945,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("ghp_", path_miss.stderr)
                     self.assertNotIn("token=ghp_", path_miss.stderr)
 
+                    loop = root / ("provider-password=" + ("C" * 32))
+                    try:
+                        loop.symlink_to(loop, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(loop / "tool")], "stdin": True}},
+                    })
+                    loop_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(loop_fail.returncode, 127)
+                    self.assertRegex(
+                        loop_fail.stderr,
+                        r"executable (?:cannot be resolved|not found or not executable): redacted-path",
+                    )
+                    self.assertNotIn(str(root), loop_fail.stderr)
+                    self.assertNotIn("password=", loop_fail.stderr)
+                    self.assertNotIn("C" * 16, loop_fail.stderr)
+
     def test_aux_delegate_writes_private_gitignore_for_responses(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -6020,6 +6045,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(label, "redacted-path")
             self.assertIn("safe-", label)
             self.assertIn("...[truncated]", label)
+            self.assertNotIn("[REDACTED]", label)
             self.assertNotIn(str(root), label)
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
