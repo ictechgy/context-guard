@@ -5356,6 +5356,34 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         module.append_csv(parent_link / "new.csv", "test", result)
                     self.assertEqual(csv_path.read_text(encoding="utf-8"), "task_id,variant\nold,baseline\n")
 
+    def test_csv_notes_are_sanitized_before_write(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_note_sanitize_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    result = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=False,
+                        notes="=HYPERLINK(\"http://example.invalid\")\x00\n" + ("x" * 800),
+                    )
+
+                    module.append_csv(csv_path, "test", result)
+
+                    with csv_path.open(encoding="utf-8", newline="") as f:
+                        row = next(csv.DictReader(f))
+                    note = row["notes"]
+                    self.assertTrue(note.startswith("'=HYPERLINK"))
+                    self.assertNotIn("\x00", note)
+                    self.assertNotIn("\n", note)
+                    self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
+                    self.assertIn("…[truncated]", note)
+
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
         with tempfile.TemporaryDirectory() as tmp:
