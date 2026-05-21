@@ -106,6 +106,10 @@ Audit local Claude transcript usage:
 ./plugins/claude-token-optimizer/bin/claude-token-audit ~/.claude/projects --top 20 --recommend
 ```
 
+The audit command skips oversized transcript files/JSONL records by default
+(`--max-file-bytes`, `--max-line-bytes`) and reports the skipped counts so a
+corrupt trace cannot dominate memory or hide scan gaps.
+
 ## Auxiliary AI delegation (optional)
 
 With Gemini CLI or Codex CLI access, delegation uses another local AI as a read-only assistant for broad file triage, long-log summaries, root-cause hypotheses, or second-opinion planning.

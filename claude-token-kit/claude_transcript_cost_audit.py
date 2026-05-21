@@ -31,6 +31,11 @@ MODEL_KEYS = ("model", "model_id", "modelId")
 QUERY_SOURCE_KEYS = ("query_source", "querySource")
 MAX_ERROR_EXAMPLES = 20
 JSON_PARSE_RECURSION_LIMIT = 10_000
+READ_CHUNK_BYTES = 64 * 1024
+DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_LINE_BYTES = 2 * 1024 * 1024
+MAX_FILE_BYTES_LIMIT = 2 * 1024 * 1024 * 1024
+MAX_LINE_BYTES_LIMIT = 128 * 1024 * 1024
 SECRET_VALUE_RE = re.compile(
     r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{8,}|"
     r"AIza[0-9A-Za-z_\-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]+|"
@@ -203,7 +208,7 @@ def stable_hash(value: str, length: int = 12) -> str:
 def path_label(path: Path, show_paths: bool = False) -> str:
     if show_paths:
         return str(path)
-    name = path.name or "transcript"
+    name = sanitize_label(path.name or "transcript", 80)
     return f"{name}#path:{stable_hash(str(path.resolve()))}"
 
 
@@ -224,6 +229,83 @@ def command_label(command: str, show_commands: bool = False) -> str:
     else:
         category = argv[0]
     return f"{category}#cmd:{stable_hash(sanitized)}"
+
+
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+def require_scan_limit(parser: argparse.ArgumentParser, option: str, value: int, maximum: int) -> int:
+    if value < 1 or value > maximum:
+        parser.error(f"{option} must be between 1 and {maximum}")
+    return value
+
+
+def os_error_summary(exc: OSError) -> str:
+    """Return OSError metadata without embedding raw filenames from str(exc)."""
+    parts = [exc.__class__.__name__]
+    if exc.errno is not None:
+        parts.append(f"errno={exc.errno}")
+    message = sanitize_label(str(exc.strerror or ""), 160)
+    if message:
+        parts.append(message)
+    return ": ".join(parts)
+
+
+@dataclass(frozen=True)
+class ScanLimits:
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
+    max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
+
+
+def iter_bounded_lines(file: Path, max_line_bytes: int) -> Iterable[tuple[int, str | None]]:
+    """Yield decoded lines without retaining an oversized JSONL record in memory.
+
+    `None` means the record exceeded `max_line_bytes` and was skipped after the
+    iterator consumed bytes up to the next newline.  This keeps transcript audit
+    robust when a corrupted trace contains one huge single-line payload.
+    """
+    line_no = 1
+    buffer = bytearray()
+    oversized = False
+    with file.open("rb") as handle:
+        while True:
+            chunk = handle.read(READ_CHUNK_BYTES)
+            if not chunk:
+                if oversized:
+                    yield line_no, None
+                elif buffer:
+                    yield line_no, buffer.decode("utf-8", errors="replace")
+                break
+
+            start = 0
+            while start < len(chunk):
+                newline = chunk.find(b"\n", start)
+                end = len(chunk) if newline == -1 else newline + 1
+                piece = chunk[start:end]
+
+                if not oversized:
+                    if len(buffer) + len(piece) > max_line_bytes:
+                        buffer.clear()
+                        oversized = True
+                    else:
+                        buffer.extend(piece)
+
+                if newline == -1:
+                    break
+
+                if oversized:
+                    yield line_no, None
+                else:
+                    yield line_no, buffer.decode("utf-8", errors="replace")
+                    buffer.clear()
+                line_no += 1
+                oversized = False
+                start = end
 
 
 def collect_record_hints(root: Any, show_commands: bool = False) -> tuple[set[str], set[str]]:
@@ -316,31 +398,57 @@ def parse_json_line(line: str) -> Any:
     return json.loads(line)
 
 
-def scan(paths: list[str], show_paths: bool = False, show_commands: bool = False) -> UsageSummary:
+def scan(
+    paths: list[str],
+    show_paths: bool = False,
+    show_commands: bool = False,
+    limits: ScanLimits | None = None,
+) -> UsageSummary:
+    limits = limits or ScanLimits()
     summary = UsageSummary()
     for file in iter_jsonl_files(paths):
         summary.files += 1
         try:
-            with file.open("r", encoding="utf-8", errors="replace") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = parse_json_line(line)
-                    except json.JSONDecodeError as exc:
-                        summary.skipped_records += 1
-                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
-                        continue
-                    except RecursionError as exc:
-                        summary.skipped_records += 1
-                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
-                        continue
-                    summary.records += 1
-                    add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
+            size = file.stat().st_size
         except OSError as exc:
             summary.skipped_files += 1
-            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {exc}")
+            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
+            continue
+        if size > limits.max_file_bytes:
+            summary.skipped_files += 1
+            summary.note_error(
+                f"{path_label(file, show_paths=show_paths)}: skipped oversized transcript file "
+                f"({size} bytes > {limits.max_file_bytes})"
+            )
+            continue
+
+        try:
+            for line_no, line in iter_bounded_lines(file, limits.max_line_bytes):
+                if line is None:
+                    summary.skipped_records += 1
+                    summary.note_error(
+                        f"{path_label(file, show_paths=show_paths)}:{line_no}: "
+                        f"skipped oversized JSONL record (> {limits.max_line_bytes} bytes)"
+                    )
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = parse_json_line(line)
+                except json.JSONDecodeError as exc:
+                    summary.skipped_records += 1
+                    summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
+                    continue
+                except RecursionError as exc:
+                    summary.skipped_records += 1
+                    summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
+                    continue
+                summary.records += 1
+                add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
+        except OSError as exc:
+            summary.skipped_files += 1
+            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
     return summary
 
@@ -507,13 +615,23 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     return recs
 
 
-def summary_json(summary: UsageSummary, top: int = 15, include_recommendations: bool = False) -> dict[str, Any]:
+def summary_json(
+    summary: UsageSummary,
+    top: int = 15,
+    include_recommendations: bool = False,
+    limits: ScanLimits | None = None,
+) -> dict[str, Any]:
+    limits = limits or ScanLimits()
     data = {
         "files": summary.files,
         "records": summary.records,
         "skipped_files": summary.skipped_files,
         "skipped_records": summary.skipped_records,
         "parse_errors": summary.parse_errors,
+        "scan_limits": {
+            "max_file_bytes": limits.max_file_bytes,
+            "max_line_bytes": limits.max_line_bytes,
+        },
         "total_tokens": summary.total_tokens,
         "tokens": dict(summary.tokens),
         "cache_metrics": {
@@ -554,12 +672,32 @@ def main() -> int:
     parser.add_argument("--recommend", action="store_true", help="Print concrete token-saving recommendations")
     parser.add_argument("--show-paths", action="store_true", help="Show raw transcript paths instead of basename+hash labels")
     parser.add_argument("--show-commands", action="store_true", help="Show redacted command strings instead of command category+hash labels")
+    parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=DEFAULT_MAX_FILE_BYTES,
+        help="skip transcript files larger than this many bytes (default: 50 MiB)",
+    )
+    parser.add_argument(
+        "--max-line-bytes",
+        type=int,
+        default=DEFAULT_MAX_LINE_BYTES,
+        help="skip individual JSONL records larger than this many bytes (default: 2 MiB)",
+    )
     args = parser.parse_args()
+    limits = ScanLimits(
+        max_file_bytes=require_scan_limit(parser, "--max-file-bytes", args.max_file_bytes, MAX_FILE_BYTES_LIMIT),
+        max_line_bytes=require_scan_limit(parser, "--max-line-bytes", args.max_line_bytes, MAX_LINE_BYTES_LIMIT),
+    )
 
-    summary = scan(args.paths, show_paths=args.show_paths, show_commands=args.show_commands)
+    summary = scan(args.paths, show_paths=args.show_paths, show_commands=args.show_commands, limits=limits)
 
     if args.json:
-        print(json.dumps(summary_json(summary, args.top, include_recommendations=args.recommend), indent=2, sort_keys=True))
+        print(json.dumps(
+            summary_json(summary, args.top, include_recommendations=args.recommend, limits=limits),
+            indent=2,
+            sort_keys=True,
+        ))
         return 0
 
     print("Claude Code transcript usage audit")
@@ -567,6 +705,7 @@ def main() -> int:
         f"files_scanned={summary.files} records={summary.records} "
         f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records}"
     )
+    print(f"scan_limits=max_file_bytes:{limits.max_file_bytes} max_line_bytes:{limits.max_line_bytes}")
     print(f"observed_total_tokens={summary.total_tokens}")
     if summary.cost_usd:
         print(f"observed_cost_usd={summary.cost_usd:.4f}")

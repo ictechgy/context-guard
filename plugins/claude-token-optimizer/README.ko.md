@@ -75,6 +75,9 @@ claude-token-delegate disable
 
 기본 출력은 공유 안전성을 위해 transcript 경로와 command string을 익명화합니다. 로컬 비공개 디버깅에서만 `--show-paths`, `--show-commands`를 사용하세요.
 
+audit scanner는 기본적으로 transcript read를 제한합니다. `--max-file-bytes`보다 큰 파일과
+`--max-line-bytes`보다 큰 JSONL record는 메모리에 올리지 않고 건너뛰며, skip count와 warning으로 보고합니다.
+
 JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `cache_amortization_defined`, 원본 cache_read/cache_creation/input 토큰)을 포함합니다. prompt cache가 write 비용을 회수하고 있는지 한눈에 보기 위한 것입니다. 두 권고가 이 메트릭을 사용합니다.
 
 - `improve-prompt-cache-reuse`는 amortization(`cache_read / cache_creation`)이 0.5 미만이고 cache write가 의미 있는 규모(`cache_creation` ≥ 10,000 토큰, `cache_read` ≥ 1)일 때만 발화하므로 baseline / cache-cold 세션의 false-positive를 차단합니다.

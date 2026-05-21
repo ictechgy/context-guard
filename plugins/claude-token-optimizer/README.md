@@ -44,6 +44,11 @@ claude-token-delegate disable
 
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
+The audit scanner also bounds transcript reads by default: files above
+`--max-file-bytes` and individual JSONL records above `--max-line-bytes` are
+skipped with explicit skip counts and warnings instead of being loaded into
+memory.
+
 The JSON output includes a `cache_metrics` block (`cache_hit_rate`, `cache_amortization`, `cache_amortization_defined`, raw cache_read/cache_creation/input tokens) so you can tell whether the prompt cache is paying back its write cost. Two recommendations operate on these metrics:
 
 - `improve-prompt-cache-reuse` triggers when amortization (`cache_read / cache_creation`) drops below 0.5 with non-trivial cache writes (`cache_creation` ≥ 10,000 tokens and `cache_read` ≥ 1), which protects baseline / cache-cold sessions from false positives.
