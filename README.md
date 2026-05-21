@@ -126,6 +126,17 @@ Manual delegation is **off by default** and stores project-local state under `.c
 - `claude-token-kit/` — underlying Python/Bash helper tools
 - `tests/` — regression tests for helper behavior
 
+## Release checks
+
+Before publishing or merging release-sensitive changes, run both gates:
+
+```bash
+python3 scripts/prepublish_check.py
+python3 scripts/release_smoke.py
+```
+
+`prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, and the regression suite. `release_smoke.py` then executes representative packaged entrypoints from `plugins/claude-token-optimizer/bin` in a temporary project so broken CLI wiring is caught before publish.
+
 ## License
 
 Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
