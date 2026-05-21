@@ -6043,7 +6043,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
                             cost_usd=0.0,
                             success=False,
-                            notes=f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n" + ("x" * 800),
+                            notes=(
+                                f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n"
+                                "Authorization: Bearer opaque-token-value "
+                                "token=ghp_" + ("A" * 36) + " "
+                                "postgres://user:pass@example.invalid/db "
+                                + ("x" * 800)
+                            ),
                         )
                         module.append_csv(csv_path, "test", result)
 
@@ -6059,6 +6065,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertNotIn("\u009b", note)
                             self.assertNotIn("\u200b", note)
                             self.assertNotIn("\n", note)
+                            self.assertNotIn("opaque-token-value", note)
+                            self.assertNotIn("ghp_", note)
+                            self.assertNotIn("user:pass", note)
+                            self.assertIn("[REDACTED]", note)
                             self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
                             self.assertIn("…[truncated]", note)
 
@@ -6234,6 +6244,59 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["total_tokens"], "980")
                     self.assertEqual(row["success"], "true")
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
+
+    def test_runner_uses_project_root_for_claude_and_redacts_failure_notes(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    project = root / "project"
+                    project.mkdir()
+                    caller = root / "caller"
+                    caller.mkdir()
+                    fake = root / "fake-claude"
+                    bearer = "opaque-token-value"
+                    github_token = "ghp_" + ("A" * 36)
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import os, pathlib, sys\n"
+                        "pathlib.Path('claude-cwd.txt').write_text(os.getcwd(), encoding='utf-8')\n"
+                        f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
+                        f"sys.stderr.write('token={github_token}\\n')\n"
+                        "sys.exit(7)\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    (project / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "x", "max_turns": 1, "success_command": "true", "success_cwd": "."}
+                    ]))
+                    (project / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []}
+                    ]))
+                    csv_path = project / "results.csv"
+                    proc = subprocess.run(
+                        [sys.executable, str(script),
+                         "--tasks", str(project / "tasks.json"),
+                         "--variants", str(project / "variants.json"),
+                         "--csv", str(csv_path),
+                         "--claude-bin", str(fake),
+                         "--project-root", str(project)],
+                        cwd=caller,
+                        text=True, capture_output=True, check=True,
+                    )
+
+                    self.assertEqual((project / "claude-cwd.txt").read_text(encoding="utf-8"), str(project.resolve()))
+                    self.assertNotIn(bearer, proc.stdout)
+                    self.assertNotIn(github_token, proc.stdout)
+                    self.assertNotIn(bearer, proc.stderr)
+                    self.assertNotIn(github_token, proc.stderr)
+                    with csv_path.open(encoding="utf-8") as f:
+                        row = next(csv.DictReader(f))
+                    self.assertEqual(row["success"], "false")
+                    self.assertIn("claude exit=7", row["notes"])
+                    self.assertIn("[REDACTED]", row["notes"])
+                    self.assertNotIn(bearer, row["notes"])
+                    self.assertNotIn(github_token, row["notes"])
 
     def test_run_records_failure_when_success_command_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:
