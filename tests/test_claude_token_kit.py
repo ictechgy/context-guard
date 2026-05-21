@@ -1244,6 +1244,98 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("symlinked Claude settings directory", proc.stderr)
 
+    def test_setup_wizard_no_follow_json_reader_rejects_symlink_targets_and_parents(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_nofollow_json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "settings.json"
+            target.write_text("{}", encoding="utf-8")
+            direct_link = root / "settings-link.json"
+            parent_link = root / "settings-link-dir"
+            try:
+                direct_link.symlink_to(target)
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            with self.assertRaises(OSError):
+                setup._read_text_no_follow(direct_link)
+            with self.assertRaises(OSError):
+                setup._read_text_no_follow(parent_link / "settings.json")
+
+    def test_setup_wizard_apply_rejects_parent_swap_before_write(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_parent_swap")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            resolved_root = root.resolve()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            original_load = setup.load_json_object
+
+            def swap_parent_after_read(path):
+                data = original_load(path)
+                if path == resolved_root / ".claude" / "settings.json" and not (resolved_root / ".claude").exists():
+                    (resolved_root / ".claude").symlink_to(outside, target_is_directory=True)
+                return data
+
+            args = argparse.Namespace(
+                root=str(root),
+                allow_home_settings=False,
+                no_denies=False,
+                no_statusline=False,
+                no_bash_hook=False,
+                no_read_guard=False,
+                no_model_defaults=False,
+                aux_provider="none",
+                auto_delegate=False,
+                failed_attempt_nudge=False,
+                yes=True,
+                plan=False,
+                dry_run=False,
+                no_backup=True,
+            )
+            setup.load_json_object = swap_parent_after_read
+            try:
+                with self.assertRaises(OSError):
+                    setup.run(args)
+            finally:
+                setup.load_json_object = original_load
+            self.assertFalse((outside / "settings.json").exists())
+
+    def test_setup_wizard_preflight_fails_unsupported_platform_before_missing_read(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_unsupported_platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            original_supported = setup.no_follow_file_ops_supported
+            setup.no_follow_file_ops_supported = lambda: False
+            args = argparse.Namespace(
+                root=str(root),
+                allow_home_settings=False,
+                no_denies=False,
+                no_statusline=False,
+                no_bash_hook=False,
+                no_read_guard=False,
+                no_model_defaults=False,
+                aux_provider="none",
+                auto_delegate=False,
+                failed_attempt_nudge=False,
+                yes=True,
+                plan=False,
+                dry_run=False,
+                no_backup=True,
+            )
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    setup.run(args)
+            finally:
+                setup.no_follow_file_ops_supported = original_supported
+            self.assertIn("requires POSIX no-follow file operations", str(ctx.exception))
+            self.assertFalse((root / ".claude" / "settings.json").exists())
+
     def test_setup_wizard_preserves_existing_settings_mode_and_statusline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
