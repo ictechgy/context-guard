@@ -4106,7 +4106,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
             })
             symlink = root / ".claude-token-optimizer" / "linked-config.json"
             symlink.symlink_to(config)
-            self.assertIn("must not be a symlink", aux.config_trust_error(symlink))
+            self.assertIn("path component must not be a symlink", aux.config_trust_error(symlink))
+            real_state = root / "real-state"
+            real_state.mkdir()
+            linked_state = root / "linked-state"
+            linked_state.symlink_to(real_state, target_is_directory=True)
+            linked_config = linked_state / "config.json"
+            write_private_config(linked_config, {
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "providers": {
+                    "bad": {
+                        "enabled": True,
+                        "command": [SAFE_SHELL, "-c", "printf 'bad\\n'"],
+                        "stdin": True,
+                    }
+                },
+            })
+            self.assertIn("path component must not be a symlink", aux.config_trust_error(linked_config))
             old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
             old_custom = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER")
             os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(symlink)
@@ -4116,7 +4133,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
                     loaded = aux.load_config()
                 self.assertNotIn("bad", loaded["providers"])
-                self.assertIn("must not be a symlink", stderr.getvalue())
+                self.assertIn("path component must not be a symlink", stderr.getvalue())
             finally:
                 if old_config is None:
                     os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)

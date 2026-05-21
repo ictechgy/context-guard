@@ -245,12 +245,34 @@ def has_private_file_mode(path: Path) -> bool:
     return stat.S_IMODE(st.st_mode) & 0o077 == 0
 
 
+def first_symlink_component(path: Path) -> Path | None:
+    expanded = path.expanduser()
+    current = Path(expanded.anchor) if expanded.is_absolute() else Path()
+    parts = expanded.parts[1:] if expanded.is_absolute() else expanded.parts
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            if not current.is_symlink():
+                continue
+        except OSError:
+            continue
+        # macOS exposes stable system aliases such as /var -> /private/var and
+        # /tmp -> /private/tmp.  Ignore only that first absolute component so
+        # temp-based tests/configs keep working while user-controlled nested
+        # symlink components are still rejected.
+        if expanded.is_absolute() and index == 0:
+            continue
+        return current
+    return None
+
+
 def config_trust_error(path: Path | None = None) -> str | None:
     path = path or config_path()
+    symlink_component = first_symlink_component(path)
+    if symlink_component is not None:
+        return f"config path component must not be a symlink: {symlink_component}"
     if not path.exists():
         return "config file does not exist"
-    if path.is_symlink():
-        return f"config file must not be a symlink: {path}"
     if is_git_tracked(path):
         return f"config file is tracked by git: {path}"
     if not has_private_file_mode(path):
