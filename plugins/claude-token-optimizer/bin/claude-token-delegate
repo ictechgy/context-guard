@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import hashlib
 import json
 import math
@@ -37,6 +38,7 @@ CONTEXT_MAX_CHARS_LIMIT = 1_000_000
 TIMEOUT_SECONDS_MAX = 600
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+UNSUPPORTED_CONFIG_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 
 SENSITIVE_CONTEXT_NAMES = {
     ".bash_history",
@@ -299,6 +301,85 @@ def first_symlink_component(path: Path) -> Path | None:
     return None
 
 
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute() or len(expanded.parts) < 2:
+        return expanded
+    first = expanded.parts[1]
+    link = Path(expanded.anchor) / first
+    if not link.is_symlink() or not is_allowed_first_absolute_symlink(link, first):
+        return expanded
+    target = link.readlink()
+    if not target.is_absolute():
+        target = link.parent / target
+    return Path(os.path.normpath(str(target))).joinpath(*expanded.parts[2:])
+
+
+def config_open_base_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    else:
+        raise OSError(UNSUPPORTED_CONFIG_IO_ERRNO, "platform does not support no-follow config reads")
+    return flags
+
+
+def open_directory_no_follow_at(dir_fd: int, component: str, full_path: Path) -> int:
+    fd = os.open(component, config_open_base_flags() | getattr(os, "O_DIRECTORY", 0), dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.ENOTDIR, "not a directory", str(full_path))
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def open_config_file_no_follow(path: Path) -> int:
+    if os.open not in os.supports_dir_fd:
+        raise OSError(UNSUPPORTED_CONFIG_IO_ERRNO, "platform does not support directory-relative no-follow config reads")
+    path = normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for component in components[:-1]:
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                raise OSError(errno.EINVAL, "parent traversal is not allowed", str(path))
+            next_fd = open_directory_no_follow_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        if not components:
+            raise OSError(errno.EINVAL, "config path is missing a file name", str(path))
+        fd = os.open(components[-1], config_open_base_flags(), dir_fd=dir_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "not a regular file", str(path))
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def read_config_text_no_follow(path: Path) -> str:
+    fd = open_config_file_no_follow(path)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            fd = -1
+            return f.read()
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def config_trust_error(path: Path | None = None) -> str | None:
     path = path or config_path()
     symlink_component = first_symlink_component(path)
@@ -358,11 +439,17 @@ def normalize_config(loaded: dict[str, Any], allow_custom_provider: bool = False
 
 def load_config() -> dict[str, Any]:
     path = config_path()
-    if not path.exists():
-        return json_clone(DEFAULT_CONFIG)
+    symlink_component = first_symlink_component(path)
+    if symlink_component is not None:
+        raise SystemExit(f"Failed to read config {path}: config path component must not be a symlink: {symlink_component}")
     try:
-        with path.open("r", encoding="utf-8") as f:
-            loaded = json.load(f)
+        os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return json_clone(DEFAULT_CONFIG)
+    except OSError as exc:
+        raise SystemExit(f"Failed to read config {path}: {exc}")
+    try:
+        loaded = json.loads(read_config_text_no_follow(path))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Failed to read config {path}: {exc}")
     if not isinstance(loaded, dict):
