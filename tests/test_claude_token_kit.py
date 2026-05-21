@@ -4746,10 +4746,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             os.environ["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
             try:
                 self.assertTrue(aux.config_path().is_symlink())
-                with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    loaded = aux.load_config()
-                self.assertNotIn("bad", loaded["providers"])
-                self.assertIn("path component must not be a symlink", stderr.getvalue())
+                with self.assertRaises(SystemExit) as ctx:
+                    aux.load_config()
+                self.assertIn("path component must not be a symlink", str(ctx.exception))
             finally:
                 if old_config is None:
                     os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
@@ -4761,6 +4760,48 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = old_custom
             with self.assertRaises(SystemExit):
                 aux.safe_delegation_dir({"delegation_dir": "."})
+
+    def test_aux_delegate_load_config_rejects_symlinked_parent_before_read(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_state = root / "real-state"
+            real_state.mkdir()
+            config = real_state / "config.json"
+            write_private_config(config, {"aux_ai_enabled": True})
+            linked_state = root / "linked-state"
+            try:
+                linked_state.symlink_to(real_state, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(linked_state / "config.json")
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    aux.load_config()
+                self.assertIn("path component must not be a symlink", str(ctx.exception))
+            finally:
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+
+    def test_aux_delegate_read_config_no_follow_rejects_parent_symlink(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_state = root / "real-state"
+            real_state.mkdir()
+            config = real_state / "config.json"
+            write_private_config(config, {"aux_ai_enabled": True})
+            linked_state = root / "linked-state"
+            try:
+                linked_state.symlink_to(real_state, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            with self.assertRaises(OSError):
+                aux.read_config_text_no_follow(linked_state / "config.json")
 
     def test_aux_delegate_config_trust_git_timeout_fails_closed(self):
         aux = load_aux_module()
