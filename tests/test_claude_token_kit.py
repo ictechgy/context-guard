@@ -6047,6 +6047,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n"
                                 "Authorization: Bearer opaque-token-value "
                                 "token=opaque-token-value "
+                                "API_TOKEN=upper-token-value "
+                                "access_token=access-secret-value "
+                                "refresh_token=refresh-secret-value "
+                                "DB_PASSWORD=db-secret-value "
+                                "SECRET_KEY=secret-key-value "
                                 "api_key=plain-api-key "
                                 '"token": "json-secret-value" '
                                 "X-Api-Key: header-secret-value "
@@ -6073,6 +6078,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertNotIn("\u200b", note)
                             self.assertNotIn("\n", note)
                             self.assertNotIn("opaque-token-value", note)
+                            self.assertNotIn("upper-token-value", note)
+                            self.assertNotIn("access-secret-value", note)
+                            self.assertNotIn("refresh-secret-value", note)
+                            self.assertNotIn("db-secret-value", note)
+                            self.assertNotIn("secret-key-value", note)
                             self.assertNotIn("plain-api-key", note)
                             self.assertNotIn("json-secret-value", note)
                             self.assertNotIn("header-secret-value", note)
@@ -6224,11 +6234,12 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     long_arg = "x" * 900
                     secret = "quoted secret value"
                     generic_secret = "generic-dry-run-secret"
+                    access_secret = "access-dry-run-secret"
                     (root / "tasks.json").write_text(json.dumps([
                         {"id": "t01", "prompt": "echo hello", "model": "sonnet", "max_turns": 1}
                     ]))
                     (root / "variants.json").write_text(json.dumps([
-                        {"name": "hygiene", "extra_args": ["--api-key", secret, "--token", generic_secret, "--long-arg", long_arg]},
+                        {"name": "hygiene", "extra_args": ["--api-key", secret, "--token", generic_secret, "--access_token", access_secret, "--long-arg", long_arg]},
                     ]))
                     proc = subprocess.run(
                         [sys.executable, str(script), "--tasks", str(root / "tasks.json"),
@@ -6237,13 +6248,16 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         text=True, capture_output=True, check=True,
                     )
                     self.assertIn("dry-run:", proc.stdout)
+                    self.assertIn("-p --model sonnet", proc.stdout)
                     self.assertIn("--long-arg", proc.stdout)
                     self.assertIn(long_arg, proc.stdout)
                     self.assertNotIn("…[truncated]", proc.stdout)
                     self.assertNotIn(secret, proc.stdout)
                     self.assertNotIn(generic_secret, proc.stdout)
+                    self.assertNotIn(access_secret, proc.stdout)
                     self.assertIn("--api-key [REDACTED]", proc.stdout)
                     self.assertIn("--token [REDACTED]", proc.stdout)
+                    self.assertIn("--access_token [REDACTED]", proc.stdout)
 
     def test_run_with_fake_claude_collects_usage_and_runs_success_command(self):
         for script in BENCH_SCRIPTS:
@@ -6299,6 +6313,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     fake = root / "fake-claude"
                     bearer = "opaque-token-value"
                     generic_token = "generic-secret-value"
+                    env_token = "env-token-value"
+                    access_token = "access-token-value"
+                    refresh_token = "refresh-token-value"
+                    db_password = "db-password-value"
+                    secret_key = "secret-key-value"
                     json_secret = "json-secret-value"
                     header_secret = "header-secret-value"
                     fake.write_text(
@@ -6307,6 +6326,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "pathlib.Path('claude-cwd.txt').write_text(os.getcwd(), encoding='utf-8')\n"
                         f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
                         f"sys.stderr.write('token={generic_token}\\n')\n"
+                        f"sys.stderr.write('API_TOKEN={env_token}\\n')\n"
+                        f"sys.stderr.write('access_token={access_token}\\n')\n"
+                        f"sys.stderr.write('refresh_token={refresh_token}\\n')\n"
+                        f"sys.stderr.write('DB_PASSWORD={db_password}\\n')\n"
+                        f"sys.stderr.write('SECRET_KEY={secret_key}\\n')\n"
                         f"sys.stderr.write('{{\"token\": \"{json_secret}\"}}\\n')\n"
                         f"sys.stderr.write('X-Api-Key: {header_secret}\\n')\n"
                         "sys.exit(7)\n",
@@ -6320,7 +6344,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         {"name": "baseline", "extra_args": []}
                     ]))
                     csv_path = project / "results.csv"
-                    relative_fake = os.path.relpath(fake, caller)
+                    nested_caller = caller / "nested" / "deeper"
+                    nested_caller.mkdir(parents=True)
+                    relative_fake = os.path.relpath(fake, nested_caller)
                     proc = subprocess.run(
                         [sys.executable, str(script),
                          "--tasks", str(project / "tasks.json"),
@@ -6328,17 +6354,27 @@ class BenchmarkRunnerTests(unittest.TestCase):
                          "--csv", str(csv_path),
                          "--claude-bin", relative_fake,
                          "--project-root", str(project)],
-                        cwd=caller,
+                        cwd=nested_caller,
                         text=True, capture_output=True, check=True,
                     )
 
                     self.assertEqual((project / "claude-cwd.txt").read_text(encoding="utf-8"), str(project.resolve()))
                     self.assertNotIn(bearer, proc.stdout)
                     self.assertNotIn(generic_token, proc.stdout)
+                    self.assertNotIn(env_token, proc.stdout)
+                    self.assertNotIn(access_token, proc.stdout)
+                    self.assertNotIn(refresh_token, proc.stdout)
+                    self.assertNotIn(db_password, proc.stdout)
+                    self.assertNotIn(secret_key, proc.stdout)
                     self.assertNotIn(json_secret, proc.stdout)
                     self.assertNotIn(header_secret, proc.stdout)
                     self.assertNotIn(bearer, proc.stderr)
                     self.assertNotIn(generic_token, proc.stderr)
+                    self.assertNotIn(env_token, proc.stderr)
+                    self.assertNotIn(access_token, proc.stderr)
+                    self.assertNotIn(refresh_token, proc.stderr)
+                    self.assertNotIn(db_password, proc.stderr)
+                    self.assertNotIn(secret_key, proc.stderr)
                     self.assertNotIn(json_secret, proc.stderr)
                     self.assertNotIn(header_secret, proc.stderr)
                     with csv_path.open(encoding="utf-8") as f:
@@ -6348,6 +6384,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("[REDACTED]", row["notes"])
                     self.assertNotIn(bearer, row["notes"])
                     self.assertNotIn(generic_token, row["notes"])
+                    self.assertNotIn(env_token, row["notes"])
+                    self.assertNotIn(access_token, row["notes"])
+                    self.assertNotIn(refresh_token, row["notes"])
+                    self.assertNotIn(db_password, row["notes"])
+                    self.assertNotIn(secret_key, row["notes"])
                     self.assertNotIn(json_secret, row["notes"])
                     self.assertNotIn(header_secret, row["notes"])
 

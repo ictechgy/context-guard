@@ -88,13 +88,15 @@ CSV_COLUMNS = [
 ]
 MAX_CSV_NOTE_CHARS = 500
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
+SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
 SECRET_NOTE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(r"(?i)([?&#;](?:api[_-]?key|token|secret|password|client[_-]?secret)=)[^\s?&#;]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(^|[\s{,?&#;])([\"']?(?:x[-_]?api[-_]?key|api[_-]?key|token|secret|password|client[_-]?secret)[\"']?\s*[:=]\s*)(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"), r"\1\2[REDACTED]"),
-    (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|\S+)"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)((?:-p|-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|\S+)"), r"\1[REDACTED]"),
+    (re.compile(rf"(?i)([?&#;]({SECRET_NOTE_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
+    (re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_NOTE_KEY_RE})[\"']?\s*[:=]\s*){SECRET_NOTE_VALUE_RE}"), r"\1\2[REDACTED]"),
+    (re.compile(rf"(?i)(--(?:{SECRET_NOTE_KEY_RE})(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|\S+)"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)((?:-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|\S+)"), r"\1[REDACTED]"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
@@ -491,7 +493,7 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
 def executable_argv0(command: str) -> str:
     resolved = shutil.which(command)
     if resolved:
-        return resolved
+        return str(Path(resolved).expanduser().resolve())
     path = Path(command).expanduser()
     if path.is_absolute():
         return str(path)
