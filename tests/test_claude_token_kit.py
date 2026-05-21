@@ -1088,6 +1088,39 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("PostToolUse", settings.get("hooks", {}))
                     self.assertNotIn("claude-token-failed-nudge", json.dumps(settings))
 
+    def test_setup_wizard_writes_settings_with_deterministic_key_order(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_dir = root / ".claude"
+                    settings_dir.mkdir()
+                    write_private_config(settings_dir / "settings.json", {"zCustom": True})
+
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--root",
+                            str(root),
+                            "--yes",
+                            "--no-backup",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+
+                    written = (settings_dir / "settings.json").read_text(encoding="utf-8")
+                    self.assertEqual(json.loads(written)["zCustom"], True)
+                    keys_in_order = [
+                        line.split('"', 2)[1]
+                        for line in written.splitlines()
+                        if line.startswith('  "') and not line.startswith('    "')
+                    ]
+                    self.assertEqual(keys_in_order, sorted(keys_in_order))
+
     def test_setup_wizard_prefers_repo_helper_over_path_shadow(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_prefers_repo_helper")
         with tempfile.TemporaryDirectory() as tmp:

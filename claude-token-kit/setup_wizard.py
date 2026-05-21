@@ -793,7 +793,7 @@ def run(args: argparse.Namespace) -> SetupResult:
         if settings != original:
             atomic_write(
                 settings_path,
-                json.dumps(settings, indent=2, sort_keys=False) + "\n",
+                json.dumps(settings, indent=2, sort_keys=True) + "\n",
                 existing_mode_or_default(settings_path, 0o600),
             )
         aux_path, aux_backup_path = write_aux_config(
