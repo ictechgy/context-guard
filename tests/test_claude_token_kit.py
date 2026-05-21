@@ -6095,6 +6095,24 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
                             self.assertIn("…[truncated]", note)
 
+    def test_note_secret_argument_redaction_preserves_surrounding_quotes(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_arg_note_sanitize_{index}")
+                note = module.sanitize_note_text(
+                    'prefix "--api-key secret-value" suffix '
+                    '"--user=admin:password" '
+                    '--token "quoted secret value" '
+                    "-p --model sonnet"
+                )
+                self.assertIn('prefix "--api-key [REDACTED]" suffix', note)
+                self.assertIn('"--user=[REDACTED]"', note)
+                self.assertIn("--token [REDACTED]", note)
+                self.assertIn("-p --model sonnet", note)
+                self.assertNotIn("secret-value", note)
+                self.assertNotIn("admin:password", note)
+                self.assertNotIn("quoted secret value", note)
+
     def test_csv_access_uses_advisory_lock_file(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -6311,7 +6329,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     caller = root / "caller"
                     caller.mkdir()
                     fake = root / "fake-claude"
-                    bearer = "opaque-token-value"
+                    auth_value = "opaque-token-value"
                     generic_token = "generic-secret-value"
                     env_token = "env-token-value"
                     access_token = "access-token-value"
@@ -6324,7 +6342,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "#!/usr/bin/env python3\n"
                         "import os, pathlib, sys\n"
                         "pathlib.Path('claude-cwd.txt').write_text(os.getcwd(), encoding='utf-8')\n"
-                        f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
+                        f"sys.stderr.write('Authorization: Bearer {auth_value}\\n')\n"
                         f"sys.stderr.write('token={generic_token}\\n')\n"
                         f"sys.stderr.write('API_TOKEN={env_token}\\n')\n"
                         f"sys.stderr.write('access_token={access_token}\\n')\n"
@@ -6359,7 +6377,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     )
 
                     self.assertEqual((project / "claude-cwd.txt").read_text(encoding="utf-8"), str(project.resolve()))
-                    self.assertNotIn(bearer, proc.stdout)
+                    self.assertNotIn(auth_value, proc.stdout)
                     self.assertNotIn(generic_token, proc.stdout)
                     self.assertNotIn(env_token, proc.stdout)
                     self.assertNotIn(access_token, proc.stdout)
@@ -6368,7 +6386,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertNotIn(secret_key, proc.stdout)
                     self.assertNotIn(json_secret, proc.stdout)
                     self.assertNotIn(header_secret, proc.stdout)
-                    self.assertNotIn(bearer, proc.stderr)
+                    self.assertNotIn(auth_value, proc.stderr)
                     self.assertNotIn(generic_token, proc.stderr)
                     self.assertNotIn(env_token, proc.stderr)
                     self.assertNotIn(access_token, proc.stderr)
@@ -6382,7 +6400,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["success"], "false")
                     self.assertIn("claude exit=7", row["notes"])
                     self.assertIn("[REDACTED]", row["notes"])
-                    self.assertNotIn(bearer, row["notes"])
+                    self.assertNotIn(auth_value, row["notes"])
                     self.assertNotIn(generic_token, row["notes"])
                     self.assertNotIn(env_token, row["notes"])
                     self.assertNotIn(access_token, row["notes"])
