@@ -1000,15 +1000,12 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
     read_limit = output_budget(limit, PROVIDER_OUTPUT_MAX_CHARS)
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return "", False
-    with path.open("rb") as f:
-        data = f.read(read_limit + 1)
-    truncated = len(data) > read_limit
-    if truncated:
-        data = data[:read_limit]
-    text = data.decode(errors="replace")
-    return text, truncated
+    try:
+        return read_text_no_follow_bounded(path, read_limit)
+    except OSError as exc:
+        return f"[failed to read provider output safely: {exc}]\n", False
 
 
 def run_provider(
