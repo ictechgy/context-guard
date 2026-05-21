@@ -195,16 +195,18 @@ def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> st
 
 def redact_sensitive_output(value: str) -> str:
     redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", value)
+    redacted = PATH_LABEL_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
     return URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
 
 
 def path_label_has_sensitive_evidence(label: str) -> bool:
-    return (
-        bool(URL_USERINFO_RE.search(label))
-        or bool(PATH_LABEL_SECRET_RE.search(label))
-        or is_sensitive_context_path(Path(label))
-    )
+    if URL_USERINFO_RE.search(label) or PATH_LABEL_SECRET_RE.search(label):
+        return True
+    try:
+        return is_sensitive_context_path(Path(label))
+    except (TypeError, ValueError):
+        return False
 
 
 def compact_path_label_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
@@ -1066,6 +1068,8 @@ def safe_delegation_dir(config: dict[str, Any]) -> Path:
 
 
 def response_path_label(raw_path: str) -> str:
+    if path_label_has_sensitive_evidence(raw_path):
+        return "redacted-path"
     try:
         root = find_project_root()
         path = Path(raw_path).expanduser()
@@ -1542,7 +1546,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     try:
         resolved_command = resolve_provider_command(provider, command)
     except SystemExit as exc:
-        print(redact_sensitive_output(compact_warning_text(str(exc), 240)), file=sys.stderr)
+        print(compact_path_label_text(str(exc), 240), file=sys.stderr)
         return 127
 
     returncode, stdout, stderr = run_provider(

@@ -5964,9 +5964,52 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         env=env,
                     )
                     self.assertEqual(path_miss.returncode, 127)
-                    self.assertIn("executable not found on safe PATH: sensitive-path", path_miss.stderr)
+                    self.assertIn("executable not found on safe PATH: redacted-path", path_miss.stderr)
                     self.assertNotIn("ghp_", path_miss.stderr)
                     self.assertNotIn("token=ghp_", path_miss.stderr)
+
+                    url_userinfo = "token-user:secret-pass"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {
+                            "bad": {
+                                "enabled": True,
+                                "command": ["https://" + url_userinfo + "@example.invalid/tool"],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    url_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(url_fail.returncode, 127)
+                    self.assertIn("redacted-path", url_fail.stderr)
+                    self.assertNotIn(url_userinfo, url_fail.stderr)
+                    self.assertNotIn("token-user@", url_fail.stderr)
+                    self.assertNotIn("secret-pass", url_fail.stderr)
+
+                    long_safe = root / ("safe-" + ("x" * 180) + ".log")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(long_safe)], "stdin": True}},
+                    })
+                    safe_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(safe_fail.returncode, 127)
+                    self.assertIn("safe-", safe_fail.stderr)
+                    self.assertIn("...[truncated]", safe_fail.stderr)
+                    self.assertNotIn("redacted-path", safe_fail.stderr)
+                    self.assertNotIn("[REDACTED]", safe_fail.stderr)
+                    self.assertNotIn(str(root), safe_fail.stderr)
 
                     loop = root / ("provider-password=" + ("C" * 32))
                     try:
@@ -6043,8 +6086,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 else:
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
             text = path.read_text(encoding="utf-8")
-            self.assertIn("sensitive_context_overrides: `sensitive-path`", text)
-            self.assertIn("outside_project_overrides: `sensitive-path`", text)
+            self.assertIn("sensitive_context_overrides: `redacted-path`", text)
+            self.assertIn("outside_project_overrides: `redacted-path`", text)
             self.assertNotIn(str(root), text)
             self.assertNotIn(tmp, text)
             self.assertNotIn("ghp_", text)
@@ -6070,6 +6113,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("...[truncated]", label)
             self.assertNotIn("[REDACTED]", label)
             self.assertNotIn(str(root), label)
+            self.assertEqual(aux.response_path_label("bad\x00token"), "redacted-path")
+            self.assertIn("safe-", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
+            self.assertNotIn("[REDACTED]", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
         aux = load_aux_module()
