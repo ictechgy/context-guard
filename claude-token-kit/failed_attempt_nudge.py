@@ -88,7 +88,7 @@ def normalize_command(command: str) -> str:
     except ValueError:
         argv = command.split()
     positional: list[str] = []
-    selectors: list[str] = []
+    selectors: list[tuple[str, str]] = []
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -96,14 +96,15 @@ def normalize_command(command: str) -> str:
         if flag in FINGERPRINT_SELECTOR_FLAGS:
             value = inline_value if sep else (argv[index + 1] if index + 1 < len(argv) else "")
             if value:
-                selectors.append(f"{flag}={value}")
+                selectors.append((flag, value))
                 if not sep:
                     index += 1
         elif token != "--" and not token.startswith("-"):
             positional.append(token)
         index += 1
     normalized = positional[:2]
-    return " ".join([*normalized, *sorted(selectors)])
+    selector_text = [f"{flag}={value}" for flag, value in sorted(selectors, key=lambda item: item[0])]
+    return " ".join([*normalized, *selector_text])
 
 
 def fingerprint(normalized: str) -> str:
