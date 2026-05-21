@@ -3839,6 +3839,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("secret-like-context-content", rule_ids)
                     self.assertEqual(outside_context.read_text(encoding="utf-8"), outside_secret)
 
+    def test_token_diet_root_open_reports_non_directory_parent_cleanly(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_parent_file_{index}")
+                if not getattr(diet.os, "O_NOFOLLOW", 0):
+                    self.skipTest("O_NOFOLLOW unavailable")
+                if diet.os.open not in getattr(diet.os, "supports_dir_fd", set()):
+                    self.skipTest("dir_fd open unavailable")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    parent_file = root / "docs"
+                    parent_file.write_text("not a directory", encoding="utf-8")
+                    with self.assertRaises(OSError) as ctx:
+                        diet.read_text_prefix(parent_file / "CLAUDE.md", root=root)
+                    self.assertIn("context parent", str(ctx.exception))
+                    self.assertNotIsInstance(ctx.exception, UnboundLocalError)
+
     def test_token_diet_settings_load_does_not_follow_symlink_after_discovery(self):
         for index, script in enumerate(DIET_SCRIPTS):
             with self.subTest(script=script):

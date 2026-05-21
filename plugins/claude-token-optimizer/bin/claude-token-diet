@@ -199,19 +199,21 @@ def _open_regular_under_root_no_follow(root: Path, path: Path, *, path_kind: str
         if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
             raise OSError(errno.ENOTDIR, f"{path_kind} root is not a directory")
         for component in parts[:-1]:
-            next_fd = -1
-            next_fd = os.open(component, dir_flags, dir_fd=dir_fd)
+            try:
+                next_fd = os.open(component, dir_flags, dir_fd=dir_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
+                    raise OSError(exc.errno, f"{path_kind} parent is not a directory") from exc
+                raise
             try:
                 if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
                     raise OSError(errno.ENOTDIR, f"{path_kind} parent is not a directory")
-                old_fd = dir_fd
-                dir_fd = next_fd
-                next_fd = -1
-                os.close(old_fd)
             except Exception:
-                if next_fd != -1:
-                    os.close(next_fd)
+                os.close(next_fd)
                 raise
+            old_fd = dir_fd
+            dir_fd = next_fd
+            os.close(old_fd)
         file_flags = os.O_RDONLY
         if hasattr(os, "O_CLOEXEC"):
             file_flags |= os.O_CLOEXEC
