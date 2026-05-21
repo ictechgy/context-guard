@@ -95,6 +95,22 @@ def safe_label(path: Path, root: Path) -> str:
         return f"{path.name}#path:{digest}"
 
 
+def has_symlink_component(path: Path) -> bool:
+    """Return True when a requested project path traverses a symlink."""
+    if path.is_symlink():
+        return True
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    depth = 0
+    for part in path.parts:
+        if path.is_absolute() and part == path.anchor:
+            continue
+        current = current / part
+        if current.is_symlink() and not (path.is_absolute() and depth == 0):
+            return True
+        depth += 1
+    return False
+
+
 def find_read_symbol_command() -> str:
     script_dir = Path(__file__).resolve().parent
     if (script_dir / "claude-read-symbol").exists():
@@ -146,6 +162,14 @@ def main() -> int:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = root / path
+    if has_symlink_component(path):
+        label = safe_label(path, root)
+        reason = (
+            f"[claude-token-kit] Read blocked for {label}: requested path traverses a symlink. "
+            "Use a real project file path before reading or extracting symbols."
+        )
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
+        return 0
     try:
         resolved = path.resolve()
         if not resolved.is_file():
