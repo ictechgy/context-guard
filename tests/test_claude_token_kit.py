@@ -255,6 +255,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
             stdout=("x" * (smoke.STATUSLINE_MAX_CHARS + 1)) + "\n",
             stderr="",
         )
+        padded_status = subprocess.CompletedProcess(
+            ["statusline"],
+            0,
+            stdout=(" " * (smoke.STATUSLINE_MAX_CHARS + 1)) + "ok\n",
+            stderr="",
+        )
+        extra_blank_status = subprocess.CompletedProcess(["statusline"], 0, stdout="ok\n\n", stderr="")
         smoke.check_launch_smoke(good_hook, "hook", "hook-json")
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(bad_hook, "hook", "hook-json")
@@ -267,6 +274,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             smoke.check_launch_smoke(bad_status, "statusline", "statusline")
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(long_status, "statusline", "statusline")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(padded_status, "statusline", "statusline")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(extra_blank_status, "statusline", "statusline")
 
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:

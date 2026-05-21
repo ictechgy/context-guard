@@ -247,15 +247,16 @@ def launch_stdin(mode: str) -> str | None:
 
 
 def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mode: str) -> None:
-    stdout = proc.stdout.strip()
-    if not stdout:
+    raw_stdout = proc.stdout
+    if not raw_stdout.strip():
         fail(f"{command} launch smoke emitted no stdout")
     if mode == "hook-json":
-        load_json(proc.stdout, command)
+        load_json(raw_stdout, command)
     elif mode == "statusline":
-        if "\n" in stdout:
+        line = raw_stdout[:-1] if raw_stdout.endswith("\n") else raw_stdout
+        if "\n" in line or "\r" in line:
             fail(f"{command} statusline smoke emitted multiple lines")
-        if len(stdout) > STATUSLINE_MAX_CHARS:
+        if len(line) > STATUSLINE_MAX_CHARS:
             fail(f"{command} statusline smoke exceeded {STATUSLINE_MAX_CHARS} characters")
 
 
