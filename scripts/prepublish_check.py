@@ -94,15 +94,25 @@ def load_json(path: Path) -> dict:
     return data
 
 
-def skill_frontmatter(text: str) -> str:
+def skill_label(skill: Path) -> str:
+    try:
+        return str(skill.relative_to(PLUGIN_DIR))
+    except ValueError:
+        return str(skill)
+
+
+def skill_frontmatter(text: str, skill: Path) -> str:
     """Return the YAML-ish skill metadata block without inspecting body examples."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
-        return ""
+        fail(f"skill metadata missing frontmatter: {skill_label(skill)}")
     for index, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
-            return "\n".join(lines[1:index])
-    return ""
+            metadata = "\n".join(lines[1:index])
+            if not re.search(r"(?m)^description:\s*\S", metadata):
+                fail(f"skill metadata missing description: {skill_label(skill)}")
+            return metadata
+    fail(f"skill metadata missing closing frontmatter: {skill_label(skill)}")
 
 
 def check_manifest() -> None:
@@ -142,15 +152,11 @@ def check_skill_allowed_tool_commands() -> None:
             text = skill.read_text(encoding="utf-8")
         except OSError as exc:
             fail(f"could not read skill metadata: {skill}: {exc}")
-        for command in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text)):
+        for command in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text, skill)):
             if not PLUGIN_HELPER_COMMAND_RE.match(command):
                 continue
             if command not in available:
-                try:
-                    rel = skill.relative_to(PLUGIN_DIR)
-                except ValueError:
-                    rel = skill
-                fail(f"skill allowed-tools references missing plugin bin command: {rel}: {command}")
+                fail(f"skill allowed-tools references missing plugin bin command: {skill_label(skill)}: {command}")
 
 
 def check_bin_copies() -> None:

@@ -195,6 +195,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
             )
             self.assertIn("prepublish check: OK", proc.stdout)
 
+    def test_prepublish_rejects_malformed_skill_frontmatter(self):
+        cases = {
+            "missing-frontmatter": "# Body only\n",
+            "unterminated": "---\ndescription: test\nallowed-tools: Bash(git *)\n",
+            "missing-description": "---\nallowed-tools: Bash(git *)\n---\n",
+        }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    skills_dir = Path(tmp) / "skills" / name
+                    skills_dir.mkdir(parents=True)
+                    (skills_dir / "SKILL.md").write_text(content, encoding="utf-8")
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
+                    proc = subprocess.run(
+                        [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("skill metadata missing", proc.stdout + proc.stderr)
+
     def test_prepublish_reports_missing_plugin_bin_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
