@@ -5852,12 +5852,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     api_key = "plain-api-key-secret"
                     auth_value = "opaque-bearer-token"
                     url_userinfo = "token-user:secret-pass"
+                    github_fine_grained = "github_pat_" + ("B" * 30)
+                    gitlab_pat = "glpat-" + ("C" * 20)
+                    openai_test_key = "sk_test_" + ("D" * 24)
+                    claude_key = "sk-ant-" + ("E" * 24)
+                    project_key = "sk-proj-" + ("F" * 24)
+                    expected_redacted = [
+                        github_token,
+                        api_key,
+                        auth_value,
+                        url_userinfo,
+                        "token-user@",
+                        "secret-pass",
+                        github_fine_grained,
+                        gitlab_pat,
+                        openai_test_key,
+                        claude_key,
+                        project_key,
+                    ]
                     provider_command = "; ".join(
                         [
                             f"printf '%s\\n' {shlex.quote('token=' + github_token)}",
                             f"printf '%s\\n' {shlex.quote('api_key=' + api_key)}",
                             f"printf '%s\\n' {shlex.quote('https://' + url_userinfo + '@example.invalid/repo')}",
                             f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + auth_value)} >&2",
+                            f"printf '%s\\n' {shlex.quote(github_fine_grained)}",
+                            f"printf '%s\\n' {shlex.quote(gitlab_pat)}",
+                            f"printf '%s\\n' {shlex.quote(openai_test_key)}",
+                            f"printf '%s\\n' {shlex.quote(claude_key)}",
+                            f"printf '%s\\n' {shlex.quote(project_key)}",
                             "exit 9",
                         ]
                     )
@@ -5886,12 +5909,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertEqual(proc.returncode, 9)
                     combined = proc.stdout + proc.stderr
-                    for secret in [github_token, api_key, auth_value, url_userinfo, "token-user@", "secret-pass"]:
+                    for secret in expected_redacted:
                         self.assertNotIn(secret, combined)
                     self.assertIn("[REDACTED]", proc.stdout)
                     saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
                     saved_text = Path(saved_line.split("=", 1)[1]).read_text(encoding="utf-8")
-                    for secret in [github_token, api_key, auth_value, url_userinfo, "token-user@", "secret-pass"]:
+                    for secret in expected_redacted:
                         self.assertNotIn(secret, saved_text)
                     self.assertIn("[REDACTED]", saved_text)
 
