@@ -110,6 +110,18 @@ def _no_follow_flag() -> int:
     raise OSError("platform does not support no-follow file opens")
 
 
+def no_follow_file_ops_supported() -> bool:
+    return hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd
+
+
+def require_no_follow_file_ops_supported() -> None:
+    if not no_follow_file_ops_supported():
+        raise SystemExit(
+            "benchmark runner requires POSIX no-follow file operations for safe fixture and CSV paths; "
+            "this platform is not supported yet."
+        )
+
+
 def _directory_flag() -> int:
     return getattr(os, "O_DIRECTORY", 0)
 
@@ -600,6 +612,8 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true",
                         help="skip (task_id, variant) rows already present in --csv")
     args = parser.parse_args()
+
+    require_no_follow_file_ops_supported()
 
     if not args.dry_run and shutil.which(args.claude_bin) is None:
         # claude_bin 이 절대경로면 shutil.which 가 None 일 수 있으므로 추가 검사.
