@@ -134,13 +134,15 @@ def safe_resolve(path: Path) -> Path:
         return path.absolute()
 
 
-def sanitize_path_component(component: str, *, include_hash: bool = True) -> str:
+def path_component_contains_secret(component: str) -> bool:
+    return bool(component and component not in {".", ".."} and SECRET_CONTENT_RE.search(component))
+
+
+def sanitize_path_component(component: str) -> str:
     if not component or component in {".", ".."}:
         return component
-    if not SECRET_CONTENT_RE.search(component):
+    if not path_component_contains_secret(component):
         return component
-    if include_hash:
-        return f"{REDACTED_PATH_COMPONENT}#path:{text_hash(component)}"
     return REDACTED_PATH_COMPONENT
 
 
@@ -148,11 +150,19 @@ def sanitize_rel_path(path: str) -> str:
     return "/".join(sanitize_path_component(component) for component in path.split("/"))
 
 
+def sanitize_path_text(path: str) -> str:
+    return "/".join(sanitize_path_component(component) for component in path.replace(os.sep, "/").split("/"))
+
+
+def display_path_hash(path: Path) -> str:
+    return text_hash(sanitize_path_text(str(safe_resolve(path))))
+
+
 def path_label(path: Path, show_paths: bool) -> str:
     if show_paths:
         return str(path)
-    name = sanitize_path_component(path.name or "path", include_hash=False)
-    return f"{name}#path:{path_hash(safe_resolve(path))}"
+    name = sanitize_path_component(path.name or "path")
+    return f"{name}#path:{display_path_hash(path)}"
 
 
 def context_finding(
@@ -170,16 +180,16 @@ def context_finding(
 def root_label(root: Path, show_paths: bool) -> str:
     if show_paths:
         return str(root)
-    name = sanitize_path_component(root.name or "project", include_hash=False)
-    return f"{name}#path:{path_hash(root)}"
+    name = sanitize_path_component(root.name or "project")
+    return f"{name}#path:{display_path_hash(root)}"
 
 
 def rel_path(path: Path, root: Path) -> str:
     try:
         return sanitize_rel_path(path.resolve().relative_to(root.resolve()).as_posix())
     except (OSError, RuntimeError, ValueError):
-        name = sanitize_path_component(path.name, include_hash=False)
-        return f"{name}#path:{path_hash(safe_resolve(path))}"
+        name = sanitize_path_component(path.name or "path")
+        return f"{name}#path:{display_path_hash(path)}"
 
 
 class SettingsFileTooLargeError(ValueError):
