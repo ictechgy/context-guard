@@ -1,6 +1,7 @@
 import argparse
 import csv
 import contextlib
+import errno
 import io
 import importlib.machinery
 import importlib.util
@@ -2177,6 +2178,282 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     # victim 파일 내용이 그대로 보존되어야 한다.
                     self.assertEqual(target.read_text(encoding="utf-8"), "important",
                                      "심볼릭 링크 타깃이 덮어써지면 안 된다")
+
+    def test_failed_attempt_nudge_load_entries_rejects_symlink_targets_and_parents(self):
+        """state read 는 lstat 후 read_text TOCTOU 없이 leaf/parent symlink 를 따라가지 않는다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_nofollow_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real_dir = root / "real"
+                    real_dir.mkdir()
+                    state = real_dir / "failures-sess.json"
+                    state.write_text(json.dumps([{"fp": "abc", "ok": False}]), encoding="utf-8")
+                    direct_link = root / "failures-link.json"
+                    parent_link = root / "state-link-dir"
+                    try:
+                        direct_link.symlink_to(state)
+                        parent_link.symlink_to(real_dir, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+
+                    self.assertEqual(module.load_entries(state), [{"fp": "abc", "ok": False}])
+                    self.assertEqual(module.load_entries(direct_link), [])
+                    self.assertEqual(module.load_entries(parent_link / "failures-sess.json"), [])
+
+    def test_failed_attempt_nudge_save_entries_uses_open_parent_fd_for_replace(self):
+        """replace 직전 parent path 가 symlink 로 바뀌어도 열린 dir_fd 안에서만 교체한다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_nofollow_write_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_dir = root / ".claude-token-optimizer"
+                    state_dir.mkdir()
+                    backup_dir = root / "original-state-dir"
+                    victim_dir = root / "victim"
+                    victim_dir.mkdir()
+                    state_path = state_dir / "failures-sess.json"
+                    race_state = {"swapped": False, "replace_called": False}
+
+                    original_rename_entry = module._rename_state_entry
+
+                    def swapping_rename(src, dst, parent_fd):
+                        race_state["replace_called"] = True
+                        if not race_state["swapped"]:
+                            os.rename(str(state_dir), str(backup_dir))
+                            try:
+                                state_dir.symlink_to(victim_dir, target_is_directory=True)
+                            except (OSError, NotImplementedError) as exc:
+                                self.skipTest(f"symlink unavailable: {exc}")
+                            race_state["swapped"] = True
+                        return original_rename_entry(src, dst, parent_fd)
+
+                    module._rename_state_entry = swapping_rename
+                    try:
+                        module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._rename_state_entry = original_rename_entry
+
+                    self.assertTrue(race_state["replace_called"])
+                    self.assertTrue(race_state["swapped"])
+                    self.assertFalse((victim_dir / "failures-sess.json").exists(),
+                                     "swapped-in symlink parent target must not receive state writes")
+                    self.assertEqual(
+                        json.loads((backup_dir / "failures-sess.json").read_text(encoding="utf-8")),
+                        [{"fp": "abc", "ok": False}],
+                    )
+
+    def test_failed_attempt_nudge_save_entries_handles_concurrent_state_dir_creation(self):
+        """다른 hook process 가 state dir 를 먼저 만들어도 silent state loss 없이 재검증 후 쓴다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_concurrent_mkdir_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    race_state = {"mkdir_called": False}
+                    original_mkdir = module._mkdir_directory_at
+
+                    def racing_mkdir(dir_fd, component):
+                        race_state["mkdir_called"] = True
+                        original_mkdir(dir_fd, component)
+                        raise FileExistsError
+
+                    module._mkdir_directory_at = racing_mkdir
+                    try:
+                        module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._mkdir_directory_at = original_mkdir
+
+                    self.assertTrue(race_state["mkdir_called"])
+                    self.assertEqual(
+                        json.loads(state_path.read_text(encoding="utf-8")),
+                        [{"fp": "abc", "ok": False}],
+                    )
+
+    def test_failed_attempt_nudge_save_entries_reports_unsupported_safe_io(self):
+        """no-follow state IO 를 보장할 수 없는 플랫폼은 조용히 성공 처리하지 않는다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_unsupported_nofollow_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    original_no_follow = module._no_follow_flag
+
+                    def unsupported_no_follow():
+                        raise module.UnsupportedSafeStateIOError(
+                            module.UNSUPPORTED_STATE_IO_ERRNO,
+                            "unsupported no-follow",
+                        )
+
+                    module._no_follow_flag = unsupported_no_follow
+                    try:
+                        with self.assertRaises(OSError) as ctx:
+                            module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._no_follow_flag = original_no_follow
+
+                    self.assertEqual(ctx.exception.errno, module.UNSUPPORTED_STATE_IO_ERRNO)
+                    self.assertFalse(state_path.exists())
+
+    def test_failed_attempt_nudge_load_entries_reports_unsupported_safe_io(self):
+        """state read 도 no-follow 미지원 같은 platform gap 을 빈 상태로 숨기지 않는다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_unsupported_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    state_path = Path(tmp) / "failures-sess.json"
+                    state_path.write_text("[]", encoding="utf-8")
+                    original_no_follow = module._no_follow_flag
+
+                    def unsupported_no_follow():
+                        raise module.UnsupportedSafeStateIOError(
+                            module.UNSUPPORTED_STATE_IO_ERRNO,
+                            "unsupported no-follow",
+                        )
+
+                    module._no_follow_flag = unsupported_no_follow
+                    try:
+                        with self.assertRaises(OSError) as ctx:
+                            module.load_entries(state_path)
+                    finally:
+                        module._no_follow_flag = original_no_follow
+
+                    self.assertEqual(ctx.exception.errno, module.UNSUPPORTED_STATE_IO_ERRNO)
+
+    def test_failed_attempt_nudge_main_logs_unsupported_state_read_and_continues(self):
+        """hook main 은 state read 진단을 stderr 에 남기되 Bash 흐름은 막지 않는다."""
+        payload = {
+            "session_id": "sess-read-unsupported",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/auth.py"},
+            "tool_response": {"exitCode": 1},
+        }
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_main_read_diag_{index}")
+                original_load = module.load_entries
+                original_save = module.save_entries
+                original_stdin = module.sys.stdin
+                original_stdout = module.sys.stdout
+                original_stderr = module.sys.stderr
+
+                def unsupported_load(path):
+                    raise module.UnsupportedSafeStateIOError(
+                        module.UNSUPPORTED_STATE_IO_ERRNO,
+                        "unsupported read",
+                    )
+
+                module.load_entries = unsupported_load
+                module.save_entries = lambda path, entries: None
+                module.sys.stdin = io.StringIO(json.dumps(payload))
+                module.sys.stdout = io.StringIO()
+                module.sys.stderr = io.StringIO()
+                try:
+                    self.assertEqual(module.main(), 0)
+                    self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
+                    self.assertIn("state read skipped", module.sys.stderr.getvalue())
+                finally:
+                    module.load_entries = original_load
+                    module.save_entries = original_save
+                    module.sys.stdin = original_stdin
+                    module.sys.stdout = original_stdout
+                    module.sys.stderr = original_stderr
+
+    def test_failed_attempt_nudge_main_logs_permission_state_read_and_continues(self):
+        """EACCES 같은 read 실패도 조용히 숨기지 않고 stderr 진단을 남긴다."""
+        payload = {
+            "session_id": "sess-read-permission",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/auth.py"},
+            "tool_response": {"exitCode": 1},
+        }
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_main_read_eacces_{index}")
+                original_load = module.load_entries
+                original_save = module.save_entries
+                original_stdin = module.sys.stdin
+                original_stdout = module.sys.stdout
+                original_stderr = module.sys.stderr
+
+                def denied_load(path):
+                    raise PermissionError(errno.EACCES, "permission denied", str(path))
+
+                module.load_entries = denied_load
+                module.save_entries = lambda path, entries: None
+                module.sys.stdin = io.StringIO(json.dumps(payload))
+                module.sys.stdout = io.StringIO()
+                module.sys.stderr = io.StringIO()
+                try:
+                    self.assertEqual(module.main(), 0)
+                    self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
+                    stderr = module.sys.stderr.getvalue()
+                    self.assertIn("state read skipped", stderr)
+                    self.assertIn("permission denied", stderr)
+                finally:
+                    module.load_entries = original_load
+                    module.save_entries = original_save
+                    module.sys.stdin = original_stdin
+                    module.sys.stdout = original_stdout
+                    module.sys.stderr = original_stderr
+
+    def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
+        """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_unsupported_rename_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    original_rename_supports = module._rename_supports_dir_fd
+
+                    module._rename_supports_dir_fd = lambda: False
+                    try:
+                        with self.assertRaises(OSError) as ctx:
+                            module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._rename_supports_dir_fd = original_rename_supports
+
+                    self.assertEqual(ctx.exception.errno, module.UNSUPPORTED_STATE_IO_ERRNO)
+                    self.assertFalse(state_path.exists())
+                    self.assertEqual(list(state_path.parent.glob(".nudge-*.tmp")), [])
+
+    def test_failed_attempt_nudge_rename_state_entry_maps_not_implemented(self):
+        """실제 rename wrapper 가 NotImplementedError 를 diagnosable safe-IO 오류로 변환한다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_rename_notimpl_{index}")
+                original_rename_with_dir_fd = module._rename_with_dir_fd
+                module._rename_with_dir_fd = lambda src, dst, parent_fd: (_ for _ in ()).throw(
+                    NotImplementedError("dir_fd unsupported")
+                )
+                try:
+                    with self.assertRaises(OSError) as ctx:
+                        module._rename_state_entry("src", "dst", -1)
+                finally:
+                    module._rename_with_dir_fd = original_rename_with_dir_fd
+
+                self.assertEqual(ctx.exception.errno, module.UNSUPPORTED_STATE_IO_ERRNO)
+
+    def test_failed_attempt_nudge_load_entries_rejects_fifo_without_blocking(self):
+        """malicious FIFO state file 은 O_NONBLOCK open 후 regular-file 검사에서 거부된다."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_fifo_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    fifo = Path(tmp) / "failures-sess.json"
+                    try:
+                        os.mkfifo(fifo)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"mkfifo unavailable: {exc}")
+
+                    self.assertEqual(module.load_entries(fifo), [])
 
     def test_failed_attempt_nudge_state_file_uses_atomic_write(self):
         """save_entries 가 tempfile + os.replace 로 atomic 교체하므로 부분 쓰기로 손상되지 않는다."""

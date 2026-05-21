@@ -23,14 +23,37 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 STATE_DIR = Path(".claude-token-optimizer")
 STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
+UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
+UNSAFE_STATE_PATH_ERRNOS = {
+    errno.ELOOP,
+    errno.ENOTDIR,
+    errno.EISDIR,
+}
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    # macOS exposes these as first-component symlinks to /private/*.  Allow only
+    # this OS-owned alias so tests and hooks in TMPDIR can still use no-follow
+    # traversal without accepting arbitrary user-controlled symlink parents.
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+
+
+class UnsupportedSafeStateIOError(OSError):
+    """현재 플랫폼에서 no-follow state IO 를 안전하게 보장할 수 없음."""
+
+
+class UnsafeStatePathError(OSError):
+    """state path 가 symlink/비정규 파일/부적절한 경로 형태라 거부됨."""
+
 
 # additionalContext 는 모델에게 주입되므로 사용자에게 직접 명령하는 톤보다 모델이 행동을
 # 결정할 때 참고할 힌트 형태가 자연스럽다. 모델이 사용자에게 안내하도록 유도한다.
@@ -71,36 +94,188 @@ def fingerprint(normalized: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def _is_real_dir(path: Path) -> bool:
-    """심볼릭 링크가 아닌 실제 디렉터리인지 검사."""
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return False
-    import stat as _stat
+def _base_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    return flags
 
-    return _stat.S_ISDIR(st.st_mode)
+
+def _no_follow_flag() -> int:
+    if hasattr(os, "O_NOFOLLOW"):
+        return os.O_NOFOLLOW
+    raise UnsupportedSafeStateIOError(
+        UNSUPPORTED_STATE_IO_ERRNO,
+        "failed-attempt nudge state requires POSIX no-follow file opens",
+    )
+
+
+def _directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+    fd = os.open(component, _base_open_flags() | _directory_flag() | _no_follow_flag(), dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise UnsafeStatePathError(errno.ENOTDIR, "not a directory", str(path))
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _mkdir_directory_at(dir_fd: int, component: str) -> None:
+    os.mkdir(component, 0o777, dir_fd=dir_fd)
+
+
+def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
+    if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+        raise UnsupportedSafeStateIOError(
+            UNSUPPORTED_STATE_IO_ERRNO,
+            "failed-attempt nudge state requires directory-relative no-follow access",
+        )
+    path = _normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for component in components:
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                raise UnsafeStatePathError(errno.EINVAL, "parent traversal is not allowed", str(path))
+            try:
+                next_fd = _open_directory_at(dir_fd, component, path)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    _mkdir_directory_at(dir_fd, component)
+                except FileExistsError:
+                    # 다른 hook process 가 방금 만든 경우. 아래 no-follow open 으로
+                    # 실제 디렉터리인지 다시 검증하므로 symlink race 는 허용하지 않는다.
+                    pass
+                next_fd = _open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return dir_fd
+    except Exception:
+        os.close(dir_fd)
+        raise
+
+
+def _open_regular_no_symlink(
+    path: Path,
+    flags: int | None = None,
+    mode: int = 0o666,
+    *,
+    create_parent: bool = False,
+) -> int:
+    if os.open not in os.supports_dir_fd:
+        raise UnsupportedSafeStateIOError(
+            UNSUPPORTED_STATE_IO_ERRNO,
+            "failed-attempt nudge state requires directory-relative no-follow opens",
+        )
+    path = _normalize_allowed_first_absolute_symlink(path)
+    parent_fd = _ensure_directory_no_symlink(path.parent, create=create_parent)
+    open_flags = (flags if flags is not None else _base_open_flags()) | _no_follow_flag()
+    try:
+        fd = os.open(path.name, open_flags, mode, dir_fd=parent_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise UnsafeStatePathError(errno.EINVAL, "not a regular file", str(path))
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(parent_fd)
+
+
+def _read_text_no_follow(path: Path) -> str:
+    fd = _open_regular_no_symlink(path)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def _is_unsafe_state_path_error(exc: OSError) -> bool:
+    return isinstance(exc, UnsafeStatePathError) or exc.errno in UNSAFE_STATE_PATH_ERRNOS
+
+
+def _rename_supports_dir_fd() -> bool:
+    return os.rename in os.supports_dir_fd
+
+
+def _rename_with_dir_fd(src: str, dst: str, parent_fd: int) -> None:
+    os.rename(src, dst, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+
+
+def _rename_state_entry(src: str, dst: str, parent_fd: int) -> None:
+    if not _rename_supports_dir_fd():
+        raise UnsupportedSafeStateIOError(
+            UNSUPPORTED_STATE_IO_ERRNO,
+            "failed-attempt nudge state requires directory-relative rename",
+        )
+    try:
+        _rename_with_dir_fd(src, dst, parent_fd)
+    except (NotImplementedError, TypeError) as exc:
+        raise UnsupportedSafeStateIOError(
+            UNSUPPORTED_STATE_IO_ERRNO,
+            "failed-attempt nudge state requires directory-relative rename",
+        ) from exc
 
 
 def load_entries(path: Path) -> list[dict]:
     """state file 을 읽는다. 파일이 symlink/regular 가 아니거나 손상되면 빈 list 반환."""
-    if not path.exists():
-        return []
     try:
-        # symlink 를 따라가지 않고 직접 검사 — 공격자가 미리 심어둔 symlink 회피.
-        st = os.lstat(path)
-    except OSError:
+        data = json.loads(_read_text_no_follow(path))
+    except FileNotFoundError:
         return []
-    import stat as _stat
-
-    if not _stat.S_ISREG(st.st_mode):
+    except UnicodeDecodeError:
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except json.JSONDecodeError:
         return []
+    except UnsupportedSafeStateIOError:
+        raise
+    except OSError as exc:
+        if _is_unsafe_state_path_error(exc):
+            return []
+        raise
     if not isinstance(data, list):
         return []
     return [entry for entry in data if isinstance(entry, dict)]
@@ -109,55 +284,71 @@ def load_entries(path: Path) -> list[dict]:
 def save_entries(path: Path, entries: list[dict]) -> None:
     """심볼릭 링크 / 동시 race 에 안전한 atomic write.
 
-    - 부모 디렉터리가 symlink 면 거부 (외부 경로로 쓰기 회피).
-    - O_CREAT|O_WRONLY|O_TRUNC|O_NOFOLLOW 로 임시 파일에 쓰고 os.replace 로 atomic 교체.
-    - 임시 파일 이름은 무작위라 동시 호출 충돌 없음.
+    - 부모/조상 디렉터리를 dir_fd + O_NOFOLLOW 로 열어 symlink/race 를 거부한다.
+    - O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW 로 임시 파일을 쓰고 dir_fd 기반 rename 으로 교체.
+    - 임시 파일 이름은 무작위라 동시 호출 충돌 가능성이 낮고 O_EXCL 로 재확인한다.
     - 모드는 0o600 으로 잠근다.
     """
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if not _is_real_dir(parent):
-        # symlink 디렉터리는 거부 — silent noop.
-        return
-
-    flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-
-    fd, tmp_name = tempfile.mkstemp(prefix=".nudge-", suffix=".json.tmp", dir=str(parent))
+    parent_fd = -1
+    tmp_fd = -1
+    tmp_name = f".nudge-{os.getpid()}-{uuid.uuid4().hex}.json.tmp"
     try:
-        os.close(fd)
-        # mkstemp 가 만든 파일을 다시 NOFOLLOW 로 열어 안전하게 쓴다.
-        write_fd = os.open(tmp_name, flags, 0o600)
+        parent_fd = _ensure_directory_no_symlink(path.parent, create=True)
+        tmp_fd = os.open(
+            tmp_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | _no_follow_flag(),
+            0o600,
+            dir_fd=parent_fd,
+        )
         try:
-            with os.fdopen(write_fd, "w", encoding="utf-8") as f:
+            if hasattr(os, "fchmod"):
+                os.fchmod(tmp_fd, 0o600)
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                tmp_fd = -1
                 f.write(json.dumps(entries, ensure_ascii=False))
-        except Exception:
+        finally:
+            if tmp_fd != -1:
+                os.close(tmp_fd)
+
+        # 기존 state file 이 symlink/비정규 파일이면 거부. 이후 이름이 바뀌어도
+        # dir_fd 기반 replace 는 symlink 타깃을 따라가지 않고 해당 dir entry 만 교체한다.
+        try:
+            existing_fd = os.open(path.name, _base_open_flags() | _no_follow_flag(), dir_fd=parent_fd)
+        except FileNotFoundError:
+            existing_fd = -1
+        except OSError as exc:
+            if _is_unsafe_state_path_error(exc):
+                return
+            raise
+        else:
             try:
-                os.close(write_fd)
+                if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
+                    return
+            finally:
+                os.close(existing_fd)
+
+        _rename_state_entry(tmp_name, path.name, parent_fd)
+        tmp_name = ""
+    except UnsupportedSafeStateIOError:
+        raise
+    except OSError as exc:
+        if _is_unsafe_state_path_error(exc):
+            return
+        raise
+    finally:
+        if tmp_fd != -1:
+            try:
+                os.close(tmp_fd)
             except OSError:
                 pass
-            raise
-        try:
-            os.chmod(tmp_name, 0o600)
-        except OSError:
-            pass
-        # 기존 state file 이 symlink 면 거부 (regular file 만 교체).
-        if path.exists():
+        if parent_fd != -1:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
             try:
-                st = os.lstat(path)
-            except OSError:
-                st = None
-            import stat as _stat
-
-            if st is not None and not _stat.S_ISREG(st.st_mode):
-                return
-        os.replace(tmp_name, path)
-        tmp_name = ""  # replaced
-    finally:
-        if tmp_name:
-            try:
-                os.unlink(tmp_name)
+                os.close(parent_fd)
             except OSError:
                 pass
 
@@ -249,15 +440,19 @@ def main() -> int:
     fp = fingerprint(normalize_command(command))
     state_path = STATE_DIR / STATE_FILE_TEMPLATE.format(session=session)
 
-    entries = load_entries(state_path)
+    try:
+        entries = load_entries(state_path)
+    except OSError as exc:
+        # state 읽기 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴 뒤 새 streak 으로 시작한다.
+        sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {exc}\n")
+        entries = []
     success = exit_code == 0
     entries = update_entries(entries, fp, success)
     try:
         save_entries(state_path, entries)
     except OSError as exc:
         # state 저장 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴다.
-        if exc.errno not in {errno.EACCES, errno.ENOENT, errno.EROFS}:
-            sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {exc}\n")
+        sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {exc}\n")
 
     if success:
         # 성공이면 nudge 는 절대 발화하지 않는다.
