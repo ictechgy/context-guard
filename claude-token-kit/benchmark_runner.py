@@ -58,6 +58,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,8 @@ CSV_COLUMNS = [
     "corrections",
     "notes",
 ]
+MAX_CSV_NOTE_CHARS = 500
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 # claude -p --output-format json 의 usage 키 후보. Anthropic SDK 와 Claude Code 의 출력
 # 형식이 시간이 지나며 바뀔 수 있어 다중 후보로 best-effort 매칭한다.
@@ -553,7 +556,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult) -> None:
                 "cost_usd": f"{result.cost_usd:.6f}",
                 "success": "true" if result.success else "false",
                 "corrections": result.corrections,
-                "notes": result.notes,
+                "notes": sanitize_csv_note(result.notes),
             })
     finally:
         if fd != -1:
@@ -580,6 +583,18 @@ def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
         if fd != -1:
             os.close(fd)
     return keys
+
+
+def sanitize_csv_note(value: Any) -> str:
+    """Normalize untrusted notes before writing them to benchmark CSV output."""
+    text = "" if value is None else str(value)
+    text = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in text)
+    text = " ".join(text.split())
+    if text.startswith(CSV_FORMULA_PREFIXES):
+        text = "'" + text
+    if len(text) > MAX_CSV_NOTE_CHARS:
+        text = text[:MAX_CSV_NOTE_CHARS - 12].rstrip() + "…[truncated]"
+    return text
 
 
 def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
