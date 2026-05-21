@@ -1702,6 +1702,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("rg -n '<symbol-or-error>' --", reason)
             self.assertNotIn(f" {bad.name}`", reason)
 
+    def test_large_read_guard_blocks_symlink_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "big.py"
+            target.write_text("x\n" * 100000, encoding="utf-8")
+            direct_link = root / "direct.py"
+            parent_link = root / "linkdir"
+            try:
+                os.symlink(target, direct_link)
+                os.symlink(real_dir, parent_link)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            for script in READ_GUARD_SCRIPTS:
+                for requested in (direct_link.name, str(parent_link / "big.py")):
+                    with self.subTest(script=script, requested=requested):
+                        proc = run_hook_payload(script, {"tool_input": {"file_path": requested}}, cwd=root)
+                        hook = json.loads(proc.stdout)["hookSpecificOutput"]
+                        self.assertEqual(hook["permissionDecision"], "deny")
+                        self.assertIn("traverses a symlink", hook["permissionDecisionReason"])
+
     def test_read_symbol_extracts_python_and_typescript_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
