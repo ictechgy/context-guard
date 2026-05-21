@@ -1503,6 +1503,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("export function target", data["content"])
             self.assertNotIn("function after", data["content"])
 
+            block_comment = root / "block-comment.ts"
+            block_comment.write_text(
+                "export function target() {\n"
+                "  /*\n"
+                "   * URL-like // text must not hide the block terminator: https://example.test\n"
+                "   * Commented brace must not terminate the slice: }\n"
+                "   */\n"
+                "  return 1;\n"
+                "}\n\n"
+                "export function after() { return 0; }\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(block_comment), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("return 1", data["content"])
+            self.assertNotIn("function after", data["content"])
+
             call_before = root / "call-before.ts"
             call_before.write_text(
                 "target();\n\n"

@@ -155,8 +155,9 @@ def python_ast_block_end(text: str, symbol: str, start: int) -> int | None:
 def brace_block_end(lines: list[str], start: int) -> int:
     depth = 0
     started = False
+    in_block_comment = False
     for index in range(start, len(lines)):
-        line = strip_line_strings(lines[index])
+        line, in_block_comment = strip_line_for_brace_count(lines[index], in_block_comment)
         opens = line.count("{")
         closes = line.count("}")
         if opens:
@@ -174,8 +175,35 @@ def strip_line_strings(line: str) -> str:
     # Good enough for brace counting in source snippets; avoids most braces in strings.
     line = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', line)
     line = re.sub(r"`(?:\\.|[^`\\])*`", "``", line)
-    line = re.sub(r"//.*", "", line)
-    return re.sub(r"/\*.*?\*/", "", line)
+    return line
+
+
+def strip_line_for_brace_count(line: str, in_block_comment: bool = False) -> tuple[str, bool]:
+    # Track multi-line block comments so braces inside comments do not end a
+    # JavaScript/Go/Rust symbol slice before the real closing brace.
+    line = strip_line_strings(line)
+    output: list[str] = []
+    index = 0
+    while index < len(line):
+        if in_block_comment:
+            end = line.find("*/", index)
+            if end == -1:
+                return "".join(output), True
+            index = end + 2
+            in_block_comment = False
+            continue
+        line_comment = line.find("//", index)
+        block_comment = line.find("/*", index)
+        if line_comment != -1 and (block_comment == -1 or line_comment < block_comment):
+            output.append(line[index:line_comment])
+            break
+        if block_comment == -1:
+            output.append(line[index:])
+            break
+        output.append(line[index:block_comment])
+        index = block_comment + 2
+        in_block_comment = True
+    return "".join(output), in_block_comment
 
 
 def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, show_paths: bool) -> SymbolSlice | None:
