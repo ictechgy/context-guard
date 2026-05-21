@@ -5362,27 +5362,33 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 module = load_python_script_module(script, f"_bench_runner_csv_note_sanitize_{index}")
                 with tempfile.TemporaryDirectory() as tmp:
                     csv_path = Path(tmp) / "results.csv"
-                    result = module.RunResult(
-                        task_id="t01",
-                        variant="baseline",
-                        model="sonnet",
-                        effort=None,
-                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
-                        cost_usd=0.0,
-                        success=False,
-                        notes="=HYPERLINK(\"http://example.invalid\")\x00\n" + ("x" * 800),
-                    )
-
-                    module.append_csv(csv_path, "test", result)
+                    for prefix in module.CSV_FORMULA_PREFIXES:
+                        result = module.RunResult(
+                            task_id=f"t{ord(prefix):02x}",
+                            variant="baseline",
+                            model="sonnet",
+                            effort=None,
+                            tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                            cost_usd=0.0,
+                            success=False,
+                            notes=f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n" + ("x" * 800),
+                        )
+                        module.append_csv(csv_path, "test", result)
 
                     with csv_path.open(encoding="utf-8", newline="") as f:
-                        row = next(csv.DictReader(f))
-                    note = row["notes"]
-                    self.assertTrue(note.startswith("'=HYPERLINK"))
-                    self.assertNotIn("\x00", note)
-                    self.assertNotIn("\n", note)
-                    self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
-                    self.assertIn("…[truncated]", note)
+                        rows = list(csv.DictReader(f))
+                    self.assertEqual(len(rows), len(module.CSV_FORMULA_PREFIXES))
+                    for row, prefix in zip(rows, module.CSV_FORMULA_PREFIXES, strict=True):
+                        with self.subTest(prefix=prefix):
+                            note = row["notes"]
+                            self.assertTrue(note.startswith("'" + prefix))
+                            self.assertNotIn("\x00", note)
+                            self.assertNotIn("\x7f", note)
+                            self.assertNotIn("\u009b", note)
+                            self.assertNotIn("\u200b", note)
+                            self.assertNotIn("\n", note)
+                            self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
+                            self.assertIn("…[truncated]", note)
 
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")

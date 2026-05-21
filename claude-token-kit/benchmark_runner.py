@@ -58,6 +58,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -587,7 +588,7 @@ def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
 def sanitize_csv_note(value: Any) -> str:
     """Normalize untrusted notes before writing them to benchmark CSV output."""
     text = "" if value is None else str(value)
-    text = "".join(ch if ch in "\t\n" or ord(ch) >= 0x20 else " " for ch in text)
+    text = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in text)
     text = " ".join(text.split())
     if text.startswith(CSV_FORMULA_PREFIXES):
         text = "'" + text
