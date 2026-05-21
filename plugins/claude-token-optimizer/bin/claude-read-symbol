@@ -11,7 +11,9 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,10 @@ MIN_MAX_CHARS = 200
 MAX_CHARS_LIMIT = 200_000
 MAX_READ_BYTES = 2_000_000
 BRACE_FALLBACK_LINES = 80
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -85,13 +91,106 @@ def has_symlink_component(path: Path) -> bool:
     return False
 
 
+def _base_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _no_follow_flag() -> int:
+    if hasattr(os, "O_NOFOLLOW"):
+        return os.O_NOFOLLOW
+    raise OSError("platform does not support no-follow file opens")
+
+
+def _directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Rewrite narrow platform-owned absolute aliases before no-follow traversal."""
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+    flags = _base_open_flags() | _directory_flag() | _no_follow_flag()
+    fd = os.open(component, flags, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"not a directory: {path}")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_regular_no_symlink(path: Path) -> int:
+    """Open a regular file without following symlinks in any trusted component."""
+    if os.open not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative no-follow opens")
+    path = _normalize_allowed_first_absolute_symlink(path)
+    nofollow = _no_follow_flag()
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    if not components:
+        raise OSError(f"not a regular file: {path}")
+
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for component in components[:-1]:
+            next_fd = _open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        fd = os.open(components[-1], _base_open_flags() | nofollow, dir_fd=dir_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"not a regular file: {path}")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
 def read_text_bounded(path: Path) -> tuple[str, bool]:
-    with path.open("rb") as handle:
-        data = handle.read(MAX_READ_BYTES + 1)
-    truncated = len(data) > MAX_READ_BYTES
-    if truncated:
-        data = data[:MAX_READ_BYTES]
-    return data.decode("utf-8", "replace"), truncated
+    fd = _open_regular_no_symlink(path)
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(MAX_READ_BYTES + 1)
+        truncated = len(data) > MAX_READ_BYTES
+        if truncated:
+            data = data[:MAX_READ_BYTES]
+        return data.decode("utf-8", "replace"), truncated
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def language_for(path: Path) -> str:
@@ -303,7 +402,11 @@ def main() -> int:
     if not path.is_file():
         print(f"claude-read-symbol: not a file: {args.path}", file=sys.stderr)
         return 2
-    result = find_symbol_slice(path, args.symbol, args.context, args.max_chars, args.show_paths)
+    try:
+        result = find_symbol_slice(path, args.symbol, args.context, args.max_chars, args.show_paths)
+    except OSError as exc:
+        print(f"claude-read-symbol: could not read file safely: {exc}", file=sys.stderr)
+        return 2
     if result is None:
         suffix = ""
         try:
