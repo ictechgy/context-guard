@@ -171,7 +171,7 @@ def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None
     return data, None
 
 
-def _open_regular_under_root_no_follow(root: Path, path: Path):
+def _open_regular_under_root_no_follow(root: Path, path: Path, *, path_kind: str = "settings"):
     root_resolved = root.resolve()
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if not nofollow:
@@ -184,26 +184,26 @@ def _open_regular_under_root_no_follow(root: Path, path: Path):
         try:
             relative = path.relative_to(root)
         except ValueError as exc:
-            raise OSError("settings path is outside project root") from exc
+            raise OSError(f"{path_kind} path is outside project root") from exc
     parts = relative.parts
     if not parts:
-        raise OSError(errno.EINVAL, "settings path is missing a file name")
+        raise OSError(errno.EINVAL, f"{path_kind} path is missing a file name")
     for component in parts:
         if component in {"", "."} or component == "..":
-            raise OSError(errno.EINVAL, "invalid settings path component")
+            raise OSError(errno.EINVAL, f"invalid {path_kind} path component")
     dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
     if hasattr(os, "O_CLOEXEC"):
         dir_flags |= os.O_CLOEXEC
     dir_fd = os.open(root_resolved, dir_flags)
     try:
         if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
-            raise OSError(errno.ENOTDIR, "settings root is not a directory")
+            raise OSError(errno.ENOTDIR, f"{path_kind} root is not a directory")
         for component in parts[:-1]:
             next_fd = -1
             next_fd = os.open(component, dir_flags, dir_fd=dir_fd)
             try:
                 if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
-                    raise OSError(errno.ENOTDIR, "settings parent is not a directory")
+                    raise OSError(errno.ENOTDIR, f"{path_kind} parent is not a directory")
                 old_fd = dir_fd
                 dir_fd = next_fd
                 next_fd = -1
@@ -594,8 +594,13 @@ def iter_context_files(root: Path) -> Iterable[Path]:
                 yield path
 
 
-def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> tuple[str, bool]:
-    with open_regular_no_follow(path) as handle:
+def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES, *, root: Path | None = None) -> tuple[str, bool]:
+    opener = (
+        _open_regular_under_root_no_follow(root, path, path_kind="context")
+        if root is not None
+        else open_regular_no_follow(path)
+    )
+    with opener as handle:
         data = handle.read(limit + 1)
     truncated = len(data) > limit
     if truncated:
@@ -603,9 +608,14 @@ def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> tuple[s
     return data.decode("utf-8", "replace"), truncated
 
 
-def file_contains_secret(path: Path, chunk_bytes: int = 64_000) -> bool:
+def file_contains_secret(path: Path, chunk_bytes: int = 64_000, *, root: Path | None = None) -> bool:
     carry = ""
-    with open_regular_no_follow(path) as handle:
+    opener = (
+        _open_regular_under_root_no_follow(root, path, path_kind="context")
+        if root is not None
+        else open_regular_no_follow(path)
+    )
+    with opener as handle:
         while True:
             data = handle.read(chunk_bytes)
             if not data:
@@ -666,8 +676,8 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
                 ))
                 continue
             size = st.st_size
-            text, sample_truncated = read_text_prefix(path)
-            contains_secret = file_contains_secret(path)
+            text, sample_truncated = read_text_prefix(path, root=root)
+            contains_secret = file_contains_secret(path, root=root)
         except OSError as exc:
             findings.append(context_finding(
                 "context-unreadable",
