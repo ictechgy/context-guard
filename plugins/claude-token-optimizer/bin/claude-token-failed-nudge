@@ -444,8 +444,7 @@ def main() -> int:
         entries = load_entries(state_path)
     except OSError as exc:
         # state 읽기 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴 뒤 새 streak 으로 시작한다.
-        if exc.errno not in {errno.EACCES, errno.ENOENT, errno.EROFS}:
-            sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {exc}\n")
+        sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {exc}\n")
         entries = []
     success = exit_code == 0
     entries = update_entries(entries, fp, success)
@@ -453,8 +452,7 @@ def main() -> int:
         save_entries(state_path, entries)
     except OSError as exc:
         # state 저장 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴다.
-        if exc.errno not in {errno.EACCES, errno.ENOENT, errno.EROFS}:
-            sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {exc}\n")
+        sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {exc}\n")
 
     if success:
         # 성공이면 nudge 는 절대 발화하지 않는다.

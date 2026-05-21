@@ -1,6 +1,7 @@
 import argparse
 import csv
 import contextlib
+import errno
 import io
 import importlib.machinery
 import importlib.util
@@ -2355,6 +2356,44 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(module.main(), 0)
                     self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
                     self.assertIn("state read skipped", module.sys.stderr.getvalue())
+                finally:
+                    module.load_entries = original_load
+                    module.save_entries = original_save
+                    module.sys.stdin = original_stdin
+                    module.sys.stdout = original_stdout
+                    module.sys.stderr = original_stderr
+
+    def test_failed_attempt_nudge_main_logs_permission_state_read_and_continues(self):
+        """EACCES 같은 read 실패도 조용히 숨기지 않고 stderr 진단을 남긴다."""
+        payload = {
+            "session_id": "sess-read-permission",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/auth.py"},
+            "tool_response": {"exitCode": 1},
+        }
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_main_read_eacces_{index}")
+                original_load = module.load_entries
+                original_save = module.save_entries
+                original_stdin = module.sys.stdin
+                original_stdout = module.sys.stdout
+                original_stderr = module.sys.stderr
+
+                def denied_load(path):
+                    raise PermissionError(errno.EACCES, "permission denied", str(path))
+
+                module.load_entries = denied_load
+                module.save_entries = lambda path, entries: None
+                module.sys.stdin = io.StringIO(json.dumps(payload))
+                module.sys.stdout = io.StringIO()
+                module.sys.stderr = io.StringIO()
+                try:
+                    self.assertEqual(module.main(), 0)
+                    self.assertEqual(json.loads(module.sys.stdout.getvalue()), {})
+                    stderr = module.sys.stderr.getvalue()
+                    self.assertIn("state read skipped", stderr)
+                    self.assertIn("permission denied", stderr)
                 finally:
                     module.load_entries = original_load
                     module.save_entries = original_save
