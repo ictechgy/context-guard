@@ -3998,6 +3998,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertEqual(len(text), 80)
 
+    def test_aux_delegate_provider_output_read_rejects_symlinks(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret = root / "secret-output.txt"
+            secret.write_text("SHOULD_NOT_LEAK\n", encoding="utf-8")
+            output = root / "provider.out"
+            output.symlink_to(secret)
+            text, truncated = aux.read_limited_output(output, 80)
+        self.assertFalse(truncated)
+        self.assertIn("failed to read provider output safely", text)
+        self.assertNotIn("SHOULD_NOT_LEAK", text)
+
     def test_aux_delegate_nonfinite_config_budget_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
