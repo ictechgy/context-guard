@@ -4834,6 +4834,61 @@ def _make_fake_claude(tmpdir: Path, usage: dict | None = None, exit_code: int = 
 class BenchmarkRunnerTests(unittest.TestCase):
     """benchmark runner 의 fixture parsing, CSV append, fake claude 호출 시나리오 검증."""
 
+    def test_fixture_readers_reject_symlink_targets_and_parents(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_nofollow_inputs")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            tasks = real_dir / "tasks.json"
+            tasks.write_text(json.dumps([{"id": "t01", "prompt": "x"}]), encoding="utf-8")
+            direct_link = root / "tasks-link.json"
+            parent_link = root / "tasks-link-dir"
+            try:
+                direct_link.symlink_to(tasks)
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            with self.assertRaises(OSError):
+                module.parse_tasks(direct_link)
+            with self.assertRaises(OSError):
+                module.parse_tasks(parent_link / "tasks.json")
+
+    def test_csv_access_rejects_symlink_targets_and_parents(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_nofollow_csv")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            csv_path = real_dir / "results.csv"
+            csv_path.write_text("task_id,variant\nold,baseline\n", encoding="utf-8")
+            direct_link = root / "results-link.csv"
+            parent_link = root / "results-link-dir"
+            try:
+                direct_link.symlink_to(csv_path)
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            result = module.RunResult(
+                task_id="t01",
+                variant="baseline",
+                model="sonnet",
+                effort=None,
+                tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                cost_usd=0.0,
+                success=True,
+                notes="ok",
+            )
+
+            with self.assertRaises(OSError):
+                module.existing_keys(direct_link)
+            with self.assertRaises(OSError):
+                module.append_csv(direct_link, "test", result)
+            with self.assertRaises(OSError):
+                module.append_csv(parent_link / "new.csv", "test", result)
+            self.assertEqual(csv_path.read_text(encoding="utf-8"), "task_id,variant\nold,baseline\n")
+
     def test_dry_run_prints_argv_without_writing_csv(self):
         """dry-run 은 stdout 에 argv 만 출력하고 CSV 파일을 만들거나 수정하지 않아야 한다.
 

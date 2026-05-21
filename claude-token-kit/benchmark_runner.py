@@ -55,6 +55,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -90,6 +91,125 @@ USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+
+
+def _base_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _no_follow_flag() -> int:
+    if hasattr(os, "O_NOFOLLOW"):
+        return os.O_NOFOLLOW
+    raise OSError("platform does not support no-follow file opens")
+
+
+def _directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+    fd = os.open(component, _base_open_flags() | _directory_flag() | _no_follow_flag(), dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"not a directory: {path}")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
+    if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative no-follow directory access")
+    path = _normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for component in components:
+            try:
+                next_fd = _open_directory_at(dir_fd, component, path)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, 0o777, dir_fd=dir_fd)
+                next_fd = _open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return dir_fd
+    except Exception:
+        os.close(dir_fd)
+        raise
+
+
+def _open_regular_no_symlink(
+    path: Path,
+    flags: int | None = None,
+    mode: int = 0o666,
+    *,
+    create_parent: bool = False,
+) -> int:
+    if os.open not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative no-follow opens")
+    path = _normalize_allowed_first_absolute_symlink(path)
+    parent_fd = _ensure_directory_no_symlink(path.parent, create=create_parent)
+    open_flags = (flags if flags is not None else _base_open_flags()) | _no_follow_flag()
+    try:
+        fd = os.open(path.name, open_flags, mode, dir_fd=parent_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"not a regular file: {path}")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(parent_fd)
+
+
+def _read_text_no_follow(path: Path) -> str:
+    fd = _open_regular_no_symlink(path)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 # 재현성 우선: fixture 에 명시되지 않은 필드는 argv 로 전달하지 않는다.
@@ -185,7 +305,7 @@ def normalize_usage_cost(value: Any) -> float | None:
 
 
 def parse_tasks(path: Path) -> list[TaskFixture]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(_read_text_no_follow(path))
     if not isinstance(raw, list):
         raise SystemExit(f"tasks file must be a JSON list: {path}")
     fixtures: list[TaskFixture] = []
@@ -222,7 +342,7 @@ def parse_tasks(path: Path) -> list[TaskFixture]:
 
 
 def parse_variants(path: Path) -> list[Variant]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.loads(_read_text_no_follow(path))
     if not isinstance(raw, list):
         raise SystemExit(f"variants file must be a JSON list: {path}")
     variants: list[Variant] = []
@@ -395,45 +515,58 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
 
 
 def append_csv(csv_path: Path, claude_ver: str, result: RunResult) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not csv_path.exists()
-    with csv_path.open("a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-        if new_file:
-            writer.writeheader()
-        tokens = result.tokens
-        total = sum(tokens.values())
-        writer.writerow({
-            "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            "claude_version": claude_ver,
-            "task_id": result.task_id,
-            "variant": result.variant,
-            "model": result.model,
-            "effort": result.effort,
-            "total_tokens": total,
-            "input_tokens": tokens.get("input_tokens", 0),
-            "output_tokens": tokens.get("output_tokens", 0),
-            "cache_read": tokens.get("cache_read", 0),
-            "cache_creation": tokens.get("cache_creation", 0),
-            "cost_usd": f"{result.cost_usd:.6f}",
-            "success": "true" if result.success else "false",
-            "corrections": result.corrections,
-            "notes": result.notes,
-        })
+    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+    fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
+    try:
+        new_file = os.fstat(fd).st_size == 0
+        with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
+            fd = -1
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+            if new_file:
+                writer.writeheader()
+            tokens = result.tokens
+            total = sum(tokens.values())
+            writer.writerow({
+                "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "claude_version": claude_ver,
+                "task_id": result.task_id,
+                "variant": result.variant,
+                "model": result.model,
+                "effort": result.effort,
+                "total_tokens": total,
+                "input_tokens": tokens.get("input_tokens", 0),
+                "output_tokens": tokens.get("output_tokens", 0),
+                "cache_read": tokens.get("cache_read", 0),
+                "cache_creation": tokens.get("cache_creation", 0),
+                "cost_usd": f"{result.cost_usd:.6f}",
+                "success": "true" if result.success else "false",
+                "corrections": result.corrections,
+                "notes": result.notes,
+            })
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
     """이미 적재된 (task_id, variant) 조합. resume 시 skip 판정에 사용."""
-    if not csv_path.exists():
+    try:
+        fd = _open_regular_no_symlink(csv_path)
+    except FileNotFoundError:
         return set()
     keys: set[tuple[str, str]] = set()
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            tid = row.get("task_id") or ""
-            var = row.get("variant") or ""
-            if tid and var:
-                keys.add((tid, var))
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
+            fd = -1
+            reader = csv.DictReader(f)
+            for row in reader:
+                tid = row.get("task_id") or ""
+                var = row.get("variant") or ""
+                if tid and var:
+                    keys.add((tid, var))
+    finally:
+        if fd != -1:
+            os.close(fd)
     return keys
 
 
