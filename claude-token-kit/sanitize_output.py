@@ -242,13 +242,17 @@ class LineSanitizer:
         if stripped_for_key.startswith(('+', '-')):
             diff_prefix = stripped_for_key[0]
 
-        multiline_quote = detect_multiline_secret_assignment(line)
-        if multiline_quote is not None:
-            self.multiline_secret_quote = multiline_quote
+        if self.multiline_secret_quote is not None:
+            redacted = True
+            label = "[REDACTED PRIVATE KEY BLOCK]\n" if (
+                self.in_private_key_block or PRIVATE_KEY_BEGIN_RE.search(line) or PRIVATE_KEY_END_RE.search(line)
+            ) else "[REDACTED MULTILINE SECRET]\n"
             key_state = private_key_state_after_line(line)
             if key_state is not None:
                 self.in_private_key_block = key_state
-            return self._finish(diff_prefix + secret_or_private_key_redaction_label(line), True)
+            if has_unescaped_quote(line, self.multiline_secret_quote):
+                self.multiline_secret_quote = None
+            return self._finish(diff_prefix + label, redacted)
 
         if self.in_private_key_block:
             redacted = True
@@ -256,14 +260,13 @@ class LineSanitizer:
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
-        if self.multiline_secret_quote is not None:
-            redacted = True
+        multiline_quote = detect_multiline_secret_assignment(line)
+        if multiline_quote is not None:
+            self.multiline_secret_quote = multiline_quote
             key_state = private_key_state_after_line(line)
             if key_state is not None:
                 self.in_private_key_block = key_state
-            if has_unescaped_quote(line, self.multiline_secret_quote):
-                self.multiline_secret_quote = None
-            return self._finish(diff_prefix + secret_or_private_key_redaction_label(line), redacted)
+            return self._finish(diff_prefix + secret_or_private_key_redaction_label(line), True)
 
         if PRIVATE_KEY_BEGIN_RE.search(line):
             redacted = True

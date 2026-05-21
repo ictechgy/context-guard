@@ -549,6 +549,32 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("leaked-secret-line", proc.stdout)
                 self.assertNotIn("real-close", proc.stdout)
 
+    def test_sanitize_output_active_multiline_secret_ignores_nested_secret_shape(self):
+        raw = (
+            'API_TOKEN="outer-secret-start\n'
+            "PASSWORD='inner-secret-start\n"
+            "inner-secret-close'\n"
+            "outer-secret-still-active\n"
+            'outer-close"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED MULTILINE SECRET]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("outer-secret-start", proc.stdout)
+                self.assertNotIn("inner-secret-start", proc.stdout)
+                self.assertNotIn("inner-secret-close", proc.stdout)
+                self.assertNotIn("outer-secret-still-active", proc.stdout)
+                self.assertNotIn("outer-close", proc.stdout)
+
     def test_sanitize_output_multiline_secret_with_private_key_marker_stays_redacted(self):
         raw = (
             'API_TOKEN="-----BEGIN OPENSSH PRIVATE KEY-----\n'
@@ -573,6 +599,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("private-key-secret-line", proc.stdout)
                 self.assertNotIn("still-secret-after-key", proc.stdout)
                 self.assertNotIn("real-close", proc.stdout)
+
+    def test_sanitize_output_multiline_secret_can_close_on_private_key_end_line(self):
+        raw = (
+            'API_TOKEN="-----BEGIN OPENSSH PRIVATE KEY-----\n'
+            "private-key-secret-line\n"
+            '-----END OPENSSH PRIVATE KEY-----"\n'
+            "SAFE_VALUE=visible\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("[REDACTED PRIVATE KEY BLOCK]", proc.stdout)
+                self.assertIn("SAFE_VALUE=visible", proc.stdout)
+                self.assertNotIn("private-key-secret-line", proc.stdout)
 
     def test_sanitize_output_redacts_inline_object_secret_literals_without_corrupting_expressions(self):
         raw = (
