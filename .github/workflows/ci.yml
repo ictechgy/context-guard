@@ -27,3 +27,6 @@ jobs:
 
       - name: Run prepublish release gate
         run: python scripts/prepublish_check.py
+
+      - name: Run plugin release smoke
+        run: python scripts/release_smoke.py

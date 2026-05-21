@@ -138,6 +138,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(plugin_bin_cache.exists())
         self.assertFalse(stale_pyc.exists())
 
+    def test_release_smoke_runs_packaged_entrypoints(self):
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "release_smoke.py")],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("release smoke: OK", proc.stdout)
+
+    def test_release_smoke_reports_missing_packaged_entrypoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "release_smoke.py"),
+                    "--plugin-bin",
+                    str(Path(tmp) / "missing-bin"),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("missing plugin entrypoint", proc.stdout + proc.stderr)
+
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_copy = Path(tmp) / "skills"
