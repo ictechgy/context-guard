@@ -3930,6 +3930,49 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
             self.assertEqual(proc.stdout.strip(), "[hud unavailable]")
             self.assertFalse(marker.exists())
 
+    def test_path_statusline_is_not_executed_as_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            wrapper = tmp / "statusline_merged.sh"
+            wrapper.write_bytes((KIT_DIR / "statusline_merged.sh").read_bytes())
+            os.chmod(wrapper, stat.S_IRWXU)
+            path_bin = tmp / "path-bin"
+            path_bin.mkdir()
+            evil = path_bin / "claude-token-statusline"
+            marker = tmp / "path-executed"
+            evil.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\necho evil\n", encoding="utf-8")
+            os.chmod(evil, stat.S_IRWXU)
+            env = os.environ.copy()
+            env["OMC_HUD_SCRIPT"] = str(tmp / "missing-omc.mjs")
+            env["PATH"] = f"{path_bin}:/usr/bin:/bin:/opt/homebrew/bin"
+            env.pop("CLAUDE_TOKEN_STATUSLINE_BIN", None)
+            proc = subprocess.run(
+                ["bash", str(wrapper)],
+                input=self.SAMPLE_PAYLOAD,
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertEqual(proc.stdout.strip(), "[hud unavailable]")
+            self.assertFalse(marker.exists())
+
+    def test_statusline_output_is_single_bounded_line(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            omc = self._make_fake_omc_hud(tmp, "[OMC]\n\x1b[31mred\x1b[0m")
+            tok = self._make_fake_token_statusline(
+                tmp,
+                "[Opus]\nbranch | cost $0.123 | cache 42%",
+            )
+            out = self._run_wrapper(omc_script=omc, tok_bin=tok)
+        self.assertNotIn("\n", out)
+        self.assertNotIn("\x1b", out)
+        self.assertLessEqual(len(out), 1000 + len(" | cost $0.123 | cache 42%"))
+        self.assertIn("[OMC] [31mred[0m", out)
+        self.assertIn(" | cost $0.123", out)
+        self.assertIn(" | cache 42%", out)
+
 
 if __name__ == "__main__":
     unittest.main()
