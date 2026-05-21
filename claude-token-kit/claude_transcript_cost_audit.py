@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -166,8 +167,8 @@ def add_token_groups(local_tokens: Counter[str], d: dict[str, Any]) -> None:
             val = d.get(raw_key)
             if isinstance(val, bool):
                 continue
-            if isinstance(val, (int, float)):
-                local_tokens[bucket] += int(val)
+            if isinstance(val, (int, float)) and math.isfinite(val):
+                local_tokens[bucket] += max(0, int(val))
                 break
 
 
@@ -254,8 +255,8 @@ def add_usage(
                 value = d.get("count")
             attrs = d.get("attributes") or {}
             token_type = attrs.get("type", "unknown") if isinstance(attrs, dict) else "unknown"
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                local_tokens[str(token_type)] += int(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                local_tokens[str(token_type)] += max(0, int(value))
 
         if local_tokens:
             summary.tokens.update(local_tokens)
@@ -269,7 +270,7 @@ def add_usage(
             val = d.get(key)
             if isinstance(val, bool):
                 continue
-            if isinstance(val, (int, float)):
+            if isinstance(val, (int, float)) and math.isfinite(val) and val >= 0:
                 summary.cost_usd += float(val)
                 record.cost_usd += float(val)
                 break
