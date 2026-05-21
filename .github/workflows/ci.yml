@@ -30,3 +30,21 @@ jobs:
 
       - name: Run plugin release smoke
         run: python scripts/release_smoke.py
+
+  test-and-prepublish-macos:
+    name: test-and-prepublish (macos-latest, 3.12)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run prepublish release gate
+        run: python scripts/prepublish_check.py
+
+      - name: Run plugin release smoke
+        run: python scripts/release_smoke.py
