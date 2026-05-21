@@ -28,7 +28,7 @@ release smoke: OK
 4. Run the local release gates.
 5. Commit using the Lore commit protocol.
 6. Push a branch and open a PR.
-7. Wait for GitHub Actions `test-and-prepublish` to pass on all supported Python/platform lanes, including macOS.
+7. Wait for GitHub Actions to pass on all supported Python/platform lanes. The Ubuntu Python matrix keeps the historical `test-and-prepublish (3.11)` / `test-and-prepublish (3.12)` check names; the macOS release lane is `test-and-prepublish (macos-latest, 3.12)`.
 8. Run quad review against the PR/diff.
 9. If any blocker is reported, commit a fix, push it, and re-run CI plus quad review.
 10. Merge only after CI is green and quad review has no blocker findings.
