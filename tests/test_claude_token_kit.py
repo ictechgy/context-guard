@@ -3748,6 +3748,66 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     diet.os.O_NOFOLLOW = old_nofollow
                 diet.os.open = real_open
 
+    def test_token_diet_settings_load_does_not_follow_symlink_after_discovery(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_settings_symlink_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    outside = root / "outside.json"
+                    outside.write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+                    settings_dir = root / ".claude"
+                    settings_dir.mkdir()
+                    link = settings_dir / "settings.json"
+                    try:
+                        link.symlink_to(outside)
+                    except (NotImplementedError, OSError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+
+                    data, error = diet.load_json(link, root)
+                    self.assertIsNone(data)
+                    self.assertIn("not a regular file", error)
+
+    def test_token_diet_settings_load_detects_symlink_swap_without_onofollow(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_settings_swap_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_dir = root / ".claude"
+                    settings_dir.mkdir()
+                    settings = settings_dir / "settings.json"
+                    outside = root / "outside.json"
+                    settings.write_text("{}", encoding="utf-8")
+                    outside.write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+                    old_nofollow = getattr(diet.os, "O_NOFOLLOW", None)
+                    real_open = diet.os.open
+
+                    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+                        target = Path(path)
+                        target.unlink()
+                        try:
+                            target.symlink_to(outside)
+                        except (NotImplementedError, OSError) as exc:
+                            self.skipTest(f"symlink unavailable: {exc}")
+                        if dir_fd is None:
+                            return real_open(path, flags, mode)
+                        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+                    try:
+                        diet.os.O_NOFOLLOW = 0
+                        diet.os.open = swapping_open
+                        data, error = diet.load_json(settings, root)
+                    finally:
+                        if old_nofollow is None:
+                            delattr(diet.os, "O_NOFOLLOW")
+                        else:
+                            diet.os.O_NOFOLLOW = old_nofollow
+                        diet.os.open = real_open
+
+                    self.assertIsNone(data)
+                    self.assertIn("unreadable", error)
+
     def test_token_diet_scan_reports_invalid_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

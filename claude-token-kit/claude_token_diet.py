@@ -160,12 +160,13 @@ def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None
     if path.is_symlink() and not is_relative_to(path, root):
         return None, "settings symlink resolves outside project root"
     try:
-        st = path.stat()
+        st = path.lstat()
         if not stat.S_ISREG(st.st_mode):
             return None, "settings path is not a regular file"
         if st.st_size > MAX_SETTINGS_READ_BYTES:
             return None, f"settings file is too large ({st.st_size} bytes > {MAX_SETTINGS_READ_BYTES})"
-        data = json.loads(path.read_text(encoding="utf-8"))
+        with open_regular_no_follow(path) as handle:
+            data = json.loads(handle.read(MAX_SETTINGS_READ_BYTES + 1).decode("utf-8"))
     except FileNotFoundError:
         return None, "missing"
     except json.JSONDecodeError as exc:
