@@ -1,3 +1,4 @@
+import argparse
 import csv
 import contextlib
 import io
@@ -4154,6 +4155,51 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = old_custom
             with self.assertRaises(SystemExit):
                 aux.safe_delegation_dir({"delegation_dir": "."})
+
+    def test_aux_delegate_config_trust_git_timeout_fails_closed(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".claude-token-optimizer" / "config.json"
+            write_private_config(config, {"aux_ai_enabled": True})
+            calls: list[list[str]] = []
+            original_run = aux.subprocess.run
+
+            def timed_out_run(args, **kwargs):
+                calls.append(list(args))
+                self.assertEqual(kwargs.get("timeout"), aux.GIT_TRUST_CHECK_TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+            aux.subprocess.run = timed_out_run
+            try:
+                self.assertIn("git tracking check timed out", aux.config_trust_error(config))
+            finally:
+                aux.subprocess.run = original_run
+            self.assertTrue(calls)
+
+    def test_aux_delegate_enable_refuses_git_timeout(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".claude-token-optimizer" / "config.json"
+            write_private_config(config, {"aux_ai_enabled": False})
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            original_run = aux.subprocess.run
+
+            def timed_out_run(args, **kwargs):
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+            aux.subprocess.run = timed_out_run
+            try:
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    rc = aux.cmd_enable(argparse.Namespace())
+            finally:
+                aux.subprocess.run = original_run
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+            self.assertEqual(rc, 2)
+            self.assertIn("git tracking check timed out", stderr.getvalue())
 
     def test_aux_delegate_blocks_sensitive_context_by_default(self):
         aux = load_aux_module()

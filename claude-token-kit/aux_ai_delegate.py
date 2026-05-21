@@ -35,6 +35,7 @@ AUTO_PROMPT_MAX_CHARS = 2_000
 PROVIDER_OUTPUT_MAX_CHARS = 1_000_000
 CONTEXT_MAX_CHARS_LIMIT = 1_000_000
 TIMEOUT_SECONDS_MAX = 600
+GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 SENSITIVE_CONTEXT_NAMES = {
@@ -202,15 +203,30 @@ def safe_resolve_under_root(path_value: str | os.PathLike[str], root: Path) -> P
     return resolved
 
 
-def git_root_for(path: Path) -> Path | None:
+class GitTrustCheckTimeout(RuntimeError):
+    pass
+
+
+def run_git_trust_check(args: list[str]) -> subprocess.CompletedProcess[str] | None:
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"],
+        return subprocess.run(
+            args,
             text=True,
             capture_output=True,
             check=False,
+            timeout=GIT_TRUST_CHECK_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise GitTrustCheckTimeout("git trust check timed out") from exc
     except OSError:
+        return None
+
+
+def git_root_for(path: Path) -> Path | None:
+    proc = run_git_trust_check(
+        ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"]
+    )
+    if proc is None:
         return None
     if proc.returncode != 0:
         return None
@@ -226,12 +242,11 @@ def is_git_tracked(path: Path) -> bool:
         rel = path.resolve().relative_to(root)
     except ValueError:
         return False
-    proc = subprocess.run(
+    proc = run_git_trust_check(
         ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(rel)],
-        text=True,
-        capture_output=True,
-        check=False,
     )
+    if proc is None:
+        return False
     return proc.returncode == 0
 
 
@@ -291,8 +306,11 @@ def config_trust_error(path: Path | None = None) -> str | None:
         return f"config path component must not be a symlink: {symlink_component}"
     if not path.exists():
         return "config file does not exist"
-    if is_git_tracked(path):
-        return f"config file is tracked by git: {path}"
+    try:
+        if is_git_tracked(path):
+            return f"config file is tracked by git: {path}"
+    except GitTrustCheckTimeout:
+        return f"git tracking check timed out for config file: {path}"
     if not has_private_file_mode(path):
         return f"config file must be owner-only (0600): {path}"
     return None
@@ -941,7 +959,12 @@ def cmd_status(_: argparse.Namespace) -> int:
 
 def cmd_enable(args: argparse.Namespace) -> int:
     path = config_path()
-    if path.exists() and is_git_tracked(path):
+    try:
+        tracked = path.exists() and is_git_tracked(path)
+    except GitTrustCheckTimeout:
+        print(f"refusing to enable delegation because git tracking check timed out: {path}", file=sys.stderr)
+        return 2
+    if tracked:
         print(f"refusing to enable delegation in git-tracked config: {path}", file=sys.stderr)
         return 2
     config = load_config()
@@ -1018,7 +1041,12 @@ def cmd_auto_disable(_: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     path = config_path()
-    if path.exists() and is_git_tracked(path):
+    try:
+        tracked = path.exists() and is_git_tracked(path)
+    except GitTrustCheckTimeout:
+        print(f"refusing to write delegation config because git tracking check timed out: {path}", file=sys.stderr)
+        return 2
+    if tracked:
         print(f"refusing to write delegation config tracked by git: {path}", file=sys.stderr)
         return 2
     config = load_config()
