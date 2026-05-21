@@ -11,7 +11,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-Expected output:
+Success sentinels include the following lines; `prepublish_check.py` may also print unittest output first:
 
 ```text
 prepublish check: OK
@@ -40,7 +40,7 @@ Claude review track may be unavailable on a machine that has not logged in to th
 Before publishing a versioned artifact, verify:
 
 - `plugins/claude-token-optimizer/.claude-plugin/plugin.json` has the intended version.
-- `.claude-plugin/marketplace.json` lists the same plugin version and `Apache-2.0` license.
+- Repository-root `.claude-plugin/marketplace.json` lists the same plugin version and `Apache-2.0` license.
 - `scripts/prepublish_check.py` passes without path overrides.
 - No generated caches, logs, or symlinks are inside `plugins/claude-token-optimizer/`.
 
