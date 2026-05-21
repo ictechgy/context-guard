@@ -131,8 +131,8 @@ Manual delegation is **off by default** and stores project-local state under `.c
 Before publishing or merging release-sensitive changes, run both gates:
 
 ```bash
-python scripts/prepublish_check.py
-python scripts/release_smoke.py
+python3 scripts/prepublish_check.py
+python3 scripts/release_smoke.py
 ```
 
 `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, and the regression suite. `release_smoke.py` then executes representative packaged entrypoints from `plugins/claude-token-optimizer/bin` in a temporary project so broken CLI wiring is caught before publish.

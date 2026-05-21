@@ -21,6 +21,16 @@ REQUIRED_COMMANDS = (
     "claude-token-audit",
     "claude-token-delegate",
 )
+PRESERVED_ENV_KEYS = (
+    "PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+)
 
 
 def fail(message: str) -> None:
@@ -47,15 +57,53 @@ def command_path(plugin_bin: Path, name: str) -> Path:
     return path
 
 
+def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
+    env = {key: value for key in PRESERVED_ENV_KEYS if (value := os.environ.get(key))}
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+            "TMPDIR": str(tmp),
+            "TEMP": str(tmp),
+            "TMP": str(tmp),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    return env
+
+
+def parse_key_value_lines(stdout: str) -> dict[str, str]:
+    items: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            items[key.strip()] = value.strip()
+    return items
+
+
+def assert_path_under(raw_path: str | None, parent: Path, label: str) -> None:
+    if not raw_path:
+        fail(f"{label} missing from command output")
+    try:
+        path = Path(raw_path).expanduser().resolve()
+        root = parent.resolve()
+    except OSError as exc:
+        fail(f"{label} could not be resolved: {exc}")
+    if path != root and root not in path.parents:
+        fail(f"{label} escaped smoke project: {path}")
+
+
 def run_command(
     argv: list[str],
     *,
     cwd: Path,
+    env: dict[str, str],
     timeout: float,
     expect: Callable[[subprocess.CompletedProcess[str]], None],
 ) -> None:
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         proc = subprocess.run(
             argv,
@@ -63,10 +111,13 @@ def run_command(
             env=env,
             text=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         fail(f"{Path(argv[0]).name} timed out after {timeout:g}s")
+    except OSError as exc:
+        fail(f"{Path(argv[0]).name} could not be launched: {exc}")
     if proc.returncode != 0:
         fail(
             f"{Path(argv[0]).name} exited {proc.returncode}: "
@@ -86,14 +137,20 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
 
     with tempfile.TemporaryDirectory(prefix="claude-token-release-smoke-") as td:
         project = Path(td) / "project"
+        smoke_home = Path(td) / "home"
+        smoke_tmp = Path(td) / "tmp"
         project.mkdir()
+        smoke_home.mkdir()
+        smoke_tmp.mkdir()
         (project / ".claude").mkdir()
         (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
         (project / "CLAUDE.md").write_text("Keep project context short.\n", encoding="utf-8")
+        env = smoke_environment(smoke_home, smoke_tmp)
 
         run_command(
             [str(commands["claude-token-setup"]), "--root", str(project), "--plan", "--json"],
             cwd=project,
+            env=env,
             timeout=timeout,
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "claude-token-setup"), "applied", False, "claude-token-setup")
@@ -102,6 +159,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         run_command(
             [str(commands["claude-token-diet"]), "scan", str(project), "--json"],
             cwd=project,
+            env=env,
             timeout=timeout,
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "claude-token-diet"), "tool", "claude-token-diet", "claude-token-diet")
@@ -110,19 +168,27 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         run_command(
             [str(commands["claude-token-audit"]), str(project), "--json"],
             cwd=project,
+            env=env,
             timeout=timeout,
-            expect=lambda proc: load_json(proc.stdout, "claude-token-audit"),
+            expect=lambda proc: (
+                check_json_field(load_json(proc.stdout, "claude-token-audit"), "records", 1, "claude-token-audit")
+            ),
         )
         run_command(
             [str(commands["claude-token-delegate"]), "status"],
             cwd=project,
+            env=env,
             timeout=timeout,
-            expect=lambda proc: (
-                None
-                if "aux_ai_enabled=" in proc.stdout and "config_path=" in proc.stdout
-                else fail("claude-token-delegate status missing expected fields")
-            ),
+            expect=lambda proc: check_delegate_status(proc.stdout, project),
         )
+
+
+def check_delegate_status(stdout: str, project: Path) -> None:
+    fields = parse_key_value_lines(stdout)
+    if "aux_ai_enabled" not in fields:
+        fail("claude-token-delegate status missing aux_ai_enabled")
+    assert_path_under(fields.get("project_root"), project, "claude-token-delegate project_root")
+    assert_path_under(fields.get("config_path"), project, "claude-token-delegate config_path")
 
 
 def main() -> int:

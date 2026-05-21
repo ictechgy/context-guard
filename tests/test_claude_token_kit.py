@@ -162,6 +162,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("missing plugin entrypoint", proc.stdout + proc.stderr)
 
+    def test_release_smoke_ignores_ambient_optimizer_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            poisoned = Path(tmp) / "bad-config.json"
+            poisoned.write_text("{", encoding="utf-8")
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(poisoned)
+            env["ANTHROPIC_API_KEY"] = "should-not-be-seen-by-smoke-commands"
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "release_smoke.py")],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("release smoke: OK", proc.stdout)
+
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_copy = Path(tmp) / "skills"

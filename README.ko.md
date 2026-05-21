@@ -131,8 +131,8 @@ Gemini CLI나 Codex CLI가 있다면, 광범위한 파일 분류, 긴 로그 요
 릴리스에 민감한 변경을 배포하거나 머지하기 전에는 두 게이트를 모두 실행하세요:
 
 ```bash
-python scripts/prepublish_check.py
-python scripts/release_smoke.py
+python3 scripts/prepublish_check.py
+python3 scripts/release_smoke.py
 ```
 
 `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/claude-token-optimizer/bin`의 대표 패키징 엔트리포인트를 실제 실행해, 배포 전 깨진 CLI 연결을 잡습니다.
