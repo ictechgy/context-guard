@@ -21,6 +21,27 @@ REQUIRED_COMMANDS = (
     "claude-token-audit",
     "claude-token-delegate",
 )
+ENTRYPOINT_SMOKE_COMMANDS = {
+    "claude-read-symbol": ["--help"],
+    "claude-sanitize-output": ["--help"],
+    "claude-token-audit": ["--help"],
+    "claude-token-bench": ["--help"],
+    "claude-token-delegate": ["--help"],
+    "claude-token-diet": ["--help"],
+    "claude-token-failed-nudge": [],
+    "claude-token-guard-read": [],
+    "claude-token-rewrite-bash": [],
+    "claude-token-setup": ["--help"],
+    "claude-token-statusline": [],
+    "claude-token-statusline-merged": [],
+    "claude-trim-output": ["--help"],
+}
+HOOK_STDIN_COMMANDS = {
+    "claude-token-failed-nudge",
+    "claude-token-guard-read",
+    "claude-token-rewrite-bash",
+    "claude-token-statusline-merged",
+}
 PRESERVED_ENV_KEYS = (
     "PATH",
     "SYSTEMROOT",
@@ -55,6 +76,14 @@ def command_path(plugin_bin: Path, name: str) -> Path:
     if mode & stat.S_IXUSR == 0:
         fail(f"plugin entrypoint is not owner-executable: {path} mode={oct(mode)}")
     return path
+
+
+def entrypoint_smoke_plan(plugin_bin: Path) -> dict[str, list[str]]:
+    files = {path.name for path in plugin_bin.iterdir() if path.is_file()}
+    missing = sorted(files - set(ENTRYPOINT_SMOKE_COMMANDS))
+    if missing:
+        fail(f"release smoke has no launch plan for plugin entrypoints: {', '.join(missing)}")
+    return {name: ENTRYPOINT_SMOKE_COMMANDS[name] for name in sorted(files)}
 
 
 def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
@@ -106,7 +135,9 @@ def run_command(
     env: dict[str, str],
     timeout: float,
     expect: Callable[[subprocess.CompletedProcess[str]], None],
+    input_text: str | None = None,
 ) -> None:
+    stdin = subprocess.DEVNULL if input_text is None else None
     try:
         proc = subprocess.run(
             argv,
@@ -114,7 +145,8 @@ def run_command(
             env=env,
             text=True,
             capture_output=True,
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
+            input=input_text,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -137,6 +169,7 @@ def check_json_field(data: dict[str, Any], key: str, expected: Any, command: str
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
+    launch_plan = entrypoint_smoke_plan(plugin_bin)
 
     with tempfile.TemporaryDirectory(prefix="claude-token-release-smoke-") as td:
         project = Path(td) / "project"
@@ -185,6 +218,16 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             expect=lambda proc: check_delegate_status(proc.stdout, project),
         )
 
+        for name, args in launch_plan.items():
+            run_command(
+                [str(command_path(plugin_bin, name)), *args],
+                cwd=project,
+                env=env,
+                timeout=timeout,
+                input_text="{}" if name in HOOK_STDIN_COMMANDS else None,
+                expect=lambda proc, command=name: check_launch_smoke(proc, command),
+            )
+
 
 def check_delegate_status(stdout: str, project: Path) -> None:
     fields = parse_key_value_lines(stdout)
@@ -192,6 +235,11 @@ def check_delegate_status(stdout: str, project: Path) -> None:
         fail("claude-token-delegate status missing aux_ai_enabled")
     assert_path_under(fields.get("project_root"), project, "claude-token-delegate project_root")
     assert_path_under(fields.get("config_path"), project, "claude-token-delegate config_path")
+
+
+def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str) -> None:
+    if not proc.stdout.strip():
+        fail(f"{command} launch smoke emitted no stdout")
 
 
 def main() -> int:

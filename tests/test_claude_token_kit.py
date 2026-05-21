@@ -197,6 +197,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     project,
                 )
 
+    def test_release_smoke_launch_plan_covers_every_packaged_entrypoint(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_plan")
+        expected = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+        self.assertEqual(set(smoke.entrypoint_smoke_plan(PLUGIN_BIN)), expected)
+
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_copy = Path(tmp) / "skills"
