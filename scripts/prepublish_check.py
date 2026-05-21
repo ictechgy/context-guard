@@ -16,7 +16,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,12 +90,6 @@ def load_json(path: Path) -> dict:
     return data
 
 
-def iter_package_files() -> Iterable[Path]:
-    for path in PLUGIN_DIR.rglob("*"):
-        if path.is_file():
-            yield path
-
-
 def check_manifest() -> None:
     plugin = load_json(PLUGIN_MANIFEST)
     marketplace = load_json(MARKETPLACE_MANIFEST)
@@ -139,8 +132,12 @@ def check_bin_copies() -> None:
 
 
 def check_package_clean() -> None:
-    for path in iter_package_files():
+    for path in PLUGIN_DIR.rglob("*"):
         rel = path.relative_to(PLUGIN_DIR)
+        if path.is_symlink():
+            fail(f"forbidden package symlink: {rel}")
+        if not path.is_file():
+            continue
         if path.name in FORBIDDEN_PACKAGE_NAMES:
             fail(f"forbidden package artifact: {rel}")
         if path.suffix in FORBIDDEN_PACKAGE_SUFFIXES:
