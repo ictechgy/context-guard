@@ -729,6 +729,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         raw = (
             'echo ok;TOKEN=first-secret;PASSWORD="second-secret";SAFE_VALUE=visible\n'
             'prefix;client_secret=third-secret;api_key=os.getenv("API_KEY")\n'
+            'mixed;TOKEN=abc"def"ghi;SAFE_VALUE=visible\n'
         )
         for script in SANITIZE_SCRIPTS:
             with self.subTest(script=script):
@@ -741,9 +742,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 self.assertIn('TOKEN=[REDACTED];PASSWORD="[REDACTED]";SAFE_VALUE=visible', proc.stdout)
                 self.assertIn('client_secret=[REDACTED];api_key=os.getenv("API_KEY")', proc.stdout)
+                self.assertIn('TOKEN=[REDACTED];SAFE_VALUE=visible', proc.stdout)
                 self.assertNotIn("first-secret", proc.stdout)
                 self.assertNotIn("second-secret", proc.stdout)
                 self.assertNotIn("third-secret", proc.stdout)
+                self.assertNotIn('abc"def"ghi', proc.stdout)
+
+    def test_sanitize_output_redacts_semicolon_url_params_without_dropping_separators(self):
+        raw = (
+            'callback https://example.invalid/cb?access_token=opaque123;'
+            'refresh_token=opaque456&password=hunter2#api_key=fragsecret&state=visible\n'
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn(
+                    'access_token=[REDACTED];refresh_token=[REDACTED]&password=[REDACTED]#api_key=[REDACTED]&state=visible',
+                    proc.stdout,
+                )
+                self.assertNotIn("opaque123", proc.stdout)
+                self.assertNotIn("opaque456", proc.stdout)
+                self.assertNotIn("hunter2", proc.stdout)
+                self.assertNotIn("fragsecret", proc.stdout)
 
     def test_sanitize_output_path_anonymization_does_not_corrupt_code_syntax(self):
         raw = (

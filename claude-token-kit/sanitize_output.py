@@ -53,7 +53,7 @@ INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>[^\"'\s,;}}\]]+)"
+    rf"(?P<value>[^\s,;}}\]&#]+)"
 )
 SAFE_UNQUOTED_VALUES = {
     "[redacted]",
