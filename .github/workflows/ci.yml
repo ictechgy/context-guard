@@ -11,11 +11,18 @@ permissions:
 
 jobs:
   test-and-prepublish:
-    runs-on: ubuntu-latest
+    name: test-and-prepublish (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
