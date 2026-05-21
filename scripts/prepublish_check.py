@@ -246,11 +246,17 @@ def check_bin_copies() -> None:
             fail(f"plugin bin is not owner-executable: {plugin_bin} mode={oct(mode)}")
 
 
-def check_package_clean() -> None:
+def check_package_symlinks() -> None:
     for path in PLUGIN_DIR.rglob("*"):
         rel = path.relative_to(PLUGIN_DIR)
         if path.is_symlink():
             fail(f"forbidden package symlink: {rel}")
+
+
+def check_package_clean() -> None:
+    check_package_symlinks()
+    for path in PLUGIN_DIR.rglob("*"):
+        rel = path.relative_to(PLUGIN_DIR)
         if not path.is_file():
             continue
         if path.name in FORBIDDEN_PACKAGE_NAMES:
@@ -297,6 +303,7 @@ def main() -> int:
 
     apply_path_overrides()
     check_trusted_release_paths()
+    check_package_symlinks()
     check_manifest()
     check_bin_copies()
     check_skill_allowed_tool_commands()

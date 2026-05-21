@@ -338,6 +338,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("plugin manifest must not be or traverse a symlink", proc.stdout + proc.stderr)
 
+    def test_prepublish_rejects_package_symlinks_before_skill_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plugin = tmp_path / "plugin"
+            bin_dir = plugin / "bin"
+            skills_dir = plugin / "skills"
+            outside_skills = tmp_path / "outside-skills"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+            skills_dir.mkdir()
+            outside_skills.mkdir()
+            (plugin / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps({
+                    "name": "claude-token-optimizer",
+                    "description": "test plugin",
+                    "version": "0.1.0",
+                    "license": "Apache-2.0",
+                }),
+                encoding="utf-8",
+            )
+            try:
+                (skills_dir / "linked").symlink_to(outside_skills, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"] = str(plugin)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("forbidden package symlink: skills/linked", proc.stdout + proc.stderr)
+            self.assertNotIn("missing plugin bin", proc.stdout + proc.stderr)
+            self.assertNotIn("skill metadata", proc.stdout + proc.stderr)
+
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
             sys.executable,
