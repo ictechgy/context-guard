@@ -5498,6 +5498,74 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 int(next(line.split("=", 1)[1] for line in blocked.stdout.splitlines() if line.startswith("prompt_chars="))),
             )
 
+    def test_aux_delegate_context_warnings_do_not_leak_raw_paths_by_default(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "project"
+                    root.mkdir()
+                    state = root / ".claude-token-optimizer"
+                    state.mkdir()
+                    secret_outside = base / ("outside-token=ghp_" + ("A" * 36) + ".log")
+                    secret_outside.write_text("plain outside context", encoding="utf-8")
+                    config_path = state / "config.json"
+                    write_private_config(config_path, {"aux_ai_enabled": True, "default_provider": "gemini"})
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "ask",
+                            "--prompt",
+                            "hello",
+                            "--context",
+                            str(secret_outside),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        cwd=root,
+                        check=True,
+                    )
+                    self.assertIn("warning=blocked outside-project context sensitive-path#path:", proc.stdout)
+                    self.assertNotIn(tmp, proc.stdout)
+                    self.assertNotIn(str(secret_outside), proc.stdout)
+                    self.assertNotIn("ghp_", proc.stdout)
+                    self.assertNotIn("token=ghp_", proc.stdout)
+
+    def test_aux_delegate_read_error_warnings_do_not_leak_absolute_paths(self):
+        if os.name == "nt":
+            self.skipTest("chmod-based unreadable file fixture is POSIX-only")
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            private_log = log_dir / "private.log"
+            private_log.write_text("plain log", encoding="utf-8")
+            private_log.chmod(0)
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(root / ".claude-token-optimizer" / "config.json")
+            try:
+                if os.access(private_log, os.R_OK):
+                    self.skipTest("current user can still read chmod(0) fixture")
+                contexts, warnings = aux.read_contexts(["logs/private.log"], 1000)
+                self.assertEqual(contexts, [])
+                self.assertEqual(len(warnings), 1)
+                self.assertIn("could not read context logs/private.log: PermissionError", warnings[0])
+                self.assertNotIn(tmp, warnings[0])
+                self.assertNotIn(str(private_log), warnings[0])
+            finally:
+                private_log.chmod(0o600)
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+
     def test_aux_delegate_refuses_repo_tracked_enabled_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

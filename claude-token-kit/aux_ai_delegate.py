@@ -37,6 +37,7 @@ PROVIDER_OUTPUT_MAX_CHARS = 1_000_000
 CONTEXT_MAX_CHARS_LIMIT = 1_000_000
 TIMEOUT_SECONDS_MAX = 600
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
+WARNING_LABEL_MAX_CHARS = 120
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 UNSUPPORTED_CONFIG_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 
@@ -159,6 +160,29 @@ def context_budget(value: Any, default: int = 60000) -> int:
 
 def timeout_budget(value: Any, default: int = 180) -> int:
     return bounded_int(value, default, 1, TIMEOUT_SECONDS_MAX)
+
+
+def stable_hash(value: str, length: int = 12) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:length]
+
+
+def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
+    compact = " ".join(value.strip().split())
+    compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
+    compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
+    if len(compact) > limit:
+        compact = compact[: limit - 15].rstrip() + " ...[truncated]"
+    return compact
+
+
+def os_error_summary(exc: OSError) -> str:
+    parts = [exc.__class__.__name__]
+    if exc.errno is not None:
+        parts.append(f"errno={exc.errno}")
+    message = compact_warning_text(str(exc.strerror or ""), 160)
+    if message:
+        parts.append(message)
+    return ": ".join(parts)
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -871,22 +895,23 @@ def read_delegated_file(
     if not path.is_absolute():
         path = root / path
     resolved = path.resolve()
+    label = context_warning_label(resolved, root)
     outside_project = not path_is_under(resolved, root)
     sensitive_allowed = is_allowed_path(resolved, allow_sensitive_paths)
     outside_allowed = is_allowed_path(resolved, allow_outside_paths)
     if outside_project and not outside_allowed:
-        return None, None, f"blocked outside-project {role} {raw_path}; configure trusted context_policy.allow_outside_project_paths for manual override"
+        return None, None, f"blocked outside-project {role} {label}; configure trusted context_policy.allow_outside_project_paths for manual override"
     if is_sensitive_context_path(resolved) and not sensitive_allowed:
-        return None, None, f"blocked sensitive {role} {raw_path}; configure trusted context_policy.allow_sensitive_paths for manual override"
+        return None, None, f"blocked sensitive {role} {label}; configure trusted context_policy.allow_sensitive_paths for manual override"
     try:
         if max_read_chars is None:
             content = read_text_no_follow(resolved)
         else:
             content, _truncated = read_text_no_follow_bounded(resolved, max_read_chars)
     except OSError as exc:
-        return None, None, f"could not read {role} {raw_path}: {exc}"
+        return None, None, f"could not read {role} {label}: {os_error_summary(exc)}"
     if contains_sensitive_content(content) and not sensitive_allowed:
-        return None, None, f"blocked sensitive-content {role} {raw_path}; configure trusted context_policy.allow_sensitive_paths for manual override"
+        return None, None, f"blocked sensitive-content {role} {label}; configure trusted context_policy.allow_sensitive_paths for manual override"
     return resolved, content, None
 
 
@@ -896,8 +921,20 @@ def context_label_for_path(path: Path, root: Path | None = None) -> str:
     try:
         return resolved.relative_to(base).as_posix()
     except ValueError:
-        digest = hashlib.sha256(str(resolved).encode("utf-8", errors="replace")).hexdigest()[:12]
+        digest = stable_hash(str(resolved))
         return f"{resolved.name or 'outside'}#path:{digest}"
+
+
+def context_warning_label(path: Path, root: Path | None = None) -> str:
+    resolved = path.resolve()
+    digest = stable_hash(str(resolved))
+    if is_sensitive_context_path(resolved):
+        return f"sensitive-path#path:{digest}"
+    label = context_label_for_path(resolved, root)
+    redacted = compact_warning_text(label)
+    if redacted != label:
+        return f"redacted-path#path:{digest}"
+    return redacted
 
 
 def is_blocking_context_warning(warning: str) -> bool:
@@ -929,14 +966,15 @@ def read_contexts(
             warnings.append(warning)
             continue
         assert resolved is not None and original is not None
+        label = context_warning_label(resolved)
         if remaining <= 0:
-            warnings.append(f"skipped {raw}: context budget exhausted")
+            warnings.append(f"skipped {label}: context budget exhausted")
             continue
         content = original
         if len(original) > remaining:
             marker_budget = len(marker) if remaining > len(marker) else 0
             take = remaining - marker_budget
-            warnings.append(f"truncated {raw}: {len(original)} -> {take} chars plus marker")
+            warnings.append(f"truncated {label}: {len(original)} -> {take} chars plus marker")
             content = original[:take] + (marker if marker_budget else "")
         contexts.append((context_label_for_path(resolved), content))
         remaining -= len(content)
