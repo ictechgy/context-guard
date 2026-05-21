@@ -46,6 +46,7 @@ SECRET_VALUE_RE = re.compile(
     r"(?:--password|-p)\s+\S+|(?:-u|--user)\s+\S+:\S+|"
     r"(api[_-]?key|token|secret|password)=\S+)"
 )
+REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 COMMAND_KEYS = ("command", "cmd")
 TOOL_NAME_KEYS = ("tool_name", "toolName", "tool")
 
@@ -205,11 +206,38 @@ def stable_hash(value: str, length: int = 12) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:length]
 
 
+def safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path.absolute()
+
+
+def path_component_contains_secret(component: str) -> bool:
+    return bool(component and component not in {".", ".."} and SECRET_VALUE_RE.search(component))
+
+
+def sanitize_path_component(component: str) -> str:
+    if not component or component in {".", ".."}:
+        return component
+    if not path_component_contains_secret(component):
+        return component
+    return REDACTED_PATH_COMPONENT
+
+
+def sanitize_path_text(path: str) -> str:
+    return "/".join(sanitize_path_component(component) for component in path.replace(os.sep, "/").split("/"))
+
+
+def display_path_hash(path: Path) -> str:
+    return stable_hash(sanitize_path_text(str(safe_resolve(path))))
+
+
 def path_label(path: Path, show_paths: bool = False) -> str:
     if show_paths:
         return str(path)
-    name = sanitize_label(path.name or "transcript", 80)
-    return f"{name}#path:{stable_hash(str(path.resolve()))}"
+    name = sanitize_label(sanitize_path_component(path.name or "transcript"), 80)
+    return f"{name}#path:{display_path_hash(path)}"
 
 
 def command_label(command: str, show_commands: bool = False) -> str:
