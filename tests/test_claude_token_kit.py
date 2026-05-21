@@ -2369,6 +2369,60 @@ class ClaudeTokenKitTests(unittest.TestCase):
             rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
             self.assertIn("context-not-regular", rule_ids)
 
+    def test_token_diet_context_reads_do_not_follow_symlinks_after_discovery(self):
+        diet = load_module_from_path(KIT_DIR / "claude_token_diet.py", "claude_token_diet_symlink_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside.md"
+            outside.write_text("token=ghp_" + ("A" * 36), encoding="utf-8")
+            link = root / "CLAUDE.md"
+            try:
+                link.symlink_to(outside)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            original_iter = diet.iter_context_files
+            try:
+                diet.iter_context_files = lambda _root: [link]
+                context_files, findings = diet.scan_context(root, 1, 2, 1)
+            finally:
+                diet.iter_context_files = original_iter
+            self.assertEqual(context_files, [])
+            self.assertIn("context-not-regular", {item.rule_id for item in findings})
+
+    def test_token_diet_open_guard_detects_symlink_swap_without_onofollow(self):
+        diet = load_module_from_path(KIT_DIR / "claude_token_diet.py", "claude_token_diet_open_guard_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / "CLAUDE.md"
+            outside = root / "outside.md"
+            context.write_text("safe\n", encoding="utf-8")
+            outside.write_text("token=ghp_" + ("A" * 36), encoding="utf-8")
+            old_nofollow = getattr(diet.os, "O_NOFOLLOW", None)
+            real_open = diet.os.open
+
+            def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+                target = Path(path)
+                target.unlink()
+                try:
+                    target.symlink_to(outside)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"symlink unavailable: {exc}")
+                if dir_fd is None:
+                    return real_open(path, flags, mode)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            try:
+                diet.os.O_NOFOLLOW = 0
+                diet.os.open = swapping_open
+                with self.assertRaises(OSError):
+                    diet.read_text_prefix(context)
+            finally:
+                if old_nofollow is None:
+                    delattr(diet.os, "O_NOFOLLOW")
+                else:
+                    diet.os.O_NOFOLLOW = old_nofollow
+                diet.os.open = real_open
+
     def test_token_diet_scan_reports_invalid_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

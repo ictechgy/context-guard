@@ -522,7 +522,7 @@ def iter_context_files(root: Path) -> Iterable[Path]:
 
 
 def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> tuple[str, bool]:
-    with path.open("rb") as handle:
+    with open_regular_no_follow(path) as handle:
         data = handle.read(limit + 1)
     truncated = len(data) > limit
     if truncated:
@@ -532,7 +532,7 @@ def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> tuple[s
 
 def file_contains_secret(path: Path, chunk_bytes: int = 64_000) -> bool:
     carry = ""
-    with path.open("rb") as handle:
+    with open_regular_no_follow(path) as handle:
         while True:
             data = handle.read(chunk_bytes)
             if not data:
@@ -541,6 +541,32 @@ def file_contains_secret(path: Path, chunk_bytes: int = 64_000) -> bool:
             if SECRET_CONTENT_RE.search(text):
                 return True
             carry = text[-512:]
+
+
+def open_regular_no_follow(path: Path):
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("not a regular file")
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        after = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or not os.path.samestat(before, opened)
+            or not os.path.samestat(after, opened)
+        ):
+            raise OSError("not a regular file")
+        handle = os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+    return handle
 
 
 def format_os_error(exc: OSError) -> str:
@@ -556,7 +582,7 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
     for path in sorted(iter_context_files(root), key=lambda p: rel_path(p, root)):
         rel = rel_path(path, root)
         try:
-            st = path.stat()
+            st = path.lstat()
             if not stat.S_ISREG(st.st_mode):
                 findings.append(context_finding(
                     "context-not-regular",
