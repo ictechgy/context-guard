@@ -9,6 +9,9 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import importlib.machinery
+import importlib.util
+import os
 from pathlib import PurePosixPath
 import re
 import subprocess
@@ -19,6 +22,22 @@ MAX_SUMMARY_ITEM_CHARS = 500
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
+SECRET_KEY = (
+    r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
+    r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
+)
+FALLBACK_INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"(?i)\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED]"),
+    (re.compile(r"(?i)\bAIza[0-9A-Za-z_\-]{20,}\b"), "[REDACTED]"),
+    (re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
+    (re.compile(rf"(?i)(\b(?:{SECRET_KEY})\s*[:=]\s*)[^\s]+"), r"\1[REDACTED]"),
+)
+FALLBACK_AUTH_HEADER_RE = re.compile(
+    r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$"
+)
 ERROR_RE = re.compile(
     r"(FAIL|FAILED|ERROR|Error:|Exception|Traceback|AssertionError|panic:|fatal:|"
     r"segmentation fault|not ok|\bE\s+assert|\[ERROR\]|✗|✖)",
@@ -57,6 +76,48 @@ def anonymize_absolute_paths(text: str) -> str:
     return ABSOLUTE_PATH_RE.sub(repl, text)
 
 
+class FallbackLineSanitizer:
+    def __init__(self, *, show_paths: bool = False) -> None:
+        self.show_paths = show_paths
+        self.redactions = 0
+
+    def sanitize(self, raw_line: str) -> tuple[str, bool]:
+        line = strip_ansi(raw_line)
+        if not self.show_paths:
+            line = anonymize_absolute_paths(line)
+        original = line
+        auth_match = FALLBACK_AUTH_HEADER_RE.match(line)
+        if auth_match:
+            line = auth_match.group("prefix") + "[REDACTED]\n"
+        else:
+            for pattern, repl in FALLBACK_INLINE_PATTERNS:
+                line = pattern.sub(repl, line)
+        redacted = line != original
+        if redacted:
+            self.redactions += 1
+        return line, redacted
+
+
+def load_line_sanitizer(show_paths: bool) -> object:
+    """Reuse the stronger sanitizer when it is shipped next to this wrapper."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for name in ("sanitize_output.py", "claude-sanitize-output"):
+        candidate = os.path.join(script_dir, name)
+        if not os.path.exists(candidate):
+            continue
+        try:
+            loader = importlib.machinery.SourceFileLoader(f"_claude_token_sanitize_{os.getpid()}", candidate)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            if spec is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module.LineSanitizer(show_paths=show_paths)
+        except Exception:
+            continue
+    return FallbackLineSanitizer(show_paths=show_paths)
+
+
 def unique_keep_order(lines: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -86,11 +147,18 @@ def cap_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + marker, True
 
 
-def compact_item(text: str, limit: int = MAX_SUMMARY_ITEM_CHARS, *, show_paths: bool = False) -> str:
+def compact_item(
+    text: str,
+    limit: int = MAX_SUMMARY_ITEM_CHARS,
+    *,
+    show_paths: bool = False,
+    sanitizer: object | None = None,
+) -> str:
     """Normalize a failure-summary item without letting one log line dominate memory/output."""
-    item = re.sub(r"\s+", " ", strip_ansi(text).strip())
-    if not show_paths:
-        item = anonymize_absolute_paths(item)
+    if sanitizer is None:
+        sanitizer = load_line_sanitizer(show_paths)
+    sanitized, _ = sanitizer.sanitize(text)  # type: ignore[attr-defined]
+    item = re.sub(r"\s+", " ", strip_ansi(sanitized).strip())
     if len(item) <= limit:
         return item
     marker = f"...[item trimmed: {len(item)} chars]"
@@ -109,6 +177,7 @@ class RunnerFailureSummary:
     def __init__(self, max_items_per_runner: int, *, show_paths: bool = False) -> None:
         self.max_items_per_runner = max(0, max_items_per_runner)
         self.show_paths = show_paths
+        self.sanitizer = load_line_sanitizer(show_paths)
         self.items: dict[str, list[str]] = collections.defaultdict(list)
         self.seen: dict[str, set[str]] = collections.defaultdict(set)
         self.jest_active = False
@@ -117,7 +186,7 @@ class RunnerFailureSummary:
     def add(self, runner: str, item: str) -> None:
         if self.max_items_per_runner <= 0:
             return
-        compact = compact_item(item, show_paths=self.show_paths)
+        compact = compact_item(item, show_paths=self.show_paths, sanitizer=self.sanitizer)
         if not compact or compact in self.seen[runner]:
             return
         if len(self.items[runner]) >= self.max_items_per_runner:
@@ -133,7 +202,7 @@ class RunnerFailureSummary:
 
         match = PYTEST_RESULT_RE.match(stripped)
         if match and (".py" in match.group("node") or "::" in match.group("node")):
-            reason = compact_item(match.group("reason") or "", show_paths=self.show_paths)
+            reason = compact_item(match.group("reason") or "", show_paths=self.show_paths, sanitizer=self.sanitizer)
             if reason:
                 self.add("pytest", f"{match.group('kind')} {match.group('node')} - {reason}")
             else:
@@ -254,6 +323,8 @@ def main() -> int:
     visible_chars = 0
     any_line_capped = False
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
+    line_sanitizer = load_line_sanitizer(args.show_paths)
+    redacted_lines = 0
 
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
@@ -261,14 +332,16 @@ def main() -> int:
     for line in proc.stdout:
         total += 1
         raw_chars += len(line)
-        visible_source = strip_ansi(line) if args.show_paths else anonymize_absolute_paths(strip_ansi(line))
+        visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
+        if redacted:
+            redacted_lines += 1
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
         if total <= args.head_lines:
             head.append(visible_line)
         tail.append(visible_line)
-        if ERROR_RE.search(line) and len(error_lines) < args.error_lines:
+        if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
             error_lines.append(visible_line)
         runner_summary.feed(line)
         if total <= args.max_lines:
@@ -294,6 +367,8 @@ def main() -> int:
         parts.append(f"[claude-token-kit] command exit_code={rc}\n")
         if any_line_capped:
             parts.append(f"[claude-token-kit] one or more lines were capped at {args.max_line_chars} chars\n")
+        if redacted_lines:
+            parts.append(f"[claude-token-kit] redacted_lines={redacted_lines}\n")
         summary_budget = max(0, min(args.max_lines, max(4, args.max_lines // 3))) if args.max_lines > 0 else 0
         runner_lines = runner_summary.as_lines(args.max_line_chars, summary_budget) if rc != 0 else []
         summary_line_count = len("".join(runner_lines).splitlines())
@@ -312,7 +387,7 @@ def main() -> int:
             remaining_log_budget -= len(error_out)
         parts.append("\n--- tail ---\n")
         if remaining_log_budget > 0:
-            parts.extend(tail_out[:remaining_log_budget])
+            parts.extend(tail_out[-remaining_log_budget:])
         parts.append("\n[claude-token-kit] rerun the command without trim only if more context is essential.\n")
         output, capped = cap_text("".join(parts), args.max_chars)
         if capped:

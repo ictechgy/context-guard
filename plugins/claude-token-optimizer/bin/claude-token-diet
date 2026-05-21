@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,7 @@ EXCLUDED_DIR_NAMES = {
     "vendor",
 }
 MAX_CONTEXT_READ_BYTES = 512_000
+MAX_SETTINGS_READ_BYTES = 256_000
 DEFAULT_LARGE_CONTEXT_BYTES = 16_000
 DEFAULT_HUGE_CONTEXT_BYTES = 64_000
 DEFAULT_LONG_CONTEXT_LINES = 300
@@ -80,7 +82,7 @@ SECRET_CONTENT_RE = re.compile(
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
     r"xox[abprs]-[A-Za-z0-9-]{10,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
-    r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
+    r"Authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )
@@ -158,11 +160,18 @@ def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None
     if path.is_symlink() and not is_relative_to(path, root):
         return None, "settings symlink resolves outside project root"
     try:
+        st = path.stat()
+        if not stat.S_ISREG(st.st_mode):
+            return None, "settings path is not a regular file"
+        if st.st_size > MAX_SETTINGS_READ_BYTES:
+            return None, f"settings file is too large ({st.st_size} bytes > {MAX_SETTINGS_READ_BYTES})"
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None, "missing"
     except json.JSONDecodeError as exc:
         return None, f"invalid JSON at line {exc.lineno}: {exc.msg}"
+    except UnicodeDecodeError as exc:
+        return None, f"invalid UTF-8 near byte {exc.start}"
     except OSError as exc:
         return None, f"unreadable: {format_os_error(exc)}"
     if not isinstance(data, dict):
@@ -173,12 +182,12 @@ def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None
 def iter_values(value: Any) -> Iterable[Any]:
     if isinstance(value, dict):
         for item in value.values():
-            yield item
             yield from iter_values(item)
     elif isinstance(value, list):
         for item in value:
-            yield item
             yield from iter_values(item)
+    else:
+        yield value
 
 
 def string_values(value: Any) -> list[str]:
@@ -189,6 +198,7 @@ def collect_settings(root: Path) -> tuple[list[dict[str, Any]], list[Finding]]:
     settings: list[dict[str, Any]] = []
     findings: list[Finding] = []
     candidates = [root / ".claude" / "settings.json", root / ".claude" / "settings.local.json"]
+    has_project_settings = (root / ".claude" / "settings.json").exists() or (root / ".claude" / "settings.json").is_symlink()
     for path in candidates:
         if not path.exists() and not path.is_symlink():
             continue
@@ -205,12 +215,12 @@ def collect_settings(root: Path) -> tuple[list[dict[str, Any]], list[Finding]]:
             continue
         assert data is not None
         settings.append({"path": rel, "data": data})
-    if not settings:
+    if not settings or not has_project_settings:
         findings.append(Finding(
             "missing-project-settings",
             "medium",
             ".claude/settings.json",
-            "No project Claude settings file was found.",
+            "No shared project Claude settings file was found.",
             "Add an opt-in project .claude/settings.json with read deny rules, statusline, and Bash output trimming hook.",
         ))
     return settings, findings
@@ -226,7 +236,15 @@ def merged_settings(settings: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(values, list):
                 merged["permissions"][key].extend(str(v) for v in values if isinstance(v, str))
         if isinstance(data.get("hooks"), dict):
-            merged["hooks"].update(data["hooks"])
+            for event, hooks in data["hooks"].items():
+                if isinstance(hooks, list):
+                    merged["hooks"].setdefault(event, [])
+                    if isinstance(merged["hooks"][event], list):
+                        merged["hooks"][event].extend(hooks)
+                    else:
+                        merged["hooks"][event] = hooks
+                else:
+                    merged["hooks"][event] = hooks
         if isinstance(data.get("statusLine"), dict):
             merged["statusLine"] = data["statusLine"]
         if "model" in data:
@@ -358,8 +376,7 @@ def scan_settings(root: Path, settings: list[dict[str, Any]]) -> tuple[dict[str,
         ))
 
     for entry in allow_entries:
-        lowered = entry.lower().replace(" ", "")
-        if "read(**)" in lowered or "read(./**)" in lowered or "read(*)" in lowered:
+        if any(target in {"**", "*", "."} for target in parse_read_targets([entry])):
             findings.append(Finding(
                 "broad-read-allow",
                 "medium",
@@ -430,7 +447,11 @@ def has_bash_trim_hook(settings: dict[str, Any]) -> bool:
         matcher = entry.get("matcher")
         if isinstance(matcher, str) and not matcher_applies_to_bash(matcher):
             continue
-        commands = string_values(entry.get("hooks"))
+        commands = (
+            string_values(entry.get("hooks"))
+            + string_values(entry.get("command"))
+            + string_values(entry.get("commands"))
+        )
         if any("claude-token-rewrite-bash" in cmd or "rewrite_bash_for_token_budget.py" in cmd for cmd in commands):
             return True
     return False
@@ -454,7 +475,11 @@ def has_large_read_guard(settings: dict[str, Any]) -> bool:
         matcher = entry.get("matcher")
         if isinstance(matcher, str) and not matcher_applies_to_read(matcher):
             continue
-        commands = string_values(entry.get("hooks"))
+        commands = (
+            string_values(entry.get("hooks"))
+            + string_values(entry.get("command"))
+            + string_values(entry.get("commands"))
+        )
         if any("claude-token-guard-read" in cmd or "guard_large_read.py" in cmd for cmd in commands):
             return True
     return False
@@ -496,10 +521,26 @@ def iter_context_files(root: Path) -> Iterable[Path]:
                 yield path
 
 
-def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> str:
+def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES) -> tuple[str, bool]:
     with path.open("rb") as handle:
-        data = handle.read(limit)
-    return data.decode("utf-8", "replace")
+        data = handle.read(limit + 1)
+    truncated = len(data) > limit
+    if truncated:
+        data = data[:limit]
+    return data.decode("utf-8", "replace"), truncated
+
+
+def file_contains_secret(path: Path, chunk_bytes: int = 64_000) -> bool:
+    carry = ""
+    with path.open("rb") as handle:
+        while True:
+            data = handle.read(chunk_bytes)
+            if not data:
+                return False
+            text = carry + data.decode("utf-8", "replace")
+            if SECRET_CONTENT_RE.search(text):
+                return True
+            carry = text[-512:]
 
 
 def format_os_error(exc: OSError) -> str:
@@ -515,8 +556,19 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
     for path in sorted(iter_context_files(root), key=lambda p: rel_path(p, root)):
         rel = rel_path(path, root)
         try:
-            size = path.stat().st_size
-            text = read_text_prefix(path)
+            st = path.stat()
+            if not stat.S_ISREG(st.st_mode):
+                findings.append(context_finding(
+                    "context-not-regular",
+                    "medium",
+                    rel,
+                    "Context-like path is not a regular file.",
+                    "Replace it with a regular markdown file or remove it from always-loaded context.",
+                ))
+                continue
+            size = st.st_size
+            text, sample_truncated = read_text_prefix(path)
+            contains_secret = file_contains_secret(path)
         except OSError as exc:
             findings.append(context_finding(
                 "context-unreadable",
@@ -528,8 +580,13 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
             continue
         lines = text.count("\n") + (1 if text else 0)
         code_fences = text.count("```")
-        contains_secret = bool(SECRET_CONTENT_RE.search(text))
-        item = {"path": rel, "bytes": size, "sampled_lines": lines, "code_fences": code_fences}
+        item = {
+            "path": rel,
+            "bytes": size,
+            "sampled_lines": lines,
+            "sample_truncated": sample_truncated,
+            "code_fences": code_fences,
+        }
         context_files.append(item)
 
         if size >= huge_bytes:

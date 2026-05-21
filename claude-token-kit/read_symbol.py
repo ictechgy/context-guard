@@ -8,6 +8,7 @@ large source file. It is heuristic, not a full language server.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -87,6 +88,8 @@ def symbol_patterns(symbol: str, language: str) -> list[re.Pattern[str]]:
             re.compile(rf"^\s*(?:export\s+)?class\s+{escaped}\b"),
             re.compile(rf"^\s*(?:export\s+)?(?:const|let|var)\s+{escaped}\b"),
             re.compile(rf"^\s*(?:export\s+)?(?:interface|type)\s+{escaped}\b"),
+            re.compile(rf"^\s*(?:(?:public|private|protected|static|async|get|set)\s+)*{escaped}\s*\([^;]*\)\s*(?::[^\{{;]+)?\{{"),
+            re.compile(rf"^\s*{escaped}\s*:\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[^,]+=>)"),
         ]
     if language == "go":
         return [
@@ -133,6 +136,22 @@ def python_block_end(lines: list[str], start: int) -> int:
     return max(end, start + 1)
 
 
+def python_ast_block_end(text: str, symbol: str, start: int) -> int | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if node.name != symbol or node.lineno - 1 != start:
+            continue
+        end_lineno = getattr(node, "end_lineno", None)
+        if isinstance(end_lineno, int):
+            return max(end_lineno, node.lineno)
+    return None
+
+
 def brace_block_end(lines: list[str], start: int) -> int:
     depth = 0
     started = False
@@ -145,7 +164,7 @@ def brace_block_end(lines: list[str], start: int) -> int:
         depth += opens - closes
         if started and depth <= 0:
             return index + 1
-        if not started and index > start and line.strip().endswith(";"):
+        if not started and index >= start and line.strip().endswith((";", ",")):
             return index + 1
     # Heuristic fallback for unmatched braces or deliberately truncated files.
     return min(len(lines), start + BRACE_FALLBACK_LINES)
@@ -153,8 +172,10 @@ def brace_block_end(lines: list[str], start: int) -> int:
 
 def strip_line_strings(line: str) -> str:
     # Good enough for brace counting in source snippets; avoids most braces in strings.
-    line = re.sub(r"(['\"])(?:\\.|(?!\1).)*\1", '""', line)
-    return re.sub(r"`[^`]*`", "``", line)
+    line = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '""', line)
+    line = re.sub(r"`(?:\\.|[^`\\])*`", "``", line)
+    line = re.sub(r"//.*", "", line)
+    return re.sub(r"/\*.*?\*/", "", line)
 
 
 def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, show_paths: bool) -> SymbolSlice | None:
@@ -166,7 +187,7 @@ def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, sho
         return None
 
     if language == "python":
-        end = python_block_end(lines, start)
+        end = python_ast_block_end(text, symbol, start) or python_block_end(lines, start)
     elif language in {"javascript", "go", "rust"}:
         end = brace_block_end(lines, start)
     else:

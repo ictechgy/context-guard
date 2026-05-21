@@ -132,12 +132,11 @@ def truthy_env(name: str) -> bool:
 
 
 def find_project_root(start: Path | None = None) -> Path:
-    raw_config = os.environ.get(CONFIG_ENV)
-    if raw_config:
-        config_file = Path(raw_config).expanduser().resolve()
+    config_file = env_config_path()
+    if config_file is not None:
         if config_file.parent.name == DEFAULT_CONFIG_PATH.parent.name:
-            return config_file.parent.parent
-        return config_file.parent
+            return config_file.parent.parent.resolve()
+        return config_file.parent.resolve()
     current = (start or Path.cwd()).resolve()
     for candidate in [current, *current.parents]:
         if (candidate / DEFAULT_CONFIG_PATH).exists() or (candidate / ".git").exists():
@@ -145,10 +144,22 @@ def find_project_root(start: Path | None = None) -> Path:
     return current
 
 
-def config_path() -> Path:
+def env_config_path() -> Path | None:
     raw = os.environ.get(CONFIG_ENV)
-    if raw:
-        return Path(raw).expanduser().resolve()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    # Preserve the lexical path so trust checks can reject symlinks.  Path.resolve()
+    # would collapse an env-provided symlink before config_trust_error() can see it.
+    return path.absolute()
+
+
+def config_path() -> Path:
+    env_path = env_config_path()
+    if env_path is not None:
+        return env_path
     return find_project_root() / DEFAULT_CONFIG_PATH
 
 
@@ -211,6 +222,8 @@ def config_trust_error(path: Path | None = None) -> str | None:
     path = path or config_path()
     if not path.exists():
         return "config file does not exist"
+    if path.is_symlink():
+        return f"config file must not be a symlink: {path}"
     if is_git_tracked(path):
         return f"config file is tracked by git: {path}"
     if not has_private_file_mode(path):
@@ -623,11 +636,39 @@ def read_text_no_follow(path: Path) -> str:
             os.close(fd)
 
 
+def read_text_no_follow_bounded(path: Path, max_bytes: int) -> tuple[str, bool]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    before = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"not a regular file: {path}")
+    fd = os.open(path, flags)
+    try:
+        after = os.fstat(fd)
+        if before.st_dev != after.st_dev or before.st_ino != after.st_ino:
+            raise OSError(f"file changed while opening: {path}")
+        with os.fdopen(fd, "rb") as f:
+            fd = -1
+            limit = max(0, max_bytes)
+            data = f.read(limit + 1)
+            truncated = len(data) > limit
+            if truncated:
+                data = data[:limit]
+            return data.decode("utf-8", "replace"), truncated
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def read_delegated_file(
     raw_path: str,
     allow_sensitive_paths: set[Path],
     allow_outside_paths: set[Path],
     role: str,
+    max_read_chars: int | None = None,
 ) -> tuple[Path | None, str | None, str | None]:
     root = find_project_root()
     path = Path(raw_path).expanduser()
@@ -642,7 +683,10 @@ def read_delegated_file(
     if is_sensitive_context_path(resolved) and not sensitive_allowed:
         return None, None, f"blocked sensitive {role} {raw_path}; configure trusted context_policy.allow_sensitive_paths for manual override"
     try:
-        content = read_text_no_follow(resolved)
+        if max_read_chars is None:
+            content = read_text_no_follow(resolved)
+        else:
+            content, _truncated = read_text_no_follow_bounded(resolved, max_read_chars)
     except OSError as exc:
         return None, None, f"could not read {role} {raw_path}: {exc}"
     if contains_sensitive_content(content) and not sensitive_allowed:
@@ -677,7 +721,14 @@ def read_contexts(
     allow_sensitive_paths = resolve_allowed_paths(allow_sensitive_context)
     allow_outside_paths = resolve_allowed_paths(allow_outside_project)
     for raw in paths:
-        resolved, original, warning = read_delegated_file(raw, allow_sensitive_paths, allow_outside_paths, "context")
+        read_limit = max(0, remaining) + len(marker)
+        resolved, original, warning = read_delegated_file(
+            raw,
+            allow_sensitive_paths,
+            allow_outside_paths,
+            "context",
+            max_read_chars=read_limit,
+        )
         if warning:
             warnings.append(warning)
             continue
@@ -720,7 +771,14 @@ def trim_for_stdout(text: str, limit: int) -> tuple[str, bool]:
 
 
 def safe_delegation_dir(config: dict[str, Any]) -> Path:
-    return safe_resolve_under_root(str(config.get("delegation_dir") or DEFAULT_DELEGATION_DIR), find_project_root())
+    root = find_project_root()
+    resolved = safe_resolve_under_root(str(config.get("delegation_dir") or DEFAULT_DELEGATION_DIR), root)
+    tool_root = (root / DEFAULT_CONFIG_PATH.parent).resolve()
+    if resolved in {root.resolve(), tool_root} or not path_is_under(resolved, tool_root):
+        raise SystemExit(
+            f"delegation_dir must be a dedicated directory under {DEFAULT_CONFIG_PATH.parent}/, not {resolved}"
+        )
+    return resolved
 
 
 def save_response(
@@ -944,48 +1002,57 @@ def run_provider(
             stdin_file = stdin_path.open("rb")
         start = _dt.datetime.now()
         killed_for_output = False
+        returncode = 0
         try:
             with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
-                proc = subprocess.Popen(
-                    command,
-                    stdin=stdin_file if stdin_file is not None else subprocess.DEVNULL,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    cwd=work_dir,
-                    env=env,
-                    start_new_session=True,
-                )
-                while proc.poll() is None:
-                    elapsed = (_dt.datetime.now() - start).total_seconds()
-                    try:
-                        current_size = stdout_path.stat().st_size + stderr_path.stat().st_size
-                    except OSError:
-                        current_size = 0
-                    if current_size > output_limit:
-                        killed_for_output = True
-                        try:
-                            os.killpg(proc.pid, signal.SIGTERM)
-                        except (OSError, AttributeError):
-                            proc.terminate()
-                        break
-                    if elapsed > timeout_seconds:
-                        try:
-                            os.killpg(proc.pid, signal.SIGTERM)
-                        except (OSError, AttributeError):
-                            proc.terminate()
-                        break
-                    try:
-                        proc.wait(timeout=0.05)
-                    except subprocess.TimeoutExpired:
-                        pass
                 try:
-                    returncode = proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
+                    proc = subprocess.Popen(
+                        command,
+                        stdin=stdin_file if stdin_file is not None else subprocess.DEVNULL,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        cwd=work_dir,
+                        env=env,
+                        start_new_session=True,
+                    )
+                except (OSError, ValueError) as exc:
+                    stderr_file.write(f"provider failed to start: {exc.__class__.__name__}: {exc}\n".encode("utf-8", "replace"))
+                    returncode = 127
+                    proc = None
+                if proc is None:
+                    pass
+                else:
+                    while proc.poll() is None:
+                        elapsed = (_dt.datetime.now() - start).total_seconds()
+                        try:
+                            current_size = stdout_path.stat().st_size + stderr_path.stat().st_size
+                        except OSError:
+                            current_size = 0
+                        if current_size > output_limit:
+                            killed_for_output = True
+                            try:
+                                os.killpg(proc.pid, signal.SIGTERM)
+                            except (OSError, AttributeError):
+                                proc.terminate()
+                            break
+                        if elapsed > timeout_seconds:
+                            try:
+                                os.killpg(proc.pid, signal.SIGTERM)
+                            except (OSError, AttributeError):
+                                proc.terminate()
+                            break
+                        try:
+                            proc.wait(timeout=0.05)
+                        except subprocess.TimeoutExpired:
+                            pass
                     try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except (OSError, AttributeError):
-                        proc.kill()
-                    returncode = proc.wait()
+                        returncode = proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except (OSError, AttributeError):
+                            proc.kill()
+                        returncode = proc.wait()
         finally:
             if stdin_file is not None:
                 stdin_file.close()
@@ -1125,8 +1192,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
         return 2
 
     if args.dry_run:
+        redacted_command = [
+            part.replace("{prompt}", f"<prompt:{len(prompt)} chars>")
+            for part in command_template
+        ]
         print(f"provider={provider}")
-        print("command=" + json.dumps(command, ensure_ascii=False))
+        print("command=" + json.dumps(redacted_command, ensure_ascii=False))
         print(f"stdin={str(bool(item.get('stdin', False))).lower()}")
         print(f"prompt_chars={len(prompt)}")
         print("provider_cwd=<temporary isolated work directory>")
@@ -1146,11 +1217,14 @@ def cmd_ask(args: argparse.Namespace) -> int:
         resolved_command,
         prompt if item.get("stdin", False) else None,
         timeout_seconds,
+        max_output_chars,
     )
 
     saved = save_response(config, provider, stdout, stderr, task, returncode, allow_sensitive, allow_outside)
-    if returncode != 0 and stderr.strip() and not stdout.strip():
+    if returncode != 0 and stderr.strip():
         preview_source = "[stderr]\n" + stderr
+        if stdout.strip():
+            preview_source += "\n[stdout]\n" + stdout
     else:
         preview_note = "\n[stderr captured; see saved response]\n" if stderr.strip() else ""
         preview_source = stdout + preview_note

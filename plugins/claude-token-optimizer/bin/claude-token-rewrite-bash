@@ -13,9 +13,11 @@ import re
 import shlex
 import sys
 
-# Reject shell control syntax before wrapping. The wrapper is intended only for a
-# single safe argv-style command, not arbitrary shell programs.
-SHELL_META_RE = re.compile(r"[;&|<>`$()\n\r\t]")
+# Reject actual shell control operators after shlex tokenization. Quoted search
+# patterns such as `rg "token|password"` and `grep "^foo$"` are safe to wrap,
+# but real pipes, redirects, command substitutions, and sequencing are not.
+SHELL_OPERATOR_TOKENS = {";", ";;", ";&", ";;&", "&", "&&", "|", "||", "<", ">", "<<", ">>", "<>", "(", ")"}
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
 WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
     "claude-trim-output",
@@ -73,13 +75,59 @@ def find_wrapper(kind: str) -> str | None:
 
 
 def split_single_safe_command(command: str) -> list[str] | None:
-    if not command.strip() or SHELL_META_RE.search(command):
+    if not command.strip():
         return None
     try:
-        argv = shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        argv = list(lexer)
     except ValueError:
         return None
-    return argv or None
+    if not argv:
+        return None
+    for token in argv:
+        if token in SHELL_OPERATOR_TOKENS:
+            return None
+        if any(char in token for char in "`\n\r\t"):
+            return None
+        if "$(" in token or "${" in token:
+            return None
+    return argv
+
+
+def command_basename(command: str) -> str:
+    return os.path.basename(command)
+
+
+def strip_env_prefix(argv: list[str]) -> list[str]:
+    """Return the executable argv after leading `KEY=VALUE` or `env` wrappers."""
+    i = 0
+    while i < len(argv) and ENV_ASSIGNMENT_RE.match(argv[i]):
+        i += 1
+    if i < len(argv) and argv[i] == "env":
+        i += 1
+        while i < len(argv):
+            token = argv[i]
+            if token in {"-i", "--ignore-environment"}:
+                i += 1
+                continue
+            if token in {"-u", "--unset"} and i + 1 < len(argv):
+                i += 2
+                continue
+            if token.startswith("-u") and token != "-u":
+                i += 1
+                continue
+            if token.startswith("--unset="):
+                i += 1
+                continue
+            if token.startswith("-"):
+                i += 1
+                continue
+            if ENV_ASSIGNMENT_RE.match(token):
+                i += 1
+                continue
+            break
+    return argv[i:]
 
 
 def npm_script_args(rest: list[str]) -> list[str]:
@@ -98,9 +146,10 @@ def npm_script_args(rest: list[str]) -> list[str]:
 
 
 def is_noisy_command(argv: list[str]) -> bool:
+    argv = strip_env_prefix(argv)
     if not argv:
         return False
-    first = argv[0]
+    first = command_basename(argv[0])
     rest = argv[1:]
 
     if first in {"npm", "pnpm", "yarn", "bun"}:
@@ -163,13 +212,19 @@ def is_dir_traversal_command(argv: list[str]) -> bool:
     `is_log_streaming_command` 가 sanitize 라우팅으로 대신 잡는다. `tree` 는 본질적으로
     출력 형식이 fixed 이라 별도 분기가 없다.
     """
+    argv = strip_env_prefix(argv)
     if not argv:
         return False
-    first = argv[0]
+    first = command_basename(argv[0])
+    rest = argv[1:]
     if first == "tree":
         return True
     if first == "find":
-        return not any(arg in _FIND_OUTPUT_RISK_ACTIONS for arg in argv[1:])
+        return not any(arg in _FIND_OUTPUT_RISK_ACTIONS for arg in rest)
+    if first == "fd":
+        return True
+    if first == "rg" and any(arg == "--files" for arg in rest):
+        return True
     return False
 
 
@@ -187,9 +242,10 @@ def is_log_streaming_command(argv: list[str]) -> bool:
     로 흡수한다. 한계: `kubectl exec ... -- cat /var/log/...` 같은 우회는 별도 룰이
     필요하며 여기서는 처리하지 않는다.
     """
+    argv = strip_env_prefix(argv)
     if not argv:
         return False
-    first = argv[0]
+    first = command_basename(argv[0])
     rest = argv[1:]
 
     if first == "journalctl":
@@ -223,6 +279,7 @@ def is_already_wrapped(argv: list[str]) -> bool:
     명령 raw 문자열에 substring 검색을 하면 컨테이너 이름이 우연히
     `claude-sanitize-output` 같으면 false-bypass 되므로 argv 기반으로 판단한다.
     """
+    argv = strip_env_prefix(argv)
     if not argv:
         return False
     head = argv[0]
@@ -232,9 +289,10 @@ def is_already_wrapped(argv: list[str]) -> bool:
 
 
 def is_sanitizable_output_command(argv: list[str]) -> bool:
+    argv = strip_env_prefix(argv)
     if not argv:
         return False
-    first = argv[0]
+    first = command_basename(argv[0])
     rest = argv[1:]
 
     if first in {"rg", "grep", "egrep", "fgrep"}:
@@ -242,6 +300,9 @@ def is_sanitizable_output_command(argv: list[str]) -> bool:
         # read/diet guards are better fits there.
         return not any(arg == "--files" for arg in rest)
     if first == "git" and rest:
+        rest = git_subcommand_args(rest)
+        if not rest:
+            return False
         subcommand = rest[0]
         if subcommand == "grep":
             return True
@@ -252,21 +313,44 @@ def is_sanitizable_output_command(argv: list[str]) -> bool:
     return False
 
 
-def build_wrapped_command(wrapper: str, argv: list[str]) -> str:
+def git_subcommand_args(rest: list[str]) -> list[str]:
+    value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token == "--":
+            return rest[i + 1:]
+        if token in value_options and i + 1 < len(rest):
+            i += 2
+            continue
+        if any(token.startswith(prefix + "=") for prefix in value_options if prefix.startswith("--")):
+            i += 1
+            continue
+        if token in {"--no-pager", "--paginate", "--bare", "--literal-pathspecs", "--no-optional-locks"}:
+            i += 1
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        break
+    return rest[i:]
+
+
+def build_wrapped_command(wrapper: str, command: str) -> str:
     if wrapper.endswith(".py"):
         prefix = ["python3", wrapper]
     else:
         prefix = [wrapper]
-    wrapped_argv = prefix + ["--max-lines", "220", "--"] + argv
+    wrapped_argv = prefix + ["--max-lines", "220", "--", "bash", "-lc", command]
     return shlex.join(wrapped_argv)
 
 
-def build_sanitized_command(wrapper: str, argv: list[str]) -> str:
+def build_sanitized_command(wrapper: str, command: str) -> str:
     if wrapper.endswith(".py"):
         prefix = ["python3", wrapper]
     else:
         prefix = [wrapper]
-    wrapped_argv = prefix + ["--max-lines", "220", "--"] + argv
+    wrapped_argv = prefix + ["--max-lines", "220", "--", "bash", "-lc", command]
     return shlex.join(wrapped_argv)
 
 
@@ -308,7 +392,7 @@ def main() -> int:
             print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
             print("{}")
             return 0
-        wrapped = build_wrapped_command(wrapper, argv)
+        wrapped = build_wrapped_command(wrapper, command)
     elif is_sanitizable_output_command(argv) or is_log_streaming_command(argv):
         wrapper = find_wrapper("sanitize")
         if wrapper is None:
@@ -329,7 +413,7 @@ def main() -> int:
                 }
             }, ensure_ascii=False))
             return 0
-        wrapped = build_sanitized_command(wrapper, argv)
+        wrapped = build_sanitized_command(wrapper, command)
     else:
         print("{}")
         return 0

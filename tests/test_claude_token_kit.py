@@ -1,4 +1,6 @@
 import csv
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -140,6 +142,37 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertLess(len(proc.stdout), 1200)
         self.assertIn("line trimmed", proc.stdout)
 
+    def test_trim_redacts_secret_bearing_test_output(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            "print('API_TOKEN=ghp_' + 'A' * 36); print('Authorization: Token opaque-token-value')",
+            max_lines=20,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("API_TOKEN=[REDACTED]", proc.stdout)
+        self.assertIn("Authorization: [REDACTED]", proc.stdout)
+        self.assertNotIn("ghp_A", proc.stdout)
+        self.assertNotIn("opaque-token-value", proc.stdout)
+
+    def test_trim_fallback_sanitizer_redacts_when_adjacent_sanitizer_missing_or_broken(self):
+        for sanitizer_body in [None, "raise RuntimeError('broken sanitizer import')\n"]:
+            with self.subTest(sanitizer_body=sanitizer_body):
+                with tempfile.TemporaryDirectory() as tmp:
+                    trim = Path(tmp) / "claude-trim-output"
+                    shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
+                    if sanitizer_body is not None:
+                        (Path(tmp) / "sanitize_output.py").write_text(sanitizer_body, encoding="utf-8")
+                    proc = run_trim_python(
+                        trim,
+                        "print('API_TOKEN=ghp_' + 'A' * 36); print('Authorization: Token opaque-token-value')",
+                        max_lines=20,
+                    )
+                    self.assertEqual(proc.returncode, 0)
+                    self.assertIn("API_TOKEN=[REDACTED]", proc.stdout)
+                    self.assertIn("Authorization: [REDACTED]", proc.stdout)
+                    self.assertNotIn("ghp_A", proc.stdout)
+                    self.assertNotIn("opaque-token-value", proc.stdout)
+
     def test_trim_missing_command_returns_clean_127(self):
         proc = subprocess.run(
             [sys.executable, str(KIT_DIR / "trim_command_output.py"), "--", "definitely-not-a-real-command"],
@@ -268,6 +301,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertRegex(proc.stdout, r"app\.py#path:[0-9a-f]{12}:12")
         self.assertNotIn("/Users/alice", proc.stdout)
 
+    def test_sanitize_output_redacts_grep_prefixed_headers_and_url_query_tokens(self):
+        raw = (
+            "src/api.py:12:Authorization: Token opaque-token-value\n"
+            "callback https://example.invalid/cb?access_token=opaque123&refresh_token=opaque456\n"
+            'quoted "/Users/alice/project/app.py"\n'
+        )
+        proc = subprocess.run(
+            [sys.executable, str(KIT_DIR / "sanitize_output.py")],
+            input=raw,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("src/api.py:12:Authorization: [REDACTED]", proc.stdout)
+        self.assertIn("access_token=[REDACTED]", proc.stdout)
+        self.assertIn("refresh_token=[REDACTED]", proc.stdout)
+        self.assertRegex(proc.stdout, r'"app\.py#path:[0-9a-f]{12}"')
+        self.assertNotIn("opaque-token-value", proc.stdout)
+        self.assertNotIn("opaque123", proc.stdout)
+        self.assertNotIn("/Users/alice", proc.stdout)
+
     def test_sanitize_output_stdin_mode_cannot_preserve_producer_exit_code(self):
         proc = subprocess.run(
             [sys.executable, str(KIT_DIR / "sanitize_output.py")],
@@ -338,6 +392,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     # 새 nudge hook 은 기본 OFF 라 PostToolUse 가 추가되지 않아야 한다.
                     self.assertNotIn("PostToolUse", settings.get("hooks", {}))
                     self.assertNotIn("claude-token-failed-nudge", json.dumps(settings))
+
+    def test_setup_wizard_prefers_repo_helper_over_path_shadow(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_prefers_repo_helper")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "claude-token-statusline"
+            fake.write_text("#!/usr/bin/env bash\necho shadow\n", encoding="utf-8")
+            fake.chmod(0o700)
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
+            try:
+                command = setup.helper_command("claude-token-statusline", "statusline.sh", shell="bash")
+            finally:
+                os.environ["PATH"] = old_path
+        self.assertIn("plugins/claude-token-optimizer/bin/claude-token-statusline", command)
+        self.assertNotEqual(command, "claude-token-statusline")
 
     def test_setup_wizard_enables_failed_attempt_nudge_only_with_opt_in_flag(self):
         """기본 실행은 nudge 를 추가하지 않고, --failed-attempt-nudge 를 줘야 PostToolUse 에 등록된다."""
@@ -881,13 +950,36 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn("hookSpecificOutput", hook_json(KIT_REWRITE, command))
 
+    def test_rewrite_hook_wraps_env_prefixed_and_path_invoked_noisy_commands(self):
+        for command in [
+            "CI=1 pytest tests -q",
+            "env CI=1 pytest tests -q",
+            "./node_modules/.bin/jest --runInBand",
+            "/tmp/venv/bin/pytest -q",
+        ]:
+            with self.subTest(command=command):
+                out = hook_json(KIT_REWRITE, command)
+                wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
+                self.assertIn("bash -lc", wrapped)
+                self.assertIn(command, wrapped)
+                self.assertTrue("trim_command_output.py" in wrapped or "claude-trim-output" in wrapped)
+
     def test_rewrite_hook_wraps_search_and_diff_with_sanitizer(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
-            for command in ["rg -n token src", "grep -R password src", "git diff", "git show HEAD"]:
+            for command in [
+                "rg -n token src",
+                "rg \"token|password\" .",
+                "grep \"^foo$\" *.py",
+                "grep -R password src",
+                "git diff",
+                "git show HEAD",
+                "git -C . grep token",
+                "git --no-pager diff",
+            ]:
                 with self.subTest(script=script, command=command):
                     out = hook_json(script, command)
                     wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
-                    self.assertIn(command.split()[0], wrapped)
+                    self.assertIn(command, wrapped)
                     self.assertTrue("sanitize_output.py" in wrapped or "claude-sanitize-output" in wrapped)
                     self.assertNotIn("trim_command_output.py", wrapped)
 
@@ -936,7 +1028,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_rewrite_hook_wraps_dir_traversal_with_trim(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
-            for command in ["find . -name '*.py'", "find src -type f", "tree", "tree src/"]:
+            for command in ["find . -name '*.py'", "find src -type f", "tree", "tree src/", "rg --files", "fd ."]:
                 with self.subTest(script=script, command=command):
                     out = hook_json(script, command)
                     wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
@@ -1364,6 +1456,107 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(data["language"], "javascript")
             self.assertIn("export function target", data["content"])
             self.assertNotIn("function after", data["content"])
+
+            call_before = root / "call-before.ts"
+            call_before.write_text(
+                "target();\n\n"
+                "export function target() { return 1; }\n"
+                "export function after() { return 0; }\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(call_before), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("export function target", data["content"])
+            self.assertNotIn("target();", data["content"])
+            self.assertNotIn("function after", data["content"])
+
+            methods = root / "methods.ts"
+            methods.write_text(
+                "class Service {\n"
+                "  async target(value: number): Promise<number> {\n"
+                "    return value + 1;\n"
+                "  }\n"
+                "  after() { return 0; }\n"
+                "}\n\n"
+                "const handlers = {\n"
+                "  target(value: number) {\n"
+                "    return value + 2;\n"
+                "  },\n"
+                "  property: true,\n"
+                "};\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(methods), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("async target", data["content"])
+            self.assertNotIn("after()", data["content"])
+
+            object_method = root / "object-method.ts"
+            object_method.write_text(
+                "const handlers = {\n"
+                "  target(value: number) {\n"
+                "    return value + 2;\n"
+                "  },\n"
+                "  after() { return 0; },\n"
+                "};\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(object_method), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("target(value", data["content"])
+            self.assertNotIn("after()", data["content"])
+
+            multi = root / "multi.py"
+            multi.write_text(
+                "def target(\n"
+                "    value,\n"
+                "):\n"
+                "    return value\n\n"
+                "def after():\n"
+                "    return 2\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(multi), "target", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("):", data["content"])
+            self.assertIn("return value", data["content"])
+            self.assertNotIn("def after", data["content"])
+
+            const_ts = root / "const.ts"
+            const_ts.write_text(
+                "export const VERSION = '1.0';\n"
+                "export const OTHER = '2.0';\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "read_symbol.py"), str(const_ts), "VERSION", "--json", "--context", "0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("VERSION", data["content"])
+            self.assertNotIn("OTHER", data["content"])
 
     def test_read_symbol_reports_truncated_search_when_symbol_after_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2030,6 +2223,67 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn("missing-large-read-guard", finding_ids)
             self.assertNotIn("large-context-file", rule_ids)
 
+    def test_token_diet_detects_direct_hook_strings_and_local_only_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.local.json").write_text(
+                json.dumps({
+                    "statusLine": {"type": "command", "command": "claude-token-statusline"},
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "Bash", "command": "claude-token-rewrite-bash"},
+                            {"matcher": "Read", "command": "claude-token-guard-read"},
+                        ]
+                    },
+                }),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            finding_ids = {item["id"] for item in data["findings"]}
+            self.assertTrue(data["settings"]["has_bash_trim_hook"])
+            self.assertTrue(data["settings"]["has_large_read_guard"])
+            self.assertIn("missing-project-settings", finding_ids)
+
+    def test_token_diet_streams_secret_scan_beyond_context_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+            (root / "CLAUDE.md").write_text("safe\n" * 130000 + "token=ghp_" + ("A" * 36), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
+            self.assertIn("secret-like-context-content", rule_ids)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "mkfifo not available")
+    def test_token_diet_reports_non_regular_context_without_opening_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+            fifo = root / "CLAUDE.md"
+            os.mkfifo(fifo)
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=True,
+            )
+            rule_ids = {item["rule_id"] for item in json.loads(proc.stdout)["findings"]}
+            self.assertIn("context-not-regular", rule_ids)
+
     def test_token_diet_scan_reports_invalid_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2655,6 +2909,49 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn('"gemini"', proc.stdout)
             self.assertNotIn("definitely-not-the-real-gemini", proc.stdout)
 
+    def test_aux_delegate_dry_run_redacts_prompt_argv_transport(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            context = root / "context.txt"
+            context.write_text("UNIQUE_CONTEXT_BODY", encoding="utf-8")
+            config_path = root / "config.json"
+            write_private_config(config_path, {
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "providers": {
+                    "bad": {
+                        "enabled": True,
+                        "command": ["/bin/echo", "{prompt}"],
+                        "stdin": False,
+                    }
+                },
+            })
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "aux_ai_delegate.py"),
+                    "ask",
+                    "--provider",
+                    "bad",
+                    "--prompt",
+                    "summarize",
+                    "--context",
+                    "context.txt",
+                    "--dry-run",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=root,
+                check=True,
+            )
+            self.assertIn("<prompt:", proc.stdout)
+            self.assertNotIn("UNIQUE_CONTEXT_BODY", proc.stdout)
+            self.assertNotIn("-----BEGIN TASK", proc.stdout)
+
     def test_aux_delegate_runs_mock_provider_in_restricted_temp_cwd(self):
         for script in AUX_SCRIPTS:
             with self.subTest(script=script):
@@ -2664,7 +2961,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "aux_ai_enabled": True,
                         "default_provider": "mock",
                         "max_output_chars": 4000,
-                        "delegation_dir": "delegations",
+                        "delegation_dir": ".claude-token-optimizer/delegations",
                         "providers": {
                             "mock": {
                                 "enabled": True,
@@ -2697,12 +2994,43 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
                     saved_path = Path(saved_line.split("=", 1)[1])
                     self.assertTrue(saved_path.exists())
-                    self.assertEqual(saved_path.parents[1], Path(tmp).resolve())
+                    self.assertEqual(saved_path.parents[2], Path(tmp).resolve())
                     self.assertEqual(stat.S_IMODE(saved_path.stat().st_mode), 0o600)
                     self.assertEqual(stat.S_IMODE(saved_path.parent.stat().st_mode), 0o700)
                     saved_text = saved_path.read_text(encoding="utf-8")
                     self.assertIn("## Untrusted Stdout", saved_text)
                     self.assertIn("BEGIN UNTRUSTED AUX STDOUT", saved_text)
+
+    def test_aux_delegate_provider_capture_uses_preview_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.json"
+            write_private_config(config_path, {
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "max_output_chars": 80,
+                "delegation_dir": ".claude-token-optimizer/delegations",
+                "providers": {
+                    "bad": {
+                        "enabled": True,
+                        "command": [sys.executable, "-c", "print('A' * 1000)"],
+                        "stdin": True,
+                    }
+                },
+            })
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+            env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "aux_ai_delegate.py"), "ask", "--provider", "bad", "--prompt", "hello"],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=root,
+            )
+            self.assertEqual(proc.returncode, 125)
+            self.assertIn("OUTPUT_LIMIT exceeded", proc.stdout)
+            self.assertLess(len(proc.stdout), 1000)
 
     def test_aux_delegate_sanitizes_provider_env_and_escapes_preview_markers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2711,7 +3039,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "aux_ai_enabled": True,
                 "default_provider": "bad",
                 "max_output_chars": 4000,
-                "delegation_dir": "delegations",
+                "delegation_dir": ".claude-token-optimizer/delegations",
                 "providers": {
                     "bad": {
                         "enabled": True,
@@ -2764,6 +3092,47 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
                 else:
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+
+    def test_aux_delegate_rejects_symlinked_config_and_non_tool_delegation_dir(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / ".claude-token-optimizer" / "config.json"
+            write_private_config(config, {
+                "aux_ai_enabled": True,
+                "default_provider": "bad",
+                "providers": {
+                    "bad": {
+                        "enabled": True,
+                        "command": [sys.executable, "-c", "print('bad')"],
+                        "stdin": True,
+                    }
+                },
+            })
+            symlink = root / ".claude-token-optimizer" / "linked-config.json"
+            symlink.symlink_to(config)
+            self.assertIn("must not be a symlink", aux.config_trust_error(symlink))
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            old_custom = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(symlink)
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+            try:
+                self.assertTrue(aux.config_path().is_symlink())
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    loaded = aux.load_config()
+                self.assertNotIn("bad", loaded["providers"])
+                self.assertIn("must not be a symlink", stderr.getvalue())
+            finally:
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+                if old_custom is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = old_custom
+            with self.assertRaises(SystemExit):
+                aux.safe_delegation_dir({"delegation_dir": "."})
 
     def test_aux_delegate_blocks_sensitive_context_by_default(self):
         aux = load_aux_module()
@@ -2948,7 +3317,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "aux_ai_enabled": True,
                 "default_provider": "bad",
                 "max_output_chars": 1000,
-                "delegation_dir": "delegations",
+                "delegation_dir": ".claude-token-optimizer/delegations",
                 "providers": {
                     "bad": {
                         "enabled": True,
@@ -3478,6 +3847,34 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
     def test_diagnostic_fallback_when_neither_available(self):
         out = self._run_wrapper(omc_script=None, tok_bin=None)
         self.assertEqual(out, "[hud unavailable]")
+
+    def test_workspace_plugin_statusline_is_not_executed_as_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            wrapper = tmp / "statusline_merged.sh"
+            wrapper.write_bytes((KIT_DIR / "statusline_merged.sh").read_bytes())
+            os.chmod(wrapper, stat.S_IRWXU)
+            workspace_bin = tmp / "workspace" / "plugins" / "claude-token-optimizer" / "bin"
+            workspace_bin.mkdir(parents=True)
+            evil = workspace_bin / "claude-token-statusline"
+            marker = tmp / "executed"
+            evil.write_text(f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\necho evil\n", encoding="utf-8")
+            os.chmod(evil, stat.S_IRWXU)
+            env = os.environ.copy()
+            env["OMC_HUD_SCRIPT"] = str(tmp / "missing-omc.mjs")
+            env["PATH"] = "/usr/bin:/bin:/opt/homebrew/bin"
+            env.pop("CLAUDE_TOKEN_STATUSLINE_BIN", None)
+            payload = json.dumps({"workspace": {"current_dir": str(tmp / "workspace")}})
+            proc = subprocess.run(
+                ["bash", str(wrapper)],
+                input=payload,
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertEqual(proc.stdout.strip(), "[hud unavailable]")
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

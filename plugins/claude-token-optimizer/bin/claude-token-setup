@@ -197,9 +197,6 @@ def helper_command(helper_name: str, kit_script: str, *, shell: str | None = Non
     경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
     quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
     """
-    found = shutil.which(helper_name)
-    if found:
-        return helper_name
     script_dir = Path(__file__).resolve().parent
     colocated = script_dir / helper_name
     if colocated.exists() and os.access(colocated, os.X_OK):
@@ -211,6 +208,9 @@ def helper_command(helper_name: str, kit_script: str, *, shell: str | None = Non
     if kit_path.exists():
         prefix = [shell] if shell else [sys.executable]
         return shlex.join([*prefix, str(kit_path)])
+    found = shutil.which(helper_name)
+    if found:
+        return helper_name
     return helper_name
 
 

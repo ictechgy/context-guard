@@ -17,7 +17,7 @@
 # 환경변수(선택, 테스트/커스텀 설치용):
 #   OMC_HUD_SCRIPT             OMC HUD 스크립트 경로 (기본 $HOME/.claude/hud/omc-hud.mjs)
 #   CLAUDE_TOKEN_STATUSLINE_BIN claude-token-statusline 바이너리 경로
-#                              (미지정 시 자기 옆 디렉토리 → PATH → workspace 플러그인 경로 순)
+#                              (미지정 시 자기 옆 디렉토리 → PATH 순)
 set -u
 
 input=$(cat)
@@ -30,7 +30,7 @@ if [[ -r "$omc_script" ]] && command -v node >/dev/null 2>&1; then
 fi
 
 # ── 2) claude-token-statusline 바이너리 위치 결정 ────────────────────────────
-# 우선순위: 환경변수 → 자기 옆 디렉토리 → PATH → workspace 내부 플러그인 경로
+# 우선순위: 환경변수 → 자기 옆 디렉토리 → PATH
 tok_bin="${CLAUDE_TOKEN_STATUSLINE_BIN:-}"
 if [[ -z "$tok_bin" ]]; then
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
@@ -46,14 +46,6 @@ fi
 if [[ -z "$tok_bin" ]] && command -v claude-token-statusline >/dev/null 2>&1; then
   tok_bin=$(command -v claude-token-statusline)
 fi
-if [[ -z "$tok_bin" ]] && command -v jq >/dev/null 2>&1; then
-  cwd=$(printf '%s' "$input" | jq -r '.workspace.current_dir // empty' 2>/dev/null || true)
-  candidate="$cwd/plugins/claude-token-optimizer/bin/claude-token-statusline"
-  if [[ -n "$cwd" && -x "$candidate" ]]; then
-    tok_bin="$candidate"
-  fi
-fi
-
 tok_out=''
 if [[ -n "$tok_bin" && -x "$tok_bin" ]]; then
   tok_out=$(printf '%s' "$input" | "$tok_bin" 2>/dev/null || true)

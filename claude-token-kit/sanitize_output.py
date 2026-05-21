@@ -23,10 +23,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # common grep/test output like /Users/me/project/app.py:12.
 PATH_SEGMENT = r"[A-Za-z0-9._~+\-]+"
 ABSOLUTE_PATH_RE = re.compile(
-    rf"(?P<prefix>^|[\s(=])(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
+    rf"(?P<prefix>^|[\s('\"=])(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
 )
 WINDOWS_PATH_RE = re.compile(
-    rf"(?P<prefix>^|[\s(=])(?P<path>[A-Za-z]:\\(?:{PATH_SEGMENT}\\)+{PATH_SEGMENT})"
+    rf"(?P<prefix>^|[\s('\"=])(?P<path>[A-Za-z]:\\(?:{PATH_SEGMENT}\\)+{PATH_SEGMENT})"
 )
 PRIVATE_KEY_BEGIN_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
@@ -34,7 +34,9 @@ PRIVATE_KEY_BEGIN_RE = re.compile(
 PRIVATE_KEY_END_RE = re.compile(
     r"-----END (?:[A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
 )
-AUTH_HEADER_RE = re.compile(r"(?i)^(?P<prefix>\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$")
+AUTH_HEADER_RE = re.compile(
+    r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$"
+)
 SECRET_KEY = (
     r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
     r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
@@ -67,6 +69,7 @@ IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)\s+)\S+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)=)\S+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:-p|-u|--user)\s+)\S+:\S+"), r"\1[REDACTED]"),
