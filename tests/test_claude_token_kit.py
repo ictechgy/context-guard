@@ -15,7 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
-PLUGIN_BIN = ROOT / "plugins" / "claude-token-optimizer" / "bin"
+PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
+PLUGIN_BIN = PLUGIN_DIR / "bin"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "claude-token-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
@@ -121,6 +122,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(kit_cache.exists())
         self.assertFalse(plugin_bin_cache.exists())
         self.assertFalse(stale_pyc.exists())
+
+    def test_prepublish_rejects_package_symlinks(self):
+        link = PLUGIN_DIR / "symlink-artifact"
+        try:
+            try:
+                link.unlink()
+            except FileNotFoundError:
+                pass
+            os.symlink(ROOT / "README.md", link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable: {exc}")
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("forbidden package symlink: symlink-artifact", proc.stdout + proc.stderr)
+        finally:
+            try:
+                link.unlink()
+            except FileNotFoundError:
+                pass
 
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
