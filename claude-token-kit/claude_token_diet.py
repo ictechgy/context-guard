@@ -9,6 +9,7 @@ burn during noisy command runs.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -141,14 +142,6 @@ def root_label(root: Path, show_paths: bool) -> str:
     return str(root) if show_paths else f"{root.name or 'project'}#path:{path_hash(root)}"
 
 
-def is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def rel_path(path: Path, root: Path) -> str:
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
@@ -156,20 +149,19 @@ def rel_path(path: Path, root: Path) -> str:
         return f"{path.name}#path:{path_hash(path.resolve())}"
 
 
+class SettingsFileTooLargeError(ValueError):
+    pass
+
+
 def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None]:
-    if path.is_symlink() and not is_relative_to(path, root):
-        return None, "settings symlink resolves outside project root"
     try:
-        st = path.stat()
-        if not stat.S_ISREG(st.st_mode):
-            return None, "settings path is not a regular file"
-        if st.st_size > MAX_SETTINGS_READ_BYTES:
-            return None, f"settings file is too large ({st.st_size} bytes > {MAX_SETTINGS_READ_BYTES})"
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_settings_json_bytes_no_follow(path, root).decode("utf-8"))
     except FileNotFoundError:
         return None, "missing"
     except json.JSONDecodeError as exc:
         return None, f"invalid JSON at line {exc.lineno}: {exc.msg}"
+    except SettingsFileTooLargeError as exc:
+        return None, str(exc)
     except UnicodeDecodeError as exc:
         return None, f"invalid UTF-8 near byte {exc.start}"
     except OSError as exc:
@@ -177,6 +169,83 @@ def load_json(path: Path, root: Path) -> tuple[dict[str, Any] | None, str | None
     if not isinstance(data, dict):
         return None, "settings root must be a JSON object"
     return data, None
+
+
+def _open_regular_under_root_no_follow(root: Path, path: Path):
+    root_resolved = root.resolve()
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise OSError("safe no-follow open is unavailable")
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        raise OSError("safe directory-relative open is unavailable")
+    try:
+        relative = path.relative_to(root_resolved)
+    except ValueError:
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise OSError("settings path is outside project root") from exc
+    parts = relative.parts
+    if not parts:
+        raise OSError(errno.EINVAL, "settings path is missing a file name")
+    for component in parts:
+        if component in {"", "."} or component == "..":
+            raise OSError(errno.EINVAL, "invalid settings path component")
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
+    if hasattr(os, "O_CLOEXEC"):
+        dir_flags |= os.O_CLOEXEC
+    dir_fd = os.open(root_resolved, dir_flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
+            raise OSError(errno.ENOTDIR, "settings root is not a directory")
+        for component in parts[:-1]:
+            next_fd = os.open(component, dir_flags, dir_fd=dir_fd)
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise OSError(errno.ENOTDIR, "settings parent is not a directory")
+            except Exception:
+                os.close(next_fd)
+                raise
+            os.close(dir_fd)
+            dir_fd = next_fd
+        file_flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            file_flags |= os.O_CLOEXEC
+        if nofollow:
+            file_flags |= nofollow
+        try:
+            fd = os.open(parts[-1], file_flags, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OSError(errno.ELOOP, "not a regular file") from exc
+            raise
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                raise OSError(errno.EINVAL, "not a regular file")
+            handle = os.fdopen(fd, "rb")
+            fd = -1
+            return handle
+        except Exception:
+            if fd != -1:
+                os.close(fd)
+            raise
+    finally:
+        if dir_fd != -1:
+            os.close(dir_fd)
+
+
+def read_settings_json_bytes_no_follow(path: Path, root: Path) -> bytes:
+    with _open_regular_under_root_no_follow(root, path) as handle:
+        st = os.fstat(handle.fileno())
+        if st.st_size > MAX_SETTINGS_READ_BYTES:
+            raise SettingsFileTooLargeError(
+                f"settings file is too large ({st.st_size} bytes > {MAX_SETTINGS_READ_BYTES})"
+            )
+        data = handle.read(MAX_SETTINGS_READ_BYTES + 1)
+    if len(data) > MAX_SETTINGS_READ_BYTES:
+        raise SettingsFileTooLargeError(f"settings file is too large (> {MAX_SETTINGS_READ_BYTES} bytes)")
+    return data
 
 
 def iter_values(value: Any) -> Iterable[Any]:
