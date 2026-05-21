@@ -5848,19 +5848,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
-                    provider_script = root / "mock_provider.py"
                     github_token = "ghp_" + ("A" * 36)
                     api_key = "plain-api-key-secret"
                     bearer = "opaque-bearer-token"
                     url_userinfo = "token-user:secret-pass"
-                    provider_script.write_text(
-                        "import sys\n"
-                        f"sys.stdout.write('token={github_token}\\n')\n"
-                        f"sys.stdout.write('api_key={api_key}\\n')\n"
-                        f"sys.stdout.write('https://{url_userinfo}@example.invalid/repo\\n')\n"
-                        f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
-                        "sys.exit(9)\n",
-                        encoding="utf-8",
+                    provider_command = "; ".join(
+                        [
+                            f"printf '%s\\n' {shlex.quote('token=' + github_token)}",
+                            f"printf '%s\\n' {shlex.quote('api_key=' + api_key)}",
+                            f"printf '%s\\n' {shlex.quote('https://' + url_userinfo + '@example.invalid/repo')}",
+                            f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + bearer)} >&2",
+                            "exit 9",
+                        ]
                     )
                     config_path = root / "config.json"
                     write_private_config(config_path, {
@@ -5871,7 +5870,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "providers": {
                             "mock": {
                                 "enabled": True,
-                                "command": [sys.executable, str(provider_script)],
+                                "command": [SAFE_SHELL, "-c", provider_command],
                                 "stdin": True,
                             }
                         },
