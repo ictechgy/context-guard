@@ -32,6 +32,7 @@ STATE_DIR = Path(".claude-token-optimizer")
 STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
+UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 UNSAFE_STATE_PATH_ERRNOS = {
     errno.ELOOP,
     errno.ENOTDIR,
@@ -48,6 +49,10 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
 
 class UnsupportedSafeStateIOError(OSError):
     """현재 플랫폼에서 no-follow state IO 를 안전하게 보장할 수 없음."""
+
+
+class UnsafeStatePathError(OSError):
+    """state path 가 symlink/비정규 파일/부적절한 경로 형태라 거부됨."""
 
 
 # additionalContext 는 모델에게 주입되므로 사용자에게 직접 명령하는 톤보다 모델이 행동을
@@ -102,7 +107,7 @@ def _no_follow_flag() -> int:
     if hasattr(os, "O_NOFOLLOW"):
         return os.O_NOFOLLOW
     raise UnsupportedSafeStateIOError(
-        errno.ENOTSUP,
+        UNSUPPORTED_STATE_IO_ERRNO,
         "failed-attempt nudge state requires POSIX no-follow file opens",
     )
 
@@ -140,7 +145,7 @@ def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
     fd = os.open(component, _base_open_flags() | _directory_flag() | _no_follow_flag(), dir_fd=dir_fd)
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise OSError(f"not a directory: {path}")
+            raise UnsafeStatePathError(errno.ENOTDIR, "not a directory", str(path))
         return fd
     except Exception:
         os.close(fd)
@@ -154,7 +159,7 @@ def _mkdir_directory_at(dir_fd: int, component: str) -> None:
 def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
     if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
         raise UnsupportedSafeStateIOError(
-            errno.ENOTSUP,
+            UNSUPPORTED_STATE_IO_ERRNO,
             "failed-attempt nudge state requires directory-relative no-follow access",
         )
     path = _normalize_allowed_first_absolute_symlink(path)
@@ -168,7 +173,7 @@ def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
             if component in {"", "."}:
                 continue
             if component == "..":
-                raise OSError(f"parent traversal is not allowed: {path}")
+                raise UnsafeStatePathError(errno.EINVAL, "parent traversal is not allowed", str(path))
             try:
                 next_fd = _open_directory_at(dir_fd, component, path)
             except FileNotFoundError:
@@ -198,7 +203,7 @@ def _open_regular_no_symlink(
 ) -> int:
     if os.open not in os.supports_dir_fd:
         raise UnsupportedSafeStateIOError(
-            errno.ENOTSUP,
+            UNSUPPORTED_STATE_IO_ERRNO,
             "failed-attempt nudge state requires directory-relative no-follow opens",
         )
     path = _normalize_allowed_first_absolute_symlink(path)
@@ -208,7 +213,7 @@ def _open_regular_no_symlink(
         fd = os.open(path.name, open_flags, mode, dir_fd=parent_fd)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise OSError(f"not a regular file: {path}")
+                raise UnsafeStatePathError(errno.EINVAL, "not a regular file", str(path))
             return fd
         except Exception:
             os.close(fd)
@@ -229,15 +234,28 @@ def _read_text_no_follow(path: Path) -> str:
 
 
 def _is_unsafe_state_path_error(exc: OSError) -> bool:
-    return exc.errno in UNSAFE_STATE_PATH_ERRNOS
+    return isinstance(exc, UnsafeStatePathError) or exc.errno in UNSAFE_STATE_PATH_ERRNOS
+
+
+def _rename_supports_dir_fd() -> bool:
+    return os.rename in os.supports_dir_fd
+
+
+def _rename_with_dir_fd(src: str, dst: str, parent_fd: int) -> None:
+    os.rename(src, dst, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
 
 
 def _rename_state_entry(src: str, dst: str, parent_fd: int) -> None:
-    try:
-        os.rename(src, dst, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-    except TypeError as exc:
+    if not _rename_supports_dir_fd():
         raise UnsupportedSafeStateIOError(
-            errno.ENOTSUP,
+            UNSUPPORTED_STATE_IO_ERRNO,
+            "failed-attempt nudge state requires directory-relative rename",
+        )
+    try:
+        _rename_with_dir_fd(src, dst, parent_fd)
+    except (NotImplementedError, TypeError) as exc:
+        raise UnsupportedSafeStateIOError(
+            UNSUPPORTED_STATE_IO_ERRNO,
             "failed-attempt nudge state requires directory-relative rename",
         ) from exc
 
@@ -246,8 +264,18 @@ def load_entries(path: Path) -> list[dict]:
     """state file 을 읽는다. 파일이 symlink/regular 가 아니거나 손상되면 빈 list 반환."""
     try:
         data = json.loads(_read_text_no_follow(path))
-    except Exception:
+    except FileNotFoundError:
         return []
+    except UnicodeDecodeError:
+        return []
+    except json.JSONDecodeError:
+        return []
+    except UnsupportedSafeStateIOError:
+        raise
+    except OSError as exc:
+        if _is_unsafe_state_path_error(exc):
+            return []
+        raise
     if not isinstance(data, list):
         return []
     return [entry for entry in data if isinstance(entry, dict)]
@@ -412,7 +440,13 @@ def main() -> int:
     fp = fingerprint(normalize_command(command))
     state_path = STATE_DIR / STATE_FILE_TEMPLATE.format(session=session)
 
-    entries = load_entries(state_path)
+    try:
+        entries = load_entries(state_path)
+    except OSError as exc:
+        # state 읽기 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴 뒤 새 streak 으로 시작한다.
+        if exc.errno not in {errno.EACCES, errno.ENOENT, errno.EROFS}:
+            sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {exc}\n")
+        entries = []
     success = exit_code == 0
     entries = update_entries(entries, fp, success)
     try:
