@@ -3808,6 +3808,54 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIsNone(data)
                     self.assertIn("unreadable", error)
 
+
+    def test_token_diet_settings_load_rejects_symlinked_parent(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_settings_parent_symlink_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    outside = root / "outside"
+                    outside.mkdir()
+                    (outside / "settings.json").write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+                    try:
+                        (root / ".claude").symlink_to(outside, target_is_directory=True)
+                    except (NotImplementedError, OSError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+
+                    data, error = diet.load_json(root / ".claude" / "settings.json", root)
+                    self.assertIsNone(data)
+                    self.assertIn("unreadable", error)
+
+    def test_token_diet_settings_load_rejects_growth_after_open(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_settings_growth_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_dir = root / ".claude"
+                    settings_dir.mkdir()
+                    settings = settings_dir / "settings.json"
+                    settings.write_text("{}", encoding="utf-8")
+                    oversized = b"{}" + (b" " * diet.MAX_SETTINGS_READ_BYTES)
+
+                    original_open_under_root = diet._open_regular_under_root_no_follow
+
+                    def grow_after_open(open_root, path):
+                        handle = original_open_under_root(open_root, path)
+                        settings.write_bytes(oversized)
+                        handle.seek(0)
+                        return handle
+
+                    diet._open_regular_under_root_no_follow = grow_after_open
+                    try:
+                        data, error = diet.load_json(settings, root)
+                    finally:
+                        diet._open_regular_under_root_no_follow = original_open_under_root
+
+                    self.assertIsNone(data)
+                    self.assertIn("settings file is too large", error)
+
     def test_token_diet_scan_reports_invalid_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
