@@ -2689,6 +2689,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 self.assertNotIn("cache ", proc2.stdout)
 
+    def test_statusline_reads_branch_without_invoking_git(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    workspace = root / "workspace"
+                    git_dir = workspace / ".git"
+                    fake_bin = root / "bin"
+                    marker = root / "git-executed"
+                    git_dir.mkdir(parents=True)
+                    fake_bin.mkdir()
+                    (git_dir / "HEAD").write_text("ref: refs/heads/feature/token-hud\n", encoding="utf-8")
+                    fake_git = fake_bin / "git"
+                    fake_git.write_text(
+                        "#!/usr/bin/env bash\n"
+                        f"touch {shlex.quote(str(marker))}\n"
+                        "exit 2\n",
+                        encoding="utf-8",
+                    )
+                    os.chmod(fake_git, stat.S_IRWXU)
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 10},
+                        "cost": {"total_cost_usd": 0.0},
+                        "workspace": {"current_dir": str(workspace)},
+                    }
+                    env = os.environ.copy()
+                    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("feature/token-hud", proc.stdout)
+                    self.assertFalse(marker.exists())
+
     def test_transcript_audit_marks_cache_amortization_undefined_when_no_writes(self):
         """cache_creation == 0 인 transcript는 amortization을 'defined=False'로 노출해야 한다."""
         with tempfile.TemporaryDirectory() as tmp:
