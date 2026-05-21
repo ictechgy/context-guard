@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +33,7 @@ PRESERVED_ENV_KEYS = (
 )
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise SystemExit(f"release smoke failed: {message}")
 
 
@@ -87,8 +87,11 @@ def parse_key_value_lines(stdout: str) -> dict[str, str]:
 def assert_path_under(raw_path: str | None, parent: Path, label: str) -> None:
     if not raw_path:
         fail(f"{label} missing from command output")
+    raw = Path(raw_path).expanduser()
+    if not raw.is_absolute():
+        raw = parent / raw
     try:
-        path = Path(raw_path).expanduser().resolve()
+        path = raw.resolve()
         root = parent.resolve()
     except OSError as exc:
         fail(f"{label} could not be resolved: {exc}")

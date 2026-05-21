@@ -178,6 +178,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
             )
             self.assertIn("release smoke: OK", proc.stdout)
 
+    def test_release_smoke_checks_delegate_relative_paths_under_project(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_relative_paths")
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            project.mkdir()
+            smoke.check_delegate_status(
+                "aux_ai_enabled=false\n"
+                "project_root=.\n"
+                "config_path=.claude-token-optimizer/config.json\n",
+                project,
+            )
+            with self.assertRaises(SystemExit):
+                smoke.check_delegate_status(
+                    "aux_ai_enabled=false\n"
+                    "project_root=.\n"
+                    "config_path=../outside/config.json\n",
+                    project,
+                )
+
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_copy = Path(tmp) / "skills"
