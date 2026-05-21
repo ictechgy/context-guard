@@ -5850,20 +5850,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     root = Path(tmp)
                     github_token = "ghp_" + ("A" * 36)
                     api_key = "plain-api-key-secret"
+                    json_api_key = "json-api-key-secret"
                     auth_value = "opaque-bearer-token"
                     url_userinfo = "token-user:secret-pass"
+                    url_key_userinfo = "url-user:url-secret"
                     github_fine_grained = "github_pat_" + ("B" * 30)
                     gitlab_pat = "glpat-" + ("C" * 20)
                     openai_test_key = "sk_test_" + ("D" * 24)
                     claude_key = "sk-ant-" + ("E" * 24)
                     project_key = "sk-proj-" + ("F" * 24)
+                    json_api_payload = '{"api_key": "' + json_api_key + '"}'
                     expected_redacted = [
                         github_token,
                         api_key,
+                        json_api_key,
                         auth_value,
                         url_userinfo,
                         "token-user@",
                         "secret-pass",
+                        url_key_userinfo,
+                        "url-user@",
+                        "url-secret",
                         github_fine_grained,
                         gitlab_pat,
                         openai_test_key,
@@ -5874,7 +5881,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         [
                             f"printf '%s\\n' {shlex.quote('token=' + github_token)}",
                             f"printf '%s\\n' {shlex.quote('api_key=' + api_key)}",
+                            f"printf '%s\\n' {shlex.quote(json_api_payload)}",
                             f"printf '%s\\n' {shlex.quote('https://' + url_userinfo + '@example.invalid/repo')}",
+                            f"printf '%s\\n' {shlex.quote('password=https://' + url_key_userinfo + '@example.invalid/repo')}",
                             f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + auth_value)} >&2",
                             f"printf '%s\\n' {shlex.quote(github_fine_grained)}",
                             f"printf '%s\\n' {shlex.quote(gitlab_pat)}",
@@ -5968,6 +5977,40 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("ghp_", path_miss.stderr)
                     self.assertNotIn("token=ghp_", path_miss.stderr)
 
+                    auth_command = "Authorization: Bearer opaque-provider-token"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [auth_command], "stdin": True}},
+                    })
+                    auth_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(auth_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", auth_fail.stderr)
+                    self.assertNotIn("Authorization", auth_fail.stderr)
+                    self.assertNotIn("opaque-provider-token", auth_fail.stderr)
+
+                    basic_command = "Authorization: Basic opaque-basic-token"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [basic_command], "stdin": True}},
+                    })
+                    basic_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(basic_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", basic_fail.stderr)
+                    self.assertNotIn("Authorization", basic_fail.stderr)
+                    self.assertNotIn("opaque-basic-token", basic_fail.stderr)
+
                     invalid_relative = "bad\x00path"
                     write_private_config(config_path, {
                         "aux_ai_enabled": True,
@@ -6024,6 +6067,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(url_userinfo, url_fail.stderr)
                     self.assertNotIn("token-user@", url_fail.stderr)
                     self.assertNotIn("secret-pass", url_fail.stderr)
+
+                    control_relative = "safe-\x1b[31m-path"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [control_relative], "stdin": True}},
+                    })
+                    control_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(control_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", control_fail.stderr)
+                    self.assertNotIn("\x1b", control_fail.stderr)
+                    self.assertNotIn("[31m", control_fail.stderr)
 
                     long_safe = root / ("safe-" + ("x" * 180) + ".log")
                     write_private_config(config_path, {
@@ -6147,6 +6207,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn("[REDACTED]", label)
             self.assertNotIn(str(root), label)
             self.assertEqual(aux.response_path_label("bad\x00token"), "redacted-path")
+            self.assertEqual(aux.response_path_label("safe-\x1b[31m-path"), "redacted-path")
+            self.assertEqual(aux.response_path_label("Authorization: Bearer opaque-provider-token"), "redacted-path")
+            self.assertEqual(aux.response_path_label("Authorization: Basic opaque-basic-token"), "redacted-path")
             self.assertIn("safe-", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
             self.assertNotIn("[REDACTED]", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
 

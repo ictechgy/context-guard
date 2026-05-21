@@ -86,8 +86,16 @@ SENSITIVE_CONTENT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )
+KEY_VALUE_SECRET_RE = re.compile(
+    r"(?is)(?<![A-Za-z0-9])"
+    r"[\"']?(?:api[_-]?key|token|secret|password|client[_-]?secret)[\"']?\s*[:=]\s*"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,}]+)"
+)
 SENSITIVE_HEX_RE = re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b[^\n]{0,40}\b[0-9a-f]{32,}\b")
+AUTH_HEADER_RE = re.compile(r"(?is)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+")
 URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+OUTPUT_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 PATH_LABEL_SECRET_RE = re.compile(
     r"(?i)("
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
@@ -98,7 +106,8 @@ PATH_LABEL_SECRET_RE = re.compile(
     r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
     r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^/\s]+"
+    r"(?<![A-Za-z0-9])[\"']?(?:api[_-]?key|token|secret|password|client[_-]?secret)[\"']?\s*[:=]\s*"
+    r"(?:\"[^\"/\s]*\"|'[^'/\s]*'|[^/\s]+)"
     r")"
 )
 SAFE_ENV_KEYS = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
@@ -184,24 +193,34 @@ def stable_hash(value: str, length: int = 12) -> str:
 
 
 def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
-    compact = " ".join(value.strip().split())
-    compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
-    compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
     compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
+    compact = KEY_VALUE_SECRET_RE.sub("[REDACTED]", compact)
+    compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
     if len(compact) > limit:
         compact = compact[: limit - 15].rstrip() + " ...[truncated]"
     return compact
 
 
 def redact_sensitive_output(value: str) -> str:
-    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", value)
+    redacted = OUTPUT_CONTROL_CHAR_RE.sub(" ", value)
+    redacted = URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", redacted)
+    redacted = KEY_VALUE_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = PATH_LABEL_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
-    return URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+    return redacted
 
 
 def path_label_has_sensitive_evidence(label: str) -> bool:
-    if URL_USERINFO_RE.search(label) or PATH_LABEL_SECRET_RE.search(label):
+    if (
+        CONTROL_CHAR_RE.search(label)
+        or URL_USERINFO_RE.search(label)
+        or AUTH_HEADER_RE.search(label)
+        or KEY_VALUE_SECRET_RE.search(label)
+        or PATH_LABEL_SECRET_RE.search(label)
+    ):
         return True
     try:
         return is_sensitive_context_path(Path(label))
@@ -210,8 +229,9 @@ def path_label_has_sensitive_evidence(label: str) -> bool:
 
 
 def compact_path_label_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
-    compact = " ".join(value.strip().split())
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
     compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = KEY_VALUE_SECRET_RE.sub("[REDACTED]", compact)
     compact = PATH_LABEL_SECRET_RE.sub("[REDACTED]", compact)
     if len(compact) > limit:
         compact = compact[: limit - 15].rstrip() + " ...[truncated]"
