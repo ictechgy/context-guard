@@ -84,6 +84,7 @@ SENSITIVE_CONTENT_RE = re.compile(
     r")"
 )
 SENSITIVE_HEX_RE = re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b[^\n]{0,40}\b[0-9a-f]{32,}\b")
+URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 SAFE_ENV_KEYS = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
 PROVIDER_AUTH_ENV_KEYS = {
     "codex": {"CODEX_API_KEY", "OPENAI_API_KEY"},
@@ -170,9 +171,16 @@ def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> st
     compact = " ".join(value.strip().split())
     compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
     compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
+    compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
     if len(compact) > limit:
         compact = compact[: limit - 15].rstrip() + " ...[truncated]"
     return compact
+
+
+def redact_sensitive_output(value: str) -> str:
+    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", value)
+    redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
+    return URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
 
 
 def os_error_summary(exc: OSError) -> str:
@@ -1015,6 +1023,29 @@ def safe_delegation_dir(config: dict[str, Any]) -> Path:
     return resolved
 
 
+def response_path_label(raw_path: str) -> str:
+    try:
+        root = find_project_root()
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        resolved = path.resolve()
+        if is_sensitive_context_path(resolved):
+            return "sensitive-path"
+        label = context_label_for_path(resolved, root)
+    except (OSError, RuntimeError, ValueError):
+        label = raw_path
+    redacted = compact_warning_text(label)
+    if redacted != label:
+        return "redacted-path"
+    return redacted or "path"
+
+
+def response_override_summary(paths: list[str] | None) -> str:
+    labels = [response_path_label(path) for path in paths or []]
+    return ", ".join(labels) if labels else "none"
+
+
 def save_response(
     config: dict[str, Any],
     provider: str,
@@ -1035,6 +1066,8 @@ def save_response(
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = out_dir / f"{stamp}-{os.getpid()}-{provider}.md"
     boundary = f"CLAUDE_TOKEN_AUX_RESPONSE_{uuid.uuid4().hex}"
+    safe_stdout = redact_sensitive_output(stdout.rstrip())
+    safe_stderr = redact_sensitive_output(stderr.rstrip())
     content = [
         "# Auxiliary AI delegation response",
         "",
@@ -1044,22 +1077,22 @@ def save_response(
         f"- exit_code: `{rc}`",
         f"- created_at: `{_dt.datetime.now().isoformat(timespec='seconds')}`",
         f"- task_chars: `{len(task)}`",
-        f"- sensitive_context_overrides: `{', '.join(sensitive_overrides or []) or 'none'}`",
-        f"- outside_project_overrides: `{', '.join(outside_overrides or []) or 'none'}`",
+        f"- sensitive_context_overrides: `{response_override_summary(sensitive_overrides)}`",
+        f"- outside_project_overrides: `{response_override_summary(outside_overrides)}`",
         "",
         "## Untrusted Stdout",
         "",
         f"-----BEGIN UNTRUSTED AUX STDOUT {boundary}-----",
-        escape_untrusted_output(stdout.rstrip(), boundary),
+        escape_untrusted_output(safe_stdout, boundary),
         f"-----END UNTRUSTED AUX STDOUT {boundary}-----",
         "",
     ]
-    if stderr.strip():
+    if safe_stderr.strip():
         content.extend([
             "## Untrusted Stderr",
             "",
             f"-----BEGIN UNTRUSTED AUX STDERR {boundary}-----",
-            escape_untrusted_output(stderr.rstrip(), boundary),
+            escape_untrusted_output(safe_stderr, boundary),
             f"-----END UNTRUSTED AUX STDERR {boundary}-----",
             "",
         ])
@@ -1222,7 +1255,7 @@ def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
     try:
         return read_text_no_follow_bounded(path, read_limit)
     except OSError as exc:
-        return f"[failed to read provider output safely: {exc}]\n", False
+        return f"[failed to read provider output safely: {os_error_summary(exc)}]\n", False
 
 
 def provider_output_size(*files: Any) -> int:
@@ -1271,7 +1304,11 @@ def run_provider(
                         start_new_session=True,
                     )
                 except (OSError, ValueError) as exc:
-                    stderr_file.write(f"provider failed to start: {exc.__class__.__name__}: {exc}\n".encode("utf-8", "replace"))
+                    if isinstance(exc, OSError):
+                        detail = os_error_summary(exc)
+                    else:
+                        detail = f"{exc.__class__.__name__}: {compact_warning_text(str(exc), 160)}"
+                    stderr_file.write(f"provider failed to start: {detail}\n".encode("utf-8", "replace"))
                     returncode = 127
                     proc = None
                 if proc is None:
@@ -1474,6 +1511,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         timeout_seconds,
         max_output_chars,
     )
+    stdout = redact_sensitive_output(stdout)
+    stderr = redact_sensitive_output(stderr)
 
     saved = save_response(config, provider, stdout, stderr, task, returncode, allow_sensitive, allow_outside)
     if returncode != 0 and stderr.strip():

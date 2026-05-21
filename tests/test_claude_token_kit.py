@@ -5843,6 +5843,59 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 9)
             self.assertIn("AUTH FAIL", proc.stdout)
 
+    def test_aux_delegate_redacts_provider_output_before_preview_and_save(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    provider_script = root / "mock_provider.py"
+                    github_token = "ghp_" + ("A" * 36)
+                    api_key = "plain-api-key-secret"
+                    bearer = "opaque-bearer-token"
+                    url_userinfo = "token-user:secret-pass"
+                    provider_script.write_text(
+                        "import sys\n"
+                        f"sys.stdout.write('token={github_token}\\n')\n"
+                        f"sys.stdout.write('api_key={api_key}\\n')\n"
+                        f"sys.stdout.write('https://{url_userinfo}@example.invalid/repo\\n')\n"
+                        f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
+                        "sys.exit(9)\n",
+                        encoding="utf-8",
+                    )
+                    config_path = root / "config.json"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "mock",
+                        "max_output_chars": 4000,
+                        "delegation_dir": ".claude-token-optimizer/delegations",
+                        "providers": {
+                            "mock": {
+                                "enabled": True,
+                                "command": [sys.executable, str(provider_script)],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "mock", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(proc.returncode, 9)
+                    combined = proc.stdout + proc.stderr
+                    for secret in [github_token, api_key, bearer, url_userinfo, "token-user@", "secret-pass"]:
+                        self.assertNotIn(secret, combined)
+                    self.assertIn("[REDACTED]", proc.stdout)
+                    saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
+                    saved_text = Path(saved_line.split("=", 1)[1]).read_text(encoding="utf-8")
+                    for secret in [github_token, api_key, bearer, url_userinfo, "token-user@", "secret-pass"]:
+                        self.assertNotIn(secret, saved_text)
+                    self.assertIn("[REDACTED]", saved_text)
+
     def test_aux_delegate_writes_private_gitignore_for_responses(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -5863,6 +5916,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
                 else:
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+
+    def test_aux_delegate_saved_response_override_metadata_uses_safe_labels(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            secret_path = root / ("token=ghp_" + ("A" * 36) + ".env")
+            outside_path = Path(tmp) / ("outside-password=" + ("B" * 32) + ".log")
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(state / "config.json")
+            try:
+                config = aux.json_clone(aux.DEFAULT_CONFIG)
+                path = aux.save_response(
+                    config,
+                    "gemini",
+                    "out",
+                    "",
+                    "task",
+                    0,
+                    sensitive_overrides=[str(secret_path)],
+                    outside_overrides=[str(outside_path)],
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("sensitive_context_overrides: `sensitive-path`", text)
+            self.assertIn("outside_project_overrides: `sensitive-path`", text)
+            self.assertNotIn(str(root), text)
+            self.assertNotIn(tmp, text)
+            self.assertNotIn("ghp_", text)
+            self.assertNotIn("password=", text)
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
         aux = load_aux_module()
