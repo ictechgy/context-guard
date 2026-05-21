@@ -1305,6 +1305,55 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 setup.load_json_object = original_load
             self.assertFalse((outside / "settings.json").exists())
 
+    def test_setup_wizard_backup_rejects_parent_swap_before_copy(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_backup_parent_swap")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            resolved_root = root.resolve()
+            settings_dir = resolved_root / ".claude"
+            settings_dir.mkdir()
+            settings_path = settings_dir / "settings.json"
+            settings_path.write_text(json.dumps({"permissions": {"deny": []}}), encoding="utf-8")
+            os.chmod(settings_path, 0o600)
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "settings.json").write_text(json.dumps({"secret": "outside"}), encoding="utf-8")
+            original_load = setup.load_json_object
+
+            def swap_parent_after_read(path):
+                data = original_load(path)
+                if path == resolved_root / ".claude" / "settings.json" and settings_dir.exists():
+                    swapped = resolved_root / ".claude-original"
+                    settings_dir.rename(swapped)
+                    settings_dir.symlink_to(outside, target_is_directory=True)
+                return data
+
+            args = argparse.Namespace(
+                root=str(root),
+                allow_home_settings=False,
+                no_denies=False,
+                no_statusline=True,
+                no_bash_hook=True,
+                no_read_guard=True,
+                no_model_defaults=True,
+                aux_provider="none",
+                auto_delegate=False,
+                failed_attempt_nudge=False,
+                yes=True,
+                plan=False,
+                dry_run=False,
+                no_backup=False,
+            )
+            setup.load_json_object = swap_parent_after_read
+            try:
+                with self.assertRaises(OSError):
+                    setup.run(args)
+            finally:
+                setup.load_json_object = original_load
+            self.assertEqual(json.loads((outside / "settings.json").read_text(encoding="utf-8")), {"secret": "outside"})
+            self.assertEqual(list(outside.glob("settings.json.bak-*")), [])
+
     def test_setup_wizard_preflight_fails_unsupported_platform_before_missing_read(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_unsupported_platform")
         with tempfile.TemporaryDirectory() as tmp:
