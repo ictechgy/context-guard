@@ -103,7 +103,7 @@ def normalize_command(command: str) -> str:
             positional.append(token)
         index += 1
     normalized = positional[:2]
-    return " ".join([*normalized, *selectors])
+    return " ".join([*normalized, *sorted(selectors)])
 
 
 def fingerprint(normalized: str) -> str:

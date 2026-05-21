@@ -2081,6 +2081,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "pytest tests/auth.py -k=login",
                 )
                 self.assertEqual(
+                    module.normalize_command("pytest tests/auth.py -k login -m slow"),
+                    module.normalize_command("pytest tests/auth.py -m slow -k login"),
+                )
+                self.assertEqual(
                     module.normalize_command("npm test -- --testNamePattern=login"),
                     "npm test --testNamePattern=login",
                 )
