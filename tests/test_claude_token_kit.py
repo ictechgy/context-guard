@@ -5968,6 +5968,39 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("ghp_", path_miss.stderr)
                     self.assertNotIn("token=ghp_", path_miss.stderr)
 
+                    invalid_relative = "bad\x00path"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [invalid_relative], "stdin": True}},
+                    })
+                    invalid_rel_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(invalid_rel_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", invalid_rel_fail.stderr)
+                    self.assertNotIn(invalid_relative.replace("\x00", ""), invalid_rel_fail.stderr)
+
+                    invalid_absolute = str(root / "bad\x00path")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [invalid_absolute], "stdin": True}},
+                    })
+                    invalid_abs_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(invalid_abs_fail.returncode, 127)
+                    self.assertIn("executable cannot be resolved: redacted-path", invalid_abs_fail.stderr)
+                    self.assertNotIn(str(root), invalid_abs_fail.stderr)
+                    self.assertNotIn("bad\x00path", invalid_abs_fail.stderr)
+
                     url_userinfo = "token-user:secret-pass"
                     write_private_config(config_path, {
                         "aux_ai_enabled": True,

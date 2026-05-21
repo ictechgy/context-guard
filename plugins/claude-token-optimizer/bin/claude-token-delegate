@@ -206,7 +206,7 @@ def path_label_has_sensitive_evidence(label: str) -> bool:
     try:
         return is_sensitive_context_path(Path(label))
     except (TypeError, ValueError):
-        return False
+        return True
 
 
 def compact_path_label_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
@@ -1080,7 +1080,7 @@ def response_path_label(raw_path: str) -> str:
             return "sensitive-path"
         label = context_label_for_path(resolved, root)
     except (OSError, RuntimeError, ValueError):
-        label = raw_path
+        return "redacted-path"
     if path_label_has_sensitive_evidence(label):
         return "redacted-path"
     return compact_path_label_text(label) or "path"
