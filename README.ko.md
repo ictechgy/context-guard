@@ -106,6 +106,10 @@ Claude에 전달하기 전에 검색·diff 출력 정제:
 ./plugins/claude-token-optimizer/bin/claude-token-audit ~/.claude/projects --top 20 --recommend
 ```
 
+audit 명령은 기본적으로 과도하게 큰 transcript 파일/JSONL record를 건너뛰며
+(`--max-file-bytes`, `--max-line-bytes`) skip count를 보고합니다. 손상된 trace가
+메모리를 독점하거나 scan gap을 숨기지 않게 하기 위한 방어입니다.
+
 ## 보조 AI 위임 (선택 기능)
 
 Gemini CLI나 Codex CLI가 있다면, 광범위한 파일 분류, 긴 로그 요약, 원인 가설 생성, 플래닝 검토 같은 읽기 전용 작업을 외부 AI CLI에 맡길 수 있습니다.

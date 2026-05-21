@@ -3154,6 +3154,67 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(data["cost_usd_observed"], 2.0)
         self.assertTrue(data["parse_errors"])
 
+    def test_transcript_audit_skips_oversized_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "oversized.jsonl"
+            sample.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            str(sample),
+                            "--json",
+                            "--max-file-bytes",
+                            "10",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["files"], 1)
+                    self.assertEqual(data["records"], 0)
+                    self.assertEqual(data["skipped_files"], 1)
+                    self.assertEqual(data["scan_limits"]["max_file_bytes"], 10)
+                    self.assertIn("skipped oversized transcript file", data["parse_errors"][0])
+                    self.assertNotIn(tmp, proc.stdout)
+
+    def test_transcript_audit_skips_oversized_jsonl_records_without_losing_following_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_bytes(
+                b'{"usage":{"input_tokens":1}}\n'
+                + b'{"blob":"'
+                + (b"x" * 200)
+                + b'"}\n'
+                + b'{"usage":{"output_tokens":2}}\n'
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            str(sample),
+                            "--json",
+                            "--max-line-bytes",
+                            "64",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["files"], 1)
+                    self.assertEqual(data["records"], 2)
+                    self.assertEqual(data["skipped_records"], 1)
+                    self.assertEqual(data["tokens"]["input"], 1)
+                    self.assertEqual(data["tokens"]["output"], 2)
+                    self.assertEqual(data["scan_limits"]["max_line_bytes"], 64)
+                    self.assertIn("skipped oversized JSONL record", data["parse_errors"][0])
+
     def test_transcript_audit_ignores_non_finite_metric_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
