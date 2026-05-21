@@ -104,6 +104,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(os.access(plugin, os.X_OK), f"{plugin} must be executable")
 
     def test_prepublish_check_package_invariants(self):
+        kit_cache = KIT_DIR / "__pycache__"
+        plugin_bin_cache = PLUGIN_BIN / "__pycache__"
+        shutil.rmtree(kit_cache, ignore_errors=True)
+        shutil.rmtree(plugin_bin_cache, ignore_errors=True)
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
             text=True,
@@ -111,6 +115,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             check=True,
         )
         self.assertIn("prepublish check: OK", proc.stdout)
+        self.assertFalse(kit_cache.exists())
+        self.assertFalse(plugin_bin_cache.exists())
 
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [

@@ -13,6 +13,7 @@ import py_compile
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -132,15 +133,19 @@ def check_package_clean() -> None:
 
 
 def check_python_compiles() -> None:
-    # Shell wrappers are skipped by py_compile.
-    for kit_name, _bin_name in IMPLEMENTATION_PAIRS:
-        path = KIT_DIR / kit_name
-        if path.suffix != ".py":
-            continue
-        try:
-            py_compile.compile(str(path), doraise=True)
-        except py_compile.PyCompileError as exc:
-            fail(f"python compile failed for {path}: {exc.msg}")
+    # Shell wrappers are skipped by py_compile. Compile to a private temp
+    # directory so a release gate does not dirty the source tree with
+    # __pycache__ artifacts before packaging.
+    with tempfile.TemporaryDirectory(prefix="claude-token-prepublish-pyc-") as td:
+        pyc_dir = Path(td)
+        for kit_name, _bin_name in IMPLEMENTATION_PAIRS:
+            path = KIT_DIR / kit_name
+            if path.suffix != ".py":
+                continue
+            try:
+                py_compile.compile(str(path), cfile=str(pyc_dir / f"{path.stem}.pyc"), doraise=True)
+            except py_compile.PyCompileError as exc:
+                fail(f"python compile failed for {path}: {exc.msg}")
 
 
 def run_tests() -> None:
