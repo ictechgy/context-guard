@@ -5427,6 +5427,44 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
                             self.assertIn("…[truncated]", note)
 
+    def test_csv_access_uses_advisory_lock_file(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_lock_{index}")
+                if module.fcntl is None:
+                    self.skipTest("fcntl unavailable")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    result = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="ok",
+                    )
+                    operations: list[int] = []
+                    real_flock = module.fcntl.flock
+
+                    def recording_flock(fd, operation):
+                        operations.append(operation)
+                        return real_flock(fd, operation)
+
+                    module.fcntl.flock = recording_flock
+                    try:
+                        module.append_csv(csv_path, "test", result)
+                        self.assertEqual(module.existing_keys(csv_path), {("t01", "baseline")})
+                    finally:
+                        module.fcntl.flock = real_flock
+
+                    lock_path = csv_path.with_name("results.csv.lock")
+                    self.assertTrue(lock_path.exists())
+                    self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
+                    self.assertGreaterEqual(operations.count(module.fcntl.LOCK_EX), 2)
+                    self.assertGreaterEqual(operations.count(module.fcntl.LOCK_UN), 2)
+
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
         with tempfile.TemporaryDirectory() as tmp:

@@ -47,6 +47,7 @@ dry-run 모드는 실제 호출은 하지 않고 어떤 명령이 실행될지�
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 import datetime as _dt
 import json
@@ -62,6 +63,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - benchmark runner already requires POSIX no-follow IO.
+    fcntl = None  # type: ignore[assignment]
 
 CSV_COLUMNS = [
     "date",
@@ -224,6 +230,26 @@ def _read_text_no_follow(path: Path) -> str:
             return handle.read()
     finally:
         if fd != -1:
+            os.close(fd)
+
+
+@contextmanager
+def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
+    """Serialize CSV read/write access with a no-follow sidecar lock file."""
+    if fcntl is None:
+        raise OSError("platform does not support advisory CSV locks")
+    lock_path = csv_path.with_name(f"{csv_path.name}.lock")
+    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
+    locked = False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        try:
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
             os.close(fd)
 
 
@@ -530,59 +556,64 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
 
 
 def append_csv(csv_path: Path, claude_ver: str, result: RunResult) -> None:
-    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
-    fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
-    try:
-        new_file = os.fstat(fd).st_size == 0
-        with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
-            fd = -1
-            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-            if new_file:
-                writer.writeheader()
-            tokens = result.tokens
-            total = sum(tokens.values())
-            writer.writerow({
-                "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                "claude_version": claude_ver,
-                "task_id": result.task_id,
-                "variant": result.variant,
-                "model": result.model,
-                "effort": result.effort,
-                "total_tokens": total,
-                "input_tokens": tokens.get("input_tokens", 0),
-                "output_tokens": tokens.get("output_tokens", 0),
-                "cache_read": tokens.get("cache_read", 0),
-                "cache_creation": tokens.get("cache_creation", 0),
-                "cost_usd": f"{result.cost_usd:.6f}",
-                "success": "true" if result.success else "false",
-                "corrections": result.corrections,
-                "notes": sanitize_csv_note(result.notes),
-            })
-    finally:
-        if fd != -1:
-            os.close(fd)
+    with csv_file_lock(csv_path, create_parent=True):
+        flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+        fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
+        try:
+            new_file = os.fstat(fd).st_size == 0
+            with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
+                fd = -1
+                writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+                if new_file:
+                    writer.writeheader()
+                tokens = result.tokens
+                total = sum(tokens.values())
+                writer.writerow({
+                    "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "claude_version": claude_ver,
+                    "task_id": result.task_id,
+                    "variant": result.variant,
+                    "model": result.model,
+                    "effort": result.effort,
+                    "total_tokens": total,
+                    "input_tokens": tokens.get("input_tokens", 0),
+                    "output_tokens": tokens.get("output_tokens", 0),
+                    "cache_read": tokens.get("cache_read", 0),
+                    "cache_creation": tokens.get("cache_creation", 0),
+                    "cost_usd": f"{result.cost_usd:.6f}",
+                    "success": "true" if result.success else "false",
+                    "corrections": result.corrections,
+                    "notes": sanitize_csv_note(result.notes),
+                })
+        finally:
+            if fd != -1:
+                os.close(fd)
 
 
 def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
     """이미 적재된 (task_id, variant) 조합. resume 시 skip 판정에 사용."""
     try:
-        fd = _open_regular_no_symlink(csv_path)
+        with csv_file_lock(csv_path, create_parent=False):
+            try:
+                fd = _open_regular_no_symlink(csv_path)
+            except FileNotFoundError:
+                return set()
+            keys: set[tuple[str, str]] = set()
+            try:
+                with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
+                    fd = -1
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        tid = row.get("task_id") or ""
+                        var = row.get("variant") or ""
+                        if tid and var:
+                            keys.add((tid, var))
+            finally:
+                if fd != -1:
+                    os.close(fd)
+            return keys
     except FileNotFoundError:
         return set()
-    keys: set[tuple[str, str]] = set()
-    try:
-        with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
-            fd = -1
-            reader = csv.DictReader(f)
-            for row in reader:
-                tid = row.get("task_id") or ""
-                var = row.get("variant") or ""
-                if tid and var:
-                    keys.add((tid, var))
-    finally:
-        if fd != -1:
-            os.close(fd)
-    return keys
 
 
 def sanitize_csv_note(value: Any) -> str:
