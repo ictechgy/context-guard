@@ -87,20 +87,77 @@ def has_symlink_component(path: Path) -> bool:
     return False
 
 
-def read_text_bounded(path: Path) -> tuple[str, bool]:
+def _base_open_flags() -> int:
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
+    return flags
+
+
+def _no_follow_flag() -> int:
     if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    before = os.stat(path, follow_symlinks=False)
-    if not stat.S_ISREG(before.st_mode):
-        raise OSError(f"not a regular file: {path}")
-    fd = os.open(path, flags)
+        return os.O_NOFOLLOW
+    raise OSError("platform does not support no-follow file opens")
+
+
+def _directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path, *, allow_first_absolute_symlink: bool) -> int:
+    flags = _base_open_flags() | _directory_flag()
+    if not allow_first_absolute_symlink:
+        flags |= _no_follow_flag()
+    fd = os.open(component, flags, dir_fd=dir_fd)
     try:
-        after = os.fstat(fd)
-        if before.st_dev != after.st_dev or before.st_ino != after.st_ino:
-            raise OSError(f"file changed while opening: {path}")
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"not a directory: {path}")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_regular_no_symlink(path: Path) -> int:
+    """Open a regular file without following symlinks in any trusted component."""
+    if os.open not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative no-follow opens")
+    nofollow = _no_follow_flag()
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    if not components:
+        raise OSError(f"not a regular file: {path}")
+
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for depth, component in enumerate(components[:-1]):
+            allow_first_absolute_symlink = path.is_absolute() and depth == 0
+            next_fd = _open_directory_at(
+                dir_fd,
+                component,
+                path,
+                allow_first_absolute_symlink=allow_first_absolute_symlink,
+            )
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        fd = os.open(components[-1], _base_open_flags() | nofollow, dir_fd=dir_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"not a regular file: {path}")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def read_text_bounded(path: Path) -> tuple[str, bool]:
+    fd = _open_regular_no_symlink(path)
+    try:
         with os.fdopen(fd, "rb") as handle:
             fd = -1
             data = handle.read(MAX_READ_BYTES + 1)
