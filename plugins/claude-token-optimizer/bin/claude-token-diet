@@ -175,9 +175,9 @@ def _open_regular_under_root_no_follow(root: Path, path: Path):
     root_resolved = root.resolve()
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     if not nofollow:
-        raise OSError("safe no-follow open is unavailable")
+        raise OSError(errno.ENOTSUP, "safe no-follow open is unavailable")
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        raise OSError("safe directory-relative open is unavailable")
+        raise OSError(errno.ENOTSUP, "safe directory-relative open is unavailable")
     try:
         relative = path.relative_to(root_resolved)
     except ValueError:
@@ -199,15 +199,19 @@ def _open_regular_under_root_no_follow(root: Path, path: Path):
         if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
             raise OSError(errno.ENOTDIR, "settings root is not a directory")
         for component in parts[:-1]:
+            next_fd = -1
             next_fd = os.open(component, dir_flags, dir_fd=dir_fd)
             try:
                 if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
                     raise OSError(errno.ENOTDIR, "settings parent is not a directory")
+                old_fd = dir_fd
+                dir_fd = next_fd
+                next_fd = -1
+                os.close(old_fd)
             except Exception:
-                os.close(next_fd)
+                if next_fd != -1:
+                    os.close(next_fd)
                 raise
-            os.close(dir_fd)
-            dir_fd = next_fd
         file_flags = os.O_RDONLY
         if hasattr(os, "O_CLOEXEC"):
             file_flags |= os.O_CLOEXEC
