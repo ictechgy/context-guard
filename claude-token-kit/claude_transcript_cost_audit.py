@@ -235,7 +235,7 @@ def display_path_hash(path: Path) -> str:
 
 def path_label(path: Path, show_paths: bool = False) -> str:
     if show_paths:
-        return str(path)
+        return sanitize_path_text(str(path))
     name = sanitize_label(sanitize_path_component(path.name or "transcript"), 80)
     return f"{name}#path:{display_path_hash(path)}"
 
@@ -698,7 +698,11 @@ def main() -> int:
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--recommend", action="store_true", help="Print concrete token-saving recommendations")
-    parser.add_argument("--show-paths", action="store_true", help="Show raw transcript paths instead of basename+hash labels")
+    parser.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="Show transcript paths instead of basename+hash labels; secret-shaped path components remain redacted",
+    )
     parser.add_argument("--show-commands", action="store_true", help="Show redacted command strings instead of command category+hash labels")
     parser.add_argument(
         "--max-file-bytes",
