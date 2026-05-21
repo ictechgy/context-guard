@@ -1379,6 +1379,41 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(config["custom_note"], "keep me")
             self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
 
+    def test_setup_wizard_aux_config_git_timeout_resets_untrusted_config(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_git_timeout")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            config_path = state / "config.json"
+            config_path.write_text(json.dumps({"custom_note": "drop me"}), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+            calls: list[list[str]] = []
+            original_run = setup.subprocess.run
+
+            def timed_out_run(args, **kwargs):
+                calls.append(list(args))
+                self.assertEqual(kwargs.get("timeout"), setup.GIT_TRUST_CHECK_TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+            setup.subprocess.run = timed_out_run
+            try:
+                actions: list[str] = []
+                setup.write_aux_config(
+                    root,
+                    "gemini",
+                    actions,
+                    auto_delegate=False,
+                    dry_run=False,
+                    backup=False,
+                )
+            finally:
+                setup.subprocess.run = original_run
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("custom_note", config)
+            self.assertTrue(any("git tracking check timed out" in action for action in actions))
+            self.assertTrue(calls)
+
     def test_setup_wizard_refuses_symlinked_aux_config_before_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "project"

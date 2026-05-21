@@ -55,6 +55,7 @@ HELPER_GUARD_READ = "claude-token-guard-read"
 HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
+GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 
 
 @dataclass
@@ -384,15 +385,30 @@ def load_aux_config(path: Path) -> dict[str, Any]:
     return data
 
 
-def git_root_for(path: Path) -> Path | None:
+class GitTrustCheckTimeout(RuntimeError):
+    pass
+
+
+def run_git_trust_check(args: list[str]) -> subprocess.CompletedProcess[str] | None:
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"],
+        return subprocess.run(
+            args,
             text=True,
             capture_output=True,
             check=False,
+            timeout=GIT_TRUST_CHECK_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise GitTrustCheckTimeout("git trust check timed out") from exc
     except OSError:
+        return None
+
+
+def git_root_for(path: Path) -> Path | None:
+    proc = run_git_trust_check(
+        ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"]
+    )
+    if proc is None:
         return None
     if proc.returncode != 0:
         return None
@@ -408,12 +424,11 @@ def is_git_tracked(path: Path) -> bool:
         rel = path.resolve().relative_to(root)
     except ValueError:
         return False
-    proc = subprocess.run(
+    proc = run_git_trust_check(
         ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(rel)],
-        text=True,
-        capture_output=True,
-        check=False,
     )
+    if proc is None:
+        return False
     return proc.returncode == 0
 
 
@@ -430,8 +445,11 @@ def has_private_file_mode(path: Path) -> bool:
 def aux_config_trust_error(path: Path) -> str | None:
     if not path.exists():
         return None
-    if is_git_tracked(path):
-        return f"tracked by git: {path}"
+    try:
+        if is_git_tracked(path):
+            return f"tracked by git: {path}"
+    except GitTrustCheckTimeout:
+        return f"git tracking check timed out: {path}"
     if not has_private_file_mode(path):
         return f"not owner-only 0600: {path}"
     return None
