@@ -3810,6 +3810,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("safe PATH", proc.stderr)
             self.assertNotIn("fake provider", proc.stdout)
 
+    def test_aux_delegate_safe_path_rejects_project_symlink_entries(self):
+        aux = load_aux_module()
+        safe_dir = Path(sys.executable).resolve().parent
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            linked_bin = root / "linked-bin"
+            linked_bin.symlink_to(safe_dir, target_is_directory=True)
+            old_path = os.environ.get("PATH")
+            original_project_root = aux.find_project_root
+            aux.find_project_root = lambda: root
+            os.environ["PATH"] = f"{linked_bin}{os.pathsep}{safe_dir}"
+            try:
+                entries = aux.safe_path_entries()
+            finally:
+                aux.find_project_root = original_project_root
+                if old_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = old_path
+            self.assertEqual(entries.count(str(safe_dir)), 1)
+
     def test_aux_delegate_rejects_unsafe_provider_executable_file_modes(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
