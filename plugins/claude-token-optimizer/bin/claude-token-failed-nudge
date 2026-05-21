@@ -32,6 +32,11 @@ STATE_DIR = Path(".claude-token-optimizer")
 STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
+UNSAFE_STATE_PATH_ERRNOS = {
+    errno.ELOOP,
+    errno.ENOTDIR,
+    errno.EISDIR,
+}
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     # macOS exposes these as first-component symlinks to /private/*.  Allow only
     # this OS-owned alias so tests and hooks in TMPDIR can still use no-follow
@@ -39,6 +44,11 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
+
+
+class UnsupportedSafeStateIOError(OSError):
+    """현재 플랫폼에서 no-follow state IO 를 안전하게 보장할 수 없음."""
+
 
 # additionalContext 는 모델에게 주입되므로 사용자에게 직접 명령하는 톤보다 모델이 행동을
 # 결정할 때 참고할 힌트 형태가 자연스럽다. 모델이 사용자에게 안내하도록 유도한다.
@@ -83,13 +93,18 @@ def _base_open_flags() -> int:
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     return flags
 
 
 def _no_follow_flag() -> int:
     if hasattr(os, "O_NOFOLLOW"):
         return os.O_NOFOLLOW
-    raise OSError("platform does not support no-follow file opens")
+    raise UnsupportedSafeStateIOError(
+        errno.ENOTSUP,
+        "failed-attempt nudge state requires POSIX no-follow file opens",
+    )
 
 
 def _directory_flag() -> int:
@@ -132,9 +147,16 @@ def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
         raise
 
 
+def _mkdir_directory_at(dir_fd: int, component: str) -> None:
+    os.mkdir(component, 0o777, dir_fd=dir_fd)
+
+
 def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
     if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
-        raise OSError("platform does not support directory-relative no-follow directory access")
+        raise UnsupportedSafeStateIOError(
+            errno.ENOTSUP,
+            "failed-attempt nudge state requires directory-relative no-follow access",
+        )
     path = _normalize_allowed_first_absolute_symlink(path)
     components = list(path.parts)
     if path.is_absolute() and components:
@@ -152,7 +174,12 @@ def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
             except FileNotFoundError:
                 if not create:
                     raise
-                os.mkdir(component, 0o777, dir_fd=dir_fd)
+                try:
+                    _mkdir_directory_at(dir_fd, component)
+                except FileExistsError:
+                    # 다른 hook process 가 방금 만든 경우. 아래 no-follow open 으로
+                    # 실제 디렉터리인지 다시 검증하므로 symlink race 는 허용하지 않는다.
+                    pass
                 next_fd = _open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = next_fd
@@ -170,7 +197,10 @@ def _open_regular_no_symlink(
     create_parent: bool = False,
 ) -> int:
     if os.open not in os.supports_dir_fd:
-        raise OSError("platform does not support directory-relative no-follow opens")
+        raise UnsupportedSafeStateIOError(
+            errno.ENOTSUP,
+            "failed-attempt nudge state requires directory-relative no-follow opens",
+        )
     path = _normalize_allowed_first_absolute_symlink(path)
     parent_fd = _ensure_directory_no_symlink(path.parent, create=create_parent)
     open_flags = (flags if flags is not None else _base_open_flags()) | _no_follow_flag()
@@ -196,6 +226,20 @@ def _read_text_no_follow(path: Path) -> str:
     finally:
         if fd != -1:
             os.close(fd)
+
+
+def _is_unsafe_state_path_error(exc: OSError) -> bool:
+    return exc.errno in UNSAFE_STATE_PATH_ERRNOS
+
+
+def _rename_state_entry(src: str, dst: str, parent_fd: int) -> None:
+    try:
+        os.rename(src, dst, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    except TypeError as exc:
+        raise UnsupportedSafeStateIOError(
+            errno.ENOTSUP,
+            "failed-attempt nudge state requires directory-relative rename",
+        ) from exc
 
 
 def load_entries(path: Path) -> list[dict]:
@@ -244,8 +288,10 @@ def save_entries(path: Path, entries: list[dict]) -> None:
             existing_fd = os.open(path.name, _base_open_flags() | _no_follow_flag(), dir_fd=parent_fd)
         except FileNotFoundError:
             existing_fd = -1
-        except OSError:
-            return
+        except OSError as exc:
+            if _is_unsafe_state_path_error(exc):
+                return
+            raise
         else:
             try:
                 if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
@@ -253,10 +299,14 @@ def save_entries(path: Path, entries: list[dict]) -> None:
             finally:
                 os.close(existing_fd)
 
-        os.rename(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        _rename_state_entry(tmp_name, path.name, parent_fd)
         tmp_name = ""
-    except (OSError, NotImplementedError, TypeError):
-        return
+    except UnsupportedSafeStateIOError:
+        raise
+    except OSError as exc:
+        if _is_unsafe_state_path_error(exc):
+            return
+        raise
     finally:
         if tmp_fd != -1:
             try:

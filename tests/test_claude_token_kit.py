@@ -1,6 +1,7 @@
 import argparse
 import csv
 import contextlib
+import errno
 import io
 import importlib.machinery
 import importlib.util
@@ -2216,24 +2217,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     state_path = state_dir / "failures-sess.json"
                     race_state = {"swapped": False, "replace_called": False}
 
-                    original_rename = module.os.rename
+                    original_rename_entry = module._rename_state_entry
 
-                    def swapping_rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+                    def swapping_rename(src, dst, parent_fd):
                         race_state["replace_called"] = True
                         if not race_state["swapped"]:
-                            original_rename(str(state_dir), str(backup_dir))
+                            os.rename(str(state_dir), str(backup_dir))
                             try:
                                 state_dir.symlink_to(victim_dir, target_is_directory=True)
                             except (OSError, NotImplementedError) as exc:
                                 self.skipTest(f"symlink unavailable: {exc}")
                             race_state["swapped"] = True
-                        return original_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+                        return original_rename_entry(src, dst, parent_fd)
 
-                    module.os.rename = swapping_rename
+                    module._rename_state_entry = swapping_rename
                     try:
                         module.save_entries(state_path, [{"fp": "abc", "ok": False}])
                     finally:
-                        module.os.rename = original_rename
+                        module._rename_state_entry = original_rename_entry
 
                     self.assertTrue(race_state["replace_called"])
                     self.assertTrue(race_state["swapped"])
@@ -2243,6 +2244,97 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         json.loads((backup_dir / "failures-sess.json").read_text(encoding="utf-8")),
                         [{"fp": "abc", "ok": False}],
                     )
+
+    def test_failed_attempt_nudge_save_entries_handles_concurrent_state_dir_creation(self):
+        """다른 hook process 가 state dir 를 먼저 만들어도 silent state loss 없이 재검증 후 쓴다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_concurrent_mkdir_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    race_state = {"mkdir_called": False}
+                    original_mkdir = module._mkdir_directory_at
+
+                    def racing_mkdir(dir_fd, component):
+                        race_state["mkdir_called"] = True
+                        original_mkdir(dir_fd, component)
+                        raise FileExistsError
+
+                    module._mkdir_directory_at = racing_mkdir
+                    try:
+                        module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._mkdir_directory_at = original_mkdir
+
+                    self.assertTrue(race_state["mkdir_called"])
+                    self.assertEqual(
+                        json.loads(state_path.read_text(encoding="utf-8")),
+                        [{"fp": "abc", "ok": False}],
+                    )
+
+    def test_failed_attempt_nudge_save_entries_reports_unsupported_safe_io(self):
+        """no-follow state IO 를 보장할 수 없는 플랫폼은 조용히 성공 처리하지 않는다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_unsupported_nofollow_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    original_no_follow = module._no_follow_flag
+
+                    def unsupported_no_follow():
+                        raise module.UnsupportedSafeStateIOError(errno.ENOTSUP, "unsupported no-follow")
+
+                    module._no_follow_flag = unsupported_no_follow
+                    try:
+                        with self.assertRaises(OSError) as ctx:
+                            module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._no_follow_flag = original_no_follow
+
+                    self.assertEqual(ctx.exception.errno, errno.ENOTSUP)
+                    self.assertFalse(state_path.exists())
+
+    def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
+        """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_unsupported_rename_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_path = root / ".claude-token-optimizer" / "failures-sess.json"
+                    original_rename_entry = module._rename_state_entry
+
+                    def unsupported_rename(src, dst, parent_fd):
+                        raise module.UnsupportedSafeStateIOError(errno.ENOTSUP, "unsupported rename")
+
+                    module._rename_state_entry = unsupported_rename
+                    try:
+                        with self.assertRaises(OSError) as ctx:
+                            module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module._rename_state_entry = original_rename_entry
+
+                    self.assertEqual(ctx.exception.errno, errno.ENOTSUP)
+                    self.assertFalse(state_path.exists())
+                    self.assertEqual(list(state_path.parent.glob(".nudge-*.tmp")), [])
+
+    def test_failed_attempt_nudge_load_entries_rejects_fifo_without_blocking(self):
+        """malicious FIFO state file 은 O_NONBLOCK open 후 regular-file 검사에서 거부된다."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_fifo_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    fifo = Path(tmp) / "failures-sess.json"
+                    try:
+                        os.mkfifo(fifo)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"mkfifo unavailable: {exc}")
+
+                    self.assertEqual(module.load_entries(fifo), [])
 
     def test_failed_attempt_nudge_state_file_uses_atomic_write(self):
         """save_entries 가 tempfile + os.replace 로 atomic 교체하므로 부분 쓰기로 손상되지 않는다."""
