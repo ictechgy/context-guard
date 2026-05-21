@@ -208,7 +208,7 @@ def stable_hash(value: str, length: int = 12) -> str:
 def path_label(path: Path, show_paths: bool = False) -> str:
     if show_paths:
         return str(path)
-    name = path.name or "transcript"
+    name = sanitize_label(path.name or "transcript", 80)
     return f"{name}#path:{stable_hash(str(path.resolve()))}"
 
 
@@ -237,6 +237,23 @@ def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError, OverflowError):
         return default
     return min(max(number, minimum), maximum)
+
+
+def require_scan_limit(parser: argparse.ArgumentParser, option: str, value: int, maximum: int) -> int:
+    if value < 1 or value > maximum:
+        parser.error(f"{option} must be between 1 and {maximum}")
+    return value
+
+
+def os_error_summary(exc: OSError) -> str:
+    """Return OSError metadata without embedding raw filenames from str(exc)."""
+    parts = [exc.__class__.__name__]
+    if exc.errno is not None:
+        parts.append(f"errno={exc.errno}")
+    message = sanitize_label(str(exc.strerror or ""), 160)
+    if message:
+        parts.append(message)
+    return ": ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -395,7 +412,7 @@ def scan(
             size = file.stat().st_size
         except OSError as exc:
             summary.skipped_files += 1
-            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {exc}")
+            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
         if size > limits.max_file_bytes:
             summary.skipped_files += 1
@@ -431,7 +448,7 @@ def scan(
                 add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
         except OSError as exc:
             summary.skipped_files += 1
-            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {exc}")
+            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
     return summary
 
@@ -669,8 +686,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     limits = ScanLimits(
-        max_file_bytes=bounded_int(args.max_file_bytes, DEFAULT_MAX_FILE_BYTES, 1, MAX_FILE_BYTES_LIMIT),
-        max_line_bytes=bounded_int(args.max_line_bytes, DEFAULT_MAX_LINE_BYTES, 1, MAX_LINE_BYTES_LIMIT),
+        max_file_bytes=require_scan_limit(parser, "--max-file-bytes", args.max_file_bytes, MAX_FILE_BYTES_LIMIT),
+        max_line_bytes=require_scan_limit(parser, "--max-line-bytes", args.max_line_bytes, MAX_LINE_BYTES_LIMIT),
     )
 
     summary = scan(args.paths, show_paths=args.show_paths, show_commands=args.show_commands, limits=limits)
