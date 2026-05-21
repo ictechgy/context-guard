@@ -4124,6 +4124,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 },
             })
             self.assertIn("path component must not be a symlink", aux.config_trust_error(linked_config))
+            private_root = root / "private"
+            private_var = private_root / "var"
+            private_var.mkdir(parents=True)
+            var_alias = root / "var"
+            var_alias.symlink_to(private_var, target_is_directory=True)
+            self.assertTrue(aux.is_allowed_first_absolute_symlink(var_alias, "var", private_root))
+            home_alias = root / "home"
+            home_alias.symlink_to(private_root / "home", target_is_directory=True)
+            self.assertFalse(aux.is_allowed_first_absolute_symlink(home_alias, "home", private_root))
             old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
             old_custom = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER")
             os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(symlink)

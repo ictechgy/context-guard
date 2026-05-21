@@ -245,6 +245,24 @@ def has_private_file_mode(path: Path) -> bool:
     return stat.S_IMODE(st.st_mode) & 0o077 == 0
 
 
+ALLOWED_FIRST_ABSOLUTE_SYMLINK_ALIASES = frozenset({"etc", "tmp", "var"})
+
+
+def is_allowed_first_absolute_symlink(path: Path, part: str, private_root: Path = Path("/private")) -> bool:
+    if part not in ALLOWED_FIRST_ABSOLUTE_SYMLINK_ALIASES:
+        return False
+    try:
+        target = path.readlink()
+    except OSError:
+        return False
+    if not target.is_absolute():
+        target = path.parent / target
+    try:
+        return target.resolve() == (private_root / part).resolve()
+    except OSError:
+        return target == private_root / part
+
+
 def first_symlink_component(path: Path) -> Path | None:
     expanded = path.expanduser()
     current = Path(expanded.anchor) if expanded.is_absolute() else Path()
@@ -260,7 +278,7 @@ def first_symlink_component(path: Path) -> Path | None:
         # /tmp -> /private/tmp.  Ignore only that first absolute component so
         # temp-based tests/configs keep working while user-controlled nested
         # symlink components are still rejected.
-        if expanded.is_absolute() and index == 0:
+        if expanded.is_absolute() and index == 0 and is_allowed_first_absolute_symlink(current, part):
             continue
         return current
     return None
