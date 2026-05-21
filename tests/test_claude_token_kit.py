@@ -5895,6 +5895,56 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(secret, saved_text)
                     self.assertIn("[REDACTED]", saved_text)
 
+    def test_aux_delegate_provider_resolution_errors_use_safe_path_labels(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    secret_missing = root / ("provider-password=" + ("B" * 32)) / "missing-exec"
+                    config_path = root / "config.json"
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(secret_missing)], "stdin": True}},
+                    })
+                    missing = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(missing.returncode, 127)
+                    self.assertRegex(missing.stderr, r"executable not found or not executable: (?:sensitive|redacted)-path")
+                    self.assertNotIn(str(root), missing.stderr)
+                    self.assertNotIn("password=", missing.stderr)
+                    self.assertNotIn("B" * 16, missing.stderr)
+
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {
+                            "bad": {
+                                "enabled": True,
+                                "command": ["tool-token=ghp_" + ("A" * 36)],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    path_miss = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(path_miss.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: sensitive-path", path_miss.stderr)
+                    self.assertNotIn("ghp_", path_miss.stderr)
+                    self.assertNotIn("token=ghp_", path_miss.stderr)
+
     def test_aux_delegate_writes_private_gitignore_for_responses(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -5951,6 +6001,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn(tmp, text)
             self.assertNotIn("ghp_", text)
             self.assertNotIn("password=", text)
+
+    def test_aux_delegate_response_path_label_keeps_long_safe_names(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            long_safe_path = root / ("safe-" + ("0" * 220) + ".log")
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(root / ".claude-token-optimizer" / "config.json")
+            try:
+                label = aux.response_path_label(str(long_safe_path))
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+            self.assertNotEqual(label, "redacted-path")
+            self.assertIn("safe-", label)
+            self.assertIn("...[truncated]", label)
+            self.assertNotIn(str(root), label)
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
         aux = load_aux_module()

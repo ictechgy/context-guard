@@ -663,29 +663,35 @@ def safe_path_env() -> str:
 
 
 def validate_provider_executable(path: Path, provider: str) -> Path:
+    original_label = response_path_label(str(path))
     resolved = path.expanduser().resolve()
+    resolved_label = response_path_label(str(resolved))
     if not resolved.exists() or not os.access(resolved, os.X_OK):
-        raise SystemExit(f"Provider '{provider}' executable not found or not executable: {path}")
+        raise SystemExit(f"Provider '{provider}' executable not found or not executable: {original_label}")
     try:
         executable_mode = resolved.stat().st_mode
     except OSError as exc:
-        raise SystemExit(f"Provider '{provider}' executable cannot be checked: {resolved}") from exc
+        raise SystemExit(f"Provider '{provider}' executable cannot be checked: {resolved_label}") from exc
     if not stat.S_ISREG(executable_mode):
-        raise SystemExit(f"Provider '{provider}' executable is not a regular file: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is not a regular file: {resolved_label}")
     if stat.S_IMODE(executable_mode) & 0o022:
-        raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved_label}")
     if executable_mode & (stat.S_ISUID | stat.S_ISGID):
-        raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved_label}")
     project_root = find_project_root()
     temp_root = Path(tempfile.gettempdir()).resolve()
     if is_under_any(resolved, [project_root, temp_root]):
-        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved_label}")
     try:
         parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
     except OSError as exc:
-        raise SystemExit(f"Provider '{provider}' executable parent cannot be checked: {resolved.parent}") from exc
+        raise SystemExit(
+            f"Provider '{provider}' executable parent cannot be checked: {response_path_label(str(resolved.parent))}"
+        ) from exc
     if parent_mode & 0o022:
-        raise SystemExit(f"Provider '{provider}' executable parent is group/world writable: {resolved.parent}")
+        raise SystemExit(
+            f"Provider '{provider}' executable parent is group/world writable: {response_path_label(str(resolved.parent))}"
+        )
     return resolved
 
 
@@ -698,7 +704,7 @@ def resolve_provider_command(provider: str, command: list[str]) -> list[str]:
     else:
         found = shutil.which(executable, path=safe_path_env())
         if not found:
-            raise SystemExit(f"Provider '{provider}' executable not found on safe PATH: {executable}")
+            raise SystemExit(f"Provider '{provider}' executable not found on safe PATH: {response_path_label(executable)}")
         resolved = validate_provider_executable(Path(found), provider)
     return [str(resolved), *command[1:]]
 
@@ -1035,10 +1041,10 @@ def response_path_label(raw_path: str) -> str:
         label = context_label_for_path(resolved, root)
     except (OSError, RuntimeError, ValueError):
         label = raw_path
-    redacted = compact_warning_text(label)
-    if redacted != label:
+    sanitized = redact_sensitive_output(label)
+    if sanitized != label:
         return "redacted-path"
-    return redacted or "path"
+    return compact_warning_text(label) or "path"
 
 
 def response_override_summary(paths: list[str] | None) -> str:
@@ -1501,7 +1507,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     try:
         resolved_command = resolve_provider_command(provider, command)
     except SystemExit as exc:
-        print(str(exc), file=sys.stderr)
+        print(redact_sensitive_output(compact_warning_text(str(exc), 240)), file=sys.stderr)
         return 127
 
     returncode, stdout, stderr = run_provider(
