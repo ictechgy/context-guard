@@ -513,7 +513,8 @@ def is_lexically_under_any(path: Path, roots: list[Path]) -> bool:
 
 def safe_path_entries() -> list[str]:
     project_root = find_project_root()
-    temp_root = Path(tempfile.gettempdir()).resolve()
+    temp_root_lexical = Path(tempfile.gettempdir()).expanduser().absolute()
+    temp_root = temp_root_lexical.resolve()
     entries: list[str] = []
     for raw in os.environ.get("PATH", os.defpath).split(os.pathsep):
         if not raw:
@@ -521,7 +522,7 @@ def safe_path_entries() -> list[str]:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             continue
-        if is_lexically_under_any(path, [project_root, temp_root]):
+        if is_lexically_under_any(path, [project_root, temp_root_lexical]):
             continue
         try:
             resolved = path.resolve()
