@@ -6046,7 +6046,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             notes=(
                                 f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n"
                                 "Authorization: Bearer opaque-token-value "
-                                "token=ghp_" + ("A" * 36) + " "
+                                "token=opaque-token-value "
+                                "api_key=plain-api-key "
+                                '"token": "json-secret-value" '
+                                "X-Api-Key: header-secret-value "
+                                "--api-key 'quoted secret value' "
+                                "--user=admin:password "
+                                "https://token@mirror.example.invalid/pkg "
+                                "github_pat_" + ("B" * 24) + " "
                                 "postgres://user:pass@example.invalid/db "
                                 + ("x" * 800)
                             ),
@@ -6066,7 +6073,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertNotIn("\u200b", note)
                             self.assertNotIn("\n", note)
                             self.assertNotIn("opaque-token-value", note)
-                            self.assertNotIn("ghp_", note)
+                            self.assertNotIn("plain-api-key", note)
+                            self.assertNotIn("json-secret-value", note)
+                            self.assertNotIn("header-secret-value", note)
+                            self.assertNotIn("quoted secret value", note)
+                            self.assertNotIn("admin:password", note)
+                            self.assertNotIn("token@mirror", note)
+                            self.assertNotIn("github_pat_", note)
                             self.assertNotIn("user:pass", note)
                             self.assertIn("[REDACTED]", note)
                             self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
@@ -6203,6 +6216,35 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertFalse((root / "results.csv.lock").exists(),
                                      "dry-run --resume must not create a sidecar lock for a missing CSV")
 
+    def test_dry_run_console_redacts_secrets_without_truncating_argv(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    long_arg = "x" * 900
+                    secret = "quoted secret value"
+                    generic_secret = "generic-dry-run-secret"
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "echo hello", "model": "sonnet", "max_turns": 1}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "hygiene", "extra_args": ["--api-key", secret, "--token", generic_secret, "--long-arg", long_arg]},
+                    ]))
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(root / "results.csv"), "--dry-run"],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertIn("dry-run:", proc.stdout)
+                    self.assertIn("--long-arg", proc.stdout)
+                    self.assertIn(long_arg, proc.stdout)
+                    self.assertNotIn("…[truncated]", proc.stdout)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(generic_secret, proc.stdout)
+                    self.assertIn("--api-key [REDACTED]", proc.stdout)
+                    self.assertIn("--token [REDACTED]", proc.stdout)
+
     def test_run_with_fake_claude_collects_usage_and_runs_success_command(self):
         for script in BENCH_SCRIPTS:
             with self.subTest(script=script):
@@ -6256,13 +6298,17 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     caller.mkdir()
                     fake = root / "fake-claude"
                     bearer = "opaque-token-value"
-                    github_token = "ghp_" + ("A" * 36)
+                    generic_token = "generic-secret-value"
+                    json_secret = "json-secret-value"
+                    header_secret = "header-secret-value"
                     fake.write_text(
                         "#!/usr/bin/env python3\n"
                         "import os, pathlib, sys\n"
                         "pathlib.Path('claude-cwd.txt').write_text(os.getcwd(), encoding='utf-8')\n"
                         f"sys.stderr.write('Authorization: Bearer {bearer}\\n')\n"
-                        f"sys.stderr.write('token={github_token}\\n')\n"
+                        f"sys.stderr.write('token={generic_token}\\n')\n"
+                        f"sys.stderr.write('{{\"token\": \"{json_secret}\"}}\\n')\n"
+                        f"sys.stderr.write('X-Api-Key: {header_secret}\\n')\n"
                         "sys.exit(7)\n",
                         encoding="utf-8",
                     )
@@ -6274,12 +6320,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         {"name": "baseline", "extra_args": []}
                     ]))
                     csv_path = project / "results.csv"
+                    relative_fake = os.path.relpath(fake, caller)
                     proc = subprocess.run(
                         [sys.executable, str(script),
                          "--tasks", str(project / "tasks.json"),
                          "--variants", str(project / "variants.json"),
                          "--csv", str(csv_path),
-                         "--claude-bin", str(fake),
+                         "--claude-bin", relative_fake,
                          "--project-root", str(project)],
                         cwd=caller,
                         text=True, capture_output=True, check=True,
@@ -6287,16 +6334,22 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
                     self.assertEqual((project / "claude-cwd.txt").read_text(encoding="utf-8"), str(project.resolve()))
                     self.assertNotIn(bearer, proc.stdout)
-                    self.assertNotIn(github_token, proc.stdout)
+                    self.assertNotIn(generic_token, proc.stdout)
+                    self.assertNotIn(json_secret, proc.stdout)
+                    self.assertNotIn(header_secret, proc.stdout)
                     self.assertNotIn(bearer, proc.stderr)
-                    self.assertNotIn(github_token, proc.stderr)
+                    self.assertNotIn(generic_token, proc.stderr)
+                    self.assertNotIn(json_secret, proc.stderr)
+                    self.assertNotIn(header_secret, proc.stderr)
                     with csv_path.open(encoding="utf-8") as f:
                         row = next(csv.DictReader(f))
                     self.assertEqual(row["success"], "false")
                     self.assertIn("claude exit=7", row["notes"])
                     self.assertIn("[REDACTED]", row["notes"])
                     self.assertNotIn(bearer, row["notes"])
-                    self.assertNotIn(github_token, row["notes"])
+                    self.assertNotIn(generic_token, row["notes"])
+                    self.assertNotIn(json_secret, row["notes"])
+                    self.assertNotIn(header_secret, row["notes"])
 
     def test_run_records_failure_when_success_command_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:
