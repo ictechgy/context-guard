@@ -2397,6 +2397,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("refusing symlink path component", proc.stderr)
                     self.assertNotIn("return 1", proc.stdout)
 
+    def test_read_symbol_bounded_reader_rejects_symlink_targets(self):
+        read_symbol = load_module_from_path(KIT_DIR / "read_symbol.py", "read_symbol_nofollow")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.py"
+            target.write_text("def target():\n    return 1\n", encoding="utf-8")
+            link = root / "link.py"
+            try:
+                os.symlink(target, link)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            with self.assertRaises(OSError):
+                read_symbol.read_text_bounded(link)
+
     def test_read_symbol_refuses_symlink_parent_directory_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

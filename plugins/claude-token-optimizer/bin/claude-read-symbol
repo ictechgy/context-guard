@@ -11,7 +11,9 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,12 +88,29 @@ def has_symlink_component(path: Path) -> bool:
 
 
 def read_text_bounded(path: Path) -> tuple[str, bool]:
-    with path.open("rb") as handle:
-        data = handle.read(MAX_READ_BYTES + 1)
-    truncated = len(data) > MAX_READ_BYTES
-    if truncated:
-        data = data[:MAX_READ_BYTES]
-    return data.decode("utf-8", "replace"), truncated
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    before = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"not a regular file: {path}")
+    fd = os.open(path, flags)
+    try:
+        after = os.fstat(fd)
+        if before.st_dev != after.st_dev or before.st_ino != after.st_ino:
+            raise OSError(f"file changed while opening: {path}")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(MAX_READ_BYTES + 1)
+        truncated = len(data) > MAX_READ_BYTES
+        if truncated:
+            data = data[:MAX_READ_BYTES]
+        return data.decode("utf-8", "replace"), truncated
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def language_for(path: Path) -> str:
@@ -303,7 +322,11 @@ def main() -> int:
     if not path.is_file():
         print(f"claude-read-symbol: not a file: {args.path}", file=sys.stderr)
         return 2
-    result = find_symbol_slice(path, args.symbol, args.context, args.max_chars, args.show_paths)
+    try:
+        result = find_symbol_slice(path, args.symbol, args.context, args.max_chars, args.show_paths)
+    except OSError as exc:
+        print(f"claude-read-symbol: could not read file safely: {exc}", file=sys.stderr)
+        return 2
     if result is None:
         suffix = ""
         try:
