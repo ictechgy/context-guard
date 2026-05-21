@@ -255,6 +255,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_prepublish_rejects_symlinked_release_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plugin_link = tmp_path / "plugin-link"
+            marketplace_link = tmp_path / "marketplace.json"
+            try:
+                plugin_link.symlink_to(PLUGIN_DIR, target_is_directory=True)
+                marketplace_link.symlink_to(ROOT / ".claude-plugin" / "marketplace.json")
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            cases = [
+                ("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR", plugin_link, "plugin package directory must not be a symlink"),
+                ("CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST", marketplace_link, "marketplace manifest must not be a symlink"),
+            ]
+            for env_key, env_path, expected in cases:
+                with self.subTest(env_key=env_key):
+                    env = os.environ.copy()
+                    env[env_key] = str(env_path)
+                    proc = subprocess.run(
+                        [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn(expected, proc.stdout + proc.stderr)
+
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
             sys.executable,

@@ -21,10 +21,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
-PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
+PLUGIN_DIR = Path(
+    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR", ROOT / "plugins" / "claude-token-optimizer")
+)
 PLUGIN_BIN = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN", PLUGIN_DIR / "bin"))
-PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
-MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
+PLUGIN_MANIFEST = Path(
+    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_MANIFEST", PLUGIN_DIR / ".claude-plugin" / "plugin.json")
+)
+MARKETPLACE_MANIFEST = Path(
+    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST", ROOT / ".claude-plugin" / "marketplace.json")
+)
 SKILLS_DIR = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR", PLUGIN_DIR / "skills"))
 BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
 PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
@@ -80,6 +86,19 @@ def remove_generated_plugin_bin_python_caches() -> None:
 
 def fail(message: str) -> None:
     raise SystemExit(message)
+
+
+def check_trusted_release_paths() -> None:
+    """Reject symlinked release roots and manifests before reading package data."""
+    for label, path in (
+        ("plugin package directory", PLUGIN_DIR),
+        ("plugin bin directory", PLUGIN_BIN),
+        ("plugin skills directory", SKILLS_DIR),
+        ("plugin manifest", PLUGIN_MANIFEST),
+        ("marketplace manifest", MARKETPLACE_MANIFEST),
+    ):
+        if path.is_symlink():
+            fail(f"{label} must not be a symlink: {path}")
 
 
 def load_json(path: Path) -> dict:
@@ -225,6 +244,7 @@ def main() -> int:
     parser.add_argument("--skip-tests", action="store_true", help="check package invariants without running unit tests")
     args = parser.parse_args()
 
+    check_trusted_release_paths()
     check_manifest()
     check_bin_copies()
     check_skill_allowed_tool_commands()
