@@ -1798,7 +1798,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             sample.write_text(
                 '{"usage":{"input_tokens":5},"total_cost_usd":0.25}\n'
                 '{"usage":{"input_tokens":NaN},"cost_usd":Infinity}\n'
-                '{"usage":{"input_tokens":-3},"cost_usd":-1}\n'
+                '{"usage":{"input_tokens":-3},"total_cost_usd":-1,"cost_usd":0.5}\n'
                 '{"name":"claude_code.token.usage","value":Infinity,"attributes":{"type":"output"}}\n'
                 '{"usage":{"input_tokens":999999999999999999999999999999999999999999},"cost_usd":999999999999999999999999999999999999999999}\n',
                 encoding="utf-8",
@@ -1814,7 +1814,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     data = json.loads(proc.stdout)
                     self.assertEqual(data["tokens"]["input"], 1000000000000000005)
                     self.assertNotIn("output", data["tokens"])
-                    self.assertEqual(data["cost_usd_observed"], 1e18 + 0.25)
+                    self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
 
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:

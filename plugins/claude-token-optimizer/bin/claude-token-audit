@@ -164,13 +164,15 @@ def first_string(obj: dict[str, Any], keys: Iterable[str]) -> str | None:
 MAX_METRIC_VALUE = 10**18
 
 
-def finite_nonnegative_number(value: Any) -> int | float | None:
+def finite_nonnegative_number(value: Any, *, clamp_negative: bool) -> int | float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
+        if value < 0 and not clamp_negative:
+            return None
         return min(max(value, 0), MAX_METRIC_VALUE)
     if isinstance(value, float):
-        if not math.isfinite(value):
+        if not math.isfinite(value) or (value < 0 and not clamp_negative):
             return None
         return min(max(value, 0.0), float(MAX_METRIC_VALUE))
     return None
@@ -180,7 +182,7 @@ def add_token_groups(local_tokens: Counter[str], d: dict[str, Any]) -> None:
     for bucket, keys in TOKEN_KEY_GROUPS:
         for raw_key in keys:
             val = d.get(raw_key)
-            metric = finite_nonnegative_number(val)
+            metric = finite_nonnegative_number(val, clamp_negative=True)
             if metric is not None:
                 local_tokens[bucket] += int(metric)
                 break
@@ -269,7 +271,7 @@ def add_usage(
                 value = d.get("count")
             attrs = d.get("attributes") or {}
             token_type = attrs.get("type", "unknown") if isinstance(attrs, dict) else "unknown"
-            metric = finite_nonnegative_number(value)
+            metric = finite_nonnegative_number(value, clamp_negative=True)
             if metric is not None:
                 local_tokens[str(token_type)] += int(metric)
 
@@ -283,7 +285,7 @@ def add_usage(
 
         for key in COST_KEYS:
             val = d.get(key)
-            metric = finite_nonnegative_number(val)
+            metric = finite_nonnegative_number(val, clamp_negative=False)
             if metric is not None:
                 cost = float(metric)
                 summary.cost_usd += cost
