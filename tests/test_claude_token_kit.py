@@ -3810,6 +3810,57 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("safe PATH", proc.stderr)
             self.assertNotIn("fake provider", proc.stdout)
 
+    def test_aux_delegate_safe_path_rejects_project_symlink_entries(self):
+        aux = load_aux_module()
+        safe_dir = next(path for path in [Path("/usr/bin"), Path("/bin"), Path(sys.executable).resolve().parent] if path.is_dir())
+        safe_dir = safe_dir.resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            linked_bin = root / "linked-bin"
+            linked_bin.symlink_to(safe_dir, target_is_directory=True)
+            old_path = os.environ.get("PATH")
+            original_project_root = aux.find_project_root
+            aux.find_project_root = lambda: root
+            os.environ["PATH"] = f"{linked_bin}{os.pathsep}{safe_dir}"
+            try:
+                entries = aux.safe_path_entries()
+            finally:
+                aux.find_project_root = original_project_root
+                if old_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = old_path
+            self.assertEqual(entries.count(str(safe_dir)), 1)
+
+    def test_aux_delegate_safe_path_rejects_lexical_temp_alias_entries(self):
+        aux = load_aux_module()
+        safe_dir = next(path for path in [Path("/usr/bin"), Path("/bin"), Path(sys.executable).resolve().parent] if path.is_dir())
+        safe_dir = safe_dir.resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_tmp = root / "real-tmp"
+            real_tmp.mkdir()
+            alias_tmp = root / "alias-tmp"
+            alias_tmp.symlink_to(real_tmp, target_is_directory=True)
+            linked_bin = alias_tmp / "linked-bin"
+            linked_bin.symlink_to(safe_dir, target_is_directory=True)
+            old_path = os.environ.get("PATH")
+            original_project_root = aux.find_project_root
+            original_tempdir = aux.tempfile.gettempdir
+            aux.find_project_root = lambda: root / "project"
+            aux.tempfile.gettempdir = lambda: str(alias_tmp)
+            os.environ["PATH"] = f"{linked_bin}{os.pathsep}{safe_dir}"
+            try:
+                entries = aux.safe_path_entries()
+            finally:
+                aux.find_project_root = original_project_root
+                aux.tempfile.gettempdir = original_tempdir
+                if old_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = old_path
+            self.assertEqual(entries.count(str(safe_dir)), 1)
+
     def test_aux_delegate_rejects_unsafe_provider_executable_file_modes(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
