@@ -443,9 +443,13 @@ def load_config() -> dict[str, Any]:
     if symlink_component is not None:
         raise SystemExit(f"Failed to read config {path}: config path component must not be a symlink: {symlink_component}")
     try:
-        loaded = json.loads(read_config_text_no_follow(path))
+        os.stat(path, follow_symlinks=False)
     except FileNotFoundError:
         return json_clone(DEFAULT_CONFIG)
+    except OSError as exc:
+        raise SystemExit(f"Failed to read config {path}: {exc}")
+    try:
+        loaded = json.loads(read_config_text_no_follow(path))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f"Failed to read config {path}: {exc}")
     if not isinstance(loaded, dict):
