@@ -4033,6 +4033,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("failed to read provider output safely", text)
         self.assertNotIn("SHOULD_NOT_LEAK", text)
 
+    def test_aux_delegate_output_budget_tracks_unlinked_capture_fd(self):
+        aux = load_aux_module()
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys, time\n"
+                "os.unlink('../provider.stdout')\n"
+                "sys.stdout.write('A' * 20000)\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(2)\n"
+            ),
+        ]
+        rc, stdout, stderr = aux.run_provider("mock", command, None, timeout_seconds=5, output_max_chars=1000)
+        self.assertEqual(rc, 125)
+        self.assertEqual(stdout, "")
+        self.assertIn("OUTPUT_LIMIT exceeded", stderr)
+
     def test_aux_delegate_nonfinite_config_budget_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
