@@ -108,6 +108,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
         plugin_bin_cache = PLUGIN_BIN / "__pycache__"
         shutil.rmtree(kit_cache, ignore_errors=True)
         shutil.rmtree(plugin_bin_cache, ignore_errors=True)
+        plugin_bin_cache.mkdir()
+        stale_pyc = plugin_bin_cache / "stale.cpython-311.pyc"
+        stale_pyc.write_bytes(b"stale")
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
             text=True,
@@ -117,6 +120,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("prepublish check: OK", proc.stdout)
         self.assertFalse(kit_cache.exists())
         self.assertFalse(plugin_bin_cache.exists())
+        self.assertFalse(stale_pyc.exists())
 
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
