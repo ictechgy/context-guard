@@ -25,6 +25,10 @@ MIN_MAX_CHARS = 200
 MAX_CHARS_LIMIT = 200_000
 MAX_READ_BYTES = 2_000_000
 BRACE_FALLBACK_LINES = 80
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -104,10 +108,34 @@ def _directory_flag() -> int:
     return getattr(os, "O_DIRECTORY", 0)
 
 
-def _open_directory_at(dir_fd: int, component: str, path: Path, *, allow_first_absolute_symlink: bool) -> int:
-    flags = _base_open_flags() | _directory_flag()
-    if not allow_first_absolute_symlink:
-        flags |= _no_follow_flag()
+def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Rewrite narrow platform-owned absolute aliases before no-follow traversal."""
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+    flags = _base_open_flags() | _directory_flag() | _no_follow_flag()
     fd = os.open(component, flags, dir_fd=dir_fd)
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
@@ -122,6 +150,7 @@ def _open_regular_no_symlink(path: Path) -> int:
     """Open a regular file without following symlinks in any trusted component."""
     if os.open not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative no-follow opens")
+    path = _normalize_allowed_first_absolute_symlink(path)
     nofollow = _no_follow_flag()
     components = list(path.parts)
     if path.is_absolute() and components:
@@ -132,14 +161,8 @@ def _open_regular_no_symlink(path: Path) -> int:
     root = path.anchor if path.is_absolute() else "."
     dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
     try:
-        for depth, component in enumerate(components[:-1]):
-            allow_first_absolute_symlink = path.is_absolute() and depth == 0
-            next_fd = _open_directory_at(
-                dir_fd,
-                component,
-                path,
-                allow_first_absolute_symlink=allow_first_absolute_symlink,
-            )
+        for component in components[:-1]:
+            next_fd = _open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = next_fd
 

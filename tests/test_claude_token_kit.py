@@ -2427,6 +2427,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 read_symbol.read_text_bounded(link_dir / "target.py")
 
+    def test_read_symbol_only_allows_known_absolute_alias_components(self):
+        read_symbol = load_module_from_path(KIT_DIR / "read_symbol.py", "read_symbol_absolute_alias")
+        self.assertEqual(
+            read_symbol._normalize_allowed_first_absolute_symlink(Path("/not-a-system-alias/project.py")),
+            Path("/not-a-system-alias/project.py"),
+        )
+        self.assertNotIn("not-a-system-alias", read_symbol.ALLOWED_FIRST_ABSOLUTE_SYMLINKS)
+
     def test_read_symbol_refuses_symlink_parent_directory_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
