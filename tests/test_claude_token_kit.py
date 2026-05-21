@@ -306,6 +306,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("+PASSWORD=[REDACTED]", proc.stdout)
         self.assertNotIn("super-secret-value", proc.stdout)
 
+    def test_sanitize_output_clamps_extreme_budget_arguments(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_DIR / "sanitize_output.py"),
+                "--max-lines",
+                "-1",
+                "--max-chars",
+                "1000",
+                "--max-line-chars",
+                "-5",
+                "--tail-lines",
+                "-10",
+                "--anchor-lines",
+                "1000000000",
+                "--",
+                sys.executable,
+                "-c",
+                "print('API_TOKEN=ghp_' + 'A' * 36); print('X' * 5000)",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("sanitized output trimmed", proc.stdout)
+        self.assertIn("redacted_lines=1", proc.stdout)
+        self.assertIn("line_caps=2", proc.stdout)
+        self.assertLess(len(proc.stdout), 1200)
+
     def test_sanitize_output_private_key_block_is_redacted(self):
         private_key = (
             "-----BEGIN OPENSSH PRIVATE KEY-----\n"

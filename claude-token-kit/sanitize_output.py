@@ -91,6 +91,27 @@ ANCHOR_RE = re.compile(
     re.IGNORECASE,
 )
 SECRET_WORD_RE = re.compile(r"(?i)\b(api[_-]?key|token|secret|password|private[_-]?key|client[_-]?secret)\b")
+MAX_LINES_LIMIT = 5_000
+MAX_CHARS_LIMIT = 1_000_000
+MAX_LINE_CHARS_LIMIT = 100_000
+MAX_SECTION_LINES_LIMIT = 2_000
+
+
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+def normalize_budgets(args: argparse.Namespace) -> None:
+    args.max_lines = bounded_int(args.max_lines, 240, 1, MAX_LINES_LIMIT)
+    args.max_chars = bounded_int(args.max_chars, 24000, 1, MAX_CHARS_LIMIT)
+    args.max_line_chars = bounded_int(args.max_line_chars, 3000, 1, MAX_LINE_CHARS_LIMIT)
+    args.head_lines = bounded_int(args.head_lines, 50, 0, MAX_SECTION_LINES_LIMIT)
+    args.tail_lines = bounded_int(args.tail_lines, 90, 0, MAX_SECTION_LINES_LIMIT)
+    args.anchor_lines = bounded_int(args.anchor_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
 
 
 def strip_ansi(text: str) -> str:
@@ -361,6 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    normalize_budgets(args)
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
