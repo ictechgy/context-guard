@@ -18,8 +18,19 @@ from pathlib import Path
 
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_CHARS = 16_000
+MAX_CONTEXT_LINES_LIMIT = 200
+MIN_MAX_CHARS = 200
+MAX_CHARS_LIMIT = 200_000
 MAX_READ_BYTES = 2_000_000
 BRACE_FALLBACK_LINES = 80
+
+
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
 
 
 @dataclass
@@ -281,6 +292,9 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-paths", action="store_true", help="show raw absolute path in output")
     args = parser.parse_args()
+
+    args.context = bounded_int(args.context, DEFAULT_CONTEXT_LINES, 0, MAX_CONTEXT_LINES_LIMIT)
+    args.max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, MIN_MAX_CHARS, MAX_CHARS_LIMIT)
 
     path = Path(args.path).expanduser()
     if has_symlink_component(path):

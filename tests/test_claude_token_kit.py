@@ -2125,6 +2125,44 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("first 2000000 bytes", proc.stderr)
 
+    def test_read_symbol_clamps_extreme_output_budgets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "sample.py"
+            sample.write_text(
+                "# before\n" * 200
+                + "def target():\n"
+                + "    value = '" + ("x" * 5000) + "'\n"
+                + "    return value\n"
+                + "# after\n" * 200,
+                encoding="utf-8",
+            )
+            for script in READ_SYMBOL_SCRIPTS:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            str(sample),
+                            "target",
+                            "--json",
+                            "--context",
+                            "0",
+                            "--max-chars",
+                            "-1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["capped"])
+                    self.assertLessEqual(len(data["content"]), 250)
+                    self.assertIn("symbol slice capped", data["content"])
+                    self.assertIn("def target", data["content"])
+                    self.assertNotIn("# before", data["content"])
+                    self.assertNotIn("# after", data["content"])
+
     def test_read_symbol_refuses_symlink_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
