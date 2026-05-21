@@ -533,6 +533,16 @@ def validate_provider_executable(path: Path, provider: str) -> Path:
     resolved = path.expanduser().resolve()
     if not resolved.exists() or not os.access(resolved, os.X_OK):
         raise SystemExit(f"Provider '{provider}' executable not found or not executable: {path}")
+    try:
+        executable_mode = resolved.stat().st_mode
+    except OSError as exc:
+        raise SystemExit(f"Provider '{provider}' executable cannot be checked: {resolved}") from exc
+    if not stat.S_ISREG(executable_mode):
+        raise SystemExit(f"Provider '{provider}' executable is not a regular file: {resolved}")
+    if stat.S_IMODE(executable_mode) & 0o022:
+        raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved}")
+    if executable_mode & (stat.S_ISUID | stat.S_ISGID):
+        raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved}")
     project_root = find_project_root()
     temp_root = Path(tempfile.gettempdir()).resolve()
     if is_under_any(resolved, [project_root, temp_root]):

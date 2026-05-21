@@ -3810,6 +3810,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("safe PATH", proc.stderr)
             self.assertNotIn("fake provider", proc.stdout)
 
+    def test_aux_delegate_rejects_unsafe_provider_executable_file_modes(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            executable = root / "trusted-tool"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o777)
+            original_project_root = aux.find_project_root
+            original_tempdir = aux.tempfile.gettempdir
+            aux.find_project_root = lambda: root / "other-project"
+            aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+            try:
+                with self.assertRaisesRegex(SystemExit, "group/world writable"):
+                    aux.validate_provider_executable(executable, "mock")
+                executable.chmod(0o4755)
+                with self.assertRaisesRegex(SystemExit, "setuid/setgid"):
+                    aux.validate_provider_executable(executable, "mock")
+            finally:
+                aux.find_project_root = original_project_root
+                aux.tempfile.gettempdir = original_tempdir
+
     def test_aux_delegate_blocks_sensitive_prompt_text_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
