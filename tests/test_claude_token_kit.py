@@ -5850,14 +5850,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     root = Path(tmp)
                     github_token = "ghp_" + ("A" * 36)
                     api_key = "plain-api-key-secret"
-                    bearer = "opaque-bearer-token"
+                    auth_value = "opaque-bearer-token"
                     url_userinfo = "token-user:secret-pass"
                     provider_command = "; ".join(
                         [
                             f"printf '%s\\n' {shlex.quote('token=' + github_token)}",
                             f"printf '%s\\n' {shlex.quote('api_key=' + api_key)}",
                             f"printf '%s\\n' {shlex.quote('https://' + url_userinfo + '@example.invalid/repo')}",
-                            f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + bearer)} >&2",
+                            f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + auth_value)} >&2",
                             "exit 9",
                         ]
                     )
@@ -5886,12 +5886,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertEqual(proc.returncode, 9)
                     combined = proc.stdout + proc.stderr
-                    for secret in [github_token, api_key, bearer, url_userinfo, "token-user@", "secret-pass"]:
+                    for secret in [github_token, api_key, auth_value, url_userinfo, "token-user@", "secret-pass"]:
                         self.assertNotIn(secret, combined)
                     self.assertIn("[REDACTED]", proc.stdout)
                     saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
                     saved_text = Path(saved_line.split("=", 1)[1]).read_text(encoding="utf-8")
-                    for secret in [github_token, api_key, bearer, url_userinfo, "token-user@", "secret-pass"]:
+                    for secret in [github_token, api_key, auth_value, url_userinfo, "token-user@", "secret-pass"]:
                         self.assertNotIn(secret, saved_text)
                     self.assertIn("[REDACTED]", saved_text)
 
