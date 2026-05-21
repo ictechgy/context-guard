@@ -38,6 +38,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
 }
 HOOK_STDIN = "{}"
 STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})
+STATUSLINE_MAX_CHARS = 1_000
 PRESERVED_ENV_KEYS = (
     "PATH",
     "SYSTEMROOT",
@@ -246,12 +247,16 @@ def launch_stdin(mode: str) -> str | None:
 
 
 def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mode: str) -> None:
-    if not proc.stdout.strip():
+    stdout = proc.stdout.strip()
+    if not stdout:
         fail(f"{command} launch smoke emitted no stdout")
     if mode == "hook-json":
         load_json(proc.stdout, command)
-    elif mode == "statusline" and "\n" in proc.stdout.strip():
-        fail(f"{command} statusline smoke emitted multiple lines")
+    elif mode == "statusline":
+        if "\n" in stdout:
+            fail(f"{command} statusline smoke emitted multiple lines")
+        if len(stdout) > STATUSLINE_MAX_CHARS:
+            fail(f"{command} statusline smoke exceeded {STATUSLINE_MAX_CHARS} characters")
 
 
 def main() -> int:
