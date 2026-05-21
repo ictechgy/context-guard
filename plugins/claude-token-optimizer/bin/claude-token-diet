@@ -87,6 +87,7 @@ SECRET_CONTENT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )
+REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 
 
 @dataclass
@@ -126,6 +127,34 @@ def safe_id_part(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
+def safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path.absolute()
+
+
+def sanitize_path_component(component: str, *, include_hash: bool = True) -> str:
+    if not component or component in {".", ".."}:
+        return component
+    if not SECRET_CONTENT_RE.search(component):
+        return component
+    if include_hash:
+        return f"{REDACTED_PATH_COMPONENT}#path:{text_hash(component)}"
+    return REDACTED_PATH_COMPONENT
+
+
+def sanitize_rel_path(path: str) -> str:
+    return "/".join(sanitize_path_component(component) for component in path.split("/"))
+
+
+def path_label(path: Path, show_paths: bool) -> str:
+    if show_paths:
+        return str(path)
+    name = sanitize_path_component(path.name or "path", include_hash=False)
+    return f"{name}#path:{path_hash(safe_resolve(path))}"
+
+
 def context_finding(
     rule_id: str,
     severity: str,
@@ -139,14 +168,18 @@ def context_finding(
 
 
 def root_label(root: Path, show_paths: bool) -> str:
-    return str(root) if show_paths else f"{root.name or 'project'}#path:{path_hash(root)}"
+    if show_paths:
+        return str(root)
+    name = sanitize_path_component(root.name or "project", include_hash=False)
+    return f"{name}#path:{path_hash(root)}"
 
 
 def rel_path(path: Path, root: Path) -> str:
     try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return f"{path.name}#path:{path_hash(path.resolve())}"
+        return sanitize_rel_path(path.resolve().relative_to(root.resolve()).as_posix())
+    except (OSError, RuntimeError, ValueError):
+        name = sanitize_path_component(path.name, include_hash=False)
+        return f"{name}#path:{path_hash(safe_resolve(path))}"
 
 
 class SettingsFileTooLargeError(ValueError):
@@ -742,9 +775,13 @@ SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
-    root = Path(args.path).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        raise SystemExit(f"claude-token-diet: scan path is not a directory: {args.path}")
+    root = safe_resolve(Path(args.path).expanduser())
+    try:
+        is_scan_root = root.exists() and root.is_dir()
+    except OSError:
+        is_scan_root = False
+    if not is_scan_root:
+        raise SystemExit(f"claude-token-diet: scan path is not a directory: {path_label(root, args.show_paths)}")
     settings, settings_findings = collect_settings(root)
     settings_summary, config_findings = scan_settings(root, settings)
     context_files, context_findings = scan_context(root, args.large_context_bytes, args.huge_context_bytes, args.long_context_lines)

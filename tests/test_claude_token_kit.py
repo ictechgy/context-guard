@@ -3952,6 +3952,48 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertRegex(data["root"], r"#path:[0-9a-f]{12}")
                     self.assertNotIn(str(root), proc.stdout)
 
+    def test_token_diet_scan_redacts_secret_shaped_path_components(self):
+        for script in DIET_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    secret_component = "token=ghp_" + ("A" * 36)
+                    context_dir = root / "docs" / secret_component
+                    context_dir.mkdir(parents=True)
+                    (context_dir / "CLAUDE.md").write_text("safe\n" * 400, encoding="utf-8")
+
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "scan", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    context_path = data["context_files"][0]["path"]
+                    finding_paths = {item["path"] for item in data["findings"]}
+
+                    self.assertNotIn(secret_component, proc.stdout)
+                    self.assertRegex(context_path, r"^docs/\[REDACTED-PATH-COMPONENT\]#path:[0-9a-f]{12}/CLAUDE\.md$")
+                    self.assertTrue(
+                        all(secret_component not in path for path in finding_paths),
+                        finding_paths,
+                    )
+
+    def test_token_diet_scan_error_redacts_secret_shaped_path_by_default(self):
+        secret_component = "password=super-secret-value"
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / secret_component
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", str(missing)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            combined = proc.stdout + proc.stderr
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn(secret_component, combined)
+            self.assertRegex(combined, r"\[REDACTED-PATH-COMPONENT\]#path:[0-9a-f]{12}")
+
     def test_token_diet_scan_accepts_hardened_settings_and_show_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
