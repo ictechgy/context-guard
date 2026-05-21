@@ -22,6 +22,52 @@ sanitize_status() {
   LC_ALL=C tr -cd '[:print:]' <<<"$1" | cut -c 1-160
 }
 
+git_head_branch() {
+  # Keep the statusline cheap and non-blocking: do not invoke `git` here.  Some
+  # workspaces have slow network filesystems, hydrated-on-demand git objects, or
+  # broken config; reading .git/HEAD is enough for a best-effort branch label.
+  local current="$1"
+  local dotgit gitdir_line gitdir head_file head_line branch
+  [[ -n "$current" && -d "$current" ]] || return 1
+  current=$(cd "$current" 2>/dev/null && pwd -P) || return 1
+
+  while [[ -n "$current" ]]; do
+    head_file=''
+    dotgit="$current/.git"
+    if [[ -d "$dotgit" && ! -L "$dotgit" ]]; then
+      head_file="$dotgit/HEAD"
+    elif [[ -f "$dotgit" && ! -L "$dotgit" ]]; then
+      IFS= read -r gitdir_line <"$dotgit" 2>/dev/null || gitdir_line=''
+      if [[ "$gitdir_line" == gitdir:\ * ]]; then
+        gitdir="${gitdir_line#gitdir: }"
+        [[ "$gitdir" == /* ]] || gitdir="$current/$gitdir"
+        if gitdir=$(cd "$gitdir" 2>/dev/null && pwd -P) && [[ -f "$gitdir/HEAD" && ! -L "$gitdir/HEAD" ]]; then
+          head_file="$gitdir/HEAD"
+        fi
+      fi
+    fi
+
+    if [[ -n "$head_file" && -f "$head_file" && ! -L "$head_file" ]]; then
+      IFS= read -r head_line <"$head_file" 2>/dev/null || return 1
+      if [[ "$head_line" == ref:\ refs/heads/* ]]; then
+        branch="${head_line#ref: refs/heads/}"
+        [[ -n "$branch" ]] && printf '%s\n' "$branch"
+        return 0
+      fi
+      if [[ "$head_line" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+        printf '%s\n' "${head_line:0:12}"
+        return 0
+      fi
+      return 1
+    fi
+
+    [[ "$current" == "/" ]] && break
+    current="${current%/*}"
+    [[ -n "$current" ]] || current="/"
+  done
+  return 1
+}
+
 model=$(jq_get '.model.display_name')
 model=${model:-$(jq_get '.model.id')}
 model=${model:-unknown}
@@ -47,12 +93,11 @@ dir=${dir:-.}
 dir=$(sanitize_status "$dir")
 
 branch=''
-if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  b=$(git branch --show-current 2>/dev/null || true)
-  if [[ -n "$b" ]]; then
-    b=$(sanitize_status "$b")
-    branch=" | ${b}"
-  fi
+branch_dir=${cwd:-$PWD}
+b=$(git_head_branch "$branch_dir" 2>/dev/null || true)
+if [[ -n "$b" ]]; then
+  b=$(sanitize_status "$b")
+  branch=" | ${b}"
 fi
 
 # Cache hit rate from the transcript tail (best-effort, fast — reads only the last 1MB).
