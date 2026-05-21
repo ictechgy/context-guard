@@ -200,7 +200,65 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_release_smoke_launch_plan_covers_every_packaged_entrypoint(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_plan")
         expected = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
-        self.assertEqual(set(smoke.entrypoint_smoke_plan(PLUGIN_BIN)), expected)
+        plan = smoke.entrypoint_smoke_plan(PLUGIN_BIN)
+        self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), expected)
+        self.assertEqual(set(plan), expected)
+        self.assertEqual(plan["claude-token-statusline"]["mode"], "statusline")
+        self.assertEqual(plan["claude-token-statusline-merged"]["mode"], "statusline")
+        self.assertEqual(plan["claude-token-guard-read"]["mode"], "hook-json")
+
+        statusline_stdin = json.loads(smoke.launch_stdin("statusline"))
+        self.assertEqual(statusline_stdin["session_id"], "release-smoke")
+        self.assertIsNone(smoke.launch_stdin("text"))
+
+    def test_release_smoke_launch_plan_rejects_missing_planned_entrypoint(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_missing_entrypoint")
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_bin = Path(tmp)
+            for name in smoke.ENTRYPOINT_SMOKE_COMMANDS:
+                if name != "claude-token-statusline":
+                    path = plugin_bin / name
+                    path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+                    path.chmod(0o700)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.entrypoint_smoke_plan(plugin_bin)
+            self.assertIn("planned entrypoints are missing", str(ctx.exception))
+            self.assertIn("claude-token-statusline", str(ctx.exception))
+
+    def test_release_smoke_launch_plan_rejects_unplanned_entrypoint(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_extra_entrypoint")
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_bin = Path(tmp)
+            for name in smoke.ENTRYPOINT_SMOKE_COMMANDS:
+                path = plugin_bin / name
+                path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+                path.chmod(0o700)
+            extra = plugin_bin / "claude-token-new-tool"
+            extra.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+            extra.chmod(0o700)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.entrypoint_smoke_plan(plugin_bin)
+            self.assertIn("no launch plan", str(ctx.exception))
+            self.assertIn("claude-token-new-tool", str(ctx.exception))
+
+    def test_release_smoke_validates_hook_json_and_statusline_output(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_launch_validators")
+        good_hook = subprocess.CompletedProcess(["hook"], 0, stdout="{}\n", stderr="")
+        bad_hook = subprocess.CompletedProcess(["hook"], 0, stdout="not-json\n", stderr="")
+        list_hook = subprocess.CompletedProcess(["hook"], 0, stdout="[]\n", stderr="")
+        empty_hook = subprocess.CompletedProcess(["hook"], 0, stdout="", stderr="")
+        good_status = subprocess.CompletedProcess(["statusline"], 0, stdout="one line\n", stderr="")
+        bad_status = subprocess.CompletedProcess(["statusline"], 0, stdout="one\ntwo\n", stderr="")
+        smoke.check_launch_smoke(good_hook, "hook", "hook-json")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(bad_hook, "hook", "hook-json")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(list_hook, "hook", "hook-json")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(empty_hook, "hook", "hook-json")
+        smoke.check_launch_smoke(good_status, "statusline", "statusline")
+        with self.assertRaises(SystemExit):
+            smoke.check_launch_smoke(bad_status, "statusline", "statusline")
 
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:

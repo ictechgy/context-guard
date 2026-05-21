@@ -21,27 +21,23 @@ REQUIRED_COMMANDS = (
     "claude-token-audit",
     "claude-token-delegate",
 )
-ENTRYPOINT_SMOKE_COMMANDS = {
-    "claude-read-symbol": ["--help"],
-    "claude-sanitize-output": ["--help"],
-    "claude-token-audit": ["--help"],
-    "claude-token-bench": ["--help"],
-    "claude-token-delegate": ["--help"],
-    "claude-token-diet": ["--help"],
-    "claude-token-failed-nudge": [],
-    "claude-token-guard-read": [],
-    "claude-token-rewrite-bash": [],
-    "claude-token-setup": ["--help"],
-    "claude-token-statusline": [],
-    "claude-token-statusline-merged": [],
-    "claude-trim-output": ["--help"],
+ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
+    "claude-read-symbol": {"args": ["--help"], "mode": "text"},
+    "claude-sanitize-output": {"args": ["--help"], "mode": "text"},
+    "claude-token-audit": {"args": ["--help"], "mode": "text"},
+    "claude-token-bench": {"args": ["--help"], "mode": "text"},
+    "claude-token-delegate": {"args": ["--help"], "mode": "text"},
+    "claude-token-diet": {"args": ["--help"], "mode": "text"},
+    "claude-token-failed-nudge": {"args": [], "mode": "hook-json"},
+    "claude-token-guard-read": {"args": [], "mode": "hook-json"},
+    "claude-token-rewrite-bash": {"args": [], "mode": "hook-json"},
+    "claude-token-setup": {"args": ["--help"], "mode": "text"},
+    "claude-token-statusline": {"args": [], "mode": "statusline"},
+    "claude-token-statusline-merged": {"args": [], "mode": "statusline"},
+    "claude-trim-output": {"args": ["--help"], "mode": "text"},
 }
-HOOK_STDIN_COMMANDS = {
-    "claude-token-failed-nudge",
-    "claude-token-guard-read",
-    "claude-token-rewrite-bash",
-    "claude-token-statusline-merged",
-}
+HOOK_STDIN = "{}"
+STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})
 PRESERVED_ENV_KEYS = (
     "PATH",
     "SYSTEMROOT",
@@ -78,12 +74,15 @@ def command_path(plugin_bin: Path, name: str) -> Path:
     return path
 
 
-def entrypoint_smoke_plan(plugin_bin: Path) -> dict[str, list[str]]:
+def entrypoint_smoke_plan(plugin_bin: Path) -> dict[str, dict[str, Any]]:
     files = {path.name for path in plugin_bin.iterdir() if path.is_file()}
-    missing = sorted(files - set(ENTRYPOINT_SMOKE_COMMANDS))
+    unexpected = sorted(files - set(ENTRYPOINT_SMOKE_COMMANDS))
+    if unexpected:
+        fail(f"release smoke has no launch plan for plugin entrypoints: {', '.join(unexpected)}")
+    missing = sorted(set(ENTRYPOINT_SMOKE_COMMANDS) - files)
     if missing:
-        fail(f"release smoke has no launch plan for plugin entrypoints: {', '.join(missing)}")
-    return {name: ENTRYPOINT_SMOKE_COMMANDS[name] for name in sorted(files)}
+        fail(f"release smoke planned entrypoints are missing from plugin bin: {', '.join(missing)}")
+    return {name: ENTRYPOINT_SMOKE_COMMANDS[name] for name in sorted(ENTRYPOINT_SMOKE_COMMANDS)}
 
 
 def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
@@ -218,14 +217,15 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             expect=lambda proc: check_delegate_status(proc.stdout, project),
         )
 
-        for name, args in launch_plan.items():
+        for name, plan in launch_plan.items():
+            mode = str(plan["mode"])
             run_command(
-                [str(command_path(plugin_bin, name)), *args],
+                [str(command_path(plugin_bin, name)), *plan["args"]],
                 cwd=project,
                 env=env,
                 timeout=timeout,
-                input_text="{}" if name in HOOK_STDIN_COMMANDS else None,
-                expect=lambda proc, command=name: check_launch_smoke(proc, command),
+                input_text=launch_stdin(mode),
+                expect=lambda proc, command=name, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
             )
 
 
@@ -237,9 +237,21 @@ def check_delegate_status(stdout: str, project: Path) -> None:
     assert_path_under(fields.get("config_path"), project, "claude-token-delegate config_path")
 
 
-def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str) -> None:
+def launch_stdin(mode: str) -> str | None:
+    if mode == "hook-json":
+        return HOOK_STDIN
+    if mode == "statusline":
+        return STATUSLINE_STDIN
+    return None
+
+
+def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mode: str) -> None:
     if not proc.stdout.strip():
         fail(f"{command} launch smoke emitted no stdout")
+    if mode == "hook-json":
+        load_json(proc.stdout, command)
+    elif mode == "statusline" and "\n" in proc.stdout.strip():
+        fail(f"{command} statusline smoke emitted multiple lines")
 
 
 def main() -> int:
