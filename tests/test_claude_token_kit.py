@@ -725,6 +725,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("hunter2", proc.stdout)
         self.assertNotIn("abc123", proc.stdout)
 
+    def test_sanitize_output_redacts_semicolon_chained_inline_assignments(self):
+        raw = (
+            'echo ok;TOKEN=first-secret;PASSWORD="second-secret";SAFE_VALUE=visible\n'
+            'prefix;client_secret=third-secret;api_key=os.getenv("API_KEY")\n'
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn('TOKEN=[REDACTED];PASSWORD="[REDACTED]";SAFE_VALUE=visible', proc.stdout)
+                self.assertIn('client_secret=[REDACTED];api_key=os.getenv("API_KEY")', proc.stdout)
+                self.assertNotIn("first-secret", proc.stdout)
+                self.assertNotIn("second-secret", proc.stdout)
+                self.assertNotIn("third-secret", proc.stdout)
+
     def test_sanitize_output_path_anonymization_does_not_corrupt_code_syntax(self):
         raw = (
             'root = "/"\n'

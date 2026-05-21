@@ -44,16 +44,16 @@ SECRET_KEY = (
     r"GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET"
 )
 INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(?P<lead>^|[\s{{\[,])"
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)"
 )
 INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(?P<lead>^|[\s{{\[,])"
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>[^\s,;}}\]]+)(?P<trailing>[;]?)"
+    rf"(?P<value>[^\"'\s,;}}\]]+)"
 )
 SAFE_UNQUOTED_VALUES = {
     "[redacted]",
@@ -69,7 +69,7 @@ IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
+    (re.compile(rf"(?i)([?&#](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)\s+)\S+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)=)\S+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:-p|-u|--user)\s+)\S+:\S+"), r"\1[REDACTED]"),
@@ -175,7 +175,7 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
         if not should_redact_unquoted_secret_value(line, match):
             return match.group(0)
         redacted = True
-        return f"{match.group('lead')}{match.group('prefix')}[REDACTED]{match.group('trailing')}"
+        return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
 
     line = INLINE_QUOTED_SECRET_ASSIGNMENT_RE.sub(quoted_repl, line)
     line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
