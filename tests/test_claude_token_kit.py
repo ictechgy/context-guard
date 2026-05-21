@@ -2178,6 +2178,72 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(target.read_text(encoding="utf-8"), "important",
                                      "심볼릭 링크 타깃이 덮어써지면 안 된다")
 
+    def test_failed_attempt_nudge_load_entries_rejects_symlink_targets_and_parents(self):
+        """state read 는 lstat 후 read_text TOCTOU 없이 leaf/parent symlink 를 따라가지 않는다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_nofollow_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real_dir = root / "real"
+                    real_dir.mkdir()
+                    state = real_dir / "failures-sess.json"
+                    state.write_text(json.dumps([{"fp": "abc", "ok": False}]), encoding="utf-8")
+                    direct_link = root / "failures-link.json"
+                    parent_link = root / "state-link-dir"
+                    try:
+                        direct_link.symlink_to(state)
+                        parent_link.symlink_to(real_dir, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+
+                    self.assertEqual(module.load_entries(state), [{"fp": "abc", "ok": False}])
+                    self.assertEqual(module.load_entries(direct_link), [])
+                    self.assertEqual(module.load_entries(parent_link / "failures-sess.json"), [])
+
+    def test_failed_attempt_nudge_save_entries_uses_open_parent_fd_for_replace(self):
+        """replace 직전 parent path 가 symlink 로 바뀌어도 열린 dir_fd 안에서만 교체한다."""
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_nofollow_write_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_dir = root / ".claude-token-optimizer"
+                    state_dir.mkdir()
+                    backup_dir = root / "original-state-dir"
+                    victim_dir = root / "victim"
+                    victim_dir.mkdir()
+                    state_path = state_dir / "failures-sess.json"
+                    race_state = {"swapped": False, "replace_called": False}
+
+                    original_rename = module.os.rename
+
+                    def swapping_rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+                        race_state["replace_called"] = True
+                        if not race_state["swapped"]:
+                            original_rename(str(state_dir), str(backup_dir))
+                            try:
+                                state_dir.symlink_to(victim_dir, target_is_directory=True)
+                            except (OSError, NotImplementedError) as exc:
+                                self.skipTest(f"symlink unavailable: {exc}")
+                            race_state["swapped"] = True
+                        return original_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+                    module.os.rename = swapping_rename
+                    try:
+                        module.save_entries(state_path, [{"fp": "abc", "ok": False}])
+                    finally:
+                        module.os.rename = original_rename
+
+                    self.assertTrue(race_state["replace_called"])
+                    self.assertTrue(race_state["swapped"])
+                    self.assertFalse((victim_dir / "failures-sess.json").exists(),
+                                     "swapped-in symlink parent target must not receive state writes")
+                    self.assertEqual(
+                        json.loads((backup_dir / "failures-sess.json").read_text(encoding="utf-8")),
+                        [{"fp": "abc", "ok": False}],
+                    )
+
     def test_failed_attempt_nudge_state_file_uses_atomic_write(self):
         """save_entries 가 tempfile + os.replace 로 atomic 교체하므로 부분 쓰기로 손상되지 않는다."""
         for script in NUDGE_SCRIPTS:
