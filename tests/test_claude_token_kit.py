@@ -1792,6 +1792,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(data["cost_usd_observed"], 2.0)
         self.assertTrue(data["parse_errors"])
 
+    def test_transcript_audit_ignores_non_finite_metric_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                '{"usage":{"input_tokens":5},"total_cost_usd":0.25}\n'
+                '{"usage":{"input_tokens":NaN},"cost_usd":Infinity}\n'
+                '{"usage":{"input_tokens":-3},"total_cost_usd":-1,"cost_usd":0.5}\n'
+                '{"name":"claude_code.token.usage","value":Infinity,"attributes":{"type":"output"}}\n'
+                '{"usage":{"input_tokens":999999999999999999999999999999999999999999},"cost_usd":999999999999999999999999999999999999999999}\n',
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tokens"]["input"], 1000000000000000005)
+                    self.assertNotIn("output", data["tokens"])
+                    self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
+
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
