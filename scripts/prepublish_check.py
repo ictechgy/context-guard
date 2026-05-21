@@ -21,17 +21,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
-PLUGIN_DIR = Path(
-    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR", ROOT / "plugins" / "claude-token-optimizer")
+PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
+PLUGIN_BIN = PLUGIN_DIR / "bin"
+PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
+MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
+SKILLS_DIR = PLUGIN_DIR / "skills"
+PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
+PATH_OVERRIDE_ENVS = (
+    "CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR",
+    "CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN",
+    "CLAUDE_TOKEN_PREPUBLISH_PLUGIN_MANIFEST",
+    "CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST",
+    "CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR",
 )
-PLUGIN_BIN = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN", PLUGIN_DIR / "bin"))
-PLUGIN_MANIFEST = Path(
-    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_MANIFEST", PLUGIN_DIR / ".claude-plugin" / "plugin.json")
-)
-MARKETPLACE_MANIFEST = Path(
-    os.environ.get("CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST", ROOT / ".claude-plugin" / "marketplace.json")
-)
-SKILLS_DIR = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR", PLUGIN_DIR / "skills"))
 BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
 PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
 
@@ -88,6 +90,54 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
+def path_overrides_allowed() -> bool:
+    return os.environ.get(PATH_OVERRIDE_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_path_overrides() -> None:
+    """Apply test-only path overrides after requiring an explicit guard flag."""
+    global PLUGIN_DIR, PLUGIN_BIN, PLUGIN_MANIFEST, MARKETPLACE_MANIFEST, SKILLS_DIR
+
+    requested = [name for name in PATH_OVERRIDE_ENVS if name in os.environ]
+    if requested and not path_overrides_allowed():
+        fail(f"prepublish path overrides require {PATH_OVERRIDE_FLAG}=1: {', '.join(sorted(requested))}")
+
+    if "CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR" in os.environ:
+        PLUGIN_DIR = Path(os.environ["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"])
+    PLUGIN_BIN = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN", PLUGIN_DIR / "bin"))
+    PLUGIN_MANIFEST = Path(
+        os.environ.get("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_MANIFEST", PLUGIN_DIR / ".claude-plugin" / "plugin.json")
+    )
+    MARKETPLACE_MANIFEST = Path(
+        os.environ.get("CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST", ROOT / ".claude-plugin" / "marketplace.json")
+    )
+    SKILLS_DIR = Path(os.environ.get("CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR", PLUGIN_DIR / "skills"))
+
+
+def lexical_absolute(path: Path) -> Path:
+    return path if path.is_absolute() else ROOT / path
+
+
+def first_symlink_component(path: Path) -> Path | None:
+    """Return the first symlink component in a path without following symlinks."""
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    depth = 0
+    for part in path.parts:
+        if path.is_absolute() and part == path.anchor:
+            continue
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            fail(f"could not inspect release path component: {current}: {exc.strerror or exc.__class__.__name__}")
+        if stat.S_ISLNK(st.st_mode) and not (path.is_absolute() and depth == 0):
+            return current
+        depth += 1
+    return None
+
+
 def check_trusted_release_paths() -> None:
     """Reject symlinked release roots and manifests before reading package data."""
     for label, path in (
@@ -97,8 +147,9 @@ def check_trusted_release_paths() -> None:
         ("plugin manifest", PLUGIN_MANIFEST),
         ("marketplace manifest", MARKETPLACE_MANIFEST),
     ):
-        if path.is_symlink():
-            fail(f"{label} must not be a symlink: {path}")
+        symlink = first_symlink_component(lexical_absolute(path))
+        if symlink is not None:
+            fail(f"{label} must not be or traverse a symlink: {symlink}")
 
 
 def load_json(path: Path) -> dict:
@@ -244,6 +295,7 @@ def main() -> int:
     parser.add_argument("--skip-tests", action="store_true", help="check package invariants without running unit tests")
     args = parser.parse_args()
 
+    apply_path_overrides()
     check_trusted_release_paths()
     check_manifest()
     check_bin_copies()
