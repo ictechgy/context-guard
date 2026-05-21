@@ -1320,6 +1320,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             outside.mkdir()
             (outside / "settings.json").write_text(json.dumps({"secret": "outside"}), encoding="utf-8")
             original_load = setup.load_json_object
+            original_backup = setup.backup_existing
+            race_state = {"swapped": False, "backup_called": False}
 
             def swap_parent_after_read(path):
                 data = original_load(path)
@@ -1327,7 +1329,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     swapped = resolved_root / ".claude-original"
                     settings_dir.rename(swapped)
                     settings_dir.symlink_to(outside, target_is_directory=True)
+                    race_state["swapped"] = True
                 return data
+
+            def record_backup(path):
+                race_state["backup_called"] = True
+                return original_backup(path)
 
             args = argparse.Namespace(
                 root=str(root),
@@ -1346,11 +1353,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 no_backup=False,
             )
             setup.load_json_object = swap_parent_after_read
+            setup.backup_existing = record_backup
             try:
-                with self.assertRaises(OSError):
+                with self.assertRaises(OSError) as ctx:
                     setup.run(args)
             finally:
                 setup.load_json_object = original_load
+                setup.backup_existing = original_backup
+            self.assertTrue(race_state["swapped"])
+            self.assertTrue(race_state["backup_called"])
+            self.assertIn(".claude", str(ctx.exception))
             self.assertEqual(json.loads((outside / "settings.json").read_text(encoding="utf-8")), {"secret": "outside"})
             self.assertEqual(list(outside.glob("settings.json.bak-*")), [])
 
