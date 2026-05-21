@@ -47,14 +47,16 @@ INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)"
+    rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
 INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>[^\s,;}}\]&#]+)"
+    rf"(?P<value>[^\s,;}}\]]+)"
 )
+URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
+URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
 SAFE_UNQUOTED_VALUES = {
     "[redacted]",
     "false",
@@ -162,8 +164,21 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
     return True
 
 
-def redact_secret_assignments(line: str) -> tuple[str, bool]:
+def redact_url_like_secret_params(line: str) -> tuple[str, bool]:
     redacted = False
+
+    def url_repl(match: re.Match[str]) -> str:
+        nonlocal redacted
+        url, count = URL_SECRET_PARAM_RE.subn(r"\1[REDACTED]", match.group(0))
+        if count:
+            redacted = True
+        return url
+
+    return URL_LIKE_RE.sub(url_repl, line), redacted
+
+
+def redact_secret_assignments(line: str) -> tuple[str, bool]:
+    line, redacted = redact_url_like_secret_params(line)
 
     def quoted_repl(match: re.Match[str]) -> str:
         nonlocal redacted
