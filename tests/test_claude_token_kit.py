@@ -134,6 +134,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
             env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(skills_copy)
             proc = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
@@ -165,6 +166,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
             env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
             proc = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
@@ -185,6 +187,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
             env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
             proc = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
@@ -208,6 +211,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     skills_dir.mkdir(parents=True)
                     (skills_dir / "SKILL.md").write_text(content, encoding="utf-8")
                     env = os.environ.copy()
+                    env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
                     env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
                     proc = subprocess.run(
                         [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
@@ -221,6 +225,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_prepublish_reports_missing_plugin_bin_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
             env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN"] = str(Path(tmp) / "missing-bin")
             proc = subprocess.run(
                 [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
@@ -254,6 +259,123 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 link.unlink()
             except FileNotFoundError:
                 pass
+
+    def test_prepublish_rejects_symlinked_release_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plugin_link = tmp_path / "plugin-link"
+            marketplace_link = tmp_path / "marketplace.json"
+            try:
+                plugin_link.symlink_to(PLUGIN_DIR, target_is_directory=True)
+                marketplace_link.symlink_to(ROOT / ".claude-plugin" / "marketplace.json")
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            cases = [
+                (
+                    "CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR",
+                    plugin_link,
+                    "plugin package directory must not be or traverse a symlink",
+                ),
+                (
+                    "CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST",
+                    marketplace_link,
+                    "marketplace manifest must not be or traverse a symlink",
+                ),
+            ]
+            for env_key, env_path, expected in cases:
+                with self.subTest(env_key=env_key):
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+                    env[env_key] = str(env_path)
+                    proc = subprocess.run(
+                        [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn(expected, proc.stdout + proc.stderr)
+
+    def test_prepublish_requires_explicit_flag_for_release_path_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"] = str(Path(tmp) / "plugin")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn(
+                "prepublish path overrides require CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES=1",
+                proc.stdout + proc.stderr,
+            )
+
+    def test_prepublish_rejects_symlinked_release_path_ancestors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plugin = tmp_path / "plugin"
+            outside_meta = tmp_path / "outside-meta"
+            plugin.mkdir()
+            outside_meta.mkdir()
+            (outside_meta / "plugin.json").write_text("{}", encoding="utf-8")
+            try:
+                (plugin / ".claude-plugin").symlink_to(outside_meta, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"] = str(plugin)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("plugin manifest must not be or traverse a symlink", proc.stdout + proc.stderr)
+
+    def test_prepublish_rejects_package_symlinks_before_skill_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            plugin = tmp_path / "plugin"
+            bin_dir = plugin / "bin"
+            skills_dir = plugin / "skills"
+            outside_skills = tmp_path / "outside-skills"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+            skills_dir.mkdir()
+            outside_skills.mkdir()
+            (plugin / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps({
+                    "name": "claude-token-optimizer",
+                    "description": "test plugin",
+                    "version": "0.1.0",
+                    "license": "Apache-2.0",
+                }),
+                encoding="utf-8",
+            )
+            try:
+                (skills_dir / "linked").symlink_to(outside_skills, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"] = str(plugin)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("forbidden package symlink: skills/linked", proc.stdout + proc.stderr)
+            self.assertNotIn("missing plugin bin", proc.stdout + proc.stderr)
+            self.assertNotIn("skill metadata", proc.stdout + proc.stderr)
 
     def test_trim_preserves_exit_code_and_trims(self):
         cmd = [
