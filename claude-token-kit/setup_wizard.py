@@ -56,6 +56,10 @@ HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 @dataclass
@@ -134,17 +138,111 @@ def validate_settings_target(root: Path, settings_path: Path, *, allow_home_sett
             raise SystemExit(f"Claude settings directory resolves outside project root: {claude_dir}") from exc
 
 
-def load_json_object(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    if path.is_symlink():
-        raise SystemExit(f"Refusing to write through symlinked settings file: {path}")
+def _base_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _no_follow_flag() -> int:
+    if hasattr(os, "O_NOFOLLOW"):
+        return os.O_NOFOLLOW
+    raise OSError("platform does not support no-follow file opens")
+
+
+def _directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Rewrite narrow platform-owned absolute aliases before no-follow traversal."""
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+    flags = _base_open_flags() | _directory_flag() | _no_follow_flag()
+    fd = os.open(component, flags, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"not a directory: {path}")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _open_regular_no_symlink(path: Path) -> int:
+    if os.open not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative no-follow opens")
+    path = _normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    if not components:
+        raise OSError(f"not a regular file: {path}")
+
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for component in components[:-1]:
+            next_fd = _open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        fd = os.open(components[-1], _base_open_flags() | _no_follow_flag(), dir_fd=dir_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"not a regular file: {path}")
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def _read_text_no_follow(path: Path) -> str:
+    fd = _open_regular_no_symlink(path)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            return handle.read()
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def load_json_object(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(_read_text_no_follow(path))
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
+    except FileNotFoundError:
+        return {}
     except OSError as exc:
-        raise SystemExit(f"Could not read {path}: {exc}") from exc
+        raise SystemExit(f"Could not read {path} without following symlinks: {exc}") from exc
     if not isinstance(data, dict):
         raise SystemExit(f"Settings file must contain a JSON object: {path}")
     return data
@@ -370,16 +468,14 @@ def existing_mode_or_default(path: Path, default: int = 0o600) -> int:
 
 
 def load_aux_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    if path.is_symlink():
-        raise SystemExit(f"Refusing to write through symlinked auxiliary config: {path}")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text_no_follow(path))
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
+    except FileNotFoundError:
+        return {}
     except OSError as exc:
-        raise SystemExit(f"Could not read {path}: {exc}") from exc
+        raise SystemExit(f"Could not read {path} without following symlinks: {exc}") from exc
     if not isinstance(data, dict):
         raise SystemExit(f"Auxiliary config must contain a JSON object: {path}")
     return data

@@ -1244,6 +1244,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("symlinked Claude settings directory", proc.stderr)
 
+    def test_setup_wizard_no_follow_json_reader_rejects_symlink_targets_and_parents(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_nofollow_json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "settings.json"
+            target.write_text("{}", encoding="utf-8")
+            direct_link = root / "settings-link.json"
+            parent_link = root / "settings-link-dir"
+            try:
+                direct_link.symlink_to(target)
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            with self.assertRaises(OSError):
+                setup._read_text_no_follow(direct_link)
+            with self.assertRaises(OSError):
+                setup._read_text_no_follow(parent_link / "settings.json")
+
     def test_setup_wizard_preserves_existing_settings_mode_and_statusline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
