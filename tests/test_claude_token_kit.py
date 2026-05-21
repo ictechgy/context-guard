@@ -1008,7 +1008,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
                     self.assertEqual(settings["model"], "sonnet")
                     self.assertEqual(settings["effortLevel"], "medium")
-                    self.assertIn("claude-token-statusline", settings["statusLine"]["command"])
+                    self.assertIn("claude-token-statusline-merged", settings["statusLine"]["command"])
                     deny = settings["permissions"]["deny"]
                     self.assertIn("Read(./node_modules/**)", deny)
                     self.assertIn("Read(./.env)", deny)
@@ -1032,17 +1032,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_setup_wizard_prefers_repo_helper_over_path_shadow(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_prefers_repo_helper")
         with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "claude-token-statusline"
+            fake = Path(tmp) / "claude-token-statusline-merged"
             fake.write_text("#!/usr/bin/env bash\necho shadow\n", encoding="utf-8")
             fake.chmod(0o700)
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
             try:
-                command = setup.helper_command("claude-token-statusline", "statusline.sh", shell="bash")
+                command = setup.helper_command("claude-token-statusline-merged", "statusline_merged.sh", shell="bash")
             finally:
                 os.environ["PATH"] = old_path
-        self.assertIn("plugins/claude-token-optimizer/bin/claude-token-statusline", command)
-        self.assertNotEqual(command, "claude-token-statusline")
+        self.assertIn("plugins/claude-token-optimizer/bin/claude-token-statusline-merged", command)
+        self.assertNotEqual(command, "claude-token-statusline-merged")
 
     def test_setup_wizard_enables_failed_attempt_nudge_only_with_opt_in_flag(self):
         """기본 실행은 nudge 를 추가하지 않고, --failed-attempt-nudge 를 줘야 PostToolUse 에 등록된다."""

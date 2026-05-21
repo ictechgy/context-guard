@@ -49,7 +49,7 @@ RECOMMENDED_DENIES = [
     "Read(~/.kube/**)",
     "Read(~/.docker/**)",
 ]
-HELPER_STATUSLINE = "claude-token-statusline"
+HELPER_STATUSLINE = "claude-token-statusline-merged"
 HELPER_REWRITE_BASH = "claude-token-rewrite-bash"
 HELPER_GUARD_READ = "claude-token-guard-read"
 HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
@@ -359,7 +359,7 @@ def helper_command(helper_name: str, kit_script: str, *, shell: str | None = Non
 
 
 def statusline_setting() -> dict[str, str]:
-    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline.sh", shell="bash")}
+    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash")}
 
 
 def bash_hook_setting() -> dict[str, Any]:
@@ -453,7 +453,7 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
             settings["statusLine"] = statusline
             actions.append("enabled token statusline")
         elif settings.get("statusLine") != statusline:
-            actions.append("kept existing statusLine; add claude-token-statusline manually if desired")
+            actions.append("kept existing statusLine; add claude-token-statusline-merged manually if desired")
     if choices.denies:
         ensure_permissions(settings, actions)
     if choices.bash_hook:
