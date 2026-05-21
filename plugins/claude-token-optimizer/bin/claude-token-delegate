@@ -1086,6 +1086,16 @@ def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
         return f"[failed to read provider output safely: {exc}]\n", False
 
 
+def provider_output_size(*files: Any) -> int:
+    total = 0
+    for file_obj in files:
+        try:
+            total += os.fstat(file_obj.fileno()).st_size
+        except OSError:
+            continue
+    return total
+
+
 def run_provider(
     provider: str,
     command: list[str],
@@ -1130,10 +1140,7 @@ def run_provider(
                 else:
                     while proc.poll() is None:
                         elapsed = (_dt.datetime.now() - start).total_seconds()
-                        try:
-                            current_size = stdout_path.stat().st_size + stderr_path.stat().st_size
-                        except OSError:
-                            current_size = 0
+                        current_size = provider_output_size(stdout_file, stderr_file)
                         if current_size > output_limit:
                             killed_for_output = True
                             try:
@@ -1175,7 +1182,7 @@ def run_provider(
                 stderr.rstrip()
                 + f"\n[OUTPUT_LIMIT exceeded; captured first {output_limit} chars per stream]\n"
             ).lstrip()
-            if returncode == 0:
+            if returncode == 0 or killed_for_output:
                 returncode = 125
         return returncode, stdout, stderr
 
