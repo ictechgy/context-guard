@@ -25,10 +25,16 @@ MIN_MAX_CHARS = 200
 MAX_CHARS_LIMIT = 200_000
 MAX_READ_BYTES = 2_000_000
 BRACE_FALLBACK_LINES = 80
+PATH_LABEL_MAX_CHARS = 80
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
+SENSITIVE_PATH_RE = re.compile(
+    r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)[^/\\\s]*)"
+)
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -67,7 +73,22 @@ def path_label(path: Path, show_paths: bool) -> str:
     if show_paths:
         return str(path)
     digest = hashlib.sha256(str(path).encode("utf-8", "replace")).hexdigest()[:12]
-    return f"{path.name}#path:{digest}"
+    name = " ".join((path.name or "path").strip().split())
+    if SENSITIVE_PATH_RE.search(name):
+        name = "redacted-path"
+    elif len(name) > PATH_LABEL_MAX_CHARS:
+        name = name[: PATH_LABEL_MAX_CHARS - 15].rstrip() + "...[truncated]"
+    return f"{name}#path:{digest}"
+
+
+def os_error_summary(exc: OSError) -> str:
+    parts = [exc.__class__.__name__]
+    if getattr(exc, "errno", None) is not None:
+        parts.append(f"errno={exc.errno}")
+    message = " ".join(str(getattr(exc, "strerror", "") or "").strip().split())
+    if message:
+        parts.append(message[:160])
+    return ": ".join(parts)
 
 
 def has_symlink_component(path: Path) -> bool:
@@ -396,16 +417,17 @@ def main() -> int:
     args.max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, MIN_MAX_CHARS, MAX_CHARS_LIMIT)
 
     path = Path(args.path).expanduser()
+    safe_path = path_label(path.absolute(), args.show_paths)
     if has_symlink_component(path):
-        print(f"claude-read-symbol: refusing symlink path component: {args.path}", file=sys.stderr)
+        print(f"claude-read-symbol: refusing symlink path component: {safe_path}", file=sys.stderr)
         return 2
     if not path.is_file():
-        print(f"claude-read-symbol: not a file: {args.path}", file=sys.stderr)
+        print(f"claude-read-symbol: not a file: {safe_path}", file=sys.stderr)
         return 2
     try:
         result = find_symbol_slice(path, args.symbol, args.context, args.max_chars, args.show_paths)
     except OSError as exc:
-        print(f"claude-read-symbol: could not read file safely: {exc}", file=sys.stderr)
+        print(f"claude-read-symbol: could not read file safely: {safe_path}: {os_error_summary(exc)}", file=sys.stderr)
         return 2
     if result is None:
         suffix = ""

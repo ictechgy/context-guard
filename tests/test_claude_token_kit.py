@@ -2992,6 +2992,44 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("first 2000000 bytes", proc.stderr)
 
+    def test_read_symbol_errors_do_not_leak_raw_paths_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_name = "missing-token=ghp_" + ("A" * 36) + ".py"
+            missing = root / secret_name
+            for script in READ_SYMBOL_SCRIPTS:
+                with self.subTest(script=script, case="missing"):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(missing), "target"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("not a file: redacted-path#path:", proc.stderr)
+                    self.assertNotIn(tmp, proc.stderr)
+                    self.assertNotIn(secret_name, proc.stderr)
+                    self.assertNotIn("ghp_", proc.stderr)
+
+            real = root / "target.py"
+            real.write_text("def target():\n    return 1\n", encoding="utf-8")
+            link = root / ("link-token=ghp_" + ("B" * 36) + ".py")
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            for script in READ_SYMBOL_SCRIPTS:
+                with self.subTest(script=script, case="symlink"):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(link), "target"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("refusing symlink path component: redacted-path#path:", proc.stderr)
+                    self.assertNotIn(tmp, proc.stderr)
+                    self.assertNotIn(link.name, proc.stderr)
+                    self.assertNotIn("ghp_", proc.stderr)
+
     def test_read_symbol_clamps_extreme_output_budgets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
