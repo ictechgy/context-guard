@@ -6043,7 +6043,25 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
                             cost_usd=0.0,
                             success=False,
-                            notes=f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n" + ("x" * 800),
+                            notes=(
+                                f"{prefix}HYPERLINK(\"http://example.invalid\")\x00\x7f\u009b\u200b\n"
+                                "Authorization: Bearer opaque-token-value "
+                                "token=opaque-token-value "
+                                "API_TOKEN=upper-token-value "
+                                "access_token=access-secret-value "
+                                "refresh_token=refresh-secret-value "
+                                "DB_PASSWORD=db-secret-value "
+                                "SECRET_KEY=secret-key-value "
+                                "api_key=plain-api-key "
+                                '"token": "json-secret-value" '
+                                "X-Api-Key: header-secret-value "
+                                "--api-key 'quoted secret value' "
+                                "--user=admin:password "
+                                "https://token@mirror.example.invalid/pkg "
+                                "github_pat_" + ("B" * 24) + " "
+                                "postgres://user:pass@example.invalid/db "
+                                + ("x" * 800)
+                            ),
                         )
                         module.append_csv(csv_path, "test", result)
 
@@ -6059,8 +6077,41 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertNotIn("\u009b", note)
                             self.assertNotIn("\u200b", note)
                             self.assertNotIn("\n", note)
+                            self.assertNotIn("opaque-token-value", note)
+                            self.assertNotIn("upper-token-value", note)
+                            self.assertNotIn("access-secret-value", note)
+                            self.assertNotIn("refresh-secret-value", note)
+                            self.assertNotIn("db-secret-value", note)
+                            self.assertNotIn("secret-key-value", note)
+                            self.assertNotIn("plain-api-key", note)
+                            self.assertNotIn("json-secret-value", note)
+                            self.assertNotIn("header-secret-value", note)
+                            self.assertNotIn("quoted secret value", note)
+                            self.assertNotIn("admin:password", note)
+                            self.assertNotIn("token@mirror", note)
+                            self.assertNotIn("github_pat_", note)
+                            self.assertNotIn("user:pass", note)
+                            self.assertIn("[REDACTED]", note)
                             self.assertLessEqual(len(note), module.MAX_CSV_NOTE_CHARS)
                             self.assertIn("…[truncated]", note)
+
+    def test_note_secret_argument_redaction_preserves_surrounding_quotes(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_arg_note_sanitize_{index}")
+                note = module.sanitize_note_text(
+                    'prefix "--api-key secret-value" suffix '
+                    '"--user=admin:password" '
+                    '--token "quoted secret value" '
+                    "-p --model sonnet"
+                )
+                self.assertIn('prefix "--api-key [REDACTED]" suffix', note)
+                self.assertIn('"--user=[REDACTED]"', note)
+                self.assertIn("--token [REDACTED]", note)
+                self.assertIn("-p --model sonnet", note)
+                self.assertNotIn("secret-value", note)
+                self.assertNotIn("admin:password", note)
+                self.assertNotIn("quoted secret value", note)
 
     def test_csv_access_uses_advisory_lock_file(self):
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -6193,6 +6244,39 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertFalse((root / "results.csv.lock").exists(),
                                      "dry-run --resume must not create a sidecar lock for a missing CSV")
 
+    def test_dry_run_console_redacts_secrets_without_truncating_argv(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    long_arg = "x" * 900
+                    secret = "quoted secret value"
+                    generic_secret = "generic-dry-run-secret"
+                    access_secret = "access-dry-run-secret"
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "echo hello", "model": "sonnet", "max_turns": 1}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "hygiene", "extra_args": ["--api-key", secret, "--token", generic_secret, "--access_token", access_secret, "--long-arg", long_arg]},
+                    ]))
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(root / "results.csv"), "--dry-run"],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertIn("dry-run:", proc.stdout)
+                    self.assertIn("-p --model sonnet", proc.stdout)
+                    self.assertIn("--long-arg", proc.stdout)
+                    self.assertIn(long_arg, proc.stdout)
+                    self.assertNotIn("…[truncated]", proc.stdout)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(generic_secret, proc.stdout)
+                    self.assertNotIn(access_secret, proc.stdout)
+                    self.assertIn("--api-key [REDACTED]", proc.stdout)
+                    self.assertIn("--token [REDACTED]", proc.stdout)
+                    self.assertIn("--access_token [REDACTED]", proc.stdout)
+
     def test_run_with_fake_claude_collects_usage_and_runs_success_command(self):
         for script in BENCH_SCRIPTS:
             with self.subTest(script=script):
@@ -6234,6 +6318,97 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["total_tokens"], "980")
                     self.assertEqual(row["success"], "true")
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
+
+    def test_runner_uses_project_root_for_claude_and_redacts_failure_notes(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    project = root / "project"
+                    project.mkdir()
+                    caller = root / "caller"
+                    caller.mkdir()
+                    fake = root / "fake-claude"
+                    auth_value = "opaque-token-value"
+                    generic_token = "generic-secret-value"
+                    env_token = "env-token-value"
+                    access_token = "access-token-value"
+                    refresh_token = "refresh-token-value"
+                    db_password = "db-password-value"
+                    secret_key = "secret-key-value"
+                    json_secret = "json-secret-value"
+                    header_secret = "header-secret-value"
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import os, pathlib, sys\n"
+                        "pathlib.Path('claude-cwd.txt').write_text(os.getcwd(), encoding='utf-8')\n"
+                        f"sys.stderr.write('Authorization: Bearer {auth_value}\\n')\n"
+                        f"sys.stderr.write('token={generic_token}\\n')\n"
+                        f"sys.stderr.write('API_TOKEN={env_token}\\n')\n"
+                        f"sys.stderr.write('access_token={access_token}\\n')\n"
+                        f"sys.stderr.write('refresh_token={refresh_token}\\n')\n"
+                        f"sys.stderr.write('DB_PASSWORD={db_password}\\n')\n"
+                        f"sys.stderr.write('SECRET_KEY={secret_key}\\n')\n"
+                        f"sys.stderr.write('{{\"token\": \"{json_secret}\"}}\\n')\n"
+                        f"sys.stderr.write('X-Api-Key: {header_secret}\\n')\n"
+                        "sys.exit(7)\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    (project / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "x", "max_turns": 1, "success_command": "true", "success_cwd": "."}
+                    ]))
+                    (project / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []}
+                    ]))
+                    csv_path = project / "results.csv"
+                    nested_caller = caller / "nested" / "deeper"
+                    nested_caller.mkdir(parents=True)
+                    relative_fake = os.path.relpath(fake, nested_caller)
+                    proc = subprocess.run(
+                        [sys.executable, str(script),
+                         "--tasks", str(project / "tasks.json"),
+                         "--variants", str(project / "variants.json"),
+                         "--csv", str(csv_path),
+                         "--claude-bin", relative_fake,
+                         "--project-root", str(project)],
+                        cwd=nested_caller,
+                        text=True, capture_output=True, check=True,
+                    )
+
+                    self.assertEqual((project / "claude-cwd.txt").read_text(encoding="utf-8"), str(project.resolve()))
+                    self.assertNotIn(auth_value, proc.stdout)
+                    self.assertNotIn(generic_token, proc.stdout)
+                    self.assertNotIn(env_token, proc.stdout)
+                    self.assertNotIn(access_token, proc.stdout)
+                    self.assertNotIn(refresh_token, proc.stdout)
+                    self.assertNotIn(db_password, proc.stdout)
+                    self.assertNotIn(secret_key, proc.stdout)
+                    self.assertNotIn(json_secret, proc.stdout)
+                    self.assertNotIn(header_secret, proc.stdout)
+                    self.assertNotIn(auth_value, proc.stderr)
+                    self.assertNotIn(generic_token, proc.stderr)
+                    self.assertNotIn(env_token, proc.stderr)
+                    self.assertNotIn(access_token, proc.stderr)
+                    self.assertNotIn(refresh_token, proc.stderr)
+                    self.assertNotIn(db_password, proc.stderr)
+                    self.assertNotIn(secret_key, proc.stderr)
+                    self.assertNotIn(json_secret, proc.stderr)
+                    self.assertNotIn(header_secret, proc.stderr)
+                    with csv_path.open(encoding="utf-8") as f:
+                        row = next(csv.DictReader(f))
+                    self.assertEqual(row["success"], "false")
+                    self.assertIn("claude exit=7", row["notes"])
+                    self.assertIn("[REDACTED]", row["notes"])
+                    self.assertNotIn(auth_value, row["notes"])
+                    self.assertNotIn(generic_token, row["notes"])
+                    self.assertNotIn(env_token, row["notes"])
+                    self.assertNotIn(access_token, row["notes"])
+                    self.assertNotIn(refresh_token, row["notes"])
+                    self.assertNotIn(db_password, row["notes"])
+                    self.assertNotIn(secret_key, row["notes"])
+                    self.assertNotIn(json_secret, row["notes"])
+                    self.assertNotIn(header_secret, row["notes"])
 
     def test_run_records_failure_when_success_command_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:

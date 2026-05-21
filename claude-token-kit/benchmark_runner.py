@@ -88,6 +88,28 @@ CSV_COLUMNS = [
 ]
 MAX_CSV_NOTE_CHARS = 500
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
+SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
+SECRET_NOTE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(rf"(?i)([?&#;]({SECRET_NOTE_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
+    (re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_NOTE_KEY_RE})[\"']?\s*[:=]\s*){SECRET_NOTE_VALUE_RE}"), r"\1\2[REDACTED]"),
+    (re.compile(rf"(?i)(^|[\s\"'])(--(?:{SECRET_NOTE_KEY_RE})(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)(^|[\s\"'])((?:-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
+    (re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}"), "[REDACTED]"),
+    (re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"), "[REDACTED]"),
+    (re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
+    (re.compile(r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
+    (re.compile(r"npm_[A-Za-z0-9]{20,}"), "[REDACTED]"),
+    (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED]"),
+    (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED]"),
+    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
+)
 
 # claude -p --output-format json 의 usage 키 후보. Anthropic SDK 와 Claude Code 의 출력
 # 형식이 시간이 지나며 바뀔 수 있어 다중 후보로 best-effort 매칭한다.
@@ -468,6 +490,16 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     return argv
 
 
+def executable_argv0(command: str) -> str:
+    resolved = shutil.which(command)
+    if resolved:
+        return str(Path(resolved).expanduser().resolve())
+    path = Path(command).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str(path.resolve())
+
+
 # shlex.split 은 shell injection 은 막지만 `true ; echo pwned` 같은 입력을 그대로
 # `["true", ";", "echo", "pwned"]` 로 분해해 /usr/bin/true 가 ";"·"echo"·"pwned" 를
 # 그냥 인자로 무시하고 success=true 로 끝나는 false-positive 를 만들 수 있다.
@@ -525,8 +557,9 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=True, notes=f"dry-run: {shlex.join(argv)}",
         )
+    argv[0] = executable_argv0(argv[0])
     try:
-        proc = subprocess.run(argv, text=True, capture_output=True, timeout=1800)
+        proc = subprocess.run(argv, cwd=project_root, text=True, capture_output=True, timeout=1800)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
@@ -633,11 +666,19 @@ def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
         return _read_existing_keys_unlocked(csv_path)
 
 
-def sanitize_csv_note(value: Any) -> str:
-    """Normalize untrusted notes before writing them to benchmark CSV output."""
+def sanitize_note_text(value: Any) -> str:
+    """Normalize untrusted benchmark note text without output-length policy."""
     text = "" if value is None else str(value)
     text = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in text)
     text = " ".join(text.split())
+    for pattern, replacement in SECRET_NOTE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def sanitize_csv_note(value: Any) -> str:
+    """Normalize untrusted notes before writing them to benchmark CSV output."""
+    text = sanitize_note_text(value)
     if text.startswith(CSV_FORMULA_PREFIXES):
         text = "'" + text
     if len(text) > MAX_CSV_NOTE_CHARS:
@@ -715,7 +756,7 @@ def main() -> int:
             suffix = " (CSV not updated; row already present)"
         else:
             suffix = ""
-        print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {result.notes}{suffix}")
+        print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {sanitize_note_text(result.notes)}{suffix}")
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
     print(f"completed {completed} run(s); results in {target}")
     return 0
