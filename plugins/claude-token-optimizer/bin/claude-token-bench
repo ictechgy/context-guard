@@ -239,7 +239,7 @@ def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
     if fcntl is None:
         raise OSError("platform does not support advisory CSV locks")
     lock_path = csv_path.with_name(f"{csv_path.name}.lock")
-    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
+    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o666, create_parent=create_parent)
     locked = False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -555,8 +555,10 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
     )
 
 
-def append_csv(csv_path: Path, claude_ver: str, result: RunResult) -> None:
+def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_existing: bool = False) -> bool:
     with csv_file_lock(csv_path, create_parent=True):
+        if skip_existing and (result.task_id, result.variant) in _read_existing_keys_unlocked(csv_path):
+            return False
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
         fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
         try:
@@ -588,32 +590,47 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult) -> None:
         finally:
             if fd != -1:
                 os.close(fd)
+    return True
+
+
+def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
+    try:
+        fd = _open_regular_no_symlink(csv_path)
+    except FileNotFoundError:
+        return set()
+    keys: set[tuple[str, str]] = set()
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
+            fd = -1
+            reader = csv.DictReader(f)
+            for row in reader:
+                tid = row.get("task_id") or ""
+                var = row.get("variant") or ""
+                if tid and var:
+                    keys.add((tid, var))
+    finally:
+        if fd != -1:
+            os.close(fd)
+    return keys
+
+
+def _csv_exists_no_follow(csv_path: Path) -> bool:
+    """Probe the CSV itself without following symlinks or creating a sidecar lock."""
+    try:
+        fd = _open_regular_no_symlink(csv_path)
+    except FileNotFoundError:
+        return False
+    else:
+        os.close(fd)
+        return True
 
 
 def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
     """이미 적재된 (task_id, variant) 조합. resume 시 skip 판정에 사용."""
-    try:
-        with csv_file_lock(csv_path, create_parent=False):
-            try:
-                fd = _open_regular_no_symlink(csv_path)
-            except FileNotFoundError:
-                return set()
-            keys: set[tuple[str, str]] = set()
-            try:
-                with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
-                    fd = -1
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        tid = row.get("task_id") or ""
-                        var = row.get("variant") or ""
-                        if tid and var:
-                            keys.add((tid, var))
-            finally:
-                if fd != -1:
-                    os.close(fd)
-            return keys
-    except FileNotFoundError:
+    if not _csv_exists_no_follow(csv_path):
         return set()
+    with csv_file_lock(csv_path, create_parent=False):
+        return _read_existing_keys_unlocked(csv_path)
 
 
 def sanitize_csv_note(value: Any) -> str:
@@ -687,11 +704,17 @@ def main() -> int:
         result = run_fixture(task, variant, args.claude_bin, project_root, args.dry_run)
         # dry-run row 는 CSV 에 적재하지 않는다. 적재하면 (a) tokens=0/cost=0 이 평균을
         # 깎고, (b) --resume 이 그 (task, variant) 를 skip 해 실제 측정값이 영구 누락된다.
+        wrote = True
         if not args.dry_run:
-            append_csv(args.csv, claude_ver, result)
+            wrote = append_csv(args.csv, claude_ver, result, skip_existing=args.resume)
         completed += 1
         status = "ok" if result.success else "FAIL"
-        suffix = "" if not args.dry_run else " (dry-run; CSV not updated)"
+        if args.dry_run:
+            suffix = " (dry-run; CSV not updated)"
+        elif not wrote:
+            suffix = " (CSV not updated; row already present)"
+        else:
+            suffix = ""
         print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {result.notes}{suffix}")
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
     print(f"completed {completed} run(s); results in {target}")

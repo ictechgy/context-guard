@@ -5391,6 +5391,15 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         module.append_csv(direct_link, "test", result)
                     with self.assertRaises(OSError):
                         module.append_csv(parent_link / "new.csv", "test", result)
+                    lock_target = root / "lock-target"
+                    lock_target.write_text("guard", encoding="utf-8")
+                    locked_csv = real_dir / "locked.csv"
+                    lock_link = real_dir / "locked.csv.lock"
+                    lock_link.symlink_to(lock_target)
+                    with self.assertRaises(OSError):
+                        module.append_csv(locked_csv, "test", result)
+                    self.assertFalse(locked_csv.exists())
+                    self.assertEqual(lock_target.read_text(encoding="utf-8"), "guard")
                     self.assertEqual(csv_path.read_text(encoding="utf-8"), "task_id,variant\nold,baseline\n")
 
     def test_csv_notes_are_sanitized_before_write(self):
@@ -5461,9 +5470,44 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
                     lock_path = csv_path.with_name("results.csv.lock")
                     self.assertTrue(lock_path.exists())
-                    self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
+                    lock_mode = lock_path.stat().st_mode & 0o777
+                    self.assertEqual(lock_mode & 0o111, 0)
+                    self.assertTrue(lock_mode & 0o600)
                     self.assertGreaterEqual(operations.count(module.fcntl.LOCK_EX), 2)
                     self.assertGreaterEqual(operations.count(module.fcntl.LOCK_UN), 2)
+
+    def test_append_csv_skip_existing_suppresses_duplicate_rows(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_dedupe_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    first = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="first",
+                    )
+                    duplicate = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 999, "output_tokens": 999, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=999.0,
+                        success=False,
+                        notes="duplicate",
+                    )
+                    self.assertTrue(module.append_csv(csv_path, "test", first))
+                    self.assertFalse(module.append_csv(csv_path, "test", duplicate, skip_existing=True))
+                    with csv_path.open(encoding="utf-8") as f:
+                        rows = list(csv.DictReader(f))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["notes"], "first")
 
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
@@ -5512,7 +5556,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     proc = subprocess.run(
                         [sys.executable, str(script), "--tasks", str(root / "tasks.json"),
                          "--variants", str(root / "variants.json"),
-                         "--csv", str(csv_path), "--dry-run"],
+                         "--csv", str(csv_path), "--dry-run", "--resume"],
                         text=True, capture_output=True, check=True,
                     )
                     self.assertIn("dry-run:", proc.stdout)
@@ -5520,6 +5564,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("(dry-run; CSV not updated)", proc.stdout)
                     self.assertFalse(csv_path.exists(),
                                      "dry-run 은 CSV 를 만들지 않아야 한다")
+                    self.assertFalse((root / "results.csv.lock").exists(),
+                                     "dry-run --resume must not create a sidecar lock for a missing CSV")
 
     def test_run_with_fake_claude_collects_usage_and_runs_success_command(self):
         for script in BENCH_SCRIPTS:
