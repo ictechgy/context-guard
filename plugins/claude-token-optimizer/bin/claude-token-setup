@@ -151,6 +151,24 @@ def _no_follow_flag() -> int:
     raise OSError("platform does not support no-follow file opens")
 
 
+def no_follow_file_ops_supported() -> bool:
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def require_no_follow_file_ops_supported() -> None:
+    if not no_follow_file_ops_supported():
+        raise SystemExit(
+            "Setup requires POSIX no-follow file operations for safe project-local settings writes; "
+            "this platform is not supported yet."
+        )
+
+
 def _directory_flag() -> int:
     return getattr(os, "O_DIRECTORY", 0)
 
@@ -221,6 +239,33 @@ def _open_regular_no_symlink(path: Path) -> int:
             raise
     finally:
         os.close(dir_fd)
+
+
+def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
+    if os.mkdir not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative directory creation")
+    path = _normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+    try:
+        for index, component in enumerate(components):
+            try:
+                next_fd = _open_directory_at(dir_fd, component, path)
+            except FileNotFoundError:
+                mkdir_mode = mode if mode is not None and index == len(components) - 1 else 0o777
+                os.mkdir(component, mkdir_mode, dir_fd=dir_fd)
+                next_fd = _open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        if mode is not None and hasattr(os, "fchmod"):
+            os.fchmod(dir_fd, mode)
+        return dir_fd
+    except Exception:
+        os.close(dir_fd)
+        raise
 
 
 def _read_text_no_follow(path: Path) -> str:
@@ -427,33 +472,43 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
 
 
 def ensure_private_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = _ensure_directory_no_symlink(path, stat.S_IRWXU)
+    except OSError as exc:
+        raise SystemExit(f"Could not create private directory safely: {path}: {exc}") from exc
     try:
         # owner-only directory access — 디렉터리에 자격증명/세션 상태가 들어갈 수 있어
         # 의도적으로 가장 좁은 권한을 적용한다.
-        os.chmod(path, stat.S_IRWXU)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, stat.S_IRWXU)
     except OSError:
         pass
+    finally:
+        os.close(fd)
 
 
 def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-    fd = os.open(tmp, flags, mode)
+    if os.rename not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
+        raise OSError("platform does not support directory-relative atomic writes")
+    parent_fd = _ensure_directory_no_symlink(path.parent)
+    tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _no_follow_flag()
+    fd = os.open(tmp_name, flags, mode, dir_fd=parent_fd)
     try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             fd = -1
             f.write(text)
-        os.replace(tmp, path)
-        os.chmod(path, mode)
+        os.rename(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     finally:
         if fd != -1:
             os.close(fd)
         try:
-            tmp.unlink()
+            os.unlink(tmp_name, dir_fd=parent_fd)
         except FileNotFoundError:
             pass
+        os.close(parent_fd)
 
 
 def write_private_gitignore(state_dir: Path) -> None:
@@ -462,9 +517,16 @@ def write_private_gitignore(state_dir: Path) -> None:
 
 
 def existing_mode_or_default(path: Path, default: int = 0o600) -> int:
-    if not path.exists():
+    try:
+        fd = _open_regular_no_symlink(path)
+    except FileNotFoundError:
         return default
-    return os.stat(path, follow_symlinks=False).st_mode & 0o777
+    except OSError:
+        return default
+    try:
+        return os.fstat(fd).st_mode & 0o777
+    finally:
+        os.close(fd)
 
 
 def load_aux_config(path: Path) -> dict[str, Any]:
@@ -598,11 +660,14 @@ def write_aux_config(
 
 
 def backup_existing(path: Path) -> Path | None:
-    if not path.exists():
+    try:
+        text = _read_text_no_follow(path)
+    except FileNotFoundError:
         return None
+    mode = existing_mode_or_default(path, 0o600)
     stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
     backup = path.with_name(f"{path.name}.bak-{stamp}-{uuid.uuid4().hex[:8]}")
-    shutil.copy2(path, backup)
+    atomic_write(backup, text, mode)
     return backup
 
 
@@ -688,6 +753,7 @@ def render_text(result: SetupResult) -> str:
 
 
 def run(args: argparse.Namespace) -> SetupResult:
+    require_no_follow_file_ops_supported()
     root = resolve_setup_root(args.root)
     settings_path = root / SETTINGS_REL
     validate_settings_target(root, settings_path, allow_home_settings=args.allow_home_settings)
