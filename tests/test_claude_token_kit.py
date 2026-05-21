@@ -2,6 +2,7 @@ import argparse
 import csv
 import contextlib
 import errno
+import hashlib
 import io
 import importlib.machinery
 import importlib.util
@@ -3521,6 +3522,83 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(shown_data["top_files"][0]["name"], str(sample))
             self.assertIn("[REDACTED]", shown_data["top_commands"][0]["name"])
             self.assertNotIn(secret, shown.stdout)
+
+    def test_transcript_audit_path_hashes_do_not_derive_from_secret_components(self):
+        secret_component = "token=ghp_" + ("A" * 36)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            secret_dir = root / secret_component
+            secret_dir.mkdir()
+            sample = secret_dir / "session.jsonl"
+            sample.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            raw_path_hash = hashlib.sha256(str(sample.resolve()).encode("utf-8", errors="replace")).hexdigest()[:12]
+
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["records"], 1)
+                    self.assertRegex(data["top_files"][0]["name"], r"session\.jsonl#path:[0-9a-f]{12}")
+                    self.assertNotIn(secret_component, proc.stdout)
+                    self.assertNotIn(secret_component, proc.stderr)
+                    self.assertNotIn(raw_path_hash, proc.stdout)
+                    self.assertNotIn(raw_path_hash, proc.stderr)
+
+                    shown = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--show-paths"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    shown_data = json.loads(shown.stdout)
+                    self.assertEqual(shown_data["records"], 1)
+                    self.assertIn("[REDACTED-PATH-COMPONENT]", shown_data["top_files"][0]["name"])
+                    self.assertNotIn(secret_component, shown.stdout)
+                    self.assertNotIn(secret_component, shown.stderr)
+                    self.assertNotIn(raw_path_hash, shown.stdout)
+                    self.assertNotIn(raw_path_hash, shown.stderr)
+
+    def test_transcript_audit_parse_error_redacts_secret_shaped_filename_hash(self):
+        secret_name = "secret-token=sk-ant-" + ("A" * 24) + ".jsonl"
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / secret_name
+            sample.write_text("{not json\n", encoding="utf-8")
+            raw_path_hash = hashlib.sha256(str(sample.resolve()).encode("utf-8", errors="replace")).hexdigest()[:12]
+
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["skipped_records"], 1)
+                    self.assertRegex(data["parse_errors"][0], r"\[REDACTED-PATH-COMPONENT\]#path:[0-9a-f]{12}:1")
+                    self.assertNotIn(secret_name, proc.stdout)
+                    self.assertNotIn(secret_name, proc.stderr)
+                    self.assertNotIn(raw_path_hash, proc.stdout)
+                    self.assertNotIn(raw_path_hash, proc.stderr)
+
+                    shown = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--show-paths"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    shown_data = json.loads(shown.stdout)
+                    self.assertEqual(shown_data["skipped_records"], 1)
+                    self.assertIn("[REDACTED-PATH-COMPONENT]", shown_data["parse_errors"][0])
+                    self.assertNotIn(secret_name, shown.stdout)
+                    self.assertNotIn(secret_name, shown.stderr)
+                    self.assertNotIn(raw_path_hash, shown.stdout)
+                    self.assertNotIn(raw_path_hash, shown.stderr)
 
     def test_transcript_audit_anonymizes_parse_error_paths_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
