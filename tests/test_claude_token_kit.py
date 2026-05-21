@@ -3785,6 +3785,77 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     diet.os.O_NOFOLLOW = old_nofollow
                 diet.os.open = real_open
 
+    def test_token_diet_context_read_rejects_parent_swap_before_open(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_parent_swap_{index}")
+                if not getattr(diet.os, "O_NOFOLLOW", 0):
+                    self.skipTest("O_NOFOLLOW unavailable")
+                if diet.os.open not in getattr(diet.os, "supports_dir_fd", set()):
+                    self.skipTest("dir_fd open unavailable")
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "project"
+                    root.mkdir()
+                    context_dir = root / "docs"
+                    context_dir.mkdir()
+                    context = context_dir / "CLAUDE.md"
+                    context.write_text("safe\n", encoding="utf-8")
+                    outside_dir = base / "outside"
+                    outside_dir.mkdir()
+                    outside_context = outside_dir / "CLAUDE.md"
+                    outside_secret = "token=ghp_" + ("A" * 36)
+                    outside_context.write_text(outside_secret, encoding="utf-8")
+                    moved_context_dir = root / "docs.real"
+                    real_open = diet.os.open
+                    swapped = False
+
+                    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+                        nonlocal swapped
+                        if not swapped and dir_fd is not None and path == "docs":
+                            swapped = True
+                            context_dir.rename(moved_context_dir)
+                            try:
+                                context_dir.symlink_to(outside_dir, target_is_directory=True)
+                            except (NotImplementedError, OSError) as exc:
+                                self.skipTest(f"symlink unavailable: {exc}")
+                        if dir_fd is None:
+                            return real_open(path, flags, mode)
+                        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+                    supports_dir_fd = diet.os.supports_dir_fd
+                    try:
+                        supports_dir_fd.add(swapping_open)
+                        diet.os.open = swapping_open
+                        context_files, findings = diet.scan_context(root, 1, 2, 1)
+                    finally:
+                        diet.os.open = real_open
+                        supports_dir_fd.discard(swapping_open)
+
+                    rule_ids = {item.rule_id for item in findings}
+                    self.assertTrue(swapped)
+                    self.assertEqual(context_files, [])
+                    self.assertIn("context-unreadable", rule_ids)
+                    self.assertNotIn("secret-like-context-content", rule_ids)
+                    self.assertEqual(outside_context.read_text(encoding="utf-8"), outside_secret)
+
+    def test_token_diet_root_open_reports_non_directory_parent_cleanly(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_parent_file_{index}")
+                if not getattr(diet.os, "O_NOFOLLOW", 0):
+                    self.skipTest("O_NOFOLLOW unavailable")
+                if diet.os.open not in getattr(diet.os, "supports_dir_fd", set()):
+                    self.skipTest("dir_fd open unavailable")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    parent_file = root / "docs"
+                    parent_file.write_text("not a directory", encoding="utf-8")
+                    with self.assertRaises(OSError) as ctx:
+                        diet.read_text_prefix(parent_file / "CLAUDE.md", root=root)
+                    self.assertIn("context parent", str(ctx.exception))
+                    self.assertNotIsInstance(ctx.exception, UnboundLocalError)
+
     def test_token_diet_settings_load_does_not_follow_symlink_after_discovery(self):
         for index, script in enumerate(DIET_SCRIPTS):
             with self.subTest(script=script):
