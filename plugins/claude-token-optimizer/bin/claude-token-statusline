@@ -6,7 +6,40 @@ if [[ -t 0 ]]; then
   exit 0
 fi
 
-input=$(cat)
+statusline_input_max_bytes() {
+  local raw="${CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES:-65536}" max=65536
+  if [[ "$raw" =~ ^[0-9]+$ ]] && (( ${#raw} <= 7 )); then
+    max=$((10#$raw))
+  fi
+  if (( max < 1 || max > 1048576 )); then
+    max=65536
+  fi
+  printf '%s\n' "$max"
+}
+
+read_bounded_statusline_input() {
+  local max input_len tmp_base
+  max=$(statusline_input_max_bytes)
+  tmp_base="${TMPDIR:-/tmp}"
+  tmp_base="${tmp_base%/}"
+  statusline_input_tmp=$(mktemp "$tmp_base/claude-token-statusline.XXXXXX") || {
+    printf '[input-error] could not create statusline input buffer\n'
+    exit 0
+  }
+  trap 'rm -f "${statusline_input_tmp:-}"' EXIT
+  LC_ALL=C head -c "$((max + 1))" >"$statusline_input_tmp" 2>/dev/null || true
+  input_len=$(LC_ALL=C wc -c <"$statusline_input_tmp" | tr -d '[:space:]')
+  if (( input_len > max )); then
+    printf '[input-too-large] Claude statusline JSON exceeds %s bytes\n' "$max"
+    exit 0
+  fi
+  input=$(cat "$statusline_input_tmp" 2>/dev/null || true)
+  rm -f "$statusline_input_tmp"
+  statusline_input_tmp=''
+  trap - EXIT
+}
+
+read_bounded_statusline_input
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "[needs-jq] install jq for Claude token statusline"
