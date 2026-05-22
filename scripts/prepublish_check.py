@@ -36,6 +36,22 @@ PATH_OVERRIDE_ENVS = (
 )
 BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
 PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+SENSITIVE_LABEL_RE = re.compile(
+    r"(?i)("
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|"
+    r"xox[abprs]-[A-Za-z0-9-]{10,}|"
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
+    r"AIza[0-9A-Za-z_\-]{20,}|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^/\s]+"
+    r")"
+)
+PATH_LABEL_MAX_CHARS = 160
 
 IMPLEMENTATION_PAIRS = (
     ("aux_ai_delegate.py", "claude-token-delegate"),
@@ -90,6 +106,44 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
+def compact_label_text(value: str, limit: int = PATH_LABEL_MAX_CHARS) -> str:
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
+    compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = SENSITIVE_LABEL_RE.sub("[REDACTED]", compact)
+    if len(compact) > limit:
+        compact = compact[: limit - 15].rstrip() + " ...[truncated]"
+    return compact
+
+
+def label_has_sensitive_evidence(value: str) -> bool:
+    return bool(CONTROL_CHAR_RE.search(value) or URL_USERINFO_RE.search(value) or SENSITIVE_LABEL_RE.search(value))
+
+
+def safe_path_label(path: Path, *, base: Path | None = None) -> str:
+    raw = str(path)
+    if label_has_sensitive_evidence(raw):
+        return "redacted-path"
+    candidates: list[str] = []
+    if base is not None:
+        try:
+            candidates.append(str(path.relative_to(base)))
+        except ValueError:
+            pass
+    for root in (PLUGIN_DIR, ROOT):
+        try:
+            candidates.append(str(path.relative_to(root)))
+        except ValueError:
+            pass
+    if path.is_absolute():
+        candidates.append(path.name or "path")
+    candidates.append(raw)
+    for candidate in candidates:
+        label = compact_label_text(candidate)
+        if label and label != ".":
+            return label
+    return "path"
+
+
 def path_overrides_allowed() -> bool:
     return os.environ.get(PATH_OVERRIDE_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -131,7 +185,10 @@ def first_symlink_component(path: Path) -> Path | None:
         except FileNotFoundError:
             return None
         except OSError as exc:
-            fail(f"could not inspect release path component: {current}: {exc.strerror or exc.__class__.__name__}")
+            fail(
+                "could not inspect release path component: "
+                f"{safe_path_label(current)}: {compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
+            )
         if stat.S_ISLNK(st.st_mode) and not (path.is_absolute() and depth == 0):
             return current
         depth += 1
@@ -149,26 +206,26 @@ def check_trusted_release_paths() -> None:
     ):
         symlink = first_symlink_component(lexical_absolute(path))
         if symlink is not None:
-            fail(f"{label} must not be or traverse a symlink: {symlink}")
+            fail(f"{label} must not be or traverse a symlink: {safe_path_label(symlink)}")
 
 
 def load_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        fail(f"missing JSON manifest: {path}")
+        fail(f"missing JSON manifest: {safe_path_label(path)}")
     except json.JSONDecodeError as exc:
-        fail(f"invalid JSON in {path}: line {exc.lineno}: {exc.msg}")
+        fail(f"invalid JSON in {safe_path_label(path)}: line {exc.lineno}: {compact_label_text(exc.msg, 80)}")
     if not isinstance(data, dict):
-        fail(f"JSON manifest must be an object: {path}")
+        fail(f"JSON manifest must be an object: {safe_path_label(path)}")
     return data
 
 
 def skill_label(skill: Path) -> str:
     try:
-        return str(skill.relative_to(PLUGIN_DIR))
+        return safe_path_label(skill.relative_to(PLUGIN_DIR))
     except ValueError:
-        return str(skill)
+        return safe_path_label(skill, base=SKILLS_DIR)
 
 
 def skill_frontmatter(text: str, skill: Path) -> str:
@@ -213,15 +270,15 @@ def check_manifest() -> None:
 
 def check_skill_allowed_tool_commands() -> None:
     if not SKILLS_DIR.is_dir():
-        fail(f"missing plugin skills directory: {SKILLS_DIR}")
+        fail(f"missing plugin skills directory: {safe_path_label(SKILLS_DIR)}")
     if not PLUGIN_BIN.is_dir():
-        fail(f"missing plugin bin directory: {PLUGIN_BIN}")
+        fail(f"missing plugin bin directory: {safe_path_label(PLUGIN_BIN)}")
     available = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
     for skill in sorted(SKILLS_DIR.glob("*/SKILL.md")):
         try:
             text = skill.read_text(encoding="utf-8")
         except OSError as exc:
-            fail(f"could not read skill metadata: {skill}: {exc}")
+            fail(f"could not read skill metadata: {skill_label(skill)}: {compact_label_text(str(exc), 120)}")
         for command in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text, skill)):
             if not PLUGIN_HELPER_COMMAND_RE.match(command):
                 continue
@@ -231,26 +288,29 @@ def check_skill_allowed_tool_commands() -> None:
 
 def check_bin_copies() -> None:
     if not PLUGIN_BIN.is_dir():
-        fail(f"missing plugin bin directory: {PLUGIN_BIN}")
+        fail(f"missing plugin bin directory: {safe_path_label(PLUGIN_BIN)}")
     for kit_name, bin_name in IMPLEMENTATION_PAIRS:
         kit = KIT_DIR / kit_name
         plugin_bin = PLUGIN_BIN / bin_name
         if not kit.exists():
-            fail(f"missing kit source: {kit}")
+            fail(f"missing kit source: {safe_path_label(kit)}")
         if not plugin_bin.exists():
-            fail(f"missing plugin bin copy: {plugin_bin}")
+            fail(f"missing plugin bin copy: {safe_path_label(plugin_bin)}")
         if kit.read_bytes() != plugin_bin.read_bytes():
-            fail(f"plugin bin is not synchronized with source: {plugin_bin} != {kit}")
+            fail(
+                "plugin bin is not synchronized with source: "
+                f"{safe_path_label(plugin_bin)} != {safe_path_label(kit)}"
+            )
         mode = stat.S_IMODE(plugin_bin.stat().st_mode)
         if mode & stat.S_IXUSR == 0:
-            fail(f"plugin bin is not owner-executable: {plugin_bin} mode={oct(mode)}")
+            fail(f"plugin bin is not owner-executable: {safe_path_label(plugin_bin)} mode={oct(mode)}")
 
 
 def check_package_symlinks() -> None:
     for path in PLUGIN_DIR.rglob("*"):
         rel = path.relative_to(PLUGIN_DIR)
         if path.is_symlink():
-            fail(f"forbidden package symlink: {rel}")
+            fail(f"forbidden package symlink: {safe_path_label(rel)}")
 
 
 def check_package_clean() -> None:
@@ -260,11 +320,11 @@ def check_package_clean() -> None:
         if not path.is_file():
             continue
         if path.name in FORBIDDEN_PACKAGE_NAMES:
-            fail(f"forbidden package artifact: {rel}")
+            fail(f"forbidden package artifact: {safe_path_label(rel)}")
         if path.suffix in FORBIDDEN_PACKAGE_SUFFIXES:
-            fail(f"forbidden package artifact: {rel}")
+            fail(f"forbidden package artifact: {safe_path_label(rel)}")
         if any(part in FORBIDDEN_PACKAGE_DIRS for part in rel.parts):
-            fail(f"forbidden package cache artifact: {rel}")
+            fail(f"forbidden package cache artifact: {safe_path_label(rel)}")
 
 
 def check_python_compiles() -> None:
@@ -280,7 +340,7 @@ def check_python_compiles() -> None:
             try:
                 py_compile.compile(str(path), cfile=str(pyc_dir / f"{path.stem}.pyc"), doraise=True)
             except py_compile.PyCompileError as exc:
-                fail(f"python compile failed for {path}: {exc.msg}")
+                fail(f"python compile failed for {safe_path_label(path)}: {compact_label_text(exc.msg, 160)}")
 
 
 def run_tests() -> None:

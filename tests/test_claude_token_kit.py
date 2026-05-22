@@ -417,6 +417,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_prepublish_redacts_secret_shaped_package_artifact_names(self):
+        secret_artifact = PLUGIN_DIR / ("token=ghp_" + ("A" * 36) + ".log")
+        try:
+            secret_artifact.write_text("debug artifact\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("forbidden package artifact: redacted-path", combined)
+            self.assertNotIn("ghp_", combined)
+            self.assertNotIn("token=ghp_", combined)
+        finally:
+            try:
+                secret_artifact.unlink()
+            except FileNotFoundError:
+                pass
+
+    def test_prepublish_redacts_secret_shaped_override_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_bin = Path(tmp) / ("token=ghp_" + ("A" * 36)) / "missing-bin"
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+            env["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_BIN"] = str(secret_bin)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("missing plugin bin directory: redacted-path", combined)
+            self.assertNotIn(str(tmp), combined)
+            self.assertNotIn("ghp_", combined)
+            self.assertNotIn("token=ghp_", combined)
+
     def test_prepublish_rejects_symlinked_release_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
