@@ -2780,6 +2780,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("\x1b", text)
                 self.assertNotIn("[31m", text)
 
+    def test_failed_attempt_nudge_diagnostic_text_redacts_secret_corpus(self):
+        """nudge 진단 sanitizer 도 출력 sanitizer 와 같은 high-confidence token 계열을 숨긴다."""
+        samples = [
+            ("github", "ghp_" + ("A" * 36), ["ghp_"]),
+            ("npm", "npm_" + ("A" * 24), ["npm_"]),
+            ("google", "AIza" + ("A" * 24), ["AIza"]),
+            ("sendgrid", "SG." + ("A" * 16) + "." + ("B" * 16), ["SG."]),
+            ("jwt", "eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8), ["eyJ"]),
+            ("bearer", "Bearer " + ("A" * 20), ["Bearer " + ("A" * 20)]),
+            ("url_userinfo", "https://user:pass@example.invalid/db", ["user:pass"]),
+        ]
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            module = load_python_script_module(script, f"_failed_nudge_diag_corpus_{index}")
+            for name, sample, forbidden_fragments in samples:
+                with self.subTest(script=script, sample=name):
+                    text = module.diagnostic_text(PermissionError(errno.EACCES, f"permission denied {sample}\x1b[31m"))
+                    self.assertIn("permission denied", text)
+                    self.assertNotIn(sample, text)
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn("[31m", text)
+                    for fragment in forbidden_fragments:
+                        self.assertNotIn(fragment, text)
+
     def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
         """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
         for index, script in enumerate(NUDGE_SCRIPTS):
@@ -2950,11 +2973,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
         cases = {
-            "secret": "token=ghp_" + ("A" * 36) + ".py",
-            "control": "bad-\x1b[31m-name.py",
+            "github": ("token=ghp_" + ("A" * 36) + ".py", ["ghp_", "token=ghp_"]),
+            "npm": ("npm_" + ("A" * 24) + ".py", ["npm_"]),
+            "google": ("AIza" + ("A" * 24) + ".py", ["AIza"]),
+            "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16) + ".py", ["SG."]),
+            "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8) + ".py", ["eyJ"]),
+            "bearer": ("Bearer " + ("A" * 20) + ".py", ["Bearer " + ("A" * 20)]),
+            "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
         }
         for script in READ_GUARD_SCRIPTS:
-            for case, filename in cases.items():
+            for case, (filename, forbidden_fragments) in cases.items():
                 with self.subTest(script=script, case=case):
                     with tempfile.TemporaryDirectory() as tmp:
                         root = Path(tmp)
@@ -2964,10 +2992,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
                         self.assertIn("redacted-path#path:", reason)
                         self.assertNotIn(str(root), reason)
-                        self.assertNotIn("ghp_", reason)
-                        self.assertNotIn("token=ghp_", reason)
-                        self.assertNotIn("\x1b", reason)
-                        self.assertNotIn("[31m", reason)
+                        for fragment in forbidden_fragments:
+                            self.assertNotIn(fragment, reason)
 
     def test_large_read_guard_keeps_safe_token_related_path_labels(self):
         safe_paths = [
