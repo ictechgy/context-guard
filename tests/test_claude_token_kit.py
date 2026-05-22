@@ -1522,6 +1522,48 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(config_path.parent.stat().st_mode), 0o700)
             self.assertTrue((config_path.parent / ".gitignore").exists())
 
+    def test_setup_wizard_creates_new_private_dirs_under_permissive_umask(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_umask = os.umask(0)
+            try:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(KIT_DIR / "setup_wizard.py"),
+                        "--root",
+                        str(root),
+                        "--yes",
+                        "--no-backup",
+                        "--aux-provider",
+                        "codex",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+            finally:
+                os.umask(old_umask)
+            self.assertTrue(json.loads(proc.stdout)["applied"])
+            self.assertEqual(stat.S_IMODE((root / ".claude").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((root / ".claude-token-optimizer").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((root / ".claude" / "settings.json").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((root / ".claude-token-optimizer" / "config.json").stat().st_mode), 0o600)
+
+    def test_setup_wizard_atomic_write_creates_missing_parent_chain_private(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_private_parent_chain")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "private" / "nested" / "settings.json"
+            old_umask = os.umask(0)
+            try:
+                setup.atomic_write(target, "{}\n", 0o600)
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(stat.S_IMODE(target.parent.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
     def test_setup_wizard_auto_delegate_requires_and_records_aux_opt_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
