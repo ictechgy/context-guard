@@ -395,11 +395,15 @@ def diagnostic_text(exc: OSError) -> str:
     text = ANSI_ESCAPE_RE.sub(" ", text)
     text = CONTROL_CHAR_RE.sub(" ", text)
     text = SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", text)
+    cwd = ""
     try:
         cwd = str(Path.cwd().resolve())
     except OSError:
-        cwd = str(Path.cwd())
-    if cwd:
+        try:
+            cwd = str(Path.cwd())
+        except OSError:
+            cwd = ""
+    if cwd and cwd not in {"/", "\\"}:
         text = text.replace(cwd, "<cwd>")
     compact = " ".join(text.split())
     if len(compact) > DIAGNOSTIC_MAX_CHARS:

@@ -2755,6 +2755,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     module.sys.stdout = original_stdout
                     module.sys.stderr = original_stderr
 
+    def test_failed_attempt_nudge_diagnostic_text_survives_unavailable_cwd(self):
+        """cwd 조회 자체가 실패해도 diagnostic sanitizer 는 hook crash 없이 compact text 를 반환한다."""
+        secret = "ghp_" + ("C" * 36)
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_diag_no_cwd_{index}")
+                original_path = module.Path
+
+                class BrokenCwdPath(original_path):
+                    @classmethod
+                    def cwd(cls):
+                        raise OSError("cwd missing token=" + secret + "\x1b[31m")
+
+                module.Path = BrokenCwdPath
+                try:
+                    text = module.diagnostic_text(PermissionError(errno.EACCES, "permission denied token=" + secret + "\x1b[31m"))
+                finally:
+                    module.Path = original_path
+
+                self.assertIn("permission denied", text)
+                self.assertNotIn(secret, text)
+                self.assertNotIn("token=ghp_", text)
+                self.assertNotIn("\x1b", text)
+                self.assertNotIn("[31m", text)
+
     def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
         """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
         for index, script in enumerate(NUDGE_SCRIPTS):
