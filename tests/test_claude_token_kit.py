@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -3926,6 +3927,38 @@ for malformed in malformed_values:
             with self.assertRaises(OSError):
                 read_symbol.read_text_bounded(link_dir / "target.py")
 
+    def test_read_symbol_bounded_reader_rejects_directory_replacement_races(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, script in enumerate(READ_SYMBOL_SCRIPTS):
+                with self.subTest(script=script):
+                    real_dir = root / f"real-{index}"
+                    old_dir = root / f"old-{index}"
+                    real_dir.mkdir()
+                    (real_dir / "target.py").write_text("def target():\n    return 1\n", encoding="utf-8")
+
+                    read_symbol = load_python_script_module(script, f"_read_symbol_dir_race_{index}")
+                    original_open = read_symbol.os.open
+                    original_supports_dir_fd = read_symbol.os.supports_dir_fd
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == real_dir.name and "dir_fd" in kwargs:
+                            raced = True
+                            real_dir.rename(old_dir)
+                            real_dir.mkdir()
+                            (real_dir / "target.py").write_text("def target():\n    return 2\n", encoding="utf-8")
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    with mock.patch.object(read_symbol.os, "open", racing_open), mock.patch.object(
+                        read_symbol.os, "supports_dir_fd", set(original_supports_dir_fd) | {racing_open}
+                    ):
+                        with self.assertRaises(OSError):
+                            read_symbol.read_text_bounded(real_dir / "target.py")
+                    shutil.rmtree(real_dir, ignore_errors=True)
+                    shutil.rmtree(old_dir, ignore_errors=True)
+
     def test_read_symbol_only_allows_known_absolute_alias_components(self):
         read_symbol = load_module_from_path(KIT_DIR / "read_symbol.py", "read_symbol_absolute_alias")
         self.assertEqual(
@@ -3933,6 +3966,34 @@ for malformed in malformed_values:
             Path("/not-a-system-alias/project.py"),
         )
         self.assertNotIn("not-a-system-alias", read_symbol.ALLOWED_FIRST_ABSOLUTE_SYMLINKS)
+
+    def test_read_symbol_refuses_non_whitelisted_first_absolute_symlink_alias(self):
+        alias_parent = Path("/etc")
+        alias_target = alias_parent / "services"
+        canonical_target = Path("/private/etc/services")
+        if not alias_parent.is_symlink() or not alias_target.is_file() or not canonical_target.is_file():
+            self.skipTest("no non-whitelisted /etc -> /private/etc alias available")
+
+        for script in READ_SYMBOL_SCRIPTS:
+            with self.subTest(script=script):
+                alias_proc = subprocess.run(
+                    [sys.executable, str(script), str(alias_target), "tcp", "--json"],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(alias_proc.returncode, 2)
+                self.assertIn("refusing symlink path component", alias_proc.stderr)
+                self.assertNotIn("tcp", alias_proc.stdout)
+
+                canonical_proc = subprocess.run(
+                    [sys.executable, str(script), str(canonical_target), "tcp", "--json", "--context", "0"],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(canonical_proc.returncode, 0)
+                data = json.loads(canonical_proc.stdout)
+                self.assertEqual(data["symbol"], "tcp")
+                self.assertIn("tcp", data["content"])
 
     def test_read_symbol_refuses_symlink_parent_directory_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
