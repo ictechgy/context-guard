@@ -143,10 +143,11 @@ if [[ -n "$transcript_path" && -r "$transcript_path" ]] && command -v python3 >/
   rate=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF' || true
 import json
 import os
+import stat
 import sys
 
 path = sys.argv[1] if len(sys.argv) > 1 else ""
-if not path or not os.path.isfile(path):
+if not path:
     sys.exit(0)
 
 # Bounded tail read so the statusline never stalls on huge transcripts.
@@ -187,13 +188,39 @@ def _extract_usage(record):
 
 input_tokens = cache_read = cache_creation = 0
 
+def _open_regular_transcript(path):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            os.close(fd)
+            return None
+        return fd, opened.st_size
+    except Exception:
+        os.close(fd)
+        raise
+
+
 try:
-    size = os.path.getsize(path)
+    opened = _open_regular_transcript(path)
+    if opened is None:
+        sys.exit(0)
+    fd, size = opened
     read_size = min(size, TAIL_BYTES)
-    with open(path, "rb") as fh:
+    try:
         if size > read_size:
-            fh.seek(size - read_size)
-        chunk = fh.read(read_size)
+            os.lseek(fd, size - read_size, os.SEEK_SET)
+        chunk = os.read(fd, read_size)
+    finally:
+        os.close(fd)
     lines = chunk.splitlines()
     if size > read_size and lines:
         # First line in the tail window is likely partial; drop it.

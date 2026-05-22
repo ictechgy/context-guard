@@ -4409,6 +4409,63 @@ for malformed in malformed_values:
                     self.assertIn("cache ", proc.stdout)
                     self.assertRegex(proc.stdout, r"cache \d+%")
 
+    def test_statusline_rejects_symlinked_transcript_path(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    transcript = root / "session.jsonl"
+                    transcript.write_text(
+                        json.dumps({"message": {"usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 100,
+                        }}}) + "\n",
+                        encoding="utf-8",
+                    )
+                    link = root / "linked-session.jsonl"
+                    try:
+                        link.symlink_to(transcript)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 42},
+                        "cost": {"total_cost_usd": 0.123},
+                        "workspace": {"current_dir": str(root)},
+                        "transcript_path": str(link),
+                    }
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertNotIn("cache ", proc.stdout)
+                    self.assertEqual(transcript.read_text(encoding="utf-8").count("cache_read_input_tokens"), 1)
+
+    def test_statusline_rejects_non_regular_transcript_path(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 42},
+                        "cost": {"total_cost_usd": 0.123},
+                        "workspace": {"current_dir": str(root)},
+                        "transcript_path": str(root),
+                    }
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertNotIn("cache ", proc.stdout)
+
     def test_statusline_omits_cache_label_when_transcript_unavailable(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
             with self.subTest(script=script):
