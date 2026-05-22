@@ -31,7 +31,7 @@ SENSITIVE_PATH_RE = re.compile(
     r"glpat-[A-Za-z0-9_-]{12,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
     r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
     r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)[^/\\\s]*)"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
 )
 
 
