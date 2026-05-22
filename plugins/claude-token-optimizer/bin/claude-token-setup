@@ -212,6 +212,17 @@ def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
         raise
 
 
+def _mkdir_directory_entry_at(dir_fd: int, component: str, mode: int) -> None:
+    # mkdir modes are still filtered through the process umask.  Temporarily
+    # clearing it around this single call preserves owner search bits under
+    # restrictive umasks without adding a chmod-before-O_NOFOLLOW-reopen window.
+    old_umask = os.umask(0)
+    try:
+        os.mkdir(component, mode, dir_fd=dir_fd)
+    finally:
+        os.umask(old_umask)
+
+
 def _open_regular_no_symlink(path: Path) -> int:
     if os.open not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative no-follow opens")
@@ -257,7 +268,7 @@ def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
                 next_fd = _open_directory_at(dir_fd, component, path)
             except FileNotFoundError:
                 mkdir_mode = mode if mode is not None and index == len(components) - 1 else PRIVATE_DIR_MODE
-                os.mkdir(component, mkdir_mode, dir_fd=dir_fd)
+                _mkdir_directory_entry_at(dir_fd, component, mkdir_mode)
                 next_fd = _open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = next_fd
