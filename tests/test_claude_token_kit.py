@@ -5918,8 +5918,12 @@ for malformed in malformed_values:
             executable.chmod(0o777)
             original_project_root = aux.find_project_root
             original_tempdir = aux.tempfile.gettempdir
+            original_ancestor_check = aux.first_group_world_writable_ancestor
             aux.find_project_root = lambda: root / "other-project"
             aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+            # This test targets executable file mode checks. Ignore ambient CI
+            # temp-directory ancestors here; dedicated tests cover ancestor trust.
+            aux.first_group_world_writable_ancestor = lambda _path: None
             try:
                 with self.assertRaisesRegex(SystemExit, "group/world writable"):
                     aux.validate_provider_executable(executable, "mock")
@@ -5929,6 +5933,7 @@ for malformed in malformed_values:
             finally:
                 aux.find_project_root = original_project_root
                 aux.tempfile.gettempdir = original_tempdir
+                aux.first_group_world_writable_ancestor = original_ancestor_check
 
     def test_aux_delegate_rejects_provider_executable_writable_ancestor_symlink(self):
         safe_executable = Path(sys.executable).resolve()
