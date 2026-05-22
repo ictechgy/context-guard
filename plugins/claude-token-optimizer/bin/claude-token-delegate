@@ -903,7 +903,14 @@ def safe_path_entries() -> list[str]:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             continue
-        if is_lexically_under_any(path, [project_root, temp_root_lexical]):
+        lexical = path.absolute()
+        if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
+            continue
+        try:
+            lexical_unsafe_ancestor = first_group_world_writable_ancestor(lexical)
+        except OSError:
+            continue
+        if lexical_unsafe_ancestor is not None:
             continue
         try:
             resolved = path.resolve()
@@ -913,10 +920,10 @@ def safe_path_entries() -> list[str]:
         if not resolved.is_dir():
             continue
         try:
-            unsafe_ancestor = first_group_world_writable_ancestor(resolved)
+            resolved_unsafe_ancestor = first_group_world_writable_ancestor(resolved)
         except OSError:
             continue
-        if unsafe_ancestor is not None:
+        if resolved_unsafe_ancestor is not None:
             continue
         if is_under_any(resolved, [project_root, temp_root]):
             continue
@@ -930,13 +937,30 @@ def safe_path_env() -> str:
 
 def validate_provider_executable(path: Path, provider: str) -> Path:
     original_label = response_path_label(str(path))
+    expanded = path.expanduser()
+    lexical = expanded.absolute()
+    project_root = find_project_root()
+    temp_root_lexical = Path(tempfile.gettempdir()).expanduser().absolute()
+    temp_root = temp_root_lexical.resolve()
     try:
-        resolved = path.expanduser().resolve()
+        resolved = expanded.resolve()
     except (OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"Provider '{provider}' executable cannot be resolved: {original_label}") from exc
     resolved_label = response_path_label(str(resolved))
     if not resolved.exists() or not os.access(resolved, os.X_OK):
         raise SystemExit(f"Provider '{provider}' executable not found or not executable: {original_label}")
+    if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
+        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {original_label}")
+    try:
+        lexical_unsafe_ancestor = first_group_world_writable_ancestor(lexical.parent)
+    except OSError as exc:
+        raise SystemExit(
+            f"Provider '{provider}' executable ancestor cannot be checked: {response_path_label(str(exc.filename or lexical.parent))}"
+        ) from exc
+    if lexical_unsafe_ancestor is not None:
+        raise SystemExit(
+            f"Provider '{provider}' executable ancestor is group/world writable: {response_path_label(str(lexical_unsafe_ancestor))}"
+        )
     try:
         executable_mode = resolved.stat().st_mode
     except OSError as exc:
@@ -947,19 +971,17 @@ def validate_provider_executable(path: Path, provider: str) -> Path:
         raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved_label}")
     if executable_mode & (stat.S_ISUID | stat.S_ISGID):
         raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved_label}")
-    project_root = find_project_root()
-    temp_root = Path(tempfile.gettempdir()).resolve()
     if is_under_any(resolved, [project_root, temp_root]):
         raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved_label}")
     try:
-        unsafe_ancestor = first_group_world_writable_ancestor(resolved.parent)
+        resolved_unsafe_ancestor = first_group_world_writable_ancestor(resolved.parent)
     except OSError as exc:
         raise SystemExit(
             f"Provider '{provider}' executable ancestor cannot be checked: {response_path_label(str(exc.filename or resolved.parent))}"
         ) from exc
-    if unsafe_ancestor is not None:
+    if resolved_unsafe_ancestor is not None:
         raise SystemExit(
-            f"Provider '{provider}' executable ancestor is group/world writable: {response_path_label(str(unsafe_ancestor))}"
+            f"Provider '{provider}' executable ancestor is group/world writable: {response_path_label(str(resolved_unsafe_ancestor))}"
         )
     return resolved
 
