@@ -33,6 +33,17 @@ STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
 FINGERPRINT_SELECTOR_FLAGS = {"-k", "-m", "--grep", "--testNamePattern", "--test-name-pattern"}
+DIAGNOSTIC_MAX_CHARS = 240
+ANSI_ESCAPE_RE = re.compile(r"(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])")
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+SENSITIVE_DIAGNOSTIC_RE = re.compile(
+    r"(?i)("
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
+)
 UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 UNSAFE_STATE_PATH_ERRNOS = {
     errno.ELOOP,
@@ -371,11 +382,33 @@ def save_entries(path: Path, entries: list[dict]) -> None:
 
 
 def safe_session_label(session_id: str | None) -> str | None:
-    """session_id 를 파일명 안전 형태로 변환. 없으면 None — 호출자가 hook 을 noop 한다."""
+    """session_id 를 파일명 안전 digest 로 변환. 없으면 None — 호출자가 hook 을 noop 한다."""
     if not session_id or not isinstance(session_id, str):
         return None
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:64]
-    return cleaned or None
+    digest = hashlib.sha256(session_id.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"sess-{digest}"
+
+
+def diagnostic_text(exc: OSError) -> str:
+    """Bound hook stderr diagnostics so hostile session/path text is not surfaced raw."""
+    text = str(exc) or exc.__class__.__name__
+    text = ANSI_ESCAPE_RE.sub(" ", text)
+    text = CONTROL_CHAR_RE.sub(" ", text)
+    text = SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", text)
+    cwd = ""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except OSError:
+        try:
+            cwd = str(Path.cwd())
+        except OSError:
+            cwd = ""
+    if cwd and cwd not in {"/", "\\"}:
+        text = text.replace(cwd, "<cwd>")
+    compact = " ".join(text.split())
+    if len(compact) > DIAGNOSTIC_MAX_CHARS:
+        compact = compact[: DIAGNOSTIC_MAX_CHARS - 15].rstrip() + "...[truncated]"
+    return compact or exc.__class__.__name__
 
 
 def extract_exit_code(tool_response: dict) -> int | None:
@@ -461,7 +494,7 @@ def main() -> int:
         entries = load_entries(state_path)
     except OSError as exc:
         # state 읽기 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴 뒤 새 streak 으로 시작한다.
-        sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {exc}\n")
+        sys.stderr.write(f"claude-token-failed-nudge: state read skipped: {diagnostic_text(exc)}\n")
         entries = []
     success = exit_code == 0
     entries = update_entries(entries, fp, success)
@@ -469,7 +502,7 @@ def main() -> int:
         save_entries(state_path, entries)
     except OSError as exc:
         # state 저장 실패해도 실행을 막지 않는다. 진단 신호만 stderr 에 남긴다.
-        sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {exc}\n")
+        sys.stderr.write(f"claude-token-failed-nudge: state write skipped: {diagnostic_text(exc)}\n")
 
     if success:
         # 성공이면 nudge 는 절대 발화하지 않는다.
