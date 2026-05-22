@@ -34,7 +34,6 @@ MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
 FINGERPRINT_SELECTOR_FLAGS = {"-k", "-m", "--grep", "--testNamePattern", "--test-name-pattern"}
 DIAGNOSTIC_MAX_CHARS = 240
-DIAGNOSTIC_SCAN_MAX_CHARS = 8_192
 ANSI_ESCAPE_RE = re.compile(r"(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])")
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 SENSITIVE_DIAGNOSTIC_RE = re.compile(
@@ -45,9 +44,9 @@ SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
     r"npm_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|"
     r"SG\.[A-Za-z0-9_-]{16,256}\.[A-Za-z0-9_-]{16,512}|"
-    r"eyJ[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{8,4096}|"
+    r"eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}|"
     r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}|"
-    r"[a-z][a-z0-9+.-]{0,31}:/+[^/\s:@]{1,256}:[^/\s@]{1,2048}@|"
+    r"[a-z][a-z0-9+.-]{0,31}:/+(?:[^/\s:@]{0,256}:[^/\s@]{0,2048}|[^/\s@]{1,2048})@|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
 )
 UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
@@ -400,8 +399,6 @@ def diagnostic_text(exc: OSError) -> str:
     text = str(exc) or exc.__class__.__name__
     text = ANSI_ESCAPE_RE.sub(" ", text)
     text = CONTROL_CHAR_RE.sub(" ", text)
-    if len(text) > DIAGNOSTIC_SCAN_MAX_CHARS:
-        text = text[: DIAGNOSTIC_SCAN_MAX_CHARS - 16].rstrip() + " ...[truncated]"
     text = SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", text)
     cwd = ""
     try:
