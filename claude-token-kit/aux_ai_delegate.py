@@ -472,6 +472,60 @@ def open_config_file_no_follow(path: Path) -> int:
         os.close(dir_fd)
 
 
+def mkdir_private_dir_entry_at(dir_fd: int, component: str, mode: int = 0o700) -> None:
+    # mkdir modes are filtered by umask. Keep the parent process umask stable by
+    # isolating the umask override in a short child, then reopen with O_NOFOLLOW.
+    helper = (
+        "import os, sys\n"
+        "dir_fd = int(sys.argv[1])\n"
+        "component = sys.argv[2]\n"
+        "mode = int(sys.argv[3], 8)\n"
+        "os.umask(0)\n"
+        "os.mkdir(component, mode, dir_fd=dir_fd)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", helper, str(dir_fd), component, oct(mode)],
+        text=True,
+        capture_output=True,
+        pass_fds=(dir_fd,),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+        raise OSError(f"could not create directory component safely: {component}: {detail[0]}")
+
+
+def open_private_dir_no_follow(path: Path, *, create: bool = True) -> int:
+    if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+        raise OSError(UNSUPPORTED_CONFIG_IO_ERRNO, "platform does not support directory-relative no-follow config writes")
+    path = normalize_allowed_first_absolute_symlink(path)
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for index, component in enumerate(components):
+            if component in {"", "."}:
+                continue
+            if component == "..":
+                raise OSError(errno.EINVAL, "parent traversal is not allowed", str(path))
+            try:
+                next_fd = open_directory_no_follow_at(dir_fd, component, path)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                mkdir_private_dir_entry_at(dir_fd, component, 0o700)
+                next_fd = open_directory_no_follow_at(dir_fd, component, path)
+            if hasattr(os, "fchmod") and index == len(components) - 1:
+                os.fchmod(next_fd, 0o700)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return dir_fd
+    except Exception:
+        os.close(dir_fd)
+        raise
+
+
 def read_config_text_no_follow(path: Path) -> str:
     fd = open_config_file_no_follow(path)
     try:
@@ -570,52 +624,90 @@ def load_config() -> dict[str, Any]:
 
 
 def ensure_private_dir(directory: Path) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    fd = open_private_dir_no_follow(directory, create=True)
+    os.close(fd)
 
 
 def atomic_write_private(path: Path, text: str, mode: int = 0o600) -> None:
-    ensure_private_dir(path.parent)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    parent_fd = open_private_dir_no_follow(path.parent, create=True)
+    tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
-    fd = os.open(tmp_path, flags, mode)
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    else:
+        os.close(parent_fd)
+        raise OSError(UNSUPPORTED_CONFIG_IO_ERRNO, "platform does not support no-follow config writes")
+    fd = -1
     try:
+        try:
+            existing = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(existing.st_mode):
+                raise OSError(errno.ELOOP, "existing destination must not be a symlink", str(path))
+            if not stat.S_ISREG(existing.st_mode):
+                raise OSError(errno.EINVAL, "existing destination is not a regular file", str(path))
+        fd = os.open(tmp_name, flags, mode, dir_fd=parent_fd)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             fd = -1
             f.write(text)
-        os.replace(tmp_path, path)
-        os.chmod(path, mode)
+        os.replace(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     finally:
         if fd != -1:
             os.close(fd)
         try:
-            tmp_path.unlink()
+            os.unlink(tmp_name, dir_fd=parent_fd)
         except FileNotFoundError:
             pass
+        os.close(parent_fd)
+
+
+def cleanup_stale_private_temps(path: Path) -> None:
+    parent_fd = open_private_dir_no_follow(path.parent, create=True)
+    try:
+        prefix = f".{path.name}."
+        for name in os.listdir(parent_fd):
+            if not name.startswith(prefix) or not name.endswith(".tmp"):
+                continue
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+    finally:
+        os.close(parent_fd)
 
 
 def write_private_gitignore(directory: Path) -> None:
     ensure_private_dir(directory)
     gitignore = directory / ".gitignore"
     desired = "*\n!.gitignore\n"
-    if not gitignore.exists() or gitignore.read_text(encoding="utf-8", errors="replace") != desired:
+    try:
+        existing = read_config_text_no_follow(gitignore)
+    except FileNotFoundError:
+        existing = None
+    except OSError:
+        existing = None
+    if existing != desired:
         atomic_write_private(gitignore, desired)
 
 
 def save_config(config: dict[str, Any]) -> Path:
     path = config_path()
-    ensure_private_dir(path.parent)
-    if path.parent.name == DEFAULT_CONFIG_PATH.parent.name:
-        write_private_gitignore(path.parent)
-    for stale in path.parent.glob(f".{path.name}.*.tmp"):
-        try:
-            stale.unlink()
-        except OSError:
-            pass
-    atomic_write_private(path, json.dumps(config, indent=2, sort_keys=True) + "\n")
+    symlink_component = first_symlink_component(path)
+    if symlink_component is not None:
+        raise SystemExit(f"Failed to write config {path}: config path component must not be a symlink: {symlink_component}")
+    try:
+        if path.parent.name == DEFAULT_CONFIG_PATH.parent.name:
+            write_private_gitignore(path.parent)
+        cleanup_stale_private_temps(path)
+        atomic_write_private(path, json.dumps(config, indent=2, sort_keys=True) + "\n")
+    except OSError as exc:
+        raise SystemExit(f"Failed to write config {path}: {exc}") from exc
     return path
 
 
