@@ -6035,6 +6035,23 @@ for malformed in malformed_values:
                         aux.find_project_root = original_project_root
                         aux.tempfile.gettempdir = original_tempdir
 
+    def test_aux_delegate_resolution_ancestor_rejects_relative_file_symlink_loop(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_file_symlink_loop_{index}")
+                with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+                    root = Path(tmp).resolve()
+                    safe_parent = root / "safe"
+                    safe_parent.mkdir()
+                    loop = safe_parent / "trusted-tool"
+                    try:
+                        loop.symlink_to("../safe/trusted-tool")
+                    except (NotImplementedError, OSError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    with self.assertRaises(OSError) as raised:
+                        aux.first_group_world_writable_resolution_ancestor(loop, final_component_is_file=True)
+                    self.assertEqual(raised.exception.errno, errno.ELOOP)
+
     def test_aux_delegate_rejects_provider_executable_writable_ancestor(self):
         for index, script in enumerate(AUX_SCRIPTS):
             with self.subTest(script=script):
