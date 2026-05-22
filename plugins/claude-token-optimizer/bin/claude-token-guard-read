@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -22,6 +23,16 @@ MAX_LINE_RANGE_LIMIT = 20_000
 GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
+PATH_LABEL_MAX_CHARS = 160
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+SENSITIVE_PATH_RE = re.compile(
+    r"(?i)("
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
+)
 
 
 def truthy_disabled(value: str | None) -> bool:
@@ -66,6 +77,26 @@ def tool_name(payload: dict[str, Any]) -> str:
     return value if isinstance(value, str) else ""
 
 
+def compact_hook_text(value: str, limit: int = PATH_LABEL_MAX_CHARS) -> str:
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
+    if len(compact) > limit:
+        compact = compact[: limit - 15].rstrip() + "...[truncated]"
+    return compact
+
+
+def path_label_has_sensitive_evidence(value: str) -> bool:
+    return bool(CONTROL_CHAR_RE.search(value) or SENSITIVE_PATH_RE.search(value))
+
+
+def anonymized_path_label(path: Path) -> str:
+    try:
+        raw = str(path.resolve())
+    except OSError:
+        raw = str(path)
+    digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
+    return f"redacted-path#path:{digest}"
+
+
 def bounded_line_range_requested(payload: dict[str, Any]) -> bool:
     data = tool_input(payload)
     raw_limit = data.get("limit")
@@ -89,10 +120,26 @@ def bounded_line_range_requested(payload: dict[str, Any]) -> bool:
 
 def safe_label(path: Path, root: Path) -> str:
     try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    try:
+        label = resolved.relative_to(root.resolve()).as_posix()
     except ValueError:
-        digest = hashlib.sha256(str(path.resolve()).encode("utf-8", "replace")).hexdigest()[:12]
-        return f"{path.name}#path:{digest}"
+        try:
+            raw = str(resolved)
+        except OSError:
+            raw = str(path)
+        digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
+        name = path.name or "path"
+        if path_label_has_sensitive_evidence(name):
+            name = "redacted-path"
+        else:
+            name = compact_hook_text(name)
+        return f"{name or 'path'}#path:{digest}"
+    if path_label_has_sensitive_evidence(label):
+        return anonymized_path_label(resolved)
+    return compact_hook_text(label) or "path"
 
 
 def has_symlink_component(path: Path) -> bool:
