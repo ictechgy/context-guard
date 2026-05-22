@@ -42,6 +42,11 @@ SENSITIVE_DIAGNOSTIC_RE = re.compile(
     r"glpat-[A-Za-z0-9_-]{12,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
     r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
     r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
+    r"npm_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|"
+    r"SG\.[A-Za-z0-9_-]{16,256}\.[A-Za-z0-9_-]{16,512}|"
+    r"eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}|"
+    r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}|"
+    r"[a-z][a-z0-9+.-]{0,31}:/+(?:[^/\s:@]{0,256}:[^/\s@]{0,2048}|[^/\s@]{1,2048})@|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
 )
 UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))

@@ -2780,6 +2780,85 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("\x1b", text)
                 self.assertNotIn("[31m", text)
 
+    def test_failed_attempt_nudge_diagnostic_text_redacts_secret_corpus(self):
+        """nudge 진단 sanitizer 도 출력 sanitizer 와 같은 high-confidence token 계열을 숨긴다."""
+        samples = [
+            ("github", "ghp_" + ("A" * 36), ["ghp_"]),
+            ("npm", "npm_" + ("A" * 24), ["npm_"]),
+            ("google", "AIza" + ("A" * 24), ["AIza"]),
+            ("sendgrid", "SG." + ("A" * 16) + "." + ("B" * 16), ["SG."]),
+            ("jwt", "eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8), ["eyJ"]),
+            ("bearer", "Bearer " + ("A" * 20), ["Bearer " + ("A" * 20)]),
+            ("bearer_lower", "bearer " + ("A" * 20), ["bearer " + ("A" * 20)]),
+            ("basic", "Basic " + ("A" * 20), ["Basic " + ("A" * 20)]),
+            ("basic_mixed", "bAsIc " + ("A" * 20), ["bAsIc " + ("A" * 20)]),
+            ("url_userinfo", "https://user:pass@example.invalid/db", ["user:pass"]),
+            ("url_upper_scheme", "HTTPS://user:pass@example.invalid/db", ["user:pass"]),
+            ("url_empty_user", "redis://:pass@example.invalid/db", [":pass@"]),
+            ("url_empty_password", "https://token:@example.invalid/db", ["token:@"]),
+            ("url_token_only", "https://token@example.invalid/db", ["token@"]),
+        ]
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            module = load_python_script_module(script, f"_failed_nudge_diag_corpus_{index}")
+            for name, sample, forbidden_fragments in samples:
+                with self.subTest(script=script, sample=name):
+                    text = module.diagnostic_text(PermissionError(errno.EACCES, f"permission denied {sample}\x1b[31m"))
+                    self.assertIn("permission denied", text)
+                    self.assertNotIn(sample, text)
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn("[31m", text)
+                    for fragment in forbidden_fragments:
+                        self.assertNotIn(fragment, text)
+
+    def test_hook_secret_regexes_bound_malformed_oversized_jwt(self):
+        """JWT-like redaction must not backtrack on attacker-sized malformed values."""
+        snippet = r"""
+import errno
+import importlib.util
+import importlib.machinery
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("hook_under_test", path)
+if spec is None:
+    loader = importlib.machinery.SourceFileLoader("hook_under_test", path)
+    spec = importlib.util.spec_from_loader("hook_under_test", loader)
+module = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(module)
+
+malformed_values = [
+    "prefix eyJ" + ("A" * 120_000) + "." + ("B" * 120_000) + ". suffix",
+    "prefix eyJAAAAAAAA." + ("B" * 120_000) + ".CCCCCCCC suffix",
+    "prefix eyJAAAAAAAA.BBBBBBBB." + ("C" * 120_000) + " suffix",
+]
+for malformed in malformed_values:
+    if hasattr(module, "SENSITIVE_PATH_RE"):
+        module.SENSITIVE_PATH_RE.search(malformed)
+    if hasattr(module, "path_label_has_sensitive_evidence"):
+        if not module.path_label_has_sensitive_evidence(malformed):
+            raise SystemExit("malformed JWT-like path evidence was not detected")
+    if hasattr(module, "SENSITIVE_DIAGNOSTIC_RE"):
+        redacted = module.SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", malformed)
+        if "eyJ" in redacted or ("A" * 80) in redacted or ("B" * 80) in redacted or ("C" * 80) in redacted:
+            raise SystemExit("malformed JWT-like diagnostic text leaked")
+    if hasattr(module, "diagnostic_text"):
+        text = module.diagnostic_text(PermissionError(errno.EACCES, "permission denied " + malformed))
+        if len(text) > module.DIAGNOSTIC_MAX_CHARS:
+            raise SystemExit("diagnostic escaped max length")
+        if "eyJ" in text or ("A" * 80) in text or ("B" * 80) in text or ("C" * 80) in text:
+            raise SystemExit("diagnostic leaked malformed JWT-like text")
+"""
+        for script in READ_GUARD_SCRIPTS + NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, "-c", snippet, str(script)],
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
     def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
         """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
         for index, script in enumerate(NUDGE_SCRIPTS):
@@ -2950,24 +3029,36 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
         cases = {
-            "secret": "token=ghp_" + ("A" * 36) + ".py",
-            "control": "bad-\x1b[31m-name.py",
+            "github": ("token=ghp_" + ("A" * 36) + ".py", ["ghp_", "token=ghp_"]),
+            "npm": ("npm_" + ("A" * 24) + ".py", ["npm_"]),
+            "google": ("AIza" + ("A" * 24) + ".py", ["AIza"]),
+            "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16) + ".py", ["SG."]),
+            "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8) + ".py", ["eyJ"]),
+            "bearer": ("Bearer " + ("A" * 20) + ".py", ["Bearer " + ("A" * 20)]),
+            "bearer_lower": ("bearer " + ("A" * 20) + ".py", ["bearer " + ("A" * 20)]),
+            "basic": ("Basic " + ("A" * 20) + ".py", ["Basic " + ("A" * 20)]),
+            "basic_mixed": ("bAsIc " + ("A" * 20) + ".py", ["bAsIc " + ("A" * 20)]),
+            "url_userinfo": ("https://user:pass@example.invalid/db.py", ["user:pass"]),
+            "url_upper_scheme": ("HTTPS://user:pass@example.invalid/db.py", ["user:pass"]),
+            "url_empty_user": ("redis://:pass@example.invalid/db.py", [":pass@"]),
+            "url_empty_password": ("https://token:@example.invalid/db.py", ["token:@"]),
+            "url_token_only": ("https://token@example.invalid/db.py", ["token@"]),
+            "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
         }
         for script in READ_GUARD_SCRIPTS:
-            for case, filename in cases.items():
+            for case, (filename, forbidden_fragments) in cases.items():
                 with self.subTest(script=script, case=case):
                     with tempfile.TemporaryDirectory() as tmp:
                         root = Path(tmp)
                         target = root / filename
+                        target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text("x\n" * 100000, encoding="utf-8")
                         proc = run_hook_payload(script, {"tool_input": {"file_path": filename}}, cwd=root)
                         reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
                         self.assertIn("redacted-path#path:", reason)
                         self.assertNotIn(str(root), reason)
-                        self.assertNotIn("ghp_", reason)
-                        self.assertNotIn("token=ghp_", reason)
-                        self.assertNotIn("\x1b", reason)
-                        self.assertNotIn("[31m", reason)
+                        for fragment in forbidden_fragments:
+                            self.assertNotIn(fragment, reason)
 
     def test_large_read_guard_keeps_safe_token_related_path_labels(self):
         safe_paths = [
