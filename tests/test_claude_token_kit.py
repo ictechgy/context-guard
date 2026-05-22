@@ -3942,6 +3942,35 @@ for malformed in malformed_values:
                     self.assertIn("must not be a symlink", data["parse_errors"][0])
                     self.assertNotIn(str(link), proc.stdout)
 
+    def test_transcript_audit_symlink_does_not_suppress_real_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.jsonl"
+            target.write_text(json.dumps({"usage": {"input_tokens": 7}}) + "\n", encoding="utf-8")
+            link = root / "00-linked.jsonl"
+            try:
+                link.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            scenarios = [
+                [str(link), str(target)],
+                [str(root)],
+            ]
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]:
+                for args in scenarios:
+                    with self.subTest(script=script, args=args):
+                        proc = subprocess.run(
+                            [sys.executable, str(script), *args, "--json"],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        data = json.loads(proc.stdout)
+                        self.assertEqual(data["records"], 1)
+                        self.assertEqual(data["skipped_files"], 1)
+                        self.assertEqual(data["tokens"]["input"], 7)
+                        self.assertTrue(any("must not be a symlink" in err for err in data["parse_errors"]))
+
     def test_transcript_audit_skips_fifo_candidates_without_blocking(self):
         if not hasattr(os, "mkfifo"):
             self.skipTest("mkfifo unavailable")

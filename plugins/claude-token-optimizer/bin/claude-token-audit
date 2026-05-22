@@ -135,6 +135,12 @@ def iter_jsonl_files(paths: Iterable[str]) -> Iterable[Path]:
         else:
             continue
         for candidate in candidates:
+            if candidate.is_symlink():
+                # The scanner opens candidates with O_NOFOLLOW and will skip
+                # this path.  Do not let a rejected link reserve its target's
+                # dedupe key and suppress a later real transcript in scope.
+                yield candidate
+                continue
             resolved = candidate.resolve()
             try:
                 resolved.relative_to(root if path.is_dir() else root.parent)
