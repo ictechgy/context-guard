@@ -892,6 +892,45 @@ def first_group_world_writable_ancestor(path: Path) -> Path | None:
         current = current.parent
 
 
+def first_group_world_writable_resolution_ancestor(
+    path: Path,
+    *,
+    final_component_is_file: bool = False,
+    _seen: set[str] | None = None,
+) -> Path | None:
+    """Return unsafe directories seen while resolving every symlink component."""
+    absolute = path.absolute()
+    check_path = absolute.parent if final_component_is_file else absolute
+    unsafe = first_group_world_writable_ancestor(check_path)
+    if unsafe is not None:
+        return unsafe
+    seen = _seen if _seen is not None else set()
+    key = str(absolute)
+    if key in seen:
+        raise OSError(errno.ELOOP, "symlink loop while checking provider path", str(absolute))
+    seen.add(key)
+    parts = absolute.parts
+    if not parts:
+        return None
+    current = Path(parts[0])
+    for index, component in enumerate(parts[1:], start=1):
+        current = current / component
+        if not current.is_symlink():
+            continue
+        target = Path(os.readlink(current))
+        if not target.is_absolute():
+            target = current.parent / target
+        target_is_final = index == len(parts) - 1
+        unsafe = first_group_world_writable_resolution_ancestor(
+            target,
+            final_component_is_file=final_component_is_file if target_is_final else False,
+            _seen=seen,
+        )
+        if unsafe is not None:
+            return unsafe
+    return None
+
+
 def safe_path_entries() -> list[str]:
     project_root = find_project_root()
     temp_root_lexical = Path(tempfile.gettempdir()).expanduser().absolute()
@@ -907,7 +946,7 @@ def safe_path_entries() -> list[str]:
         if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
             continue
         try:
-            lexical_unsafe_ancestor = first_group_world_writable_ancestor(lexical)
+            lexical_unsafe_ancestor = first_group_world_writable_resolution_ancestor(lexical)
         except OSError:
             continue
         if lexical_unsafe_ancestor is not None:
@@ -952,7 +991,7 @@ def validate_provider_executable(path: Path, provider: str) -> Path:
     if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
         raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {original_label}")
     try:
-        lexical_unsafe_ancestor = first_group_world_writable_ancestor(lexical.parent)
+        lexical_unsafe_ancestor = first_group_world_writable_resolution_ancestor(lexical, final_component_is_file=True)
     except OSError as exc:
         raise SystemExit(
             f"Provider '{provider}' executable ancestor cannot be checked: {response_path_label(str(exc.filename or lexical.parent))}"

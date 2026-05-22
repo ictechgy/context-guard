@@ -5878,6 +5878,44 @@ for malformed in malformed_values:
                             os.environ["PATH"] = old_path
                     self.assertEqual(entries.count(str(safe_dir)), 1)
 
+    def test_aux_delegate_safe_path_rejects_intermediate_symlink_writable_ancestor(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_safe_path_intermediate_symlink_{index}")
+                with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+                    root = Path(tmp)
+                    actual_dir = root / "actual" / "bin"
+                    actual_dir.mkdir(parents=True)
+                    safe_parent = root / "safe"
+                    safe_parent.mkdir()
+                    writable_ancestor = root / "writable-route"
+                    writable_ancestor.mkdir()
+                    link2 = writable_ancestor / "link2"
+                    link1 = safe_parent / "link1"
+                    try:
+                        link2.symlink_to(actual_dir, target_is_directory=True)
+                        link1.symlink_to(link2, target_is_directory=True)
+                    except (NotImplementedError, OSError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    writable_ancestor.chmod(0o777)
+                    old_path = os.environ.get("PATH")
+                    original_project_root = aux.find_project_root
+                    original_tempdir = aux.tempfile.gettempdir
+                    aux.find_project_root = lambda: root / "project"
+                    aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+                    os.environ["PATH"] = str(link1)
+                    try:
+                        entries = aux.safe_path_entries()
+                    finally:
+                        writable_ancestor.chmod(0o755)
+                        aux.find_project_root = original_project_root
+                        aux.tempfile.gettempdir = original_tempdir
+                        if old_path is None:
+                            os.environ.pop("PATH", None)
+                        else:
+                            os.environ["PATH"] = old_path
+                    self.assertNotIn(str(actual_dir.resolve()), entries)
+
     def test_aux_delegate_safe_path_rejects_writable_ancestor_entries(self):
         safe_dir = next(path for path in [Path("/usr/bin"), Path("/bin"), Path(sys.executable).resolve().parent] if path.is_dir())
         safe_dir = safe_dir.resolve()
@@ -5957,6 +5995,41 @@ for malformed in malformed_values:
                     try:
                         with self.assertRaisesRegex(SystemExit, "ancestor is group/world writable"):
                             aux.validate_provider_executable(linked_executable, "mock")
+                    finally:
+                        writable_ancestor.chmod(0o755)
+                        aux.find_project_root = original_project_root
+                        aux.tempfile.gettempdir = original_tempdir
+
+    def test_aux_delegate_rejects_provider_executable_intermediate_symlink_writable_ancestor(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_exec_intermediate_symlink_{index}")
+                with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+                    root = Path(tmp)
+                    actual_bin = root / "actual" / "bin"
+                    actual_bin.mkdir(parents=True)
+                    executable = actual_bin / "trusted-tool"
+                    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    executable.chmod(0o755)
+                    safe_parent = root / "safe"
+                    safe_parent.mkdir()
+                    writable_ancestor = root / "writable-route"
+                    writable_ancestor.mkdir()
+                    link2 = writable_ancestor / "link2"
+                    link1 = safe_parent / "link1"
+                    try:
+                        link2.symlink_to(actual_bin, target_is_directory=True)
+                        link1.symlink_to(link2, target_is_directory=True)
+                    except (NotImplementedError, OSError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    writable_ancestor.chmod(0o777)
+                    original_project_root = aux.find_project_root
+                    original_tempdir = aux.tempfile.gettempdir
+                    aux.find_project_root = lambda: root / "other-project"
+                    aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+                    try:
+                        with self.assertRaisesRegex(SystemExit, "ancestor is group/world writable"):
+                            aux.validate_provider_executable(link1 / "trusted-tool", "mock")
                     finally:
                         writable_ancestor.chmod(0o755)
                         aux.find_project_root = original_project_root
