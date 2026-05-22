@@ -26,6 +26,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+for _helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+    if (_helper_dir / "hook_secret_patterns.py").is_file():
+        sys.path.insert(0, str(_helper_dir))
+        break
+from hook_secret_patterns import hook_label_has_sensitive_evidence
+
 CONFIG_ENV = "CLAUDE_TOKEN_OPTIMIZER_CONFIG"
 ENABLED_ENV = "CLAUDE_TOKEN_OPTIMIZER_AUX_AI"
 CUSTOM_PROVIDER_ENV = "CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"
@@ -92,7 +99,6 @@ KEY_VALUE_SECRET_RE = re.compile(
     r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,}]+)"
 )
 SENSITIVE_HEX_RE = re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b[^\n]{0,40}\b[0-9a-f]{32,}\b")
-AUTH_HEADER_RE = re.compile(r"(?is)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+")
 URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 OUTPUT_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
@@ -214,13 +220,7 @@ def redact_sensitive_output(value: str) -> str:
 
 
 def path_label_has_sensitive_evidence(label: str) -> bool:
-    if (
-        CONTROL_CHAR_RE.search(label)
-        or URL_USERINFO_RE.search(label)
-        or AUTH_HEADER_RE.search(label)
-        or KEY_VALUE_SECRET_RE.search(label)
-        or PATH_LABEL_SECRET_RE.search(label)
-    ):
+    if hook_label_has_sensitive_evidence(label) or KEY_VALUE_SECRET_RE.search(label):
         return True
     try:
         return is_sensitive_context_path(Path(label))
