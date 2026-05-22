@@ -2804,6 +2804,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     for fragment in forbidden_fragments:
                         self.assertNotIn(fragment, text)
 
+    def test_hook_secret_regexes_bound_malformed_oversized_jwt(self):
+        """JWT-like redaction must not backtrack on attacker-sized malformed values."""
+        snippet = r"""
+import errno
+import importlib.util
+import importlib.machinery
+import sys
+
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("hook_under_test", path)
+if spec is None:
+    loader = importlib.machinery.SourceFileLoader("hook_under_test", path)
+    spec = importlib.util.spec_from_loader("hook_under_test", loader)
+module = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(module)
+
+malformed = "prefix eyJ" + ("A" * 120_000) + "." + ("B" * 120_000) + ". suffix"
+if hasattr(module, "SENSITIVE_PATH_RE"):
+    module.SENSITIVE_PATH_RE.search(malformed)
+if hasattr(module, "path_label_has_sensitive_evidence"):
+    module.path_label_has_sensitive_evidence(malformed)
+if hasattr(module, "SENSITIVE_DIAGNOSTIC_RE"):
+    module.SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", malformed)
+if hasattr(module, "diagnostic_text"):
+    text = module.diagnostic_text(PermissionError(errno.EACCES, "permission denied " + malformed))
+    if len(text) > module.DIAGNOSTIC_MAX_CHARS:
+        raise SystemExit("diagnostic escaped max length")
+"""
+        for script in READ_GUARD_SCRIPTS + NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, "-c", snippet, str(script)],
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
     def test_failed_attempt_nudge_save_entries_reports_unsupported_dirfd_rename(self):
         """dir_fd rename 이 불가하면 temp 파일을 정리하고 명시적 OSError 로 진단 가능하게 한다."""
         for index, script in enumerate(NUDGE_SCRIPTS):
