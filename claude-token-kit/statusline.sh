@@ -194,6 +194,8 @@ def _open_regular_transcript(path):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     st = os.lstat(path)
     if not stat.S_ISREG(st.st_mode):
         return None
@@ -209,16 +211,28 @@ def _open_regular_transcript(path):
         raise
 
 
+def _read_tail(fd, size):
+    read_size = min(size, TAIL_BYTES)
+    if size > read_size:
+        os.lseek(fd, size - read_size, os.SEEK_SET)
+    chunks = []
+    remaining = read_size
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks), read_size
+
+
 try:
     opened = _open_regular_transcript(path)
     if opened is None:
         sys.exit(0)
     fd, size = opened
-    read_size = min(size, TAIL_BYTES)
     try:
-        if size > read_size:
-            os.lseek(fd, size - read_size, os.SEEK_SET)
-        chunk = os.read(fd, read_size)
+        chunk, read_size = _read_tail(fd, size)
     finally:
         os.close(fd)
     lines = chunk.splitlines()
