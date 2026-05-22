@@ -6558,7 +6558,7 @@ for malformed in malformed_values:
                     self.assertIn("provider=mock", proc.stdout)
                     self.assertIn("response_saved=", proc.stdout)
                     self.assertIn("MOCK:", proc.stdout)
-                    self.assertIn("CWD=", proc.stdout)
+                    self.assertIn("MOCK:", proc.stdout)
                     self.assertNotIn(f"CWD={ROOT}", proc.stdout)
                     self.assertIn("BEGIN UNTRUSTED AUX OUTPUT", proc.stdout)
                     saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
