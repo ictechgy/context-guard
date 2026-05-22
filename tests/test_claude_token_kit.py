@@ -6437,6 +6437,7 @@ for malformed in malformed_values:
                         "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16), ["SG."]),
                         "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8), ["eyJ"]),
                         "bare_basic": ("Basic " + ("A" * 20), ["Basic " + ("A" * 20)]),
+                        "auth_bearer": ("Authorization: Bearer " + ("A" * 24), ["Authorization", "Bearer " + ("A" * 24)]),
                         "newline_split": ("ghp_\n" + ("A" * 36), ["ghp_", "A" * 20]),
                     }
                     for case, (command, forbidden_fragments) in shared_label_commands.items():
@@ -6661,6 +6662,7 @@ for malformed in malformed_values:
                 "SG." + ("A" * 16) + "." + ("B" * 16),
                 "eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8),
                 "Basic " + ("A" * 20),
+                "Authorization: Bearer " + ("A" * 24),
                 "ghp_\n" + ("A" * 36),
                 "token=\tsecretvalue123",
             ]
