@@ -195,8 +195,8 @@ def stable_hash(value: str, length: int = 12) -> str:
 def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
     compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
     compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
-    compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
     compact = KEY_VALUE_SECRET_RE.sub("[REDACTED]", compact)
+    compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
     compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
     if len(compact) > limit:
         compact = compact[: limit - 15].rstrip() + " ...[truncated]"
@@ -206,8 +206,8 @@ def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> st
 def redact_sensitive_output(value: str) -> str:
     redacted = OUTPUT_CONTROL_CHAR_RE.sub(" ", value)
     redacted = URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
-    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", redacted)
     redacted = KEY_VALUE_SECRET_RE.sub("[REDACTED]", redacted)
+    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", redacted)
     redacted = PATH_LABEL_SECRET_RE.sub("[REDACTED]", redacted)
     redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
     return redacted

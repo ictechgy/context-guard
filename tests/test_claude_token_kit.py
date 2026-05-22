@@ -5850,7 +5850,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     root = Path(tmp)
                     github_token = "ghp_" + ("A" * 36)
                     api_key = "plain-api-key-secret"
-                    json_api_key = "json-api-key-secret"
+                    json_api_key = "json alpha-secret beta-secret gamma-secret"
                     auth_value = "opaque-bearer-token"
                     url_userinfo = "token-user:secret-pass"
                     url_key_userinfo = "url-user:url-secret"
@@ -5864,6 +5864,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         github_token,
                         api_key,
                         json_api_key,
+                        "alpha-secret",
+                        "beta-secret",
+                        "gamma-secret",
                         auth_value,
                         url_userinfo,
                         "token-user@",
