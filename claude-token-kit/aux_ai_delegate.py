@@ -62,6 +62,7 @@ TIMEOUT_SECONDS_MAX = 600
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 WARNING_LABEL_MAX_CHARS = 120
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+MAX_PROVIDER_SYMLINK_DEPTH = 40
 UNSUPPORTED_CONFIG_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
 
 SENSITIVE_CONTEXT_NAMES = {
@@ -880,6 +881,67 @@ def is_lexically_under_any(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def first_group_world_writable_ancestor(path: Path) -> Path | None:
+    """Return the first group/world-writable directory from path up to root."""
+    current = path
+    while True:
+        st = current.stat()
+        if stat.S_IMODE(st.st_mode) & 0o022:
+            return current
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
+def first_group_world_writable_resolution_ancestor(
+    path: Path,
+    *,
+    final_component_is_file: bool = False,
+    _active: set[str] | None = None,
+    _depth: int = 0,
+) -> Path | None:
+    """Return unsafe directories seen while resolving every symlink component."""
+    if _depth > MAX_PROVIDER_SYMLINK_DEPTH:
+        raise OSError(errno.ELOOP, "too many symlinks while checking provider path", str(path))
+    absolute = path.absolute()
+    check_path = absolute.parent if final_component_is_file else absolute
+    unsafe = first_group_world_writable_ancestor(check_path)
+    if unsafe is not None:
+        return unsafe
+    active = _active if _active is not None else set()
+    key = os.path.normpath(os.fspath(absolute))
+    if key in active:
+        raise OSError(errno.ELOOP, "symlink loop while checking provider path", str(absolute))
+    active.add(key)
+    try:
+        parts = absolute.parts
+        if not parts:
+            return None
+        current = Path(parts[0])
+        for index, component in enumerate(parts[1:], start=1):
+            current = current / component
+            if not current.is_symlink():
+                continue
+            target = Path(os.readlink(current))
+            if not target.is_absolute():
+                target = current.parent / target
+            target_is_final = index == len(parts) - 1
+            try:
+                unsafe = first_group_world_writable_resolution_ancestor(
+                    target,
+                    final_component_is_file=final_component_is_file if target_is_final else False,
+                    _active=active,
+                    _depth=_depth + 1,
+                )
+            except RecursionError as exc:
+                raise OSError(errno.ELOOP, "symlink loop while checking provider path", str(target)) from exc
+            if unsafe is not None:
+                return unsafe
+        return None
+    finally:
+        active.discard(key)
+
+
 def safe_path_entries() -> list[str]:
     project_root = find_project_root()
     temp_root_lexical = Path(tempfile.gettempdir()).expanduser().absolute()
@@ -891,7 +953,14 @@ def safe_path_entries() -> list[str]:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             continue
-        if is_lexically_under_any(path, [project_root, temp_root_lexical]):
+        lexical = path.absolute()
+        if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
+            continue
+        try:
+            lexical_unsafe_ancestor = first_group_world_writable_resolution_ancestor(lexical)
+        except OSError:
+            continue
+        if lexical_unsafe_ancestor is not None:
             continue
         try:
             resolved = path.resolve()
@@ -900,7 +969,11 @@ def safe_path_entries() -> list[str]:
             continue
         if not resolved.is_dir():
             continue
-        if stat.S_IMODE(st.st_mode) & 0o022:
+        try:
+            resolved_unsafe_ancestor = first_group_world_writable_ancestor(resolved)
+        except OSError:
+            continue
+        if resolved_unsafe_ancestor is not None:
             continue
         if is_under_any(resolved, [project_root, temp_root]):
             continue
@@ -914,13 +987,30 @@ def safe_path_env() -> str:
 
 def validate_provider_executable(path: Path, provider: str) -> Path:
     original_label = response_path_label(str(path))
+    expanded = path.expanduser()
+    lexical = expanded.absolute()
+    project_root = find_project_root()
+    temp_root_lexical = Path(tempfile.gettempdir()).expanduser().absolute()
+    temp_root = temp_root_lexical.resolve()
     try:
-        resolved = path.expanduser().resolve()
+        resolved = expanded.resolve()
     except (OSError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"Provider '{provider}' executable cannot be resolved: {original_label}") from exc
     resolved_label = response_path_label(str(resolved))
     if not resolved.exists() or not os.access(resolved, os.X_OK):
         raise SystemExit(f"Provider '{provider}' executable not found or not executable: {original_label}")
+    if is_lexically_under_any(lexical, [project_root, temp_root_lexical]):
+        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {original_label}")
+    try:
+        lexical_unsafe_ancestor = first_group_world_writable_resolution_ancestor(lexical, final_component_is_file=True)
+    except OSError as exc:
+        raise SystemExit(
+            f"Provider '{provider}' executable ancestor cannot be checked: {response_path_label(str(exc.filename or lexical.parent))}"
+        ) from exc
+    if lexical_unsafe_ancestor is not None:
+        raise SystemExit(
+            f"Provider '{provider}' executable ancestor is group/world writable: {response_path_label(str(lexical_unsafe_ancestor))}"
+        )
     try:
         executable_mode = resolved.stat().st_mode
     except OSError as exc:
@@ -931,19 +1021,17 @@ def validate_provider_executable(path: Path, provider: str) -> Path:
         raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved_label}")
     if executable_mode & (stat.S_ISUID | stat.S_ISGID):
         raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved_label}")
-    project_root = find_project_root()
-    temp_root = Path(tempfile.gettempdir()).resolve()
     if is_under_any(resolved, [project_root, temp_root]):
         raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved_label}")
     try:
-        parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
+        resolved_unsafe_ancestor = first_group_world_writable_ancestor(resolved.parent)
     except OSError as exc:
         raise SystemExit(
-            f"Provider '{provider}' executable parent cannot be checked: {response_path_label(str(resolved.parent))}"
+            f"Provider '{provider}' executable ancestor cannot be checked: {response_path_label(str(exc.filename or resolved.parent))}"
         ) from exc
-    if parent_mode & 0o022:
+    if resolved_unsafe_ancestor is not None:
         raise SystemExit(
-            f"Provider '{provider}' executable parent is group/world writable: {response_path_label(str(resolved.parent))}"
+            f"Provider '{provider}' executable ancestor is group/world writable: {response_path_label(str(resolved_unsafe_ancestor))}"
         )
     return resolved
 
