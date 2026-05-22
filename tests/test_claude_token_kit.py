@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
 PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
 PLUGIN_BIN = PLUGIN_DIR / "bin"
+PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "claude-token-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
@@ -39,6 +40,9 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
     (KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"),
+]
+HELPER_PAIRS = [
+    (KIT_DIR / "hook_secret_patterns.py", PLUGIN_LIB / "hook_secret_patterns.py"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"]
@@ -119,6 +123,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(plugin=plugin):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertTrue(os.access(plugin, os.X_OK), f"{plugin} must be executable")
+
+    def test_plugin_helpers_match_kit_sources(self):
+        for kit, plugin in HELPER_PAIRS:
+            with self.subTest(plugin=plugin):
+                self.assertEqual(kit.read_bytes(), plugin.read_bytes())
+                self.assertFalse(os.access(plugin, os.X_OK), f"{plugin} should not be executable")
 
     def test_prepublish_check_package_invariants(self):
         kit_cache = KIT_DIR / "__pycache__"
