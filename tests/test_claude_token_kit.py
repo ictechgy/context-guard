@@ -3374,6 +3374,149 @@ for malformed in malformed_values:
                         self.assertEqual(hook["permissionDecision"], "deny")
                         self.assertIn("traverses a symlink", hook["permissionDecisionReason"])
 
+    def test_large_read_guard_blocks_non_whitelisted_first_absolute_symlink_alias(self):
+        alias_parent = Path("/etc")
+        alias_target = alias_parent / "services"
+        canonical_target = Path("/private/etc/services")
+        if not alias_parent.is_symlink() or not alias_target.is_file() or not canonical_target.is_file():
+            self.skipTest("no non-whitelisted /etc -> /private/etc alias available")
+
+        env = os.environ.copy()
+        env["CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"] = "1"
+        for script in READ_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                alias_proc = run_hook_payload(script, {"tool_input": {"file_path": str(alias_target)}}, cwd=ROOT, env=env)
+                alias_hook = json.loads(alias_proc.stdout)["hookSpecificOutput"]
+                self.assertEqual(alias_hook["permissionDecision"], "deny")
+                self.assertIn("traverses a symlink", alias_hook["permissionDecisionReason"])
+
+                canonical_proc = run_hook_payload(script, {"tool_input": {"file_path": str(canonical_target)}}, cwd=ROOT, env=env)
+                canonical_hook = json.loads(canonical_proc.stdout)["hookSpecificOutput"]
+                self.assertEqual(canonical_hook["permissionDecision"], "deny")
+                self.assertIn("Large Read blocked", canonical_hook["permissionDecisionReason"])
+
+    def test_large_read_guard_size_probe_rejects_symlinks_and_fifos(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "big.py"
+            target.write_text("x\n" * 100000, encoding="utf-8")
+            link = root / "linked.py"
+            fifo = root / "pipe.py"
+            try:
+                link.symlink_to(target)
+                os.mkfifo(fifo)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"special file fixture unavailable: {exc}")
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    guard = load_python_script_module(script, f"_read_guard_size_probe_{index}")
+                    self.assertGreater(guard.regular_file_size_no_symlink(target), guard.DEFAULT_MAX_BYTES)
+                    with self.assertRaises(OSError) as symlink_error:
+                        guard.regular_file_size_no_symlink(link)
+                    self.assertEqual(symlink_error.exception.errno, errno.ELOOP)
+                    with self.assertRaises(OSError) as fifo_error:
+                        guard.regular_file_size_no_symlink(fifo)
+                    self.assertEqual(fifo_error.exception.errno, errno.EINVAL)
+
+    def test_large_read_guard_fallback_rejects_parent_symlink_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "big.py"
+            target.write_text("x\n" * 100000, encoding="utf-8")
+            parent_link = root / "linkdir"
+            try:
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    guard = load_python_script_module(script, f"_read_guard_fallback_parent_symlink_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    guard.os.supports_dir_fd = set()
+                    try:
+                        self.assertGreater(guard.regular_file_size_no_symlink(target), guard.DEFAULT_MAX_BYTES)
+                        with self.assertRaises(OSError) as symlink_error:
+                            guard.regular_file_size_no_symlink(parent_link / "big.py")
+                        self.assertEqual(symlink_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+
+    def test_large_read_guard_fallback_race_to_nonregular_denies(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "big.py"
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    target.write_text("x\n" * 100000, encoding="utf-8")
+                    guard = load_python_script_module(script, f"_read_guard_fallback_nonregular_race_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    original_open = guard.os.open
+                    normalized_target = guard.normalize_allowed_first_absolute_symlink(target)
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == os.fspath(normalized_target):
+                            raced = True
+                            target.unlink()
+                            os.mkfifo(normalized_target)
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    guard.os.supports_dir_fd = set()
+                    guard.os.open = racing_open
+                    try:
+                        with self.assertRaises(OSError) as race_error:
+                            guard.regular_file_size_no_symlink(target)
+                        self.assertEqual(race_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.open = original_open
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+                        if target.exists():
+                            target.unlink()
+
+    def test_large_read_guard_dir_component_replacement_race_denies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    real_dir = root / f"real-{index}"
+                    old_dir = root / f"old-{index}"
+                    real_dir.mkdir()
+                    (real_dir / "big.py").write_text("x\n" * 100000, encoding="utf-8")
+
+                    guard = load_python_script_module(script, f"_read_guard_dir_race_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    original_open = guard.os.open
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == real_dir.name and "dir_fd" in kwargs:
+                            raced = True
+                            real_dir.rename(old_dir)
+                            real_dir.mkdir()
+                            (real_dir / "big.py").write_text("y\n" * 100000, encoding="utf-8")
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    guard.os.open = racing_open
+                    guard.os.supports_dir_fd = set(original_supports_dir_fd) | {racing_open}
+                    try:
+                        with self.assertRaises(OSError) as race_error:
+                            guard.regular_file_size_no_symlink(real_dir / "big.py")
+                        self.assertEqual(race_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.open = original_open
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+                        shutil.rmtree(real_dir, ignore_errors=True)
+                        shutil.rmtree(old_dir, ignore_errors=True)
+
     def test_read_symbol_extracts_python_and_typescript_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
