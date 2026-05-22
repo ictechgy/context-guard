@@ -3968,6 +3968,34 @@ for malformed in malformed_values:
                     self.assertIn("regular file", data["parse_errors"][0])
                     self.assertNotIn(str(fifo), proc.stdout)
 
+    def test_transcript_audit_max_file_limit_uses_open_descriptor_size(self):
+        for index, script in enumerate([KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"]):
+            with self.subTest(script=script):
+                audit = load_python_script_module(script, f"_audit_open_size_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    small = root / "small.jsonl"
+                    small.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+                    oversized = root / "oversized.jsonl"
+                    oversized.write_text(json.dumps({"blob": "x" * 200, "usage": {"input_tokens": 99}}) + "\n", encoding="utf-8")
+                    original_iter = audit.iter_jsonl_files
+                    original_open = audit.open_regular_no_symlink
+                    audit.iter_jsonl_files = lambda _paths: iter([small])
+                    audit.open_regular_no_symlink = lambda _path: original_open(oversized)
+                    try:
+                        summary = audit.scan(
+                            [str(small)],
+                            limits=audit.ScanLimits(max_file_bytes=64, max_line_bytes=1024),
+                        )
+                    finally:
+                        audit.iter_jsonl_files = original_iter
+                        audit.open_regular_no_symlink = original_open
+                    self.assertEqual(summary.files, 1)
+                    self.assertEqual(summary.records, 0)
+                    self.assertEqual(summary.skipped_files, 1)
+                    self.assertEqual(summary.tokens.get("input", 0), 0)
+                    self.assertTrue(any("skipped oversized transcript file" in err for err in summary.parse_errors))
+
     def test_transcript_audit_read_errors_do_not_leak_paths_by_default(self):
         if os.name == "nt":
             self.skipTest("chmod-based unreadable file fixture is POSIX-only")
