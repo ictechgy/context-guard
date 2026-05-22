@@ -163,14 +163,12 @@ def has_symlink_component(path: Path) -> bool:
     if path.is_symlink():
         return True
     current = Path(path.anchor) if path.is_absolute() else Path()
-    depth = 0
     for part in path.parts:
         if path.is_absolute() and part == path.anchor:
             continue
         current = current / part
-        if current.is_symlink() and not (path.is_absolute() and depth == 0):
+        if current.is_symlink():
             return True
-        depth += 1
     return False
 
 
@@ -216,6 +214,12 @@ def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
 
 
 def open_directory_at(parent_fd: int, component: str, full_path: Path) -> int:
+    component_stat = lstat_at_no_follow(parent_fd, component)
+    if component_stat is not None:
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise OSError(errno.ELOOP, "path component must not be a symlink", str(full_path))
+        if not stat.S_ISDIR(component_stat.st_mode):
+            raise OSError(errno.ENOTDIR, "path component is not a directory", str(full_path))
     fd = os.open(component, base_open_flags() | directory_flag() | no_follow_flag(), dir_fd=parent_fd)
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
@@ -357,6 +361,7 @@ def main() -> int:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = root / path
+    path = normalize_allowed_first_absolute_symlink(path)
     if has_symlink_component(path):
         label = safe_label(path, root)
         reason = (

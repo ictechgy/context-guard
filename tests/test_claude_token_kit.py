@@ -3374,6 +3374,27 @@ for malformed in malformed_values:
                         self.assertEqual(hook["permissionDecision"], "deny")
                         self.assertIn("traverses a symlink", hook["permissionDecisionReason"])
 
+    def test_large_read_guard_blocks_non_whitelisted_first_absolute_symlink_alias(self):
+        alias_parent = Path("/etc")
+        alias_target = alias_parent / "services"
+        canonical_target = Path("/private/etc/services")
+        if not alias_parent.is_symlink() or not alias_target.is_file() or not canonical_target.is_file():
+            self.skipTest("no non-whitelisted /etc -> /private/etc alias available")
+
+        env = os.environ.copy()
+        env["CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"] = "1"
+        for script in READ_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                alias_proc = run_hook_payload(script, {"tool_input": {"file_path": str(alias_target)}}, cwd=ROOT, env=env)
+                alias_hook = json.loads(alias_proc.stdout)["hookSpecificOutput"]
+                self.assertEqual(alias_hook["permissionDecision"], "deny")
+                self.assertIn("traverses a symlink", alias_hook["permissionDecisionReason"])
+
+                canonical_proc = run_hook_payload(script, {"tool_input": {"file_path": str(canonical_target)}}, cwd=ROOT, env=env)
+                canonical_hook = json.loads(canonical_proc.stdout)["hookSpecificOutput"]
+                self.assertEqual(canonical_hook["permissionDecision"], "deny")
+                self.assertIn("Large Read blocked", canonical_hook["permissionDecisionReason"])
+
     def test_large_read_guard_size_probe_rejects_symlinks_and_fifos(self):
         if not hasattr(os, "mkfifo"):
             self.skipTest("mkfifo unavailable")
