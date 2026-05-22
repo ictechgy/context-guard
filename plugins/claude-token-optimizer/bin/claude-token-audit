@@ -8,12 +8,14 @@ parse/read skips so totals are not mistaken for billing-authoritative data.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
 import os
 import re
 import shlex
+import stat
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -290,6 +292,41 @@ class ScanLimits:
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
 
 
+def open_regular_no_symlink(file: Path):
+    """Open a transcript candidate only if it is still a regular non-symlink file."""
+    before = file.lstat()
+    if stat.S_ISLNK(before.st_mode):
+        raise OSError(errno.ELOOP, "transcript file must not be a symlink", str(file))
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.EINVAL, "transcript file must be a regular file", str(file))
+    flags = os.O_RDONLY
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, optional_flag, 0)
+    fd = os.open(file, flags)
+    try:
+        opened = os.fstat(fd)
+        after = file.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(before, opened)
+            or not os.path.samestat(after, opened)
+        ):
+            raise OSError(errno.ELOOP, "transcript file changed while opening", str(file))
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def regular_file_size_no_symlink(file: Path) -> int:
+    st = file.lstat()
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(errno.ELOOP, "transcript file must not be a symlink", str(file))
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(errno.EINVAL, "transcript file must be a regular file", str(file))
+    return st.st_size
+
+
 def iter_bounded_lines(file: Path, max_line_bytes: int) -> Iterable[tuple[int, str | None]]:
     """Yield decoded lines without retaining an oversized JSONL record in memory.
 
@@ -300,7 +337,7 @@ def iter_bounded_lines(file: Path, max_line_bytes: int) -> Iterable[tuple[int, s
     line_no = 1
     buffer = bytearray()
     oversized = False
-    with file.open("rb") as handle:
+    with open_regular_no_symlink(file) as handle:
         while True:
             chunk = handle.read(READ_CHUNK_BYTES)
             if not chunk:
@@ -437,7 +474,7 @@ def scan(
     for file in iter_jsonl_files(paths):
         summary.files += 1
         try:
-            size = file.stat().st_size
+            size = regular_file_size_no_symlink(file)
         except OSError as exc:
             summary.skipped_files += 1
             summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
