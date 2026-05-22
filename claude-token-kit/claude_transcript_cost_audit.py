@@ -8,17 +8,19 @@ parse/read skips so totals are not mistaken for billing-authoritative data.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
 import os
 import re
 import shlex
+import stat
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, BinaryIO, Iterable
 
 TOKEN_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("input", ("input_tokens",)),
@@ -133,6 +135,12 @@ def iter_jsonl_files(paths: Iterable[str]) -> Iterable[Path]:
         else:
             continue
         for candidate in candidates:
+            if candidate.is_symlink():
+                # The scanner opens candidates with O_NOFOLLOW and will skip
+                # this path.  Do not let a rejected link reserve its target's
+                # dedupe key and suppress a later real transcript in scope.
+                yield candidate
+                continue
             resolved = candidate.resolve()
             try:
                 resolved.relative_to(root if path.is_dir() else root.parent)
@@ -290,7 +298,33 @@ class ScanLimits:
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
 
 
-def iter_bounded_lines(file: Path, max_line_bytes: int) -> Iterable[tuple[int, str | None]]:
+def open_regular_no_symlink(file: Path):
+    """Open a transcript candidate only if it is still a regular non-symlink file."""
+    before = file.lstat()
+    if stat.S_ISLNK(before.st_mode):
+        raise OSError(errno.ELOOP, "transcript file must not be a symlink", str(file))
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.EINVAL, "transcript file must be a regular file", str(file))
+    flags = os.O_RDONLY
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= getattr(os, optional_flag, 0)
+    fd = os.open(file, flags)
+    try:
+        opened = os.fstat(fd)
+        after = file.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(before, opened)
+            or not os.path.samestat(after, opened)
+        ):
+            raise OSError(errno.ELOOP, "transcript file changed while opening", str(file))
+        return os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def iter_bounded_lines(handle: BinaryIO, max_line_bytes: int) -> Iterable[tuple[int, str | None]]:
     """Yield decoded lines without retaining an oversized JSONL record in memory.
 
     `None` means the record exceeded `max_line_bytes` and was skipped after the
@@ -300,40 +334,39 @@ def iter_bounded_lines(file: Path, max_line_bytes: int) -> Iterable[tuple[int, s
     line_no = 1
     buffer = bytearray()
     oversized = False
-    with file.open("rb") as handle:
-        while True:
-            chunk = handle.read(READ_CHUNK_BYTES)
-            if not chunk:
-                if oversized:
-                    yield line_no, None
-                elif buffer:
-                    yield line_no, buffer.decode("utf-8", errors="replace")
+    while True:
+        chunk = handle.read(READ_CHUNK_BYTES)
+        if not chunk:
+            if oversized:
+                yield line_no, None
+            elif buffer:
+                yield line_no, buffer.decode("utf-8", errors="replace")
+            break
+
+        start = 0
+        while start < len(chunk):
+            newline = chunk.find(b"\n", start)
+            end = len(chunk) if newline == -1 else newline + 1
+            piece = chunk[start:end]
+
+            if not oversized:
+                if len(buffer) + len(piece) > max_line_bytes:
+                    buffer.clear()
+                    oversized = True
+                else:
+                    buffer.extend(piece)
+
+            if newline == -1:
                 break
 
-            start = 0
-            while start < len(chunk):
-                newline = chunk.find(b"\n", start)
-                end = len(chunk) if newline == -1 else newline + 1
-                piece = chunk[start:end]
-
-                if not oversized:
-                    if len(buffer) + len(piece) > max_line_bytes:
-                        buffer.clear()
-                        oversized = True
-                    else:
-                        buffer.extend(piece)
-
-                if newline == -1:
-                    break
-
-                if oversized:
-                    yield line_no, None
-                else:
-                    yield line_no, buffer.decode("utf-8", errors="replace")
-                    buffer.clear()
-                line_no += 1
-                oversized = False
-                start = end
+            if oversized:
+                yield line_no, None
+            else:
+                yield line_no, buffer.decode("utf-8", errors="replace")
+                buffer.clear()
+            line_no += 1
+            oversized = False
+            start = end
 
 
 def collect_record_hints(root: Any, show_commands: bool = False) -> tuple[set[str], set[str]]:
@@ -437,43 +470,38 @@ def scan(
     for file in iter_jsonl_files(paths):
         summary.files += 1
         try:
-            size = file.stat().st_size
-        except OSError as exc:
-            summary.skipped_files += 1
-            summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
-            continue
-        if size > limits.max_file_bytes:
-            summary.skipped_files += 1
-            summary.note_error(
-                f"{path_label(file, show_paths=show_paths)}: skipped oversized transcript file "
-                f"({size} bytes > {limits.max_file_bytes})"
-            )
-            continue
-
-        try:
-            for line_no, line in iter_bounded_lines(file, limits.max_line_bytes):
-                if line is None:
-                    summary.skipped_records += 1
+            with open_regular_no_symlink(file) as handle:
+                size = os.fstat(handle.fileno()).st_size
+                if size > limits.max_file_bytes:
+                    summary.skipped_files += 1
                     summary.note_error(
-                        f"{path_label(file, show_paths=show_paths)}:{line_no}: "
-                        f"skipped oversized JSONL record (> {limits.max_line_bytes} bytes)"
+                        f"{path_label(file, show_paths=show_paths)}: skipped oversized transcript file "
+                        f"({size} bytes > {limits.max_file_bytes})"
                     )
                     continue
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = parse_json_line(line)
-                except json.JSONDecodeError as exc:
-                    summary.skipped_records += 1
-                    summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
-                    continue
-                except RecursionError as exc:
-                    summary.skipped_records += 1
-                    summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
-                    continue
-                summary.records += 1
-                add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
+                for line_no, line in iter_bounded_lines(handle, limits.max_line_bytes):
+                    if line is None:
+                        summary.skipped_records += 1
+                        summary.note_error(
+                            f"{path_label(file, show_paths=show_paths)}:{line_no}: "
+                            f"skipped oversized JSONL record (> {limits.max_line_bytes} bytes)"
+                        )
+                        continue
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = parse_json_line(line)
+                    except json.JSONDecodeError as exc:
+                        summary.skipped_records += 1
+                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
+                        continue
+                    except RecursionError as exc:
+                        summary.skipped_records += 1
+                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
+                        continue
+                    summary.records += 1
+                    add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
         except OSError as exc:
             summary.skipped_files += 1
             summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
