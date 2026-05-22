@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shlex
 import sys
 from pathlib import Path
@@ -21,7 +20,7 @@ for _helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
     if (_helper_dir / "hook_secret_patterns.py").is_file():
         sys.path.insert(0, str(_helper_dir))
         break
-from hook_secret_patterns import hook_text_has_sensitive_evidence
+from hook_secret_patterns import CONTROL_CHAR_RE, hook_label_has_sensitive_evidence
 
 DEFAULT_MAX_BYTES = 48_000
 DEFAULT_MAX_LINE_RANGE = 400
@@ -31,7 +30,6 @@ GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
 PATH_LABEL_MAX_CHARS = 160
-CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def truthy_disabled(value: str | None) -> bool:
@@ -83,10 +81,6 @@ def compact_hook_text(value: str, limit: int = PATH_LABEL_MAX_CHARS) -> str:
     return compact
 
 
-def path_label_has_sensitive_evidence(value: str) -> bool:
-    return bool(CONTROL_CHAR_RE.search(value) or hook_text_has_sensitive_evidence(value))
-
-
 def anonymized_path_label(path: Path) -> str:
     try:
         raw = str(path.resolve())
@@ -131,12 +125,12 @@ def safe_label(path: Path, root: Path) -> str:
             raw = str(path)
         digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:12]
         name = path.name or "path"
-        if path_label_has_sensitive_evidence(name):
+        if hook_label_has_sensitive_evidence(name):
             name = "redacted-path"
         else:
             name = compact_hook_text(name)
         return f"{name or 'path'}#path:{digest}"
-    if path_label_has_sensitive_evidence(label):
+    if hook_label_has_sensitive_evidence(label):
         return anonymized_path_label(resolved)
     return compact_hook_text(label) or "path"
 
