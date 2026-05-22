@@ -212,6 +212,29 @@ def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
         raise
 
 
+def _mkdir_directory_entry_at(dir_fd: int, component: str, mode: int) -> None:
+    # mkdir modes are still filtered through umask.  Run only the mkdir in an
+    # isolated child process with umask 0 so the parent process umask never
+    # changes, then the parent immediately reopens with O_NOFOLLOW.
+    helper = (
+        "import os, sys\n"
+        "dir_fd = int(sys.argv[1])\n"
+        "component = sys.argv[2]\n"
+        "mode = int(sys.argv[3], 8)\n"
+        "os.umask(0)\n"
+        "os.mkdir(component, mode, dir_fd=dir_fd)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", helper, str(dir_fd), component, oct(mode)],
+        text=True,
+        capture_output=True,
+        pass_fds=(dir_fd,),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+        raise OSError(f"could not create directory component safely: {component}: {detail[0]}")
+
+
 def _open_regular_no_symlink(path: Path) -> int:
     if os.open not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative no-follow opens")
@@ -257,7 +280,7 @@ def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
                 next_fd = _open_directory_at(dir_fd, component, path)
             except FileNotFoundError:
                 mkdir_mode = mode if mode is not None and index == len(components) - 1 else PRIVATE_DIR_MODE
-                os.mkdir(component, mkdir_mode, dir_fd=dir_fd)
+                _mkdir_directory_entry_at(dir_fd, component, mkdir_mode)
                 next_fd = _open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = next_fd
