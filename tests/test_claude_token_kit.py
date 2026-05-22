@@ -2845,6 +2845,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     for fragment in forbidden_fragments:
                         self.assertNotIn(fragment, text)
 
+    def test_hook_label_sensitive_evidence_flags_control_without_safe_name_false_positives(self):
+        safe_names = ["test_tokenizer.py", "token_count.py", "api_key_helpers.py"]
+        sensitive_names = [
+            "bad-\x1b[31m-name.py",
+            "Bearer " + ("A" * 20) + ".py",
+            "Basic " + ("A" * 20) + ".py",
+            "npm_" + ("A" * 24) + ".py",
+            "AIza" + ("A" * 24) + ".py",
+        ]
+        for pair_index, (kit_helper, plugin_helper) in enumerate(HELPER_PAIRS):
+            for helper in (kit_helper, plugin_helper):
+                module = load_module_from_path(helper, f"_hook_label_helper_{pair_index}_{helper.parent.name}")
+                for name in sensitive_names:
+                    with self.subTest(helper=helper, name=name):
+                        self.assertTrue(module.hook_label_has_sensitive_evidence(name))
+                for name in safe_names:
+                    with self.subTest(helper=helper, name=name):
+                        self.assertFalse(module.hook_label_has_sensitive_evidence(name))
+
     def test_hook_secret_regexes_bound_malformed_oversized_jwt(self):
         """JWT-like redaction must not backtrack on attacker-sized malformed values."""
         snippet = r"""
@@ -2873,6 +2892,9 @@ for malformed in malformed_values:
     if hasattr(module, "path_label_has_sensitive_evidence"):
         if not module.path_label_has_sensitive_evidence(malformed):
             raise SystemExit("malformed JWT-like path evidence was not detected")
+    if hasattr(module, "hook_label_has_sensitive_evidence"):
+        if not module.hook_label_has_sensitive_evidence(malformed):
+            raise SystemExit("malformed JWT-like hook label evidence was not detected")
     if hasattr(module, "SENSITIVE_DIAGNOSTIC_RE"):
         redacted = module.SENSITIVE_DIAGNOSTIC_RE.sub("[redacted]", malformed)
         if "eyJ" in redacted or ("A" * 80) in redacted or ("B" * 80) in redacted or ("C" * 80) in redacted:
@@ -3079,6 +3101,8 @@ for malformed in malformed_values:
             "url_empty_password": ("https://token:@example.invalid/db.py", ["token:@"]),
             "url_token_only": ("https://token@example.invalid/db.py", ["token@"]),
             "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
+            "newline_split_github": ("ghp_\n" + ("A" * 36) + ".py", ["ghp_", "A" * 20]),
+            "tab_split_key_value": ("token=\tsecretvalue123.py", ["token=", "secretvalue123"]),
         }
         for script in READ_GUARD_SCRIPTS:
             for case, (filename, forbidden_fragments) in cases.items():
@@ -3398,6 +3422,65 @@ for malformed in malformed_values:
                         self.assertIn(str(unreadable), shown.stderr)
             finally:
                 unreadable.chmod(0o600)
+
+    def test_read_symbol_path_labels_use_shared_hook_secret_corpus(self):
+        cases = {
+            "github": ("missing-ghp_" + ("A" * 36) + ".py", ["ghp_"]),
+            "github_pat": ("github_pat_" + ("A" * 24) + ".py", ["github_pat_"]),
+            "gitlab": ("glpat-" + ("A" * 16) + ".py", ["glpat-"]),
+            "aws": ("AKIA" + ("A" * 16) + ".py", ["AKIA"]),
+            "stripe": ("sk_live_" + ("A" * 20) + ".py", ["sk_live_"]),
+            "npm": ("npm_" + ("A" * 24) + ".py", ["npm_"]),
+            "google": ("AIza" + ("A" * 24) + ".py", ["AIza"]),
+            "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16) + ".py", ["SG."]),
+            "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8) + ".py", ["eyJ"]),
+            "bearer": ("Bearer " + ("A" * 20) + ".py", ["Bearer " + ("A" * 20)]),
+            "basic": ("Basic " + ("A" * 20) + ".py", ["Basic " + ("A" * 20)]),
+            "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
+            "newline_split_github": ("ghp_\n" + ("A" * 36) + ".py", ["ghp_", "A" * 20]),
+            "tab_split_key_value": ("token=\tsecretvalue123.py", ["token=", "secretvalue123"]),
+        }
+        for script in READ_SYMBOL_SCRIPTS:
+            for case, (filename, forbidden_fragments) in cases.items():
+                with self.subTest(script=script, case=case):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        missing = Path(tmp) / filename
+                        proc = subprocess.run(
+                            [sys.executable, str(script), str(missing), "target"],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        self.assertIn("not a file: redacted-path#path:", proc.stderr)
+                        self.assertNotIn(tmp, proc.stderr)
+                        for fragment in forbidden_fragments:
+                            self.assertNotIn(fragment, proc.stderr)
+
+    def test_read_symbol_keeps_safe_token_related_path_labels(self):
+        safe_paths = [
+            "claude-token-kit/safe-big.py",
+            "src/test_tokenizer.py",
+            "src/token_count.py",
+            "src/api_key_helpers.py",
+        ]
+        for script in READ_SYMBOL_SCRIPTS:
+            for filename in safe_paths:
+                with self.subTest(script=script, filename=filename):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        target = root / filename
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text("def target():\n    return 1\n", encoding="utf-8")
+                        proc = subprocess.run(
+                            [sys.executable, str(script), str(target), "target", "--json", "--context", "0"],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        data = json.loads(proc.stdout)
+                        self.assertIn(target.name, data["path"])
+                        self.assertNotIn("redacted-path#path:", data["path"])
+                        self.assertNotIn(str(root), data["path"])
 
     def test_read_symbol_clamps_extreme_output_budgets(self):
         with tempfile.TemporaryDirectory() as tmp:

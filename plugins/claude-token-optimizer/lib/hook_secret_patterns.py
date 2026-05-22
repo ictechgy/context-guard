@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 SENSITIVE_HOOK_TEXT_RE = re.compile(
     r"(?i)("
     r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -30,6 +31,11 @@ SENSITIVE_HOOK_TEXT_RE = re.compile(
 def hook_text_has_sensitive_evidence(value: str) -> bool:
     """Return True when hook-visible text contains a high-confidence secret."""
     return bool(SENSITIVE_HOOK_TEXT_RE.search(value))
+
+
+def hook_label_has_sensitive_evidence(value: str) -> bool:
+    """Return True when a compact hook-visible label must be fully redacted."""
+    return bool(CONTROL_CHAR_RE.search(value) or hook_text_has_sensitive_evidence(value))
 
 
 def redact_sensitive_hook_text(value: str, replacement: str = "[redacted]") -> str:

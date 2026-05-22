@@ -18,6 +18,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+for _helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+    if (_helper_dir / "hook_secret_patterns.py").is_file():
+        sys.path.insert(0, str(_helper_dir))
+        break
+from hook_secret_patterns import hook_label_has_sensitive_evidence
+
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_CHARS = 16_000
 MAX_CONTEXT_LINES_LIMIT = 200
@@ -30,11 +37,6 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
-SENSITIVE_PATH_RE = re.compile(
-    r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|"
-    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)[^/\\\s]*)"
-)
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -73,8 +75,9 @@ def path_label(path: Path, show_paths: bool) -> str:
     if show_paths:
         return str(path)
     digest = hashlib.sha256(str(path).encode("utf-8", "replace")).hexdigest()[:12]
-    name = " ".join((path.name or "path").strip().split())
-    if SENSITIVE_PATH_RE.search(name):
+    raw_name = path.name or "path"
+    name = " ".join(raw_name.strip().split())
+    if hook_label_has_sensitive_evidence(raw_name):
         name = "redacted-path"
     elif len(name) > PATH_LABEL_MAX_CHARS:
         name = name[: PATH_LABEL_MAX_CHARS - 15].rstrip() + "...[truncated]"
