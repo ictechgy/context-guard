@@ -139,7 +139,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-`prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/claude-token-optimizer/bin`의 대표 패키징 엔트리포인트를 실제 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차와 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
+`prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 redaction, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/claude-token-optimizer/bin`의 대표 패키징 엔트리포인트를 실제 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
 
 ## 라이선스
 
