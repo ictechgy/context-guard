@@ -8,6 +8,7 @@ with CLAUDE_TOKEN_READ_GUARD=0.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -16,11 +17,27 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-for _helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
-    if (_helper_dir / "hook_secret_patterns.py").is_file():
-        sys.path.insert(0, str(_helper_dir))
-        break
-from hook_secret_patterns import CONTROL_CHAR_RE, hook_label_has_sensitive_evidence
+
+
+def _load_hook_secret_patterns():
+    searched = []
+    for helper_dir in (SCRIPT_DIR, SCRIPT_DIR.parent / "lib"):
+        helper_path = helper_dir / "hook_secret_patterns.py"
+        searched.append(str(helper_path))
+        if not helper_path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("_claude_token_hook_secret_patterns", helper_path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise ImportError("hook_secret_patterns.py not found in " + ", ".join(searched))
+
+
+_hook_secret_patterns = _load_hook_secret_patterns()
+CONTROL_CHAR_RE = _hook_secret_patterns.CONTROL_CHAR_RE
+hook_label_has_sensitive_evidence = _hook_secret_patterns.hook_label_has_sensitive_evidence
 
 DEFAULT_MAX_BYTES = 48_000
 DEFAULT_MAX_LINE_RANGE = 400

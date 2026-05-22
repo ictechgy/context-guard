@@ -130,6 +130,60 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertEqual(stat.S_IMODE(plugin.stat().st_mode) & 0o111, 0, f"{plugin} should not be executable")
 
+    def test_hook_secret_helper_imports_are_file_bound_and_fail_closed_against_shadows(self):
+        cases = [
+            (KIT_DIR / "aux_ai_delegate.py", ["--help"], ""),
+            (PLUGIN_BIN / "claude-token-delegate", ["--help"], ""),
+            (KIT_DIR / "read_symbol.py", ["--help"], ""),
+            (PLUGIN_BIN / "claude-read-symbol", ["--help"], ""),
+            (KIT_DIR / "guard_large_read.py", [], "{}"),
+            (PLUGIN_BIN / "claude-token-guard-read", [], "{}"),
+            (KIT_DIR / "failed_attempt_nudge.py", [], "{}"),
+            (PLUGIN_BIN / "claude-token-failed-nudge", [], "{}"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shadow_dir = root / "shadow"
+            shadow_dir.mkdir()
+            (shadow_dir / "hook_secret_patterns.py").write_text(
+                "raise RuntimeError('shadow helper imported')\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(shadow_dir)
+            env["CLAUDE_TOKEN_READ_GUARD"] = "0"
+
+            for index, (script, args, stdin) in enumerate(cases):
+                with self.subTest(script=script, mode="installed"):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), *args],
+                        input=stdin,
+                        text=True,
+                        capture_output=True,
+                        cwd=shadow_dir,
+                        env=env,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertNotIn("shadow helper imported", proc.stdout + proc.stderr)
+
+                isolated_dir = root / f"isolated-{index}"
+                isolated_dir.mkdir()
+                isolated_script = isolated_dir / script.name
+                shutil.copy2(script, isolated_script)
+                with self.subTest(script=script, mode="isolated-copy"):
+                    proc = subprocess.run(
+                        [sys.executable, str(isolated_script), *args],
+                        input=stdin,
+                        text=True,
+                        capture_output=True,
+                        cwd=shadow_dir,
+                        env=env,
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertNotEqual(proc.returncode, 0, combined)
+                    self.assertIn("hook_secret_patterns.py not found", combined)
+                    self.assertNotIn("shadow helper imported", combined)
+
     def test_prepublish_check_package_invariants(self):
         kit_cache = KIT_DIR / "__pycache__"
         plugin_bin_cache = PLUGIN_BIN / "__pycache__"
