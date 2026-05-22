@@ -18,7 +18,7 @@ prepublish check: OK
 release smoke: OK
 ```
 
-`prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. `release_smoke.py` executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
+`prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. It must also keep failure diagnostics safe to copy into issues: secret-shaped package artifact names, credential-like path labels, URL userinfo, control-character labels, and maintainer-local override paths should be redacted or summarized rather than printed raw. `release_smoke.py` executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
 
 ## PR release workflow
 
@@ -29,11 +29,32 @@ release smoke: OK
 5. Commit using the Lore commit protocol.
 6. Push a branch and open a PR.
 7. Wait for GitHub Actions to pass on all supported Python/platform lanes. The Ubuntu Python matrix keeps the historical `test-and-prepublish (3.11)` / `test-and-prepublish (3.12)` check names; the macOS release lane is `test-and-prepublish (macos-latest, 3.12)`.
-8. Run quad review against the PR/diff.
-9. If any blocker is reported, commit a fix, push it, and re-run CI plus quad review.
-10. Merge only after CI is green and quad review has no blocker findings.
+8. Run quad review against the PR/diff and save a concise evidence comment on the PR. The comment should list the target hash or commit, which tracks completed, which tracks were unavailable, and whether any blocker findings remain.
+9. If any blocker is reported, commit a fix, push it, and re-run CI plus quad review. Do not merge on stale review output from an earlier commit.
+10. Merge only after CI is green and quad review has no blocker findings on the latest head.
 
 Claude review track may be unavailable on a machine that has not logged in to the local Claude CLI. Record that as unavailable; do not treat it as approval.
+
+## Evidence checklist
+
+Before merge or publish, capture enough evidence that another maintainer can reproduce the release decision:
+
+- Local commands run and their success sentinels:
+  - `python3 scripts/prepublish_check.py`
+  - `python3 scripts/release_smoke.py`
+- GitHub Actions check names and final status:
+  - `test-and-prepublish (3.11)`
+  - `test-and-prepublish (3.12)`
+  - `test-and-prepublish (macos-latest, 3.12)`
+- Quad-review summary:
+  - PR number or diff range
+  - latest commit hash reviewed
+  - redacted target hash when available
+  - per-track verdicts and unavailable tracks
+  - blocker fix/re-review loop outcome
+- Diagnostic hygiene confirmation for release-sensitive changes:
+  - no raw tokens, URL userinfo, private local paths, or secret-shaped filenames in new failure output
+  - safe package-relative labels remain useful for ordinary non-sensitive artifacts
 
 ## Version and manifest checks
 
@@ -62,8 +83,8 @@ The setup command must be read-only in `--plan` mode. The diet scanner must not 
 If a release gate fails after a publish candidate has been prepared:
 
 1. Stop the release.
-2. Keep the failing artifact or PR branch for investigation.
-3. File or commit the fix as a new focused PR.
-4. Re-run this runbook from the beginning.
+2. Keep the failing artifact or PR branch for investigation, but do not paste raw logs until credential-like strings and private paths have been removed.
+3. Revert or supersede the candidate with a focused fix PR. For an already-pushed tag or marketplace artifact, pin the bad version in the incident note and publish a corrected version rather than mutating history.
+4. Re-run this runbook from the beginning, including CI and quad-review evidence on the new head.
 
 Do not publish by bypassing `prepublish_check.py`, `release_smoke.py`, CI, or blocker-free quad review.
