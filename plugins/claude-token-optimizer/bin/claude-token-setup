@@ -102,6 +102,10 @@ class SetupResult:
         }
 
 
+class AtomicWriteDurabilityError(OSError):
+    """Raised after rename when the new file exists but directory durability is uncertain."""
+
+
 def find_project_root(start: Path | None = None) -> Path:
     current = (start or Path.cwd()).expanduser().resolve()
     if current.is_file():
@@ -524,7 +528,16 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             fd = -1
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.fsync(parent_fd)
         os.rename(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise AtomicWriteDurabilityError(
+                f"write committed but parent directory durability is uncertain: {path}"
+            ) from exc
     finally:
         if fd != -1:
             os.close(fd)

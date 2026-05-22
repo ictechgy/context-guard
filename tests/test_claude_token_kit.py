@@ -1761,6 +1761,112 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 os.umask(old_umask)
             self.assertEqual(observed_umask, 0o700)
 
+    def test_setup_wizard_atomic_write_fsyncs_file_and_parent_directory(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_fsync_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    real_fsync = setup.os.fsync
+                    fsync_kinds: list[str] = []
+
+                    def recording_fsync(fd: int) -> None:
+                        mode = setup.os.fstat(fd).st_mode
+                        fsync_kinds.append("dir" if stat.S_ISDIR(mode) else "file")
+                        real_fsync(fd)
+
+                    setup.os.fsync = recording_fsync
+                    try:
+                        setup.atomic_write(target, "{}\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
+                    self.assertEqual(fsync_kinds, ["file", "dir", "dir"])
+
+    def test_setup_wizard_atomic_write_cleans_temp_after_file_fsync_failure(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_fsync_fail_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    real_fsync = setup.os.fsync
+
+                    def failing_file_fsync(fd: int) -> None:
+                        mode = setup.os.fstat(fd).st_mode
+                        if not stat.S_ISDIR(mode):
+                            raise OSError(errno.EIO, "simulated file fsync failure")
+                        real_fsync(fd)
+
+                    setup.os.fsync = failing_file_fsync
+                    try:
+                        with self.assertRaises(OSError):
+                            setup.atomic_write(target, "{}\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertFalse(target.exists())
+                    self.assertEqual(list((Path(tmp) / "private").glob(".*.tmp")), [])
+
+    def test_setup_wizard_atomic_write_keeps_old_target_when_pre_rename_dir_fsync_fails(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_dir_fsync_pre_fail_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("old\n", encoding="utf-8")
+                    real_fsync = setup.os.fsync
+
+                    def failing_directory_fsync(fd: int) -> None:
+                        mode = setup.os.fstat(fd).st_mode
+                        if stat.S_ISDIR(mode):
+                            raise OSError(errno.EINVAL, "simulated unsupported directory fsync")
+                        real_fsync(fd)
+
+                    setup.os.fsync = failing_directory_fsync
+                    try:
+                        with self.assertRaises(OSError):
+                            setup.atomic_write(target, "new\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
+                    self.assertEqual(list(target.parent.glob(".*.tmp")), [])
+
+    def test_setup_wizard_atomic_write_reports_committed_uncertain_after_post_rename_dir_fsync_failure(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_dir_fsync_post_fail_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("old\n", encoding="utf-8")
+                    real_fsync = setup.os.fsync
+                    directory_fsyncs = 0
+
+                    def failing_second_directory_fsync(fd: int) -> None:
+                        nonlocal directory_fsyncs
+                        mode = setup.os.fstat(fd).st_mode
+                        if stat.S_ISDIR(mode):
+                            directory_fsyncs += 1
+                            if directory_fsyncs == 2:
+                                raise OSError(errno.EIO, "simulated post-rename directory fsync failure")
+                        real_fsync(fd)
+
+                    setup.os.fsync = failing_second_directory_fsync
+                    try:
+                        with self.assertRaises(setup.AtomicWriteDurabilityError) as raised:
+                            setup.atomic_write(target, "new\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertIn("write committed", str(raised.exception))
+                    self.assertIn("durability is uncertain", str(raised.exception))
+                    self.assertEqual(directory_fsyncs, 2)
+                    self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+                    self.assertEqual(list(target.parent.glob(".*.tmp")), [])
+
     def test_setup_wizard_auto_delegate_requires_and_records_aux_opt_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
