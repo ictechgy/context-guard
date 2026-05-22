@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import hashlib
 import importlib.util
 import json
@@ -169,27 +170,24 @@ def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
 
 def _lstat_at_no_follow(dir_fd: int, component: str, path: Path) -> os.stat_result:
     if os.stat not in getattr(os, "supports_dir_fd", set()):
-        raise OSError(f"platform does not support directory-relative no-follow stat: {path}")
+        raise OSError(errno.ENOSYS, "platform does not support directory-relative no-follow stat", str(path))
     if os.stat not in getattr(os, "supports_follow_symlinks", set()):
-        raise OSError(f"platform does not support no-follow stat: {path}")
+        raise OSError(errno.ENOSYS, "platform does not support no-follow stat", str(path))
     return os.stat(component, dir_fd=dir_fd, follow_symlinks=False)
 
 
 def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
     component_stat = _lstat_at_no_follow(dir_fd, component, path)
     if stat.S_ISLNK(component_stat.st_mode):
-        raise OSError(f"symlink path component: {path}")
+        raise OSError(errno.ELOOP, "symlink path component", str(path))
     if not stat.S_ISDIR(component_stat.st_mode):
-        raise OSError(f"not a directory: {path}")
+        raise OSError(errno.ENOTDIR, "not a directory", str(path))
     flags = _base_open_flags() | _directory_flag() | _no_follow_flag()
-    try:
-        fd = os.open(component, flags, dir_fd=dir_fd)
-    except OSError as exc:
-        raise OSError(f"path component changed while opening: {path}") from exc
+    fd = os.open(component, flags, dir_fd=dir_fd)
     try:
         opened = os.fstat(fd)
         if not stat.S_ISDIR(opened.st_mode) or not os.path.samestat(component_stat, opened):
-            raise OSError(f"path component changed while opening: {path}")
+            raise OSError(errno.ELOOP, "path component changed while opening", str(path))
         return fd
     except Exception:
         os.close(fd)
@@ -218,14 +216,14 @@ def _open_regular_no_symlink(path: Path) -> int:
 
         before = _lstat_at_no_follow(dir_fd, components[-1], path)
         if stat.S_ISLNK(before.st_mode):
-            raise OSError(f"symlink path component: {path}")
+            raise OSError(errno.ELOOP, "symlink path component", str(path))
         if not stat.S_ISREG(before.st_mode):
-            raise OSError(f"not a regular file: {path}")
+            raise OSError(errno.EINVAL, "not a regular file", str(path))
         fd = os.open(components[-1], _base_open_flags() | nofollow, dir_fd=dir_fd)
         try:
             opened = os.fstat(fd)
             if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
-                raise OSError(f"path changed while opening: {path}")
+                raise OSError(errno.ELOOP, "path changed while opening", str(path))
             return fd
         except Exception:
             os.close(fd)

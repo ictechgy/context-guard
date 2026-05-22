@@ -3929,7 +3929,7 @@ for malformed in malformed_values:
 
     def test_read_symbol_bounded_reader_rejects_directory_replacement_races(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             for index, script in enumerate(READ_SYMBOL_SCRIPTS):
                 with self.subTest(script=script):
                     real_dir = root / f"real-{index}"
@@ -3940,6 +3940,7 @@ for malformed in malformed_values:
                     read_symbol = load_python_script_module(script, f"_read_symbol_dir_race_{index}")
                     original_open = read_symbol.os.open
                     original_supports_dir_fd = read_symbol.os.supports_dir_fd
+                    original_supports_follow_symlinks = read_symbol.os.supports_follow_symlinks
                     raced = False
 
                     def racing_open(path_arg, flags, *args, **kwargs):
@@ -3951,13 +3952,55 @@ for malformed in malformed_values:
                             (real_dir / "target.py").write_text("def target():\n    return 2\n", encoding="utf-8")
                         return original_open(path_arg, flags, *args, **kwargs)
 
+                    patched_supports_dir_fd = set(original_supports_dir_fd) | {read_symbol.os.stat, racing_open}
+                    patched_supports_follow_symlinks = set(original_supports_follow_symlinks) | {read_symbol.os.stat}
                     with mock.patch.object(read_symbol.os, "open", racing_open), mock.patch.object(
-                        read_symbol.os, "supports_dir_fd", set(original_supports_dir_fd) | {racing_open}
+                        read_symbol.os, "supports_dir_fd", patched_supports_dir_fd
+                    ), mock.patch.object(
+                        read_symbol.os, "supports_follow_symlinks", patched_supports_follow_symlinks
                     ):
                         with self.assertRaises(OSError):
                             read_symbol.read_text_bounded(real_dir / "target.py")
+                    self.assertTrue(raced, "directory replacement race fixture must reach the target component")
                     shutil.rmtree(real_dir, ignore_errors=True)
                     shutil.rmtree(old_dir, ignore_errors=True)
+
+    def test_read_symbol_bounded_reader_rejects_file_replacement_races(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            for index, script in enumerate(READ_SYMBOL_SCRIPTS):
+                with self.subTest(script=script):
+                    real_dir = root / f"real-{index}"
+                    real_dir.mkdir()
+                    target = real_dir / "target.py"
+                    old_target = real_dir / "target-old.py"
+                    target.write_text("def target():\n    return 1\n", encoding="utf-8")
+
+                    read_symbol = load_python_script_module(script, f"_read_symbol_file_race_{index}")
+                    original_open = read_symbol.os.open
+                    original_supports_dir_fd = read_symbol.os.supports_dir_fd
+                    original_supports_follow_symlinks = read_symbol.os.supports_follow_symlinks
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == target.name and "dir_fd" in kwargs:
+                            raced = True
+                            target.rename(old_target)
+                            target.write_text("def target():\n    return 2\n", encoding="utf-8")
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    patched_supports_dir_fd = set(original_supports_dir_fd) | {read_symbol.os.stat, racing_open}
+                    patched_supports_follow_symlinks = set(original_supports_follow_symlinks) | {read_symbol.os.stat}
+                    with mock.patch.object(read_symbol.os, "open", racing_open), mock.patch.object(
+                        read_symbol.os, "supports_dir_fd", patched_supports_dir_fd
+                    ), mock.patch.object(
+                        read_symbol.os, "supports_follow_symlinks", patched_supports_follow_symlinks
+                    ):
+                        with self.assertRaises(OSError):
+                            read_symbol.read_text_bounded(target)
+                    self.assertTrue(raced, "file replacement race fixture must reach the final component")
+                    shutil.rmtree(real_dir, ignore_errors=True)
 
     def test_read_symbol_only_allows_known_absolute_alias_components(self):
         read_symbol = load_module_from_path(KIT_DIR / "read_symbol.py", "read_symbol_absolute_alias")
