@@ -3481,6 +3481,42 @@ for malformed in malformed_values:
                         if target.exists():
                             target.unlink()
 
+    def test_large_read_guard_dir_component_replacement_race_denies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    real_dir = root / f"real-{index}"
+                    old_dir = root / f"old-{index}"
+                    real_dir.mkdir()
+                    (real_dir / "big.py").write_text("x\n" * 100000, encoding="utf-8")
+
+                    guard = load_python_script_module(script, f"_read_guard_dir_race_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    original_open = guard.os.open
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == real_dir.name and "dir_fd" in kwargs:
+                            raced = True
+                            real_dir.rename(old_dir)
+                            real_dir.mkdir()
+                            (real_dir / "big.py").write_text("y\n" * 100000, encoding="utf-8")
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    guard.os.open = racing_open
+                    guard.os.supports_dir_fd = set(original_supports_dir_fd) | {racing_open}
+                    try:
+                        with self.assertRaises(OSError) as race_error:
+                            guard.regular_file_size_no_symlink(real_dir / "big.py")
+                        self.assertEqual(race_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.open = original_open
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+                        shutil.rmtree(real_dir, ignore_errors=True)
+                        shutil.rmtree(old_dir, ignore_errors=True)
+
     def test_read_symbol_extracts_python_and_typescript_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

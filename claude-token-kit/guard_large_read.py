@@ -220,9 +220,18 @@ def open_directory_at(parent_fd: int, component: str, full_path: Path) -> int:
             raise OSError(errno.ELOOP, "path component must not be a symlink", str(full_path))
         if not stat.S_ISDIR(component_stat.st_mode):
             raise OSError(errno.ENOTDIR, "path component is not a directory", str(full_path))
-    fd = os.open(component, base_open_flags() | directory_flag() | no_follow_flag(), dir_fd=parent_fd)
     try:
-        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        fd = os.open(component, base_open_flags() | directory_flag() | no_follow_flag(), dir_fd=parent_fd)
+    except OSError as exc:
+        if component_stat is not None and exc.errno in {errno.ELOOP, errno.ENOTDIR, errno.ENOENT, errno.EINVAL}:
+            raise OSError(errno.ELOOP, "path component changed while opening", str(full_path)) from exc
+        raise
+    try:
+        opened = os.fstat(fd)
+        if component_stat is not None:
+            if not stat.S_ISDIR(opened.st_mode) or not os.path.samestat(component_stat, opened):
+                raise OSError(errno.ELOOP, "path component changed while opening", str(full_path))
+        elif not stat.S_ISDIR(opened.st_mode):
             raise OSError(errno.ENOTDIR, "path component is not a directory", str(full_path))
         return fd
     except Exception:
