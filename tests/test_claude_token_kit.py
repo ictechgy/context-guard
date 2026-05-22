@@ -4466,6 +4466,35 @@ for malformed in malformed_values:
                     )
                     self.assertNotIn("cache ", proc.stdout)
 
+    def test_statusline_rejects_fifo_transcript_path_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO creation unavailable")
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fifo = root / "session.jsonl"
+                    try:
+                        os.mkfifo(fifo)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"FIFO unavailable: {exc}")
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 42},
+                        "cost": {"total_cost_usd": 0.123},
+                        "workspace": {"current_dir": str(root)},
+                        "transcript_path": str(fifo),
+                    }
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        timeout=2,
+                    )
+                    self.assertNotIn("cache ", proc.stdout)
+
     def test_statusline_omits_cache_label_when_transcript_unavailable(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
             with self.subTest(script=script):
