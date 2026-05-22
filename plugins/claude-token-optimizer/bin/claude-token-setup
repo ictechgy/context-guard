@@ -524,7 +524,10 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             fd = -1
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.rename(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
     finally:
         if fd != -1:
             os.close(fd)

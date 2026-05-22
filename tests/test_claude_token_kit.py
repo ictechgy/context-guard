@@ -1761,6 +1761,53 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 os.umask(old_umask)
             self.assertEqual(observed_umask, 0o700)
 
+    def test_setup_wizard_atomic_write_fsyncs_file_and_parent_directory(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_fsync_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    real_fsync = setup.os.fsync
+                    fsync_kinds: list[str] = []
+
+                    def recording_fsync(fd: int) -> None:
+                        mode = setup.os.fstat(fd).st_mode
+                        fsync_kinds.append("dir" if stat.S_ISDIR(mode) else "file")
+                        real_fsync(fd)
+
+                    setup.os.fsync = recording_fsync
+                    try:
+                        setup.atomic_write(target, "{}\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertEqual(target.read_text(encoding="utf-8"), "{}\n")
+                    self.assertEqual(fsync_kinds, ["file", "dir"])
+
+    def test_setup_wizard_atomic_write_cleans_temp_after_file_fsync_failure(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"_setup_atomic_fsync_fail_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / "private" / "settings.json"
+                    real_fsync = setup.os.fsync
+
+                    def failing_file_fsync(fd: int) -> None:
+                        mode = setup.os.fstat(fd).st_mode
+                        if not stat.S_ISDIR(mode):
+                            raise OSError(errno.EIO, "simulated file fsync failure")
+                        real_fsync(fd)
+
+                    setup.os.fsync = failing_file_fsync
+                    try:
+                        with self.assertRaises(OSError):
+                            setup.atomic_write(target, "{}\n", 0o600)
+                    finally:
+                        setup.os.fsync = real_fsync
+
+                    self.assertFalse(target.exists())
+                    self.assertEqual(list((Path(tmp) / "private").glob(".*.tmp")), [])
+
     def test_setup_wizard_auto_delegate_requires_and_records_aux_opt_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
