@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -14,7 +15,17 @@ from typing import Any, Callable, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
 PLUGIN_BIN = ROOT / "plugins" / "claude-token-optimizer" / "bin"
+PACKAGE_REQUIRED_FILES = (".claude-plugin/plugin.json",)
+PACKAGE_REQUIRED_DIRS = ("bin", "lib", "skills")
+PACKAGE_COPY_IGNORE_NAMES = {
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".DS_Store",
+}
 REQUIRED_COMMANDS = (
     "claude-token-setup",
     "claude-token-diet",
@@ -53,6 +64,47 @@ PRESERVED_ENV_KEYS = (
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"release smoke failed: {message}")
+
+
+def validate_plugin_package(plugin_dir: Path) -> Path:
+    raw_root = plugin_dir.expanduser()
+    if raw_root.is_symlink():
+        fail(f"plugin package directory must not be a symlink: {plugin_dir}")
+    try:
+        root = raw_root.resolve(strict=True)
+    except OSError as exc:
+        fail(f"plugin package directory could not be resolved: {exc}")
+    if not root.is_dir():
+        fail(f"plugin package path is not a directory: {plugin_dir}")
+
+    for rel in PACKAGE_REQUIRED_FILES:
+        if not (root / rel).is_file():
+            fail(f"plugin package missing required file: {rel}")
+    for rel in PACKAGE_REQUIRED_DIRS:
+        if not (root / rel).is_dir():
+            fail(f"plugin package missing required directory: {rel}")
+
+    for current, dirs, files in os.walk(root):
+        current_path = Path(current)
+        for name in dirs + files:
+            path = current_path / name
+            if path.is_symlink():
+                fail(f"plugin package must not contain symlink: {path.relative_to(root)}")
+    return root
+
+
+def copy_plugin_package_for_smoke(plugin_dir: Path, destination: Path) -> Path:
+    source = validate_plugin_package(plugin_dir)
+
+    def ignore(_directory: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if name in PACKAGE_COPY_IGNORE_NAMES or name.endswith((".pyc", ".pyo"))
+        }
+
+    shutil.copytree(source, destination, symlinks=True, ignore=ignore)
+    return validate_plugin_package(destination)
 
 
 def load_json(stdout: str, command: str) -> dict[str, Any]:
@@ -262,13 +314,24 @@ def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mod
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--plugin-bin", type=Path, default=PLUGIN_BIN)
+    parser.add_argument("--plugin-dir", type=Path, default=PLUGIN_DIR)
+    parser.add_argument(
+        "--plugin-bin",
+        type=Path,
+        default=None,
+        help="test an already-staged plugin bin directory without package copy validation",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     args = parser.parse_args()
 
     if args.timeout <= 0:
         fail("--timeout must be positive")
-    run_smoke(args.plugin_bin, args.timeout)
+    if args.plugin_bin is not None:
+        run_smoke(args.plugin_bin, args.timeout)
+    else:
+        with tempfile.TemporaryDirectory(prefix="claude-token-package-smoke-") as td:
+            staged = copy_plugin_package_for_smoke(args.plugin_dir, Path(td) / "claude-token-optimizer")
+            run_smoke(staged / "bin", args.timeout)
     print("release smoke: OK")
     return 0
 

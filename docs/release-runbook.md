@@ -18,7 +18,7 @@ prepublish check: OK
 release smoke: OK
 ```
 
-`prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. It must also keep failure diagnostics safe to copy into issues: secret-shaped package artifact names, credential-like path labels, URL userinfo, control-character labels, and maintainer-local override paths should be redacted or summarized rather than printed raw. `release_smoke.py` executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
+`prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. It must also keep failure diagnostics safe to copy into issues: secret-shaped package artifact names, credential-like path labels, URL userinfo, control-character labels, and maintainer-local override paths should be redacted or summarized rather than printed raw. `release_smoke.py` first stages a clean copy of the plugin package, rejects symlinked package entries, then executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
 
 ## PR release workflow
 
@@ -65,18 +65,18 @@ Before publishing a versioned artifact, verify:
 - `scripts/prepublish_check.py` passes without path overrides.
 - No generated caches, logs, or symlinks are inside `plugins/claude-token-optimizer/`.
 
-## Manual smoke checklist
+## Clean-install smoke coverage
 
-After a release candidate is installed in a clean project, verify:
+`release_smoke.py` automates the read-only subset of the clean-install smoke by staging the plugin into a temporary package copy and running:
 
 ```bash
 claude-token-setup --plan --json
 claude-token-diet scan . --json
-claude-token-audit ~/.claude/projects --json
+claude-token-audit <temporary-project> --json
 claude-token-delegate status
 ```
 
-The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. Delegation must remain opt-in and project-local.
+The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. Delegation must remain opt-in and project-local. If you perform an additional manual smoke after installing a marketplace artifact, run the same commands from a clean project and compare the success shape against the automated gate rather than bypassing it.
 
 ## Rollback notes
 

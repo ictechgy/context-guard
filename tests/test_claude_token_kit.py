@@ -237,6 +237,67 @@ class ClaudeTokenKitTests(unittest.TestCase):
         )
         self.assertIn("release smoke: OK", proc.stdout)
 
+    def test_release_smoke_stages_clean_plugin_package_copy(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_package_stage")
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = smoke.copy_plugin_package_for_smoke(PLUGIN_DIR, Path(tmp) / "installed-plugin")
+            self.assertEqual(staged, (Path(tmp) / "installed-plugin").resolve())
+            self.assertTrue((staged / ".claude-plugin" / "plugin.json").is_file())
+            self.assertTrue((staged / "bin" / "claude-token-setup").is_file())
+            self.assertTrue((staged / "lib" / "hook_secret_patterns.py").is_file())
+            self.assertTrue((staged / "skills").is_dir())
+
+    def test_release_smoke_rejects_symlinked_plugin_package_entries(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_package_symlink")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plugin = root / "plugin"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            (plugin / "bin").mkdir()
+            (plugin / "lib").mkdir()
+            (plugin / "skills").mkdir()
+            (plugin / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+            target = root / "outside.txt"
+            target.write_text("outside", encoding="utf-8")
+            link = plugin / "lib" / "outside-link"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unsupported on this filesystem")
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.copy_plugin_package_for_smoke(plugin, root / "staged")
+            self.assertIn("plugin package must not contain symlink", str(ctx.exception))
+
+    def test_release_smoke_rejects_symlinked_plugin_package_root(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_package_root_symlink")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            link = root / "plugin-link"
+            try:
+                link.symlink_to(PLUGIN_DIR, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unsupported on this filesystem")
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.copy_plugin_package_for_smoke(link, root / "staged")
+            self.assertIn("plugin package directory must not be a symlink", str(ctx.exception))
+
+    def test_release_smoke_rejects_missing_plugin_package_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin = Path(tmp) / "plugin"
+            plugin.mkdir()
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "release_smoke.py"),
+                    "--plugin-dir",
+                    str(plugin),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("plugin package missing required file", proc.stdout + proc.stderr)
+
     def test_release_smoke_reports_missing_packaged_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             proc = subprocess.run(
