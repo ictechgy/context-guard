@@ -521,19 +521,22 @@ def executable_argv0(command: str) -> str:
     return str(path.resolve())
 
 
-def _signal_process_group(proc: subprocess.Popen[bytes], sig: int) -> None:
-    try:
-        os.killpg(proc.pid, sig)
-    except (AttributeError, ProcessLookupError):
-        pass
-    except OSError:
+def _signal_process_group(proc: subprocess.Popen[bytes], sig: int, pgid: int | None) -> None:
+    if pgid is not None:
         try:
-            if sig == signal.SIGKILL:
-                proc.kill()
-            else:
-                proc.terminate()
+            os.killpg(pgid, sig)
+            return
+        except (AttributeError, ProcessLookupError):
+            pass
         except OSError:
             pass
+    try:
+        if sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
 
 
 def run_bounded_command(
@@ -550,6 +553,10 @@ def run_bounded_command(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = proc.pid
     selector = selectors.DefaultSelector()
     buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
     streams = {"stdout": proc.stdout, "stderr": proc.stderr}
@@ -565,18 +572,20 @@ def run_bounded_command(
     timed_out = False
     output_truncated = False
     terminated_at: float | None = None
+    sent_kill = False
     deadline = time.monotonic() + timeout_seconds
     try:
         while selector.get_map():
             now = time.monotonic()
-            if proc.poll() is None and now >= deadline:
+            if now >= deadline:
                 timed_out = True
                 if terminated_at is None:
-                    _signal_process_group(proc, signal.SIGTERM)
+                    _signal_process_group(proc, signal.SIGTERM, pgid)
                     terminated_at = now
-            if terminated_at is not None and proc.poll() is None:
+            if terminated_at is not None and not sent_kill:
                 if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
-                    _signal_process_group(proc, signal.SIGKILL)
+                    _signal_process_group(proc, signal.SIGKILL, pgid)
+                    sent_kill = True
             events = selector.select(timeout=0.05)
             for key, _ in events:
                 name = key.data
@@ -598,8 +607,8 @@ def run_bounded_command(
                     buffer.extend(chunk[:remaining])
                 if len(chunk) > remaining:
                     output_truncated = True
-                    if terminated_at is None and proc.poll() is None:
-                        _signal_process_group(proc, signal.SIGTERM)
+                    if terminated_at is None:
+                        _signal_process_group(proc, signal.SIGTERM, pgid)
                         terminated_at = time.monotonic()
     finally:
         selector.close()
@@ -607,7 +616,7 @@ def run_bounded_command(
     try:
         returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        _signal_process_group(proc, signal.SIGKILL)
+        _signal_process_group(proc, signal.SIGKILL, pgid)
         returncode = proc.wait()
     if timed_out:
         returncode = 124

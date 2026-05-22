@@ -8587,6 +8587,35 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     time.sleep(1.5)
                     self.assertFalse(sentinel.exists())
 
+    def test_benchmark_runner_timeout_kills_pipe_holding_child_after_parent_exit(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_pipe_child_timeout_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "pipe-child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+                    )
+
+                    result = module.run_bounded_command(
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        cwd=root,
+                        timeout_seconds=1,
+                        max_output_bytes=1024,
+                    )
+
+                    self.assertTrue(result.timed_out)
+                    self.assertEqual(result.returncode, 124)
+                    time.sleep(1.5)
+                    self.assertFalse(sentinel.exists())
+
     def test_runner_uses_project_root_for_claude_and_redacts_failure_notes(self):
         for script in BENCH_SCRIPTS:
             with self.subTest(script=script):
