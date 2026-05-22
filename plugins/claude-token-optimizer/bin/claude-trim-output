@@ -13,10 +13,14 @@ import importlib.machinery
 import importlib.util
 import os
 from pathlib import PurePosixPath
+import queue
 import re
+import signal
 import subprocess
 import sys
-from typing import Iterable
+import threading
+import time
+from typing import Iterable, Iterator
 
 MAX_SUMMARY_ITEM_CHARS = 500
 MAX_LINES_LIMIT = 5_000
@@ -24,6 +28,9 @@ MAX_CHARS_LIMIT = 1_000_000
 MAX_LINE_CHARS_LIMIT = 100_000
 MAX_SECTION_LINES_LIMIT = 2_000
 MAX_RUNNER_SUMMARY_ITEMS_LIMIT = 100
+DEFAULT_TIMEOUT_SECONDS = 600
+MAX_TIMEOUT_SECONDS = 86_400
+TIMEOUT_EXIT_CODE = 124
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -42,6 +49,12 @@ def normalize_budgets(args: argparse.Namespace) -> None:
     args.tail_lines = bounded_int(args.tail_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
     args.error_lines = bounded_int(args.error_lines, 120, 0, MAX_SECTION_LINES_LIMIT)
     args.runner_summary_items = bounded_int(args.runner_summary_items, 12, 0, MAX_RUNNER_SUMMARY_ITEMS_LIMIT)
+    args.timeout_seconds = bounded_int(
+        args.timeout_seconds,
+        DEFAULT_TIMEOUT_SECONDS,
+        1,
+        MAX_TIMEOUT_SECONDS,
+    )
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
@@ -303,6 +316,168 @@ class RunnerFailureSummary:
         return out
 
 
+_STREAM_END = object()
+
+
+def process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def terminate_process_tree(
+    proc: subprocess.Popen[str],
+    *,
+    process_group_id: int | None = None,
+    include_exited_group: bool = False,
+) -> None:
+    if os.name != "nt":
+        pgid = process_group_id if process_group_id is not None else proc.pid
+        if proc.poll() is not None and not include_exited_group:
+            return
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=0.05)
+                except subprocess.TimeoutExpired:
+                    pass
+            if not process_group_exists(pgid):
+                return
+            time.sleep(0.05)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        return
+
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        return
+
+
+class TimedCommandStream:
+    def __init__(
+        self,
+        proc: subprocess.Popen[str],
+        stdout: Iterable[str],
+        *,
+        timeout_seconds: int,
+        process_group_id: int | None = None,
+    ) -> None:
+        self.proc = proc
+        self.timeout_seconds = timeout_seconds
+        self.process_group_id = process_group_id
+        self.deadline = time.monotonic() + timeout_seconds
+        self.timed_out = False
+        self.timeout_reported = False
+        self._stream_closed = False
+        self._queue: queue.Queue[str | object] = queue.Queue(maxsize=1024)
+        self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
+        self._thread.start()
+
+    def _read_stdout(self, stdout: Iterable[str]) -> None:
+        try:
+            for line in stdout:
+                self._queue.put(line)
+        finally:
+            self._stream_closed = True
+            self._queue.put(_STREAM_END)
+
+    def timeout_message(self) -> str:
+        return (
+            f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+            "terminated wrapped process\n"
+        )
+
+    def _mark_timed_out(self) -> None:
+        if not self.timed_out:
+            self.timed_out = True
+            terminate_process_tree(
+                self.proc,
+                process_group_id=self.process_group_id,
+                include_exited_group=True,
+            )
+
+    def _timeout_line(self) -> str:
+        self._mark_timed_out()
+        self.timeout_reported = True
+        return self.timeout_message()
+
+    def __iter__(self) -> Iterator[str]:
+        while True:
+            remaining = self.deadline - time.monotonic()
+            wait_time = 0.05 if self.proc.poll() is not None or self.timed_out else min(0.05, max(0.0, remaining))
+            try:
+                item = self._queue.get(timeout=wait_time)
+            except queue.Empty:
+                if remaining <= 0 and not self._stream_closed:
+                    if not self.timeout_reported:
+                        yield self._timeout_line()
+                    break
+                continue
+            if item is _STREAM_END:
+                break
+            if not isinstance(item, str):
+                continue
+            yield item
+            if not self._stream_closed and time.monotonic() >= self.deadline:
+                if not self.timeout_reported:
+                    yield self._timeout_line()
+                break
+
+    def returncode(self) -> int:
+        if self.timed_out:
+            return TIMEOUT_EXIT_CODE
+        remaining = self.deadline - time.monotonic()
+        try:
+            return self.proc.wait(timeout=max(0.0, remaining))
+        except subprocess.TimeoutExpired:
+            self._mark_timed_out()
+            return TIMEOUT_EXIT_CODE
+
+
+def process_group_id_for(proc: subprocess.Popen[str]) -> int | None:
+    if os.name == "nt":
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except ProcessLookupError:
+        # start_new_session=True makes the child the group leader; if it exits
+        # before getpgid(), the group id is still the leader pid while inherited
+        # stdout descendants remain alive.
+        return proc.pid
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-lines", type=int, default=220)
@@ -322,6 +497,15 @@ def main() -> int:
         action="store_true",
         help="show raw absolute paths in output instead of basename#path:<hash>; local debugging only because private paths may be exposed",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "maximum runtime for wrapped commands before terminating the process group "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS}, max: {MAX_TIMEOUT_SECONDS})"
+        ),
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     normalize_budgets(args)
@@ -333,6 +517,9 @@ def main() -> int:
         print("trim_command_output.py: missing command", file=sys.stderr)
         return 2
 
+    popen_kwargs: dict[str, object] = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     try:
         proc = subprocess.Popen(
             command,
@@ -341,6 +528,7 @@ def main() -> int:
             text=True,
             bufsize=1,
             errors="replace",
+            **popen_kwargs,
         )
     except OSError as exc:
         print(f"claude-token-kit: command failed to start: {exc}", file=sys.stderr)
@@ -361,7 +549,13 @@ def main() -> int:
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
         return 1
-    for line in proc.stdout:
+    command_stream = TimedCommandStream(
+        proc,
+        proc.stdout,
+        timeout_seconds=args.timeout_seconds,
+        process_group_id=process_group_id_for(proc),
+    )
+    for line in command_stream:
         total += 1
         raw_chars += len(line)
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
@@ -379,7 +573,26 @@ def main() -> int:
         if total <= args.max_lines:
             all_lines.append(visible_line)
 
-    rc = proc.wait()
+    rc = command_stream.returncode()
+    if command_stream.timed_out and not command_stream.timeout_reported:
+        line = command_stream.timeout_message()
+        command_stream.timeout_reported = True
+        total += 1
+        raw_chars += len(line)
+        visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
+        if redacted:
+            redacted_lines += 1
+        visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
+        any_line_capped = any_line_capped or line_capped
+        visible_chars += len(visible_line)
+        if total <= args.head_lines:
+            head.append(visible_line)
+        tail.append(visible_line)
+        if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
+            error_lines.append(visible_line)
+        runner_summary.feed(line)
+        if total <= args.max_lines:
+            all_lines.append(visible_line)
 
     if total <= args.max_lines and visible_chars <= args.max_chars and not any_line_capped:
         sys.stdout.writelines(all_lines)
