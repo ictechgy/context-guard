@@ -93,6 +93,8 @@ Trim long test/build logs while preserving the exit code of the wrapped command:
 ./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
 ```
 
+Wrapped commands are terminated after 600 seconds by default (`--timeout-seconds` to tune), so a silent or stuck command cannot hang a Claude session indefinitely.
+
 Sanitize search or diff output before sending it to Claude:
 
 ```bash

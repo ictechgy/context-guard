@@ -115,7 +115,7 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 ./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
 ```
 
-감싼 명령의 exit code를 보존하며, pytest/Jest/Vitest/Go/Rust test 실패 요약을 우선 보존합니다. ANSI color code는 제거하고 absolute path는 기본적으로 익명화합니다.
+감싼 명령의 exit code를 보존하며, pytest/Jest/Vitest/Go/Rust test 실패 요약을 우선 보존합니다. 감싼 명령은 기본 600초 후 timeout 처리되며(`--timeout-seconds`로 조정), 가능한 환경에서는 process group까지 종료한 뒤 124를 반환합니다. ANSI color code는 제거하고 absolute path는 기본적으로 익명화합니다.
 
 ### grep/diff sanitizer
 
@@ -123,6 +123,8 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 ./plugins/claude-token-optimizer/bin/claude-sanitize-output -- rg -n "TOKEN|SECRET" .
 ./plugins/claude-token-optimizer/bin/claude-sanitize-output -- git diff
 ```
+
+`claude-sanitize-output`도 wrapper mode에서 동일한 기본 600초 timeout을 적용해 grep/diff/log 명령이 멈춰도 Claude 세션이 무기한 대기하지 않게 합니다.
 
 credential pattern, private key block, auth header, credential URL을 redact하고, 긴 결과는 head / grep·diff·security anchor / tail로 줄입니다. Wrapper mode는 감싼 명령의 exit code를 그대로 보존합니다. Stdin pipe mode는 임시 정리에 쓸 수 있지만 producer exit code는 shell `pipefail` 없이는 알 수 없습니다.
 

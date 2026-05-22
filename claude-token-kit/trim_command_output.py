@@ -13,9 +13,13 @@ import importlib.machinery
 import importlib.util
 import os
 from pathlib import PurePosixPath
+import queue
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 from typing import Iterable
 
 MAX_SUMMARY_ITEM_CHARS = 500
@@ -24,6 +28,9 @@ MAX_CHARS_LIMIT = 1_000_000
 MAX_LINE_CHARS_LIMIT = 100_000
 MAX_SECTION_LINES_LIMIT = 2_000
 MAX_RUNNER_SUMMARY_ITEMS_LIMIT = 100
+DEFAULT_TIMEOUT_SECONDS = 600
+MAX_TIMEOUT_SECONDS = 86_400
+TIMEOUT_EXIT_CODE = 124
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -42,6 +49,12 @@ def normalize_budgets(args: argparse.Namespace) -> None:
     args.tail_lines = bounded_int(args.tail_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
     args.error_lines = bounded_int(args.error_lines, 120, 0, MAX_SECTION_LINES_LIMIT)
     args.runner_summary_items = bounded_int(args.runner_summary_items, 12, 0, MAX_RUNNER_SUMMARY_ITEMS_LIMIT)
+    args.timeout_seconds = bounded_int(
+        args.timeout_seconds,
+        DEFAULT_TIMEOUT_SECONDS,
+        1,
+        MAX_TIMEOUT_SECONDS,
+    )
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
@@ -303,6 +316,106 @@ class RunnerFailureSummary:
         return out
 
 
+_STREAM_END = object()
+
+
+def terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.terminate()
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name != "nt":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.kill()
+
+
+class TimedCommandStream:
+    def __init__(
+        self,
+        proc: subprocess.Popen[str],
+        stdout: Iterable[str],
+        *,
+        timeout_seconds: int,
+    ) -> None:
+        self.proc = proc
+        self.timeout_seconds = timeout_seconds
+        self.timed_out = False
+        self._queue: queue.Queue[str | object] = queue.Queue(maxsize=1024)
+        self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
+        self._thread.start()
+
+    def _read_stdout(self, stdout: Iterable[str]) -> None:
+        try:
+            for line in stdout:
+                self._queue.put(line)
+        finally:
+            self._queue.put(_STREAM_END)
+
+    def __iter__(self) -> Iterable[str]:
+        deadline = time.monotonic() + self.timeout_seconds
+        timeout_reported = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if self.proc.poll() is not None or self.timed_out:
+                wait_time = 0.05
+            else:
+                wait_time = min(0.05, max(0.0, remaining))
+            try:
+                item = self._queue.get(timeout=wait_time)
+            except queue.Empty:
+                if remaining <= 0 and self.proc.poll() is None:
+                    self.timed_out = True
+                    terminate_process_tree(self.proc)
+                    if not timeout_reported:
+                        timeout_reported = True
+                        yield (
+                            f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+                            "terminated wrapped process\n"
+                        )
+                continue
+            if item is _STREAM_END:
+                break
+            if not isinstance(item, str):
+                continue
+            yield item
+            if not self.timed_out and time.monotonic() >= deadline and self.proc.poll() is None:
+                self.timed_out = True
+                terminate_process_tree(self.proc)
+                if not timeout_reported:
+                    timeout_reported = True
+                    yield (
+                        f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+                        "terminated wrapped process\n"
+                    )
+
+    def returncode(self) -> int:
+        if self.timed_out:
+            try:
+                self.proc.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(self.proc)
+            return TIMEOUT_EXIT_CODE
+        return self.proc.wait()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-lines", type=int, default=220)
@@ -322,6 +435,15 @@ def main() -> int:
         action="store_true",
         help="show raw absolute paths in output instead of basename#path:<hash>; local debugging only because private paths may be exposed",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "maximum runtime for wrapped commands before terminating the process group "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS}, max: {MAX_TIMEOUT_SECONDS})"
+        ),
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     normalize_budgets(args)
@@ -333,6 +455,9 @@ def main() -> int:
         print("trim_command_output.py: missing command", file=sys.stderr)
         return 2
 
+    popen_kwargs: dict[str, object] = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     try:
         proc = subprocess.Popen(
             command,
@@ -341,6 +466,7 @@ def main() -> int:
             text=True,
             bufsize=1,
             errors="replace",
+            **popen_kwargs,
         )
     except OSError as exc:
         print(f"claude-token-kit: command failed to start: {exc}", file=sys.stderr)
@@ -361,7 +487,8 @@ def main() -> int:
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
         return 1
-    for line in proc.stdout:
+    command_stream = TimedCommandStream(proc, proc.stdout, timeout_seconds=args.timeout_seconds)
+    for line in command_stream:
         total += 1
         raw_chars += len(line)
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
@@ -379,7 +506,7 @@ def main() -> int:
         if total <= args.max_lines:
             all_lines.append(visible_line)
 
-    rc = proc.wait()
+    rc = command_stream.returncode()
 
     if total <= args.max_lines and visible_chars <= args.max_chars and not any_line_capped:
         sys.stdout.writelines(all_lines)

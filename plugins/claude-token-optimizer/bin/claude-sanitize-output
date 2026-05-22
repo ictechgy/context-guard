@@ -10,10 +10,15 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import os
 from pathlib import PurePosixPath
+import queue
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 from typing import Iterable, TextIO
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -97,6 +102,9 @@ MAX_LINES_LIMIT = 5_000
 MAX_CHARS_LIMIT = 1_000_000
 MAX_LINE_CHARS_LIMIT = 100_000
 MAX_SECTION_LINES_LIMIT = 2_000
+DEFAULT_TIMEOUT_SECONDS = 600
+MAX_TIMEOUT_SECONDS = 86_400
+TIMEOUT_EXIT_CODE = 124
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -114,6 +122,12 @@ def normalize_budgets(args: argparse.Namespace) -> None:
     args.head_lines = bounded_int(args.head_lines, 50, 0, MAX_SECTION_LINES_LIMIT)
     args.tail_lines = bounded_int(args.tail_lines, 90, 0, MAX_SECTION_LINES_LIMIT)
     args.anchor_lines = bounded_int(args.anchor_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
+    args.timeout_seconds = bounded_int(
+        args.timeout_seconds,
+        DEFAULT_TIMEOUT_SECONDS,
+        1,
+        MAX_TIMEOUT_SECONDS,
+    )
 
 
 def strip_ansi(text: str) -> str:
@@ -427,7 +441,113 @@ def sanitize_stream(stream: Iterable[str], args: argparse.Namespace) -> tuple[st
     return bounded.render(sanitizer.redactions), sanitizer.redactions, bounded.line_count
 
 
-def run_command(command: list[str]) -> tuple[Iterable[str], subprocess.Popen[str] | None, int | None]:
+_STREAM_END = object()
+
+
+def terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.terminate()
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name != "nt":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.kill()
+
+
+class TimedCommandStream:
+    def __init__(
+        self,
+        proc: subprocess.Popen[str],
+        stdout: TextIO,
+        *,
+        timeout_seconds: int,
+    ) -> None:
+        self.proc = proc
+        self.timeout_seconds = timeout_seconds
+        self.timed_out = False
+        self._queue: queue.Queue[str | object] = queue.Queue(maxsize=1024)
+        self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
+        self._thread.start()
+
+    def _read_stdout(self, stdout: TextIO) -> None:
+        try:
+            for line in stdout:
+                self._queue.put(line)
+        finally:
+            self._queue.put(_STREAM_END)
+
+    def __iter__(self) -> Iterable[str]:
+        deadline = time.monotonic() + self.timeout_seconds
+        timeout_reported = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if self.proc.poll() is not None or self.timed_out:
+                wait_time = 0.05
+            else:
+                wait_time = min(0.05, max(0.0, remaining))
+            try:
+                item = self._queue.get(timeout=wait_time)
+            except queue.Empty:
+                if remaining <= 0 and self.proc.poll() is None:
+                    self.timed_out = True
+                    terminate_process_tree(self.proc)
+                    if not timeout_reported:
+                        timeout_reported = True
+                        yield (
+                            f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+                            "terminated wrapped process\n"
+                        )
+                continue
+            if item is _STREAM_END:
+                break
+            if not isinstance(item, str):
+                continue
+            yield item
+            if not self.timed_out and time.monotonic() >= deadline and self.proc.poll() is None:
+                self.timed_out = True
+                terminate_process_tree(self.proc)
+                if not timeout_reported:
+                    timeout_reported = True
+                    yield (
+                        f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+                        "terminated wrapped process\n"
+                    )
+
+    def returncode(self) -> int:
+        if self.timed_out:
+            try:
+                self.proc.wait(timeout=0)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(self.proc)
+            return TIMEOUT_EXIT_CODE
+        return self.proc.wait()
+
+
+def run_command(
+    command: list[str],
+    timeout_seconds: int,
+) -> tuple[Iterable[str], subprocess.Popen[str] | None, int | None]:
+    popen_kwargs: dict[str, object] = {}
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     try:
         proc = subprocess.Popen(
             command,
@@ -436,6 +556,7 @@ def run_command(command: list[str]) -> tuple[Iterable[str], subprocess.Popen[str
             text=True,
             bufsize=1,
             errors="replace",
+            **popen_kwargs,
         )
     except OSError as exc:
         print(f"claude-sanitize-output: command failed to start: {exc}", file=sys.stderr)
@@ -443,7 +564,7 @@ def run_command(command: list[str]) -> tuple[Iterable[str], subprocess.Popen[str
     if proc.stdout is None:
         print("claude-sanitize-output: subprocess produced no stdout pipe", file=sys.stderr)
         return [], proc, 1
-    return proc.stdout, proc, None
+    return TimedCommandStream(proc, proc.stdout, timeout_seconds=timeout_seconds), proc, None
 
 
 def stdin_has_data(stdin: TextIO) -> bool:
@@ -460,6 +581,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head-lines", type=int, default=50)
     parser.add_argument("--tail-lines", type=int, default=90)
     parser.add_argument("--anchor-lines", type=int, default=80)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "maximum runtime for wrapped commands before terminating the process group "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS}, max: {MAX_TIMEOUT_SECONDS})"
+        ),
+    )
     parser.add_argument(
         "--show-paths",
         action="store_true",
@@ -478,9 +608,12 @@ def main() -> int:
         command = command[1:]
 
     proc: subprocess.Popen[str] | None = None
+    command_stream: TimedCommandStream | None = None
     early_rc: int | None = None
     if command:
-        stream, proc, early_rc = run_command(command)
+        stream, proc, early_rc = run_command(command, args.timeout_seconds)
+        if isinstance(stream, TimedCommandStream):
+            command_stream = stream
         if early_rc is not None and proc is None:
             return early_rc
     elif stdin_has_data(sys.stdin):
@@ -496,7 +629,7 @@ def main() -> int:
             sys.stdout.write("\n")
 
     if proc is not None:
-        rc = proc.wait()
+        rc = command_stream.returncode() if command_stream is not None else proc.wait()
         return early_rc if early_rc is not None else rc
     return 0
 

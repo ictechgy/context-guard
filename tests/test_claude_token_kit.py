@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -877,6 +878,75 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 127)
         self.assertIn("command failed to start", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
+
+    def test_output_wrappers_timeout_long_running_commands(self):
+        secret = "ghp_" + ("A" * 36)
+        code = (
+            "import sys, time; "
+            f"print('API_TOKEN={secret}', flush=True); "
+            "time.sleep(5)"
+        )
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--timeout-seconds",
+                        "1",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        code,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=4,
+                )
+                self.assertEqual(proc.returncode, 124)
+                self.assertIn("command timed out after 1s", proc.stdout)
+                self.assertIn("API_TOKEN=[REDACTED]", proc.stdout)
+                self.assertNotIn(secret, proc.stdout)
+                self.assertNotIn("Traceback", proc.stderr)
+
+    @unittest.skipIf(os.name == "nt", "process-group timeout behavior is POSIX-specific")
+    def test_output_wrapper_timeout_kills_child_process_group(self):
+        scripts = [KIT_DIR / "trim_command_output.py", KIT_DIR / "sanitize_output.py"]
+        for script in scripts:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    marker = Path(tmp) / "grandchild-survived"
+                    child_code = (
+                        "import pathlib, time; "
+                        "time.sleep(2.5); "
+                        f"pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys, time; "
+                        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                        "print('spawned', flush=True); "
+                        "time.sleep(10)"
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--timeout-seconds",
+                            "1",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            parent_code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(proc.returncode, 124)
+                    self.assertIn("spawned", proc.stdout)
+                    self.assertIn("command timed out after 1s", proc.stdout)
+                    time.sleep(2.0)
+                    self.assertFalse(marker.exists(), f"{script} left a child process running")
 
     def test_sanitize_output_redacts_secrets_from_stdin_and_anonymizes_paths(self):
         raw = (
