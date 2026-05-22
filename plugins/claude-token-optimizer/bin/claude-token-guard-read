@@ -7,11 +7,13 @@ with CLAUDE_TOKEN_READ_GUARD=0.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 import shlex
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,10 @@ GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
 PATH_LABEL_MAX_CHARS = 160
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 def truthy_disabled(value: str | None) -> bool:
@@ -168,6 +174,106 @@ def has_symlink_component(path: Path) -> bool:
     return False
 
 
+def base_open_flags() -> int:
+    flags = os.O_RDONLY
+    for optional_flag in ("O_CLOEXEC", "O_NONBLOCK"):
+        flags |= getattr(os, optional_flag, 0)
+    return flags
+
+
+def no_follow_flag() -> int:
+    return getattr(os, "O_NOFOLLOW", 0)
+
+
+def directory_flag() -> int:
+    return getattr(os, "O_DIRECTORY", 0)
+
+
+def normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Rewrite narrow platform-owned absolute aliases before no-follow traversal."""
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def open_directory_at(parent_fd: int, component: str, full_path: Path) -> int:
+    fd = os.open(component, base_open_flags() | directory_flag() | no_follow_flag(), dir_fd=parent_fd)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.ENOTDIR, "path component is not a directory", str(full_path))
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def regular_file_size_no_symlink(path: Path) -> int:
+    """Return size for a regular file opened without following symlinks."""
+    path = normalize_allowed_first_absolute_symlink(path)
+    if os.open not in getattr(os, "supports_dir_fd", set()):
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode):
+            raise OSError(errno.ELOOP, "requested path must not be a symlink", str(path))
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
+        flags = base_open_flags() | no_follow_flag()
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            after = path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not os.path.samestat(before, opened)
+                or not os.path.samestat(after, opened)
+            ):
+                raise OSError(errno.ELOOP, "requested path changed while opening", str(path))
+            return opened.st_size
+        finally:
+            os.close(fd)
+
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    if not components:
+        raise OSError(errno.EINVAL, "requested path is not a regular file", str(path))
+    root = path.anchor if path.is_absolute() else "."
+    dir_fd = os.open(root or ".", base_open_flags() | directory_flag())
+    try:
+        for component in components[:-1]:
+            next_fd = open_directory_at(dir_fd, component, path)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        fd = os.open(components[-1], base_open_flags() | no_follow_flag(), dir_fd=dir_fd)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
+            return st.st_size
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
 def find_read_symbol_command() -> str:
     script_dir = Path(__file__).resolve().parent
     if (script_dir / "claude-read-symbol").exists():
@@ -229,11 +335,19 @@ def main() -> int:
         return 0
     try:
         resolved = path.resolve()
-        if not resolved.is_file():
+        size = regular_file_size_no_symlink(path)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            label = safe_label(path, root)
+            reason = (
+                f"[claude-token-kit] Read blocked for {label}: requested path traverses a symlink. "
+                "Use a real project file path before reading or extracting symbols."
+            )
+            print(json.dumps(deny_response(reason), ensure_ascii=False))
+            return 0
+        if exc.errno in {errno.EINVAL, errno.ENOTDIR, errno.ENOENT}:
             print("{}")
             return 0
-        size = resolved.stat().st_size
-    except OSError as exc:
         print(f"claude-token-guard-read: could not stat requested file: {exc.strerror or exc.__class__.__name__}", file=sys.stderr)
         print("{}")
         return 0

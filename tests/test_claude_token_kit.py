@@ -3374,6 +3374,31 @@ for malformed in malformed_values:
                         self.assertEqual(hook["permissionDecision"], "deny")
                         self.assertIn("traverses a symlink", hook["permissionDecisionReason"])
 
+    def test_large_read_guard_size_probe_rejects_symlinks_and_fifos(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "big.py"
+            target.write_text("x\n" * 100000, encoding="utf-8")
+            link = root / "linked.py"
+            fifo = root / "pipe.py"
+            try:
+                link.symlink_to(target)
+                os.mkfifo(fifo)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"special file fixture unavailable: {exc}")
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    guard = load_python_script_module(script, f"_read_guard_size_probe_{index}")
+                    self.assertGreater(guard.regular_file_size_no_symlink(target), guard.DEFAULT_MAX_BYTES)
+                    with self.assertRaises(OSError) as symlink_error:
+                        guard.regular_file_size_no_symlink(link)
+                    self.assertEqual(symlink_error.exception.errno, errno.ELOOP)
+                    with self.assertRaises(OSError) as fifo_error:
+                        guard.regular_file_size_no_symlink(fifo)
+                    self.assertEqual(fifo_error.exception.errno, errno.EINVAL)
+
     def test_read_symbol_extracts_python_and_typescript_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
