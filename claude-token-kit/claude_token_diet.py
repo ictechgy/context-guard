@@ -260,6 +260,8 @@ def _open_regular_under_root_no_follow(root: Path, path: Path, *, path_kind: str
         file_flags = os.O_RDONLY
         if hasattr(os, "O_CLOEXEC"):
             file_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            file_flags |= os.O_NONBLOCK
         if nofollow:
             file_flags |= nofollow
         try:
@@ -677,6 +679,8 @@ def open_regular_no_follow(path: Path):
         raise OSError("not a regular file")
     flags = os.O_RDONLY
     nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     if nofollow:
         flags |= nofollow
     fd = os.open(path, flags)

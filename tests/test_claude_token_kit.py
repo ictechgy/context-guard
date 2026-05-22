@@ -5092,6 +5092,37 @@ for malformed in malformed_values:
                     self.assertIn("context parent", str(ctx.exception))
                     self.assertNotIsInstance(ctx.exception, UnboundLocalError)
 
+    @unittest.skipUnless(hasattr(os, "O_NONBLOCK"), "O_NONBLOCK not available")
+    def test_token_diet_regular_file_opens_use_nonblocking_flag(self):
+        for index, script in enumerate(DIET_SCRIPTS):
+            with self.subTest(script=script):
+                diet = load_python_script_module(script, f"_token_diet_nonblock_open_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    context = root / "CLAUDE.md"
+                    context.write_text("safe\n", encoding="utf-8")
+                    real_open = diet.os.open
+                    seen_flags: list[int] = []
+
+                    def recording_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                        if Path(path_arg) == context or path_arg == context.name:
+                            seen_flags.append(flags)
+                        if dir_fd is None:
+                            return real_open(path_arg, flags, mode)
+                        return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+
+                    supports_dir_fd = diet.os.supports_dir_fd
+                    diet.os.open = recording_open
+                    supports_dir_fd.add(recording_open)
+                    try:
+                        self.assertEqual(diet.read_text_prefix(context)[0], "safe\n")
+                        self.assertEqual(diet.read_text_prefix(context, root=root)[0], "safe\n")
+                    finally:
+                        diet.os.open = real_open
+                        supports_dir_fd.discard(recording_open)
+                    self.assertGreaterEqual(len(seen_flags), 2)
+                    self.assertTrue(all(flags & diet.os.O_NONBLOCK for flags in seen_flags))
+
     def test_token_diet_settings_load_does_not_follow_symlink_after_discovery(self):
         for index, script in enumerate(DIET_SCRIPTS):
             with self.subTest(script=script):
@@ -6415,6 +6446,56 @@ for malformed in malformed_values:
                             os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
                         else:
                             os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "mkfifo not available")
+    def test_aux_delegate_load_config_rejects_fifo_without_blocking(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config = root / "config.json"
+                    os.mkfifo(config)
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "status"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        cwd=root,
+                        timeout=2,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("not a regular file", proc.stderr)
+
+    @unittest.skipUnless(hasattr(os, "O_NONBLOCK"), "O_NONBLOCK not available")
+    def test_aux_delegate_no_follow_reads_use_nonblocking_flag(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_nonblock_reads_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "context.txt"
+                    sample.write_text("hello", encoding="utf-8")
+                    real_open = aux.os.open
+                    seen_flags: list[int] = []
+
+                    def recording_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                        if Path(path_arg) == sample:
+                            seen_flags.append(flags)
+                        if dir_fd is None:
+                            return real_open(path_arg, flags, mode)
+                        return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+
+                    aux.os.open = recording_open
+                    try:
+                        self.assertEqual(aux.read_text_no_follow(sample), "hello")
+                        text, truncated = aux.read_text_no_follow_bounded(sample, 10)
+                    finally:
+                        aux.os.open = real_open
+                    self.assertEqual(text, "hello")
+                    self.assertFalse(truncated)
+                    self.assertGreaterEqual(len(seen_flags), 2)
+                    self.assertTrue(all(flags & aux.os.O_NONBLOCK for flags in seen_flags))
 
     def test_aux_delegate_config_trust_git_timeout_fails_closed(self):
         aux = load_aux_module()
