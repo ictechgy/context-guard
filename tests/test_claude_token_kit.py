@@ -2789,6 +2789,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             ("sendgrid", "SG." + ("A" * 16) + "." + ("B" * 16), ["SG."]),
             ("jwt", "eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8), ["eyJ"]),
             ("bearer", "Bearer " + ("A" * 20), ["Bearer " + ("A" * 20)]),
+            ("basic", "Basic " + ("A" * 20), ["Basic " + ("A" * 20)]),
             ("url_userinfo", "https://user:pass@example.invalid/db", ["user:pass"]),
         ]
         for index, script in enumerate(NUDGE_SCRIPTS):
@@ -2979,6 +2980,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16) + ".py", ["SG."]),
             "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8) + ".py", ["eyJ"]),
             "bearer": ("Bearer " + ("A" * 20) + ".py", ["Bearer " + ("A" * 20)]),
+            "basic": ("Basic " + ("A" * 20) + ".py", ["Basic " + ("A" * 20)]),
+            "url_userinfo": ("https://user:pass@example.invalid/db.py", ["user:pass"]),
             "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
         }
         for script in READ_GUARD_SCRIPTS:
@@ -2987,6 +2990,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     with tempfile.TemporaryDirectory() as tmp:
                         root = Path(tmp)
                         target = root / filename
+                        target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text("x\n" * 100000, encoding="utf-8")
                         proc = run_hook_payload(script, {"tool_input": {"file_path": filename}}, cwd=root)
                         reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]

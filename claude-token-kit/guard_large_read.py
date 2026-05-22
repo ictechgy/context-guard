@@ -35,7 +35,7 @@ SENSITIVE_PATH_RE = re.compile(
     r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|"
     r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
     r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}|"
-    r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@|"
+    r"[a-z][a-z0-9+.-]*:/+[^/\s:@]+:[^/\s@]+@|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*(?:=|:|%3d)[^/\\\s]{4,})"
 )
 
