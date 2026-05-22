@@ -97,12 +97,13 @@ def remove_generated_plugin_bin_python_caches() -> None:
     for cache_dir in (PLUGIN_BIN / "__pycache__", PLUGIN_DIR / "lib" / "__pycache__"):
         if cache_dir.is_dir():
             shutil.rmtree(cache_dir, ignore_errors=True)
-    for suffix in ("*.pyc", "*.pyo"):
-        for path in list(PLUGIN_BIN.glob(suffix)):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+    for generated_dir in (PLUGIN_BIN, PLUGIN_DIR / "lib"):
+        for suffix in ("*.pyc", "*.pyo"):
+            for path in list(generated_dir.glob(suffix)):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def fail(message: str) -> None:
@@ -319,6 +320,9 @@ def check_bin_copies() -> None:
                 "plugin helper is not synchronized with source: "
                 f"{safe_path_label(plugin_helper)} != {safe_path_label(kit)}"
             )
+        mode = stat.S_IMODE(plugin_helper.stat().st_mode)
+        if mode & stat.S_IXUSR != 0:
+            fail(f"plugin helper must not be executable: {safe_path_label(plugin_helper)} mode={oct(mode)}")
 
 
 def check_package_symlinks() -> None:
