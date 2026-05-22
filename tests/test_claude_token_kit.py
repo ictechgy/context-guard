@@ -5844,6 +5844,37 @@ for malformed in malformed_values:
                     os.environ["PATH"] = old_path
             self.assertEqual(entries.count(str(safe_dir)), 1)
 
+    def test_aux_delegate_safe_path_rejects_writable_ancestor_entries(self):
+        safe_dir = next(path for path in [Path("/usr/bin"), Path("/bin"), Path(sys.executable).resolve().parent] if path.is_dir())
+        safe_dir = safe_dir.resolve()
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_safe_path_ancestor_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    writable_ancestor = root / "toolchain"
+                    bin_dir = writable_ancestor / "locked" / "bin"
+                    bin_dir.mkdir(parents=True)
+                    writable_ancestor.chmod(0o777)
+                    old_path = os.environ.get("PATH")
+                    original_project_root = aux.find_project_root
+                    original_tempdir = aux.tempfile.gettempdir
+                    aux.find_project_root = lambda: root / "project"
+                    aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+                    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{safe_dir}"
+                    try:
+                        entries = aux.safe_path_entries()
+                    finally:
+                        writable_ancestor.chmod(0o755)
+                        aux.find_project_root = original_project_root
+                        aux.tempfile.gettempdir = original_tempdir
+                        if old_path is None:
+                            os.environ.pop("PATH", None)
+                        else:
+                            os.environ["PATH"] = old_path
+                    self.assertNotIn(str(bin_dir.resolve()), entries)
+                    self.assertEqual(entries.count(str(safe_dir)), 1)
+
     def test_aux_delegate_rejects_unsafe_provider_executable_file_modes(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -5864,6 +5895,31 @@ for malformed in malformed_values:
             finally:
                 aux.find_project_root = original_project_root
                 aux.tempfile.gettempdir = original_tempdir
+
+    def test_aux_delegate_rejects_provider_executable_writable_ancestor(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_exec_ancestor_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    writable_ancestor = root / "toolchain"
+                    bin_dir = writable_ancestor / "locked" / "bin"
+                    bin_dir.mkdir(parents=True)
+                    executable = bin_dir / "trusted-tool"
+                    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    executable.chmod(0o755)
+                    writable_ancestor.chmod(0o777)
+                    original_project_root = aux.find_project_root
+                    original_tempdir = aux.tempfile.gettempdir
+                    aux.find_project_root = lambda: root / "other-project"
+                    aux.tempfile.gettempdir = lambda: str(root / "other-temp")
+                    try:
+                        with self.assertRaisesRegex(SystemExit, "ancestor is group/world writable"):
+                            aux.validate_provider_executable(executable, "mock")
+                    finally:
+                        writable_ancestor.chmod(0o755)
+                        aux.find_project_root = original_project_root
+                        aux.tempfile.gettempdir = original_tempdir
 
     def test_aux_delegate_blocks_sensitive_prompt_text_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
