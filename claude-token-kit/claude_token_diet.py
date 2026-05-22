@@ -839,7 +839,7 @@ def main() -> int:
     scan = sub.add_parser("scan", help="scan project settings and context files for token-diet gaps")
     scan.add_argument("path", nargs="?", default=".")
     scan.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-    scan.add_argument("--show-paths", action="store_true", help="show raw absolute root path instead of a stable anonymized root label")
+    scan.add_argument("--show-paths", action="store_true", help="show raw absolute root path instead of a stable anonymized root label; local debugging only because private paths may be exposed")
     scan.add_argument("--top", type=int, default=20, help="maximum context-like files to list")
     scan.add_argument("--large-context-bytes", type=int, default=DEFAULT_LARGE_CONTEXT_BYTES)
     scan.add_argument("--huge-context-bytes", type=int, default=DEFAULT_HUGE_CONTEXT_BYTES)

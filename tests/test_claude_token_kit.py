@@ -280,6 +280,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(extra_blank_status, "statusline", "statusline")
 
+    def test_show_paths_help_warns_private_path_exposure(self):
+        commands = [
+            [sys.executable, str(KIT_DIR / "read_symbol.py"), "--help"],
+            [sys.executable, str(KIT_DIR / "trim_command_output.py"), "--help"],
+            [sys.executable, str(KIT_DIR / "sanitize_output.py"), "--help"],
+            [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", "--help"],
+            [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), "--help"],
+            [str(PLUGIN_BIN / "claude-read-symbol"), "--help"],
+            [str(PLUGIN_BIN / "claude-trim-output"), "--help"],
+            [str(PLUGIN_BIN / "claude-sanitize-output"), "--help"],
+            [str(PLUGIN_BIN / "claude-token-diet"), "scan", "--help"],
+            [str(PLUGIN_BIN / "claude-token-audit"), "--help"],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                proc = subprocess.run(command, text=True, capture_output=True, check=True)
+                output = proc.stdout + proc.stderr
+                compact = " ".join(output.split())
+                self.assertIn("--show-paths", output)
+                self.assertIn("local debugging only", compact)
+                self.assertRegex(compact, r"(private paths may be exposed|secret-shaped path components remain redacted)")
+
     def test_prepublish_rejects_missing_skill_allowed_tool_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_copy = Path(tmp) / "skills"

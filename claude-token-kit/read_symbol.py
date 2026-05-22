@@ -410,7 +410,7 @@ def main() -> int:
     parser.add_argument("--context", type=int, default=DEFAULT_CONTEXT_LINES)
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--show-paths", action="store_true", help="show raw absolute path in output")
+    parser.add_argument("--show-paths", action="store_true", help="show raw absolute paths in output; local debugging only because private paths may be exposed")
     args = parser.parse_args()
 
     args.context = bounded_int(args.context, DEFAULT_CONTEXT_LINES, 0, MAX_CONTEXT_LINES_LIMIT)
