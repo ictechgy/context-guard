@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 KIT_DIR = ROOT / "claude-token-kit"
 PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
 PLUGIN_BIN = PLUGIN_DIR / "bin"
+PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "claude-token-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
@@ -39,6 +40,9 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"),
     (KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"),
     (KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"),
+]
+HELPER_PAIRS = [
+    (KIT_DIR / "hook_secret_patterns.py", PLUGIN_LIB / "hook_secret_patterns.py"),
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "claude-trim-output"]
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "claude-sanitize-output"]
@@ -120,14 +124,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertTrue(os.access(plugin, os.X_OK), f"{plugin} must be executable")
 
+    def test_plugin_helpers_match_kit_sources(self):
+        for kit, plugin in HELPER_PAIRS:
+            with self.subTest(plugin=plugin):
+                self.assertEqual(kit.read_bytes(), plugin.read_bytes())
+                self.assertEqual(stat.S_IMODE(plugin.stat().st_mode) & 0o111, 0, f"{plugin} should not be executable")
+
     def test_prepublish_check_package_invariants(self):
         kit_cache = KIT_DIR / "__pycache__"
         plugin_bin_cache = PLUGIN_BIN / "__pycache__"
+        plugin_lib_cache = PLUGIN_LIB / "__pycache__"
         shutil.rmtree(kit_cache, ignore_errors=True)
         shutil.rmtree(plugin_bin_cache, ignore_errors=True)
+        shutil.rmtree(plugin_lib_cache, ignore_errors=True)
         plugin_bin_cache.mkdir()
+        plugin_lib_cache.mkdir()
         stale_pyc = plugin_bin_cache / "stale.cpython-311.pyc"
         stale_pyc.write_bytes(b"stale")
+        stale_lib_pyc = PLUGIN_LIB / "stale.pyc"
+        stale_lib_pyc.write_bytes(b"stale")
+        stale_lib_cache_pyc = plugin_lib_cache / "stale.cpython-311.pyc"
+        stale_lib_cache_pyc.write_bytes(b"stale")
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
             text=True,
@@ -137,7 +154,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("prepublish check: OK", proc.stdout)
         self.assertFalse(kit_cache.exists())
         self.assertFalse(plugin_bin_cache.exists())
+        self.assertFalse(plugin_lib_cache.exists())
         self.assertFalse(stale_pyc.exists())
+        self.assertFalse(stale_lib_pyc.exists())
+        self.assertFalse(stale_lib_cache_pyc.exists())
+
+    def test_prepublish_check_rejects_executable_plugin_helper(self):
+        _kit, plugin = HELPER_PAIRS[0]
+        original_mode = stat.S_IMODE(plugin.stat().st_mode)
+        try:
+            plugin.chmod(original_mode | stat.S_IXGRP)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+        finally:
+            plugin.chmod(original_mode)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("plugin helper must not be executable", proc.stdout + proc.stderr)
 
     def test_release_smoke_runs_packaged_entrypoints(self):
         proc = subprocess.run(

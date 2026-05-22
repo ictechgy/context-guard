@@ -68,6 +68,9 @@ IMPLEMENTATION_PAIRS = (
     ("statusline_merged.sh", "claude-token-statusline-merged"),
     ("trim_command_output.py", "claude-trim-output"),
 )
+HELPER_PAIRS = (
+    ("hook_secret_patterns.py", "lib/hook_secret_patterns.py"),
+)
 
 FORBIDDEN_PACKAGE_NAMES = {
     ".DS_Store",
@@ -91,15 +94,16 @@ def remove_generated_plugin_bin_python_caches() -> None:
     # entrypoints and leave import bytecode under bin/__pycache__. Keep cleanup
     # scoped to that generated cache location; unrelated package artifacts still
     # fail check_package_clean().
-    cache_dir = PLUGIN_BIN / "__pycache__"
-    if cache_dir.is_dir():
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for suffix in ("*.pyc", "*.pyo"):
-        for path in list(PLUGIN_BIN.glob(suffix)):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+    for cache_dir in (PLUGIN_BIN / "__pycache__", PLUGIN_DIR / "lib" / "__pycache__"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+    for generated_dir in (PLUGIN_BIN, PLUGIN_DIR / "lib"):
+        for suffix in ("*.pyc", "*.pyo"):
+            for path in list(generated_dir.glob(suffix)):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def fail(message: str) -> None:
@@ -304,6 +308,21 @@ def check_bin_copies() -> None:
         mode = stat.S_IMODE(plugin_bin.stat().st_mode)
         if mode & stat.S_IXUSR == 0:
             fail(f"plugin bin is not owner-executable: {safe_path_label(plugin_bin)} mode={oct(mode)}")
+    for kit_name, plugin_rel in HELPER_PAIRS:
+        kit = KIT_DIR / kit_name
+        plugin_helper = PLUGIN_DIR / plugin_rel
+        if not kit.exists():
+            fail(f"missing kit helper: {safe_path_label(kit)}")
+        if not plugin_helper.exists():
+            fail(f"missing plugin helper copy: {safe_path_label(plugin_helper)}")
+        if kit.read_bytes() != plugin_helper.read_bytes():
+            fail(
+                "plugin helper is not synchronized with source: "
+                f"{safe_path_label(plugin_helper)} != {safe_path_label(kit)}"
+            )
+        mode = stat.S_IMODE(plugin_helper.stat().st_mode)
+        if mode & 0o111 != 0:
+            fail(f"plugin helper must not be executable: {safe_path_label(plugin_helper)} mode={oct(mode)}")
 
 
 def check_package_symlinks() -> None:
@@ -333,7 +352,7 @@ def check_python_compiles() -> None:
     # __pycache__ artifacts before packaging.
     with tempfile.TemporaryDirectory(prefix="claude-token-prepublish-pyc-") as td:
         pyc_dir = Path(td)
-        for kit_name, _bin_name in IMPLEMENTATION_PAIRS:
+        for kit_name in [name for name, _bin_name in IMPLEMENTATION_PAIRS] + [name for name, _rel in HELPER_PAIRS]:
             path = KIT_DIR / kit_name
             if path.suffix != ".py":
                 continue
