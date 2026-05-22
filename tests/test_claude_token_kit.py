@@ -3399,6 +3399,67 @@ for malformed in malformed_values:
                         guard.regular_file_size_no_symlink(fifo)
                     self.assertEqual(fifo_error.exception.errno, errno.EINVAL)
 
+    def test_large_read_guard_fallback_rejects_parent_symlink_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_dir = root / "real"
+            real_dir.mkdir()
+            target = real_dir / "big.py"
+            target.write_text("x\n" * 100000, encoding="utf-8")
+            parent_link = root / "linkdir"
+            try:
+                parent_link.symlink_to(real_dir, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    guard = load_python_script_module(script, f"_read_guard_fallback_parent_symlink_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    guard.os.supports_dir_fd = set()
+                    try:
+                        self.assertGreater(guard.regular_file_size_no_symlink(target), guard.DEFAULT_MAX_BYTES)
+                        with self.assertRaises(OSError) as symlink_error:
+                            guard.regular_file_size_no_symlink(parent_link / "big.py")
+                        self.assertEqual(symlink_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+
+    def test_large_read_guard_fallback_race_to_nonregular_denies(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "big.py"
+            for index, script in enumerate(READ_GUARD_SCRIPTS):
+                with self.subTest(script=script):
+                    target.write_text("x\n" * 100000, encoding="utf-8")
+                    guard = load_python_script_module(script, f"_read_guard_fallback_nonregular_race_{index}")
+                    original_supports_dir_fd = guard.os.supports_dir_fd
+                    original_open = guard.os.open
+                    normalized_target = guard.normalize_allowed_first_absolute_symlink(target)
+                    raced = False
+
+                    def racing_open(path_arg, flags, *args, **kwargs):
+                        nonlocal raced
+                        if not raced and os.fspath(path_arg) == os.fspath(normalized_target):
+                            raced = True
+                            target.unlink()
+                            os.mkfifo(normalized_target)
+                        return original_open(path_arg, flags, *args, **kwargs)
+
+                    guard.os.supports_dir_fd = set()
+                    guard.os.open = racing_open
+                    try:
+                        with self.assertRaises(OSError) as race_error:
+                            guard.regular_file_size_no_symlink(target)
+                        self.assertEqual(race_error.exception.errno, errno.ELOOP)
+                    finally:
+                        guard.os.open = original_open
+                        guard.os.supports_dir_fd = original_supports_dir_fd
+                        if target.exists():
+                            target.unlink()
+
     def test_read_symbol_extracts_python_and_typescript_symbols(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -226,25 +226,48 @@ def open_directory_at(parent_fd: int, component: str, full_path: Path) -> int:
         raise
 
 
+def lstat_no_symlink_components(path: Path) -> os.stat_result:
+    """lstat each path component and reject any symlink traversal."""
+    components = list(path.parts)
+    if path.is_absolute() and components:
+        components = components[1:]
+    if not components:
+        raise OSError(errno.EINVAL, "requested path is not a regular file", str(path))
+
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    last_stat = None
+    for index, component in enumerate(components):
+        current = current / component
+        current_stat = current.lstat()
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise OSError(errno.ELOOP, "requested path must not traverse symlinks", str(path))
+        if index < len(components) - 1 and not stat.S_ISDIR(current_stat.st_mode):
+            raise OSError(errno.ENOTDIR, "path component is not a directory", str(path))
+        last_stat = current_stat
+    assert last_stat is not None
+    return last_stat
+
+
+def lstat_at_no_follow(dir_fd: int, component: str) -> os.stat_result | None:
+    if os.stat not in getattr(os, "supports_dir_fd", set()):
+        return None
+    if os.stat not in getattr(os, "supports_follow_symlinks", set()):
+        return None
+    return os.stat(component, dir_fd=dir_fd, follow_symlinks=False)
+
+
 def regular_file_size_no_symlink(path: Path) -> int:
     """Return size for a regular file opened without following symlinks."""
     path = normalize_allowed_first_absolute_symlink(path)
     if os.open not in getattr(os, "supports_dir_fd", set()):
-        before = path.lstat()
-        if stat.S_ISLNK(before.st_mode):
-            raise OSError(errno.ELOOP, "requested path must not be a symlink", str(path))
+        before = lstat_no_symlink_components(path)
         if not stat.S_ISREG(before.st_mode):
             raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
         flags = base_open_flags() | no_follow_flag()
         fd = os.open(path, flags)
         try:
             opened = os.fstat(fd)
-            after = path.lstat()
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or not os.path.samestat(before, opened)
-                or not os.path.samestat(after, opened)
-            ):
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
                 raise OSError(errno.ELOOP, "requested path changed while opening", str(path))
             return opened.st_size
         finally:
@@ -262,10 +285,19 @@ def regular_file_size_no_symlink(path: Path) -> int:
             next_fd = open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = next_fd
+        before = lstat_at_no_follow(dir_fd, components[-1])
+        if before is not None:
+            if stat.S_ISLNK(before.st_mode):
+                raise OSError(errno.ELOOP, "requested path must not be a symlink", str(path))
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
         fd = os.open(components[-1], base_open_flags() | no_follow_flag(), dir_fd=dir_fd)
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode):
+            if before is not None:
+                if not stat.S_ISREG(st.st_mode) or not os.path.samestat(before, st):
+                    raise OSError(errno.ELOOP, "requested path changed while opening", str(path))
+            elif not stat.S_ISREG(st.st_mode):
                 raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
             return st.st_size
         finally:
@@ -334,7 +366,6 @@ def main() -> int:
         print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
     try:
-        resolved = path.resolve()
         size = regular_file_size_no_symlink(path)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
@@ -360,7 +391,7 @@ def main() -> int:
         print("{}")
         return 0
 
-    label = safe_label(resolved, root)
+    label = safe_label(path, root)
     read_symbol = find_read_symbol_command()
     rg_cmd, symbol_cmd = suggested_commands(label, read_symbol)
     reason = (
