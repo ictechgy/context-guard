@@ -6432,6 +6432,32 @@ for malformed in malformed_values:
                     self.assertNotIn("Authorization", basic_fail.stderr)
                     self.assertNotIn("opaque-basic-token", basic_fail.stderr)
 
+                    shared_label_commands = {
+                        "npm": ("npm_" + ("A" * 24), ["npm_"]),
+                        "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16), ["SG."]),
+                        "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8), ["eyJ"]),
+                        "bare_basic": ("Basic " + ("A" * 20), ["Basic " + ("A" * 20)]),
+                        "auth_bearer": ("Authorization: Bearer " + ("A" * 24), ["Authorization", "Bearer " + ("A" * 24)]),
+                        "newline_split": ("ghp_\n" + ("A" * 36), ["ghp_", "A" * 20]),
+                    }
+                    for case, (command, forbidden_fragments) in shared_label_commands.items():
+                        with self.subTest(script=script, case=case):
+                            write_private_config(config_path, {
+                                "aux_ai_enabled": True,
+                                "default_provider": "bad",
+                                "providers": {"bad": {"enabled": True, "command": [command], "stdin": True}},
+                            })
+                            shared_fail = subprocess.run(
+                                [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                                text=True,
+                                capture_output=True,
+                                env=env,
+                            )
+                            self.assertEqual(shared_fail.returncode, 127)
+                            self.assertIn("executable not found on safe PATH: redacted-path", shared_fail.stderr)
+                            for fragment in forbidden_fragments:
+                                self.assertNotIn(fragment, shared_fail.stderr)
+
                     invalid_relative = "bad\x00path"
                     write_private_config(config_path, {
                         "aux_ai_enabled": True,
@@ -6631,6 +6657,18 @@ for malformed in malformed_values:
             self.assertEqual(aux.response_path_label("safe-\x1b[31m-path"), "redacted-path")
             self.assertEqual(aux.response_path_label("Authorization: Bearer opaque-provider-token"), "redacted-path")
             self.assertEqual(aux.response_path_label("Authorization: Basic opaque-basic-token"), "redacted-path")
+            shared_label_samples = [
+                "npm_" + ("A" * 24),
+                "SG." + ("A" * 16) + "." + ("B" * 16),
+                "eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8),
+                "Basic " + ("A" * 20),
+                "Authorization: Bearer " + ("A" * 24),
+                "ghp_\n" + ("A" * 36),
+                "token=\tsecretvalue123",
+            ]
+            for sample in shared_label_samples:
+                with self.subTest(sample=sample):
+                    self.assertEqual(aux.response_path_label(sample), "redacted-path")
             self.assertIn("safe-", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
             self.assertNotIn("[REDACTED]", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
 
