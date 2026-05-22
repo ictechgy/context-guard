@@ -54,11 +54,14 @@ import json
 import math
 import os
 import re
+import selectors
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -122,6 +125,10 @@ USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
+CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
+SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
+VERSION_OUTPUT_MAX_BYTES = 16_000
+PROCESS_TERMINATE_GRACE_SECONDS = 2.0
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -310,6 +317,15 @@ class RunResult:
     corrections: int = 0
 
 
+@dataclass
+class BoundedProcessResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    output_truncated: bool = False
+
+
 def parse_positive_int(value: Any, *, field: str, owner: str) -> int:
     """Parse a JSON fixture field that must be a positive integer."""
     if isinstance(value, bool):
@@ -464,9 +480,14 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
 
 def claude_version(claude_bin: str) -> str:
     try:
-        proc = subprocess.run([claude_bin, "--version"], text=True, capture_output=True, timeout=5)
+        proc = run_bounded_command(
+            [claude_bin, "--version"],
+            cwd=Path.cwd(),
+            timeout_seconds=5,
+            max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+        )
         return proc.stdout.strip().splitlines()[0] if proc.stdout else "unknown"
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return "unknown"
 
 
@@ -498,6 +519,107 @@ def executable_argv0(command: str) -> str:
     if path.is_absolute():
         return str(path)
     return str(path.resolve())
+
+
+def _signal_process_group(proc: subprocess.Popen[bytes], sig: int) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (AttributeError, ProcessLookupError):
+        pass
+    except OSError:
+        try:
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+        except OSError:
+            pass
+
+
+def run_bounded_command(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+    max_output_bytes: int,
+) -> BoundedProcessResult:
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    selector = selectors.DefaultSelector()
+    buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+    streams = {"stdout": proc.stdout, "stderr": proc.stderr}
+    for name, stream in streams.items():
+        if stream is None:
+            continue
+        try:
+            os.set_blocking(stream.fileno(), False)
+        except (AttributeError, OSError):
+            pass
+        selector.register(stream, selectors.EVENT_READ, name)
+
+    timed_out = False
+    output_truncated = False
+    terminated_at: float | None = None
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while selector.get_map():
+            now = time.monotonic()
+            if proc.poll() is None and now >= deadline:
+                timed_out = True
+                if terminated_at is None:
+                    _signal_process_group(proc, signal.SIGTERM)
+                    terminated_at = now
+            if terminated_at is not None and proc.poll() is None:
+                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
+                    _signal_process_group(proc, signal.SIGKILL)
+            events = selector.select(timeout=0.05)
+            for key, _ in events:
+                name = key.data
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+                    continue
+                buffer = buffers[name]
+                remaining = max_output_bytes - len(buffer)
+                if remaining > 0:
+                    buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    output_truncated = True
+                    if terminated_at is None and proc.poll() is None:
+                        _signal_process_group(proc, signal.SIGTERM)
+                        terminated_at = time.monotonic()
+    finally:
+        selector.close()
+
+    try:
+        returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(proc, signal.SIGKILL)
+        returncode = proc.wait()
+    if timed_out:
+        returncode = 124
+    elif output_truncated:
+        returncode = 125
+    return BoundedProcessResult(
+        returncode=returncode,
+        stdout=bytes(buffers["stdout"]).decode("utf-8", "replace"),
+        stderr=bytes(buffers["stderr"]).decode("utf-8", "replace"),
+        timed_out=timed_out,
+        output_truncated=output_truncated,
+    )
 
 
 # shlex.split 은 shell injection 은 막지만 `true ; echo pwned` 같은 입력을 그대로
@@ -542,9 +664,18 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
     except ValueError:
         return False, f"success_cwd escapes project_root: {cwd}"
     try:
-        proc = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=600)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = run_bounded_command(
+            argv,
+            cwd=cwd,
+            timeout_seconds=600,
+            max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         return False, f"success_command failed to launch: {exc}"
+    if proc.timed_out:
+        return False, "success_command timed out after 600s"
+    if proc.output_truncated:
+        return False, f"success_command output limit exceeded ({SUCCESS_COMMAND_OUTPUT_MAX_BYTES} bytes)"
     return proc.returncode == 0, f"exit={proc.returncode}"
 
 
@@ -559,12 +690,29 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
         )
     argv[0] = executable_argv0(argv[0])
     try:
-        proc = subprocess.run(argv, cwd=project_root, text=True, capture_output=True, timeout=1800)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = run_bounded_command(
+            argv,
+            cwd=project_root,
+            timeout_seconds=1800,
+            max_output_bytes=CLAUDE_OUTPUT_MAX_BYTES,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude launch failed: {exc}",
+        )
+    if proc.timed_out:
+        return RunResult(
+            task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+            tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+            success=False, notes="claude timed out after 1800s",
+        )
+    if proc.output_truncated:
+        return RunResult(
+            task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+            tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+            success=False, notes=f"claude output limit exceeded ({CLAUDE_OUTPUT_MAX_BYTES} bytes)",
         )
     if proc.returncode != 0:
         return RunResult(

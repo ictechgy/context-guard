@@ -8494,6 +8494,99 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["success"], "true")
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
 
+    def test_benchmark_runner_bounds_claude_stdout_before_json_parse(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_claude_output_bound_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = root / "fake-claude"
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import sys\n"
+                        "sys.stdout.write('x' * 256)\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    original_limit = module.CLAUDE_OUTPUT_MAX_BYTES
+                    module.CLAUDE_OUTPUT_MAX_BYTES = 128
+                    try:
+                        result = module.run_fixture(
+                            module.TaskFixture(id="t01", prompt="x", max_turns=1),
+                            module.Variant(name="baseline", extra_args=[]),
+                            str(fake),
+                            root,
+                            False,
+                        )
+                    finally:
+                        module.CLAUDE_OUTPUT_MAX_BYTES = original_limit
+
+                    self.assertFalse(result.success)
+                    self.assertIn("claude output limit exceeded", result.notes)
+
+    def test_benchmark_runner_bounds_success_command_output(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_success_output_bound_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    loud_success = root / "loud-success"
+                    loud_success.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import sys\n"
+                        "sys.stdout.write('x' * 256)\n",
+                        encoding="utf-8",
+                    )
+                    loud_success.chmod(0o755)
+                    original_limit = module.SUCCESS_COMMAND_OUTPUT_MAX_BYTES
+                    module.SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 128
+                    try:
+                        ok, note = module.run_success_command(
+                            module.TaskFixture(
+                                id="t01",
+                                prompt="x",
+                                max_turns=1,
+                                success_command=str(loud_success),
+                                success_cwd=".",
+                            ),
+                            root,
+                        )
+                    finally:
+                        module.SUCCESS_COMMAND_OUTPUT_MAX_BYTES = original_limit
+
+                    self.assertFalse(ok)
+                    self.assertIn("success_command output limit exceeded", note)
+
+    def test_benchmark_runner_timeout_kills_process_group_children(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_pg_timeout_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys, time; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+                        "time.sleep(10.0)"
+                    )
+
+                    result = module.run_bounded_command(
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        cwd=root,
+                        timeout_seconds=1,
+                        max_output_bytes=1024,
+                    )
+
+                    self.assertTrue(result.timed_out)
+                    self.assertEqual(result.returncode, 124)
+                    time.sleep(1.5)
+                    self.assertFalse(sentinel.exists())
+
     def test_runner_uses_project_root_for_claude_and_redacts_failure_notes(self):
         for script in BENCH_SCRIPTS:
             with self.subTest(script=script):
