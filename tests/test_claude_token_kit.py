@@ -6222,6 +6222,57 @@ for malformed in malformed_values:
             self.assertEqual(stat.S_IMODE(config.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
 
+    def test_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_save_compat_{index}")
+                self._assert_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(aux)
+
+    def _assert_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".claude-token-optimizer" / "config.json"
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            old_supports_dir_fd = aux.os.supports_dir_fd
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+            aux.os.supports_dir_fd = set()
+            try:
+                aux.save_config({"aux_ai_enabled": True})
+            finally:
+                aux.os.supports_dir_fd = old_supports_dir_fd
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+            self.assertTrue(config.exists())
+            self.assertTrue((config.parent / ".gitignore").exists())
+            self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["aux_ai_enabled"], True)
+
+    def test_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_mkdir_race_{index}")
+                self._assert_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(aux)
+
+    def _assert_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "nested"
+            original_mkdir = aux.mkdir_private_dir_entry_at
+
+            def racing_mkdir(dir_fd, component, mode=0o700):
+                aux.os.mkdir(component, mode, dir_fd=dir_fd)
+                raise OSError(errno.EEXIST, "simulated concurrent mkdir")
+
+            aux.mkdir_private_dir_entry_at = racing_mkdir
+            try:
+                fd = aux.open_private_dir_no_follow(target, create=True)
+                aux.os.close(fd)
+            finally:
+                aux.mkdir_private_dir_entry_at = original_mkdir
+            self.assertTrue(target.is_dir())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+
     def test_aux_delegate_missing_config_defaults_before_no_follow_support_check(self):
         scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
         for index, script in enumerate(scripts):

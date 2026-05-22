@@ -472,6 +472,15 @@ def open_config_file_no_follow(path: Path) -> int:
         os.close(dir_fd)
 
 
+def private_dir_fd_writes_supported() -> bool:
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.mkdir in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+    )
+
+
 def mkdir_private_dir_entry_at(dir_fd: int, component: str, mode: int = 0o700) -> None:
     # mkdir modes are filtered by umask. Keep the parent process umask stable by
     # isolating the umask override in a short child, then reopen with O_NOFOLLOW.
@@ -495,7 +504,7 @@ def mkdir_private_dir_entry_at(dir_fd: int, component: str, mode: int = 0o700) -
 
 
 def open_private_dir_no_follow(path: Path, *, create: bool = True) -> int:
-    if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+    if not private_dir_fd_writes_supported():
         raise OSError(UNSUPPORTED_CONFIG_IO_ERRNO, "platform does not support directory-relative no-follow config writes")
     path = normalize_allowed_first_absolute_symlink(path)
     components = list(path.parts)
@@ -514,10 +523,21 @@ def open_private_dir_no_follow(path: Path, *, create: bool = True) -> int:
             except FileNotFoundError:
                 if not create:
                     raise
-                mkdir_private_dir_entry_at(dir_fd, component, 0o700)
-                next_fd = open_directory_no_follow_at(dir_fd, component, path)
-            if hasattr(os, "fchmod") and index == len(components) - 1:
-                os.fchmod(next_fd, 0o700)
+                try:
+                    mkdir_private_dir_entry_at(dir_fd, component, 0o700)
+                except OSError as mkdir_exc:
+                    try:
+                        next_fd = open_directory_no_follow_at(dir_fd, component, path)
+                    except OSError:
+                        raise mkdir_exc
+                else:
+                    next_fd = open_directory_no_follow_at(dir_fd, component, path)
+            try:
+                if hasattr(os, "fchmod") and index == len(components) - 1:
+                    os.fchmod(next_fd, 0o700)
+            except Exception:
+                os.close(next_fd)
+                raise
             os.close(dir_fd)
             dir_fd = next_fd
         return dir_fd
@@ -624,11 +644,67 @@ def load_config() -> dict[str, Any]:
 
 
 def ensure_private_dir(directory: Path) -> None:
+    if not private_dir_fd_writes_supported():
+        ensure_private_dir_compat(directory)
+        return
     fd = open_private_dir_no_follow(directory, create=True)
     os.close(fd)
 
 
+def ensure_private_dir_compat(directory: Path) -> None:
+    symlink_component = first_symlink_component(directory)
+    if symlink_component is not None:
+        raise OSError(errno.ELOOP, f"path component must not be a symlink: {symlink_component}", str(directory))
+    directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise OSError(errno.ELOOP, "directory must not be a symlink", str(directory))
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        # Some non-POSIX platforms do not provide POSIX owner-only chmod
+        # semantics. Keep the old platform-compatible save path there.
+        pass
+
+
+def atomic_write_private_compat(path: Path, text: str, mode: int = 0o600) -> None:
+    ensure_private_dir_compat(path.parent)
+    symlink_component = first_symlink_component(path)
+    if symlink_component is not None:
+        raise OSError(errno.ELOOP, f"path component must not be a symlink: {symlink_component}", str(path))
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
+    fd = os.open(tmp_path, flags, mode)
+    try:
+        try:
+            if path.is_symlink():
+                raise OSError(errno.ELOOP, "existing destination must not be a symlink", str(path))
+            if path.exists() and not path.is_file():
+                raise OSError(errno.EINVAL, "existing destination is not a regular file", str(path))
+        except OSError:
+            os.close(fd)
+            fd = -1
+            raise
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(text)
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+    finally:
+        if fd != -1:
+            os.close(fd)
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def atomic_write_private(path: Path, text: str, mode: int = 0o600) -> None:
+    if not private_dir_fd_writes_supported():
+        atomic_write_private_compat(path, text, mode)
+        return
     parent_fd = open_private_dir_no_follow(path.parent, create=True)
     tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
@@ -664,10 +740,19 @@ def atomic_write_private(path: Path, text: str, mode: int = 0o600) -> None:
             os.unlink(tmp_name, dir_fd=parent_fd)
         except FileNotFoundError:
             pass
-        os.close(parent_fd)
+        finally:
+            os.close(parent_fd)
 
 
 def cleanup_stale_private_temps(path: Path) -> None:
+    if not private_dir_fd_writes_supported():
+        for stale in path.parent.glob(f".{path.name}.*.tmp"):
+            try:
+                if not stale.is_symlink():
+                    stale.unlink()
+            except OSError:
+                pass
+        return
     parent_fd = open_private_dir_no_follow(path.parent, create=True)
     try:
         prefix = f".{path.name}."
