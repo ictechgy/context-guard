@@ -128,7 +128,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for kit, plugin in HELPER_PAIRS:
             with self.subTest(plugin=plugin):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
-                self.assertFalse(os.access(plugin, os.X_OK), f"{plugin} should not be executable")
+                self.assertEqual(stat.S_IMODE(plugin.stat().st_mode) & 0o111, 0, f"{plugin} should not be executable")
 
     def test_prepublish_check_package_invariants(self):
         kit_cache = KIT_DIR / "__pycache__"
@@ -158,6 +158,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(stale_pyc.exists())
         self.assertFalse(stale_lib_pyc.exists())
         self.assertFalse(stale_lib_cache_pyc.exists())
+
+    def test_prepublish_check_rejects_executable_plugin_helper(self):
+        _kit, plugin = HELPER_PAIRS[0]
+        original_mode = stat.S_IMODE(plugin.stat().st_mode)
+        try:
+            plugin.chmod(original_mode | stat.S_IXGRP)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+        finally:
+            plugin.chmod(original_mode)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("plugin helper must not be executable", proc.stdout + proc.stderr)
 
     def test_release_smoke_runs_packaged_entrypoints(self):
         proc = subprocess.run(

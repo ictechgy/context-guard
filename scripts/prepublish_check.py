@@ -321,7 +321,7 @@ def check_bin_copies() -> None:
                 f"{safe_path_label(plugin_helper)} != {safe_path_label(kit)}"
             )
         mode = stat.S_IMODE(plugin_helper.stat().st_mode)
-        if mode & stat.S_IXUSR != 0:
+        if mode & 0o111 != 0:
             fail(f"plugin helper must not be executable: {safe_path_label(plugin_helper)} mode={oct(mode)}")
 
 
