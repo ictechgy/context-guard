@@ -2842,6 +2842,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn("rg -n '<symbol-or-error>' --", reason)
             self.assertNotIn(f" {bad.name}`", reason)
 
+    def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
+        cases = {
+            "secret": "token=ghp_" + ("A" * 36) + ".py",
+            "control": "bad-\x1b[31m-name.py",
+        }
+        for script in READ_GUARD_SCRIPTS:
+            for case, filename in cases.items():
+                with self.subTest(script=script, case=case):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        target = root / filename
+                        target.write_text("x\n" * 100000, encoding="utf-8")
+                        proc = run_hook_payload(script, {"tool_input": {"file_path": filename}}, cwd=root)
+                        reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                        self.assertIn("redacted-path#path:", reason)
+                        self.assertNotIn(str(root), reason)
+                        self.assertNotIn("ghp_", reason)
+                        self.assertNotIn("token=ghp_", reason)
+                        self.assertNotIn("\x1b", reason)
+                        self.assertNotIn("[31m", reason)
+
     def test_large_read_guard_blocks_symlink_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
