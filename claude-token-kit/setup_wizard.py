@@ -56,6 +56,7 @@ HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
+PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -255,7 +256,7 @@ def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
             try:
                 next_fd = _open_directory_at(dir_fd, component, path)
             except FileNotFoundError:
-                mkdir_mode = mode if mode is not None and index == len(components) - 1 else 0o777
+                mkdir_mode = mode if mode is not None and index == len(components) - 1 else PRIVATE_DIR_MODE
                 os.mkdir(component, mkdir_mode, dir_fd=dir_fd)
                 next_fd = _open_directory_at(dir_fd, component, path)
             os.close(dir_fd)
@@ -473,14 +474,14 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
 
 def ensure_private_dir(path: Path) -> None:
     try:
-        fd = _ensure_directory_no_symlink(path, stat.S_IRWXU)
+        fd = _ensure_directory_no_symlink(path, PRIVATE_DIR_MODE)
     except OSError as exc:
         raise SystemExit(f"Could not create private directory safely: {path}: {exc}") from exc
     try:
         # owner-only directory access — 디렉터리에 자격증명/세션 상태가 들어갈 수 있어
         # 의도적으로 가장 좁은 권한을 적용한다.
         if hasattr(os, "fchmod"):
-            os.fchmod(fd, stat.S_IRWXU)
+            os.fchmod(fd, PRIVATE_DIR_MODE)
     except OSError:
         pass
     finally:
