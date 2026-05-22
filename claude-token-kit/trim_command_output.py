@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Iterable
+from typing import Iterable, Iterator
 
 MAX_SUMMARY_ITEM_CHARS = 500
 MAX_LINES_LIMIT = 5_000
@@ -331,9 +331,14 @@ def process_group_exists(pgid: int) -> bool:
     return True
 
 
-def terminate_process_tree(proc: subprocess.Popen[str], *, include_exited_group: bool = False) -> None:
+def terminate_process_tree(
+    proc: subprocess.Popen[str],
+    *,
+    process_group_id: int | None = None,
+    include_exited_group: bool = False,
+) -> None:
     if os.name != "nt":
-        pgid = proc.pid
+        pgid = process_group_id if process_group_id is not None else proc.pid
         if proc.poll() is not None and not include_exited_group:
             return
         try:
@@ -363,7 +368,10 @@ def terminate_process_tree(proc: subprocess.Popen[str], *, include_exited_group:
     except ProcessLookupError:
         return
     except OSError:
-        proc.terminate()
+        try:
+            proc.kill()
+        except OSError:
+            return
     try:
         proc.wait(timeout=2)
         return
@@ -374,7 +382,7 @@ def terminate_process_tree(proc: subprocess.Popen[str], *, include_exited_group:
     except ProcessLookupError:
         return
     except OSError:
-        proc.kill()
+        return
 
 
 class TimedCommandStream:
@@ -384,10 +392,14 @@ class TimedCommandStream:
         stdout: Iterable[str],
         *,
         timeout_seconds: int,
+        process_group_id: int | None = None,
     ) -> None:
         self.proc = proc
         self.timeout_seconds = timeout_seconds
+        self.process_group_id = process_group_id
+        self.deadline = time.monotonic() + timeout_seconds
         self.timed_out = False
+        self.timeout_reported = False
         self._stream_closed = False
         self._queue: queue.Queue[str | object] = queue.Queue(maxsize=1024)
         self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
@@ -401,50 +413,69 @@ class TimedCommandStream:
             self._stream_closed = True
             self._queue.put(_STREAM_END)
 
-    def _timeout_line(self) -> str:
-        if not self.timed_out:
-            self.timed_out = True
-            terminate_process_tree(self.proc, include_exited_group=True)
+    def timeout_message(self) -> str:
         return (
             f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
             "terminated wrapped process\n"
         )
 
-    def __iter__(self) -> Iterable[str]:
-        deadline = time.monotonic() + self.timeout_seconds
-        timeout_reported = False
+    def _mark_timed_out(self) -> None:
+        if not self.timed_out:
+            self.timed_out = True
+            terminate_process_tree(
+                self.proc,
+                process_group_id=self.process_group_id,
+                include_exited_group=True,
+            )
+
+    def _timeout_line(self) -> str:
+        self._mark_timed_out()
+        self.timeout_reported = True
+        return self.timeout_message()
+
+    def __iter__(self) -> Iterator[str]:
         while True:
-            remaining = deadline - time.monotonic()
-            if self.proc.poll() is not None or self.timed_out:
-                wait_time = 0.05
-            else:
-                wait_time = min(0.05, max(0.0, remaining))
+            remaining = self.deadline - time.monotonic()
+            wait_time = 0.05 if self.proc.poll() is not None or self.timed_out else min(0.05, max(0.0, remaining))
             try:
                 item = self._queue.get(timeout=wait_time)
             except queue.Empty:
                 if remaining <= 0 and not self._stream_closed:
-                    if not timeout_reported:
-                        timeout_reported = True
+                    if not self.timeout_reported:
                         yield self._timeout_line()
+                    break
                 continue
             if item is _STREAM_END:
                 break
             if not isinstance(item, str):
                 continue
             yield item
-            if not self._stream_closed and time.monotonic() >= deadline:
-                if not timeout_reported:
-                    timeout_reported = True
+            if not self._stream_closed and time.monotonic() >= self.deadline:
+                if not self.timeout_reported:
                     yield self._timeout_line()
+                break
 
     def returncode(self) -> int:
         if self.timed_out:
-            try:
-                self.proc.wait(timeout=0)
-            except subprocess.TimeoutExpired:
-                terminate_process_tree(self.proc)
             return TIMEOUT_EXIT_CODE
-        return self.proc.wait()
+        remaining = self.deadline - time.monotonic()
+        try:
+            return self.proc.wait(timeout=max(0.0, remaining))
+        except subprocess.TimeoutExpired:
+            self._mark_timed_out()
+            return TIMEOUT_EXIT_CODE
+
+
+def process_group_id_for(proc: subprocess.Popen[str]) -> int | None:
+    if os.name == "nt":
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except ProcessLookupError:
+        # start_new_session=True makes the child the group leader; if it exits
+        # before getpgid(), the group id is still the leader pid while inherited
+        # stdout descendants remain alive.
+        return proc.pid
 
 
 def main() -> int:
@@ -518,7 +549,12 @@ def main() -> int:
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
         return 1
-    command_stream = TimedCommandStream(proc, proc.stdout, timeout_seconds=args.timeout_seconds)
+    command_stream = TimedCommandStream(
+        proc,
+        proc.stdout,
+        timeout_seconds=args.timeout_seconds,
+        process_group_id=process_group_id_for(proc),
+    )
     for line in command_stream:
         total += 1
         raw_chars += len(line)
@@ -538,6 +574,25 @@ def main() -> int:
             all_lines.append(visible_line)
 
     rc = command_stream.returncode()
+    if command_stream.timed_out and not command_stream.timeout_reported:
+        line = command_stream.timeout_message()
+        command_stream.timeout_reported = True
+        total += 1
+        raw_chars += len(line)
+        visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
+        if redacted:
+            redacted_lines += 1
+        visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
+        any_line_capped = any_line_capped or line_capped
+        visible_chars += len(visible_line)
+        if total <= args.head_lines:
+            head.append(visible_line)
+        tail.append(visible_line)
+        if ERROR_RE.search(visible_line) and len(error_lines) < args.error_lines:
+            error_lines.append(visible_line)
+        runner_summary.feed(line)
+        if total <= args.max_lines:
+            all_lines.append(visible_line)
 
     if total <= args.max_lines and visible_chars <= args.max_chars and not any_line_capped:
         sys.stdout.writelines(all_lines)

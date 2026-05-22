@@ -909,6 +909,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn(secret, proc.stdout)
                 self.assertNotIn("Traceback", proc.stderr)
 
+    def test_output_wrappers_timeout_after_wrapped_command_closes_stdout(self):
+        code = (
+            "import os, time; "
+            "devnull = os.open(os.devnull, os.O_WRONLY); "
+            "os.dup2(devnull, 1); "
+            "os.dup2(devnull, 2); "
+            "time.sleep(5)"
+        )
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--timeout-seconds",
+                        "1",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        code,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=4,
+                )
+                self.assertEqual(proc.returncode, 124)
+                self.assertIn("command timed out after 1s", proc.stdout)
+                self.assertNotIn("Traceback", proc.stderr)
+
     @unittest.skipIf(os.name == "nt", "process-group timeout behavior is POSIX-specific")
     def test_output_wrapper_timeout_kills_child_process_group(self):
         scripts = [KIT_DIR / "trim_command_output.py", KIT_DIR / "sanitize_output.py"]
@@ -945,7 +974,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.returncode, 124)
                     self.assertIn("spawned", proc.stdout)
                     self.assertIn("command timed out after 1s", proc.stdout)
-                    time.sleep(2.0)
+                    deadline = time.monotonic() + 4.0
+                    while time.monotonic() < deadline and not marker.exists():
+                        time.sleep(0.05)
                     self.assertFalse(marker.exists(), f"{script} left a child process running")
 
     @unittest.skipIf(os.name == "nt", "process-group timeout behavior is POSIX-specific")
@@ -983,7 +1014,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.returncode, 124)
                     self.assertIn("spawned", proc.stdout)
                     self.assertIn("command timed out after 1s", proc.stdout)
-                    time.sleep(2.0)
+                    deadline = time.monotonic() + 4.0
+                    while time.monotonic() < deadline and not marker.exists():
+                        time.sleep(0.05)
                     self.assertFalse(marker.exists(), f"{script} left a stdout-inheriting child running")
 
     def test_sanitize_output_redacts_secrets_from_stdin_and_anonymizes_paths(self):
