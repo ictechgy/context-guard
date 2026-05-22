@@ -75,7 +75,10 @@ SENSITIVE_CONTENT_RE = re.compile(
     r"(?=[A-Za-z0-9/+=]*[+/=G-Zg-z])[A-Za-z0-9/+=]{40,}(?![A-Za-z0-9/+=])|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
-    r"(?:sk|pk|rk)_live_[A-Za-z0-9]{16,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
     r"SK[0-9a-fA-F]{32}|"
     r"xox[abprs]-[A-Za-z0-9-]{10,}|"
     r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
@@ -83,7 +86,30 @@ SENSITIVE_CONTENT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )
+KEY_VALUE_SECRET_RE = re.compile(
+    r"(?is)(?<![A-Za-z0-9])"
+    r"[\"']?(?:api[_-]?key|token|secret|password|client[_-]?secret)[\"']?\s*[:=]\s*"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,}]+)"
+)
 SENSITIVE_HEX_RE = re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b[^\n]{0,40}\b[0-9a-f]{32,}\b")
+AUTH_HEADER_RE = re.compile(r"(?is)\bAuthorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+")
+URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+OUTPUT_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+PATH_LABEL_SECRET_RE = re.compile(
+    r"(?i)("
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|"
+    r"xox[abprs]-[A-Za-z0-9-]{10,}|"
+    r"(?:AKIA|ASIA)[0-9A-Z]{16}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
+    r"AIza[0-9A-Za-z_\-]{20,}|"
+    r"(?<![A-Za-z0-9])[\"']?(?:api[_-]?key|token|secret|password|client[_-]?secret)[\"']?\s*[:=]\s*"
+    r"(?:\"[^\"/\s]*\"|'[^'/\s]*'|[^/\s]+)"
+    r")"
+)
 SAFE_ENV_KEYS = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM"}
 PROVIDER_AUTH_ENV_KEYS = {
     "codex": {"CODEX_API_KEY", "OPENAI_API_KEY"},
@@ -167,9 +193,46 @@ def stable_hash(value: str, length: int = 12) -> str:
 
 
 def compact_warning_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
-    compact = " ".join(value.strip().split())
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
+    compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = KEY_VALUE_SECRET_RE.sub("[REDACTED]", compact)
     compact = SENSITIVE_CONTENT_RE.sub("[REDACTED]", compact)
     compact = SENSITIVE_HEX_RE.sub("[REDACTED]", compact)
+    if len(compact) > limit:
+        compact = compact[: limit - 15].rstrip() + " ...[truncated]"
+    return compact
+
+
+def redact_sensitive_output(value: str) -> str:
+    redacted = OUTPUT_CONTROL_CHAR_RE.sub(" ", value)
+    redacted = URL_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+    redacted = KEY_VALUE_SECRET_RE.sub("[REDACTED]", redacted)
+    redacted = SENSITIVE_CONTENT_RE.sub("[REDACTED]", redacted)
+    redacted = PATH_LABEL_SECRET_RE.sub("[REDACTED]", redacted)
+    redacted = SENSITIVE_HEX_RE.sub("[REDACTED]", redacted)
+    return redacted
+
+
+def path_label_has_sensitive_evidence(label: str) -> bool:
+    if (
+        CONTROL_CHAR_RE.search(label)
+        or URL_USERINFO_RE.search(label)
+        or AUTH_HEADER_RE.search(label)
+        or KEY_VALUE_SECRET_RE.search(label)
+        or PATH_LABEL_SECRET_RE.search(label)
+    ):
+        return True
+    try:
+        return is_sensitive_context_path(Path(label))
+    except (TypeError, ValueError):
+        return True
+
+
+def compact_path_label_text(value: str, limit: int = WARNING_LABEL_MAX_CHARS) -> str:
+    compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
+    compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
+    compact = KEY_VALUE_SECRET_RE.sub("[REDACTED]", compact)
+    compact = PATH_LABEL_SECRET_RE.sub("[REDACTED]", compact)
     if len(compact) > limit:
         compact = compact[: limit - 15].rstrip() + " ...[truncated]"
     return compact
@@ -655,29 +718,38 @@ def safe_path_env() -> str:
 
 
 def validate_provider_executable(path: Path, provider: str) -> Path:
-    resolved = path.expanduser().resolve()
+    original_label = response_path_label(str(path))
+    try:
+        resolved = path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f"Provider '{provider}' executable cannot be resolved: {original_label}") from exc
+    resolved_label = response_path_label(str(resolved))
     if not resolved.exists() or not os.access(resolved, os.X_OK):
-        raise SystemExit(f"Provider '{provider}' executable not found or not executable: {path}")
+        raise SystemExit(f"Provider '{provider}' executable not found or not executable: {original_label}")
     try:
         executable_mode = resolved.stat().st_mode
     except OSError as exc:
-        raise SystemExit(f"Provider '{provider}' executable cannot be checked: {resolved}") from exc
+        raise SystemExit(f"Provider '{provider}' executable cannot be checked: {resolved_label}") from exc
     if not stat.S_ISREG(executable_mode):
-        raise SystemExit(f"Provider '{provider}' executable is not a regular file: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is not a regular file: {resolved_label}")
     if stat.S_IMODE(executable_mode) & 0o022:
-        raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is group/world writable: {resolved_label}")
     if executable_mode & (stat.S_ISUID | stat.S_ISGID):
-        raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable must not be setuid/setgid: {resolved_label}")
     project_root = find_project_root()
     temp_root = Path(tempfile.gettempdir()).resolve()
     if is_under_any(resolved, [project_root, temp_root]):
-        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved}")
+        raise SystemExit(f"Provider '{provider}' executable is in an unsafe project/temp path: {resolved_label}")
     try:
         parent_mode = stat.S_IMODE(resolved.parent.stat().st_mode)
     except OSError as exc:
-        raise SystemExit(f"Provider '{provider}' executable parent cannot be checked: {resolved.parent}") from exc
+        raise SystemExit(
+            f"Provider '{provider}' executable parent cannot be checked: {response_path_label(str(resolved.parent))}"
+        ) from exc
     if parent_mode & 0o022:
-        raise SystemExit(f"Provider '{provider}' executable parent is group/world writable: {resolved.parent}")
+        raise SystemExit(
+            f"Provider '{provider}' executable parent is group/world writable: {response_path_label(str(resolved.parent))}"
+        )
     return resolved
 
 
@@ -690,7 +762,7 @@ def resolve_provider_command(provider: str, command: list[str]) -> list[str]:
     else:
         found = shutil.which(executable, path=safe_path_env())
         if not found:
-            raise SystemExit(f"Provider '{provider}' executable not found on safe PATH: {executable}")
+            raise SystemExit(f"Provider '{provider}' executable not found on safe PATH: {response_path_label(executable)}")
         resolved = validate_provider_executable(Path(found), provider)
     return [str(resolved), *command[1:]]
 
@@ -1015,6 +1087,30 @@ def safe_delegation_dir(config: dict[str, Any]) -> Path:
     return resolved
 
 
+def response_path_label(raw_path: str) -> str:
+    if path_label_has_sensitive_evidence(raw_path):
+        return "redacted-path"
+    try:
+        root = find_project_root()
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        resolved = path.resolve()
+        if is_sensitive_context_path(resolved):
+            return "sensitive-path"
+        label = context_label_for_path(resolved, root)
+    except (OSError, RuntimeError, ValueError):
+        return "redacted-path"
+    if path_label_has_sensitive_evidence(label):
+        return "redacted-path"
+    return compact_path_label_text(label) or "path"
+
+
+def response_override_summary(paths: list[str] | None) -> str:
+    labels = [response_path_label(path) for path in paths or []]
+    return ", ".join(labels) if labels else "none"
+
+
 def save_response(
     config: dict[str, Any],
     provider: str,
@@ -1035,6 +1131,8 @@ def save_response(
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = out_dir / f"{stamp}-{os.getpid()}-{provider}.md"
     boundary = f"CLAUDE_TOKEN_AUX_RESPONSE_{uuid.uuid4().hex}"
+    safe_stdout = redact_sensitive_output(stdout.rstrip())
+    safe_stderr = redact_sensitive_output(stderr.rstrip())
     content = [
         "# Auxiliary AI delegation response",
         "",
@@ -1044,22 +1142,22 @@ def save_response(
         f"- exit_code: `{rc}`",
         f"- created_at: `{_dt.datetime.now().isoformat(timespec='seconds')}`",
         f"- task_chars: `{len(task)}`",
-        f"- sensitive_context_overrides: `{', '.join(sensitive_overrides or []) or 'none'}`",
-        f"- outside_project_overrides: `{', '.join(outside_overrides or []) or 'none'}`",
+        f"- sensitive_context_overrides: `{response_override_summary(sensitive_overrides)}`",
+        f"- outside_project_overrides: `{response_override_summary(outside_overrides)}`",
         "",
         "## Untrusted Stdout",
         "",
         f"-----BEGIN UNTRUSTED AUX STDOUT {boundary}-----",
-        escape_untrusted_output(stdout.rstrip(), boundary),
+        escape_untrusted_output(safe_stdout, boundary),
         f"-----END UNTRUSTED AUX STDOUT {boundary}-----",
         "",
     ]
-    if stderr.strip():
+    if safe_stderr.strip():
         content.extend([
             "## Untrusted Stderr",
             "",
             f"-----BEGIN UNTRUSTED AUX STDERR {boundary}-----",
-            escape_untrusted_output(stderr.rstrip(), boundary),
+            escape_untrusted_output(safe_stderr, boundary),
             f"-----END UNTRUSTED AUX STDERR {boundary}-----",
             "",
         ])
@@ -1222,7 +1320,7 @@ def read_limited_output(path: Path, limit: int) -> tuple[str, bool]:
     try:
         return read_text_no_follow_bounded(path, read_limit)
     except OSError as exc:
-        return f"[failed to read provider output safely: {exc}]\n", False
+        return f"[failed to read provider output safely: {os_error_summary(exc)}]\n", False
 
 
 def provider_output_size(*files: Any) -> int:
@@ -1271,7 +1369,11 @@ def run_provider(
                         start_new_session=True,
                     )
                 except (OSError, ValueError) as exc:
-                    stderr_file.write(f"provider failed to start: {exc.__class__.__name__}: {exc}\n".encode("utf-8", "replace"))
+                    if isinstance(exc, OSError):
+                        detail = os_error_summary(exc)
+                    else:
+                        detail = f"{exc.__class__.__name__}: {compact_warning_text(str(exc), 160)}"
+                    stderr_file.write(f"provider failed to start: {detail}\n".encode("utf-8", "replace"))
                     returncode = 127
                     proc = None
                 if proc is None:
@@ -1464,7 +1566,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     try:
         resolved_command = resolve_provider_command(provider, command)
     except SystemExit as exc:
-        print(str(exc), file=sys.stderr)
+        print(compact_path_label_text(str(exc), 240), file=sys.stderr)
         return 127
 
     returncode, stdout, stderr = run_provider(
@@ -1474,6 +1576,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         timeout_seconds,
         max_output_chars,
     )
+    stdout = redact_sensitive_output(stdout)
+    stderr = redact_sensitive_output(stderr)
 
     saved = save_response(config, provider, stdout, stderr, task, returncode, allow_sensitive, allow_outside)
     if returncode != 0 and stderr.strip():

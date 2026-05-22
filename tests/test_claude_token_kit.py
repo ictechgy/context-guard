@@ -5843,6 +5843,295 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 9)
             self.assertIn("AUTH FAIL", proc.stdout)
 
+    def test_aux_delegate_redacts_provider_output_before_preview_and_save(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    github_token = "ghp_" + ("A" * 36)
+                    api_key = "plain-api-key-secret"
+                    json_api_key = "json alpha-secret beta-secret gamma-secret"
+                    auth_value = "opaque-bearer-token"
+                    url_userinfo = "token-user:secret-pass"
+                    url_key_userinfo = "url-user:url-secret"
+                    github_fine_grained = "github_pat_" + ("B" * 30)
+                    gitlab_pat = "glpat-" + ("C" * 20)
+                    openai_test_key = "sk_test_" + ("D" * 24)
+                    claude_key = "sk-ant-" + ("E" * 24)
+                    project_key = "sk-proj-" + ("F" * 24)
+                    json_api_payload = '{"api_key": "' + json_api_key + '"}'
+                    expected_redacted = [
+                        github_token,
+                        api_key,
+                        json_api_key,
+                        "alpha-secret",
+                        "beta-secret",
+                        "gamma-secret",
+                        auth_value,
+                        url_userinfo,
+                        "token-user@",
+                        "secret-pass",
+                        url_key_userinfo,
+                        "url-user@",
+                        "url-secret",
+                        github_fine_grained,
+                        gitlab_pat,
+                        openai_test_key,
+                        claude_key,
+                        project_key,
+                    ]
+                    provider_command = "; ".join(
+                        [
+                            f"printf '%s\\n' {shlex.quote('token=' + github_token)}",
+                            f"printf '%s\\n' {shlex.quote('api_key=' + api_key)}",
+                            f"printf '%s\\n' {shlex.quote(json_api_payload)}",
+                            f"printf '%s\\n' {shlex.quote('https://' + url_userinfo + '@example.invalid/repo')}",
+                            f"printf '%s\\n' {shlex.quote('password=https://' + url_key_userinfo + '@example.invalid/repo')}",
+                            f"printf '%s\\n' {shlex.quote('Authorization: Bearer ' + auth_value)} >&2",
+                            f"printf '%s\\n' {shlex.quote(github_fine_grained)}",
+                            f"printf '%s\\n' {shlex.quote(gitlab_pat)}",
+                            f"printf '%s\\n' {shlex.quote(openai_test_key)}",
+                            f"printf '%s\\n' {shlex.quote(claude_key)}",
+                            f"printf '%s\\n' {shlex.quote(project_key)}",
+                            "exit 9",
+                        ]
+                    )
+                    config_path = root / "config.json"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "mock",
+                        "max_output_chars": 4000,
+                        "delegation_dir": ".claude-token-optimizer/delegations",
+                        "providers": {
+                            "mock": {
+                                "enabled": True,
+                                "command": [SAFE_SHELL, "-c", provider_command],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "mock", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(proc.returncode, 9)
+                    combined = proc.stdout + proc.stderr
+                    for secret in expected_redacted:
+                        self.assertNotIn(secret, combined)
+                    self.assertIn("[REDACTED]", proc.stdout)
+                    saved_line = next(line for line in proc.stdout.splitlines() if line.startswith("response_saved="))
+                    saved_text = Path(saved_line.split("=", 1)[1]).read_text(encoding="utf-8")
+                    for secret in expected_redacted:
+                        self.assertNotIn(secret, saved_text)
+                    self.assertIn("[REDACTED]", saved_text)
+
+    def test_aux_delegate_provider_resolution_errors_use_safe_path_labels(self):
+        for script in AUX_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    secret_missing = root / ("provider-password=" + ("B" * 32)) / "missing-exec"
+                    config_path = root / "config.json"
+                    env = os.environ.copy()
+                    env["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config_path)
+                    env["CLAUDE_TOKEN_OPTIMIZER_ALLOW_CUSTOM_PROVIDER"] = "1"
+
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(secret_missing)], "stdin": True}},
+                    })
+                    missing = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(missing.returncode, 127)
+                    self.assertRegex(missing.stderr, r"executable not found or not executable: (?:sensitive|redacted)-path")
+                    self.assertNotIn(str(root), missing.stderr)
+                    self.assertNotIn("password=", missing.stderr)
+                    self.assertNotIn("B" * 16, missing.stderr)
+
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {
+                            "bad": {
+                                "enabled": True,
+                                "command": ["tool-token=ghp_" + ("A" * 36)],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    path_miss = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(path_miss.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", path_miss.stderr)
+                    self.assertNotIn("ghp_", path_miss.stderr)
+                    self.assertNotIn("token=ghp_", path_miss.stderr)
+
+                    auth_command = "Authorization: Bearer opaque-provider-token"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [auth_command], "stdin": True}},
+                    })
+                    auth_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(auth_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", auth_fail.stderr)
+                    self.assertNotIn("Authorization", auth_fail.stderr)
+                    self.assertNotIn("opaque-provider-token", auth_fail.stderr)
+
+                    basic_command = "Authorization: Basic opaque-basic-token"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [basic_command], "stdin": True}},
+                    })
+                    basic_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(basic_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", basic_fail.stderr)
+                    self.assertNotIn("Authorization", basic_fail.stderr)
+                    self.assertNotIn("opaque-basic-token", basic_fail.stderr)
+
+                    invalid_relative = "bad\x00path"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [invalid_relative], "stdin": True}},
+                    })
+                    invalid_rel_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(invalid_rel_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", invalid_rel_fail.stderr)
+                    self.assertNotIn(invalid_relative.replace("\x00", ""), invalid_rel_fail.stderr)
+
+                    invalid_absolute = str(root / "bad\x00path")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [invalid_absolute], "stdin": True}},
+                    })
+                    invalid_abs_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(invalid_abs_fail.returncode, 127)
+                    self.assertIn("executable cannot be resolved: redacted-path", invalid_abs_fail.stderr)
+                    self.assertNotIn(str(root), invalid_abs_fail.stderr)
+                    self.assertNotIn("bad\x00path", invalid_abs_fail.stderr)
+
+                    url_userinfo = "token-user:secret-pass"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {
+                            "bad": {
+                                "enabled": True,
+                                "command": ["https://" + url_userinfo + "@example.invalid/tool"],
+                                "stdin": True,
+                            }
+                        },
+                    })
+                    url_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(url_fail.returncode, 127)
+                    self.assertIn("redacted-path", url_fail.stderr)
+                    self.assertNotIn(url_userinfo, url_fail.stderr)
+                    self.assertNotIn("token-user@", url_fail.stderr)
+                    self.assertNotIn("secret-pass", url_fail.stderr)
+
+                    control_relative = "safe-\x1b[31m-path"
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [control_relative], "stdin": True}},
+                    })
+                    control_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(control_fail.returncode, 127)
+                    self.assertIn("executable not found on safe PATH: redacted-path", control_fail.stderr)
+                    self.assertNotIn("\x1b", control_fail.stderr)
+                    self.assertNotIn("[31m", control_fail.stderr)
+
+                    long_safe = root / ("safe-" + ("x" * 180) + ".log")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(long_safe)], "stdin": True}},
+                    })
+                    safe_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(safe_fail.returncode, 127)
+                    self.assertIn("safe-", safe_fail.stderr)
+                    self.assertIn("...[truncated]", safe_fail.stderr)
+                    self.assertNotIn("redacted-path", safe_fail.stderr)
+                    self.assertNotIn("[REDACTED]", safe_fail.stderr)
+                    self.assertNotIn(str(root), safe_fail.stderr)
+
+                    loop = root / ("provider-password=" + ("C" * 32))
+                    try:
+                        loop.symlink_to(loop, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    write_private_config(config_path, {
+                        "aux_ai_enabled": True,
+                        "default_provider": "bad",
+                        "providers": {"bad": {"enabled": True, "command": [str(loop / "tool")], "stdin": True}},
+                    })
+                    loop_fail = subprocess.run(
+                        [sys.executable, str(script), "ask", "--provider", "bad", "--prompt", "hello"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertEqual(loop_fail.returncode, 127)
+                    self.assertRegex(
+                        loop_fail.stderr,
+                        r"executable (?:cannot be resolved|not found or not executable): redacted-path",
+                    )
+                    self.assertNotIn(str(root), loop_fail.stderr)
+                    self.assertNotIn("password=", loop_fail.stderr)
+                    self.assertNotIn("C" * 16, loop_fail.stderr)
+
     def test_aux_delegate_writes_private_gitignore_for_responses(self):
         aux = load_aux_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -5863,6 +6152,69 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
                 else:
                     os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+
+    def test_aux_delegate_saved_response_override_metadata_uses_safe_labels(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            secret_path = root / ("token=ghp_" + ("A" * 36) + ".env")
+            outside_path = Path(tmp) / ("outside-password=" + ("B" * 32) + ".log")
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(state / "config.json")
+            try:
+                config = aux.json_clone(aux.DEFAULT_CONFIG)
+                path = aux.save_response(
+                    config,
+                    "gemini",
+                    "out",
+                    "",
+                    "task",
+                    0,
+                    sensitive_overrides=[str(secret_path)],
+                    outside_overrides=[str(outside_path)],
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("sensitive_context_overrides: `redacted-path`", text)
+            self.assertIn("outside_project_overrides: `redacted-path`", text)
+            self.assertNotIn(str(root), text)
+            self.assertNotIn(tmp, text)
+            self.assertNotIn("ghp_", text)
+            self.assertNotIn("password=", text)
+
+    def test_aux_delegate_response_path_label_keeps_long_safe_names(self):
+        aux = load_aux_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            long_safe_path = root / ("safe-" + ("0" * 220) + ".log")
+            old = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(root / ".claude-token-optimizer" / "config.json")
+            try:
+                label = aux.response_path_label(str(long_safe_path))
+            finally:
+                if old is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old
+            self.assertNotEqual(label, "redacted-path")
+            self.assertIn("safe-", label)
+            self.assertIn("...[truncated]", label)
+            self.assertNotIn("[REDACTED]", label)
+            self.assertNotIn(str(root), label)
+            self.assertEqual(aux.response_path_label("bad\x00token"), "redacted-path")
+            self.assertEqual(aux.response_path_label("safe-\x1b[31m-path"), "redacted-path")
+            self.assertEqual(aux.response_path_label("Authorization: Bearer opaque-provider-token"), "redacted-path")
+            self.assertEqual(aux.response_path_label("Authorization: Basic opaque-basic-token"), "redacted-path")
+            self.assertIn("safe-", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
+            self.assertNotIn("[REDACTED]", aux.response_path_label("safe-" + ("x" * 180) + ".log"))
 
     def test_aux_prompt_marks_task_and_context_untrusted(self):
         aux = load_aux_module()
