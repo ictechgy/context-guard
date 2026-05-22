@@ -2427,6 +2427,38 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(json.loads(proc3.stdout), {})
                     self.assertFalse((cwd / ".claude-token-optimizer").exists())
 
+    def test_failed_attempt_nudge_hashes_sensitive_session_labels_and_state(self):
+        """session_id/command 에 secret/control 문자가 있어도 파일명·상태·출력에 raw 로 남기지 않는다."""
+        secret = "ghp_" + ("A" * 36)
+        session_id = f"sess-\x1b[31m-token={secret}"
+        command = f"pytest tests/auth.py -k token={secret}\n"
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    payload = {
+                        "session_id": session_id,
+                        "tool_name": "Bash",
+                        "tool_input": {"command": command},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    self.assertEqual(json.loads(run_hook_payload(script, payload, cwd=cwd).stdout), {})
+                    proc = run_hook_payload(script, payload, cwd=cwd)
+                    data = json.loads(proc.stdout)
+                    self.assertIn("hookSpecificOutput", data)
+                    rendered = proc.stdout + proc.stderr
+                    state_files = list((cwd / ".claude-token-optimizer").glob("failures-*.json"))
+                    self.assertEqual(len(state_files), 1)
+                    state_rendered = state_files[0].name + state_files[0].read_text(encoding="utf-8")
+
+                    for text in (rendered, state_rendered):
+                        self.assertNotIn(secret, text)
+                        self.assertNotIn("token=ghp_", text)
+                        self.assertNotIn("\x1b", text)
+                        self.assertNotIn("[31m", text)
+                        self.assertNotIn(command, text)
+                    self.assertRegex(state_files[0].name, r"^failures-sess-[0-9a-f]{16}\.json$")
+
     def test_failed_attempt_nudge_rejects_symlinked_state_file(self):
         """state file 이 심볼릭 링크로 미리 만들어져 있어도 그 link 를 따라 쓰지 않는다."""
         for script in NUDGE_SCRIPTS:
@@ -2438,10 +2470,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     target = cwd / "victim.txt"
                     target.write_text("important", encoding="utf-8")
                     # 공격자가 심어둔 symlink: state file 이 victim 파일을 가리킨다.
-                    link = state_dir / "failures-sess-symlink.json"
+                    session_id = "sess-symlink"
+                    session_label = "sess-" + hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+                    link = state_dir / f"failures-{session_label}.json"
                     link.symlink_to(target)
                     payload = {
-                        "session_id": "sess-symlink",
+                        "session_id": session_id,
                         "tool_name": "Bash",
                         "tool_input": {"command": "pytest tests/x.py"},
                         "tool_response": {"exitCode": 1},
@@ -2667,6 +2701,53 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     stderr = module.sys.stderr.getvalue()
                     self.assertIn("state read skipped", stderr)
                     self.assertIn("permission denied", stderr)
+                finally:
+                    module.load_entries = original_load
+                    module.save_entries = original_save
+                    module.sys.stdin = original_stdin
+                    module.sys.stdout = original_stdout
+                    module.sys.stderr = original_stderr
+
+    def test_failed_attempt_nudge_main_sanitizes_state_diagnostics(self):
+        """state 진단 stderr 는 cwd, secret-shaped 값, control 문자를 raw 로 노출하지 않는다."""
+        secret = "ghp_" + ("B" * 36)
+        payload = {
+            "session_id": f"sess-token={secret}",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/auth.py"},
+            "tool_response": {"exitCode": 1},
+        }
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_main_diag_sanitize_{index}")
+                original_load = module.load_entries
+                original_save = module.save_entries
+                original_stdin = module.sys.stdin
+                original_stdout = module.sys.stdout
+                original_stderr = module.sys.stderr
+
+                def noisy_load(path):
+                    raise PermissionError(
+                        errno.EACCES,
+                        f"permission denied in {Path.cwd()} token={secret}\x1b[31m",
+                        str(path),
+                    )
+
+                module.load_entries = noisy_load
+                module.save_entries = lambda path, entries: None
+                module.sys.stdin = io.StringIO(json.dumps(payload))
+                module.sys.stdout = io.StringIO()
+                module.sys.stderr = io.StringIO()
+                try:
+                    self.assertEqual(module.main(), 0)
+                    stderr = module.sys.stderr.getvalue()
+                    self.assertIn("state read skipped", stderr)
+                    self.assertIn("permission denied", stderr)
+                    self.assertNotIn(secret, stderr)
+                    self.assertNotIn("token=ghp_", stderr)
+                    self.assertNotIn("\x1b", stderr)
+                    self.assertNotIn("[31m", stderr)
+                    self.assertNotIn(str(Path.cwd()), stderr)
                 finally:
                     module.load_entries = original_load
                     module.save_entries = original_save
