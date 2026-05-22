@@ -463,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--show-paths",
         action="store_true",
-        help="show raw absolute paths instead of anonymizing them as basename#path:<hash>",
+        help="show raw absolute paths instead of basename#path:<hash>; local debugging only because private paths may be exposed",
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser

@@ -701,7 +701,7 @@ def main() -> int:
     parser.add_argument(
         "--show-paths",
         action="store_true",
-        help="Show transcript paths instead of basename+hash labels; secret-shaped path components remain redacted",
+        help="Show transcript paths instead of basename+hash labels; local debugging only; secret-shaped path components remain redacted",
     )
     parser.add_argument("--show-commands", action="store_true", help="Show redacted command strings instead of command category+hash labels")
     parser.add_argument(
