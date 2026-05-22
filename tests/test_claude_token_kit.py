@@ -948,6 +948,44 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     time.sleep(2.0)
                     self.assertFalse(marker.exists(), f"{script} left a child process running")
 
+    @unittest.skipIf(os.name == "nt", "process-group timeout behavior is POSIX-specific")
+    def test_output_wrapper_timeout_kills_stdout_inheriting_child_after_parent_exits(self):
+        scripts = [KIT_DIR / "trim_command_output.py", KIT_DIR / "sanitize_output.py"]
+        for script in scripts:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    marker = Path(tmp) / "orphan-survived"
+                    child_code = (
+                        "import pathlib, time; "
+                        "time.sleep(2.5); "
+                        f"pathlib.Path({str(marker)!r}).write_text('ran', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                        "print('spawned', flush=True)"
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--timeout-seconds",
+                            "1",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            parent_code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(proc.returncode, 124)
+                    self.assertIn("spawned", proc.stdout)
+                    self.assertIn("command timed out after 1s", proc.stdout)
+                    time.sleep(2.0)
+                    self.assertFalse(marker.exists(), f"{script} left a stdout-inheriting child running")
+
     def test_sanitize_output_redacts_secrets_from_stdin_and_anonymizes_paths(self):
         raw = (
             "/Users/alice/project/app.py:12:API_TOKEN=ghp_" + ("A" * 36) + "\n"

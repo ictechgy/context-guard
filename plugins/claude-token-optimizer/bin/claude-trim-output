@@ -319,14 +319,47 @@ class RunnerFailureSummary:
 _STREAM_END = object()
 
 
-def terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+def process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def terminate_process_tree(proc: subprocess.Popen[str], *, include_exited_group: bool = False) -> None:
+    if os.name != "nt":
+        pgid = proc.pid
+        if proc.poll() is not None and not include_exited_group:
+            return
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=0.05)
+                except subprocess.TimeoutExpired:
+                    pass
+            if not process_group_exists(pgid):
+                return
+            time.sleep(0.05)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        return
+
     if proc.poll() is not None:
         return
     try:
-        if os.name != "nt":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:
-            proc.terminate()
+        proc.terminate()
     except ProcessLookupError:
         return
     except OSError:
@@ -337,10 +370,7 @@ def terminate_process_tree(proc: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         pass
     try:
-        if os.name != "nt":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
+        proc.kill()
     except ProcessLookupError:
         return
     except OSError:
@@ -358,6 +388,7 @@ class TimedCommandStream:
         self.proc = proc
         self.timeout_seconds = timeout_seconds
         self.timed_out = False
+        self._stream_closed = False
         self._queue: queue.Queue[str | object] = queue.Queue(maxsize=1024)
         self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
         self._thread.start()
@@ -367,7 +398,17 @@ class TimedCommandStream:
             for line in stdout:
                 self._queue.put(line)
         finally:
+            self._stream_closed = True
             self._queue.put(_STREAM_END)
+
+    def _timeout_line(self) -> str:
+        if not self.timed_out:
+            self.timed_out = True
+            terminate_process_tree(self.proc, include_exited_group=True)
+        return (
+            f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
+            "terminated wrapped process\n"
+        )
 
     def __iter__(self) -> Iterable[str]:
         deadline = time.monotonic() + self.timeout_seconds
@@ -381,30 +422,20 @@ class TimedCommandStream:
             try:
                 item = self._queue.get(timeout=wait_time)
             except queue.Empty:
-                if remaining <= 0 and self.proc.poll() is None:
-                    self.timed_out = True
-                    terminate_process_tree(self.proc)
+                if remaining <= 0 and not self._stream_closed:
                     if not timeout_reported:
                         timeout_reported = True
-                        yield (
-                            f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
-                            "terminated wrapped process\n"
-                        )
+                        yield self._timeout_line()
                 continue
             if item is _STREAM_END:
                 break
             if not isinstance(item, str):
                 continue
             yield item
-            if not self.timed_out and time.monotonic() >= deadline and self.proc.poll() is None:
-                self.timed_out = True
-                terminate_process_tree(self.proc)
+            if not self._stream_closed and time.monotonic() >= deadline:
                 if not timeout_reported:
                     timeout_reported = True
-                    yield (
-                        f"[claude-token-kit] command timed out after {self.timeout_seconds}s; "
-                        "terminated wrapped process\n"
-                    )
+                    yield self._timeout_line()
 
     def returncode(self) -> int:
         if self.timed_out:
