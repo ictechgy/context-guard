@@ -4477,6 +4477,23 @@ for malformed in malformed_values:
                     self.assertIn("feature/token-hud", proc.stdout)
                     self.assertFalse(marker.exists())
 
+    def test_statusline_rejects_oversized_stdin_before_json_processing(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                env = os.environ.copy()
+                env["CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES"] = "32"
+                proc = subprocess.run(
+                    ["bash", str(script)],
+                    input="{" + ("x" * 128),
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    check=True,
+                )
+                self.assertEqual(proc.stderr, "")
+                self.assertIn("[input-too-large]", proc.stdout)
+                self.assertLessEqual(len(proc.stdout.rstrip("\n")), 80)
+
     def test_transcript_audit_marks_cache_amortization_undefined_when_no_writes(self):
         """cache_creation == 0 인 transcript는 amortization을 'defined=False'로 노출해야 한다."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -8101,6 +8118,42 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
         self.assertIn("[OMC] [31mred[0m", out)
         self.assertIn(" | cost $0.123", out)
         self.assertIn(" | cache 42%", out)
+
+    def test_rejects_oversized_stdin_without_invoking_helpers(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            omc_marker = tmp / "omc-executed"
+            tok_marker = tmp / "token-executed"
+            omc = tmp / "omc-hud.mjs"
+            omc.write_text(
+                f"require('fs').writeFileSync({json.dumps(str(omc_marker))}, 'ran');\n"
+                "process.stdin.resume();\n",
+                encoding="utf-8",
+            )
+            tok = tmp / "fake-token-statusline"
+            tok.write_text(
+                "#!/usr/bin/env bash\n"
+                f"touch {shlex.quote(str(tok_marker))}\n"
+                "cat >/dev/null\n"
+                "echo token\n",
+                encoding="utf-8",
+            )
+            os.chmod(tok, stat.S_IRWXU)
+            env = os.environ.copy()
+            env["OMC_HUD_SCRIPT"] = str(omc)
+            env["CLAUDE_TOKEN_STATUSLINE_BIN"] = str(tok)
+            env["CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES"] = "32"
+            proc = subprocess.run(
+                ["bash", str(KIT_DIR / "statusline_merged.sh")],
+                input="{" + ("x" * 128),
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("[input-too-large]", proc.stdout)
+            self.assertFalse(omc_marker.exists())
+            self.assertFalse(tok_marker.exists())
 
 
 if __name__ == "__main__":

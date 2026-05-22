@@ -6,7 +6,29 @@ if [[ -t 0 ]]; then
   exit 0
 fi
 
-input=$(cat)
+statusline_input_max_bytes() {
+  local max="${CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES:-65536}"
+  if [[ ! "$max" =~ ^[0-9]+$ ]] || (( ${#max} > 7 )); then
+    max=65536
+  fi
+  if (( max < 1 || max > 1048576 )); then
+    max=65536
+  fi
+  printf '%s\n' "$max"
+}
+
+read_bounded_statusline_input() {
+  local max input_len
+  max=$(statusline_input_max_bytes)
+  input=$(LC_ALL=C head -c "$((max + 1))" 2>/dev/null || true)
+  input_len=$(printf '%s' "$input" | LC_ALL=C wc -c | tr -d '[:space:]')
+  if (( input_len > max )); then
+    echo "[input-too-large] Claude statusline JSON exceeds ${max} bytes"
+    exit 0
+  fi
+}
+
+read_bounded_statusline_input
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "[needs-jq] install jq for Claude token statusline"
