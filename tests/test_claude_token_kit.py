@@ -1606,6 +1606,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
 
+    def test_setup_wizard_restrictive_umask_repair_does_not_change_parent_umask(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_parent_umask_preserved")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "private" / "nested" / "settings.json"
+            old_umask = os.umask(0o700)
+            try:
+                setup.atomic_write(target, "{}\n", 0o600)
+                observed_umask = os.umask(0o077)
+                os.umask(observed_umask)
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(observed_umask, 0o700)
+
     def test_setup_wizard_auto_delegate_requires_and_records_aux_opt_in(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

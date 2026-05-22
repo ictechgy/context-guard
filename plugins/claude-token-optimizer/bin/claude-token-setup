@@ -213,14 +213,26 @@ def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
 
 
 def _mkdir_directory_entry_at(dir_fd: int, component: str, mode: int) -> None:
-    # mkdir modes are still filtered through the process umask.  Temporarily
-    # clearing it around this single call preserves owner search bits under
-    # restrictive umasks without adding a chmod-before-O_NOFOLLOW-reopen window.
-    old_umask = os.umask(0)
-    try:
-        os.mkdir(component, mode, dir_fd=dir_fd)
-    finally:
-        os.umask(old_umask)
+    # mkdir modes are still filtered through umask.  Run only the mkdir in an
+    # isolated child process with umask 0 so the parent process umask never
+    # changes, then the parent immediately reopens with O_NOFOLLOW.
+    helper = (
+        "import os, sys\n"
+        "dir_fd = int(sys.argv[1])\n"
+        "component = sys.argv[2]\n"
+        "mode = int(sys.argv[3], 8)\n"
+        "os.umask(0)\n"
+        "os.mkdir(component, mode, dir_fd=dir_fd)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", helper, str(dir_fd), component, oct(mode)],
+        text=True,
+        capture_output=True,
+        pass_fds=(dir_fd,),
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+        raise OSError(f"could not create directory component safely: {component}: {detail[0]}")
 
 
 def _open_regular_no_symlink(path: Path) -> int:
