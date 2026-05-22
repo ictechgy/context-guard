@@ -3101,6 +3101,8 @@ for malformed in malformed_values:
             "url_empty_password": ("https://token:@example.invalid/db.py", ["token:@"]),
             "url_token_only": ("https://token@example.invalid/db.py", ["token@"]),
             "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
+            "newline_split_github": ("ghp_\n" + ("A" * 36) + ".py", ["ghp_", "A" * 20]),
+            "tab_split_key_value": ("token=\tsecretvalue123.py", ["token=", "secretvalue123"]),
         }
         for script in READ_GUARD_SCRIPTS:
             for case, (filename, forbidden_fragments) in cases.items():
@@ -3435,6 +3437,8 @@ for malformed in malformed_values:
             "bearer": ("Bearer " + ("A" * 20) + ".py", ["Bearer " + ("A" * 20)]),
             "basic": ("Basic " + ("A" * 20) + ".py", ["Basic " + ("A" * 20)]),
             "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
+            "newline_split_github": ("ghp_\n" + ("A" * 36) + ".py", ["ghp_", "A" * 20]),
+            "tab_split_key_value": ("token=\tsecretvalue123.py", ["token=", "secretvalue123"]),
         }
         for script in READ_SYMBOL_SCRIPTS:
             for case, (filename, forbidden_fragments) in cases.items():

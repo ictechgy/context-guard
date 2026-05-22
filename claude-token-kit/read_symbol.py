@@ -75,8 +75,9 @@ def path_label(path: Path, show_paths: bool) -> str:
     if show_paths:
         return str(path)
     digest = hashlib.sha256(str(path).encode("utf-8", "replace")).hexdigest()[:12]
-    name = " ".join((path.name or "path").strip().split())
-    if hook_label_has_sensitive_evidence(name):
+    raw_name = path.name or "path"
+    name = " ".join(raw_name.strip().split())
+    if hook_label_has_sensitive_evidence(raw_name):
         name = "redacted-path"
     elif len(name) > PATH_LABEL_MAX_CHARS:
         name = name[: PATH_LABEL_MAX_CHARS - 15].rstrip() + "...[truncated]"
