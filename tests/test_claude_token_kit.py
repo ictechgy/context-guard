@@ -6132,6 +6132,147 @@ for malformed in malformed_values:
             with self.assertRaises(OSError):
                 aux.read_config_text_no_follow(linked_state / "config.json")
 
+    def test_aux_delegate_save_config_rejects_symlinked_parent_before_write(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_save_parent_symlink_{index}")
+                self._assert_aux_delegate_save_config_rejects_symlinked_parent_before_write(aux)
+
+    def _assert_aux_delegate_save_config_rejects_symlinked_parent_before_write(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_state = root / "real-state"
+            real_state.mkdir()
+            linked_state = root / "linked-state"
+            try:
+                linked_state.symlink_to(real_state, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(linked_state / "config.json")
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    aux.save_config({"aux_ai_enabled": True})
+                self.assertIn("config path component must not be a symlink", str(ctx.exception))
+                self.assertFalse((real_state / "config.json").exists())
+                self.assertFalse((real_state / ".gitignore").exists())
+            finally:
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+
+    def test_aux_delegate_save_config_rejects_symlinked_destination_before_write(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_save_leaf_symlink_{index}")
+                self._assert_aux_delegate_save_config_rejects_symlinked_destination_before_write(aux)
+
+    def _assert_aux_delegate_save_config_rejects_symlinked_destination_before_write(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / ".claude-token-optimizer"
+            state.mkdir()
+            victim = root / "victim.json"
+            victim.write_text("do-not-overwrite\n", encoding="utf-8")
+            config = state / "config.json"
+            try:
+                config.symlink_to(victim)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    aux.save_config({"aux_ai_enabled": True})
+                self.assertIn("config path component must not be a symlink", str(ctx.exception))
+                self.assertTrue(config.is_symlink())
+                self.assertEqual(victim.read_text(encoding="utf-8"), "do-not-overwrite\n")
+            finally:
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+
+    def test_aux_delegate_save_config_repairs_restrictive_umask_without_parent_umask_change(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_save_restrictive_umask_{index}")
+                self._assert_aux_delegate_save_config_repairs_restrictive_umask_without_parent_umask_change(aux)
+
+    def _assert_aux_delegate_save_config_repairs_restrictive_umask_without_parent_umask_change(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".claude-token-optimizer" / "nested" / "config.json"
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+            previous_umask = os.umask(0o777)
+            try:
+                aux.save_config({"aux_ai_enabled": True})
+            finally:
+                observed_umask = os.umask(previous_umask)
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+            self.assertEqual(observed_umask, 0o777)
+            self.assertEqual(stat.S_IMODE(config.parent.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(config.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+
+    def test_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_save_compat_{index}")
+                self._assert_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(aux)
+
+    def _assert_aux_delegate_save_config_compat_path_keeps_non_dirfd_platforms_working(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".claude-token-optimizer" / "config.json"
+            old_config = os.environ.get("CLAUDE_TOKEN_OPTIMIZER_CONFIG")
+            old_supports_dir_fd = aux.os.supports_dir_fd
+            os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = str(config)
+            aux.os.supports_dir_fd = set()
+            try:
+                aux.save_config({"aux_ai_enabled": True})
+            finally:
+                aux.os.supports_dir_fd = old_supports_dir_fd
+                if old_config is None:
+                    os.environ.pop("CLAUDE_TOKEN_OPTIMIZER_CONFIG", None)
+                else:
+                    os.environ["CLAUDE_TOKEN_OPTIMIZER_CONFIG"] = old_config
+            self.assertTrue(config.exists())
+            self.assertTrue((config.parent / ".gitignore").exists())
+            self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["aux_ai_enabled"], True)
+
+    def test_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(self):
+        scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
+        for index, script in enumerate(scripts):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_delegate_mkdir_race_{index}")
+                self._assert_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(aux)
+
+    def _assert_aux_delegate_private_dir_creation_tolerates_concurrent_mkdir_race(self, aux):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "nested"
+            original_mkdir = aux.mkdir_private_dir_entry_at
+
+            def racing_mkdir(dir_fd, component, mode=0o700):
+                aux.os.mkdir(component, mode, dir_fd=dir_fd)
+                raise OSError(errno.EEXIST, "simulated concurrent mkdir")
+
+            aux.mkdir_private_dir_entry_at = racing_mkdir
+            try:
+                fd = aux.open_private_dir_no_follow(target, create=True)
+                aux.os.close(fd)
+            finally:
+                aux.mkdir_private_dir_entry_at = original_mkdir
+            self.assertTrue(target.is_dir())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+
     def test_aux_delegate_missing_config_defaults_before_no_follow_support_check(self):
         scripts = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"]
         for index, script in enumerate(scripts):
