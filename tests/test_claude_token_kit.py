@@ -432,6 +432,178 @@ class ClaudeTokenKitTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(extra_blank_status, "statusline", "statusline")
 
+    def test_release_smoke_run_command_passes_bounded_output_to_expectation(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_success")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            observed: list[tuple[str, str, int]] = []
+            smoke.run_command(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        "data = sys.stdin.read(); "
+                        "print('stdout:' + data); "
+                        "print('stderr:ok', file=sys.stderr)"
+                    ),
+                ],
+                cwd=root,
+                env=os.environ.copy(),
+                timeout=5,
+                input_text="input-ok",
+                expect=lambda proc: observed.append((proc.stdout, proc.stderr, proc.returncode)),
+            )
+
+            self.assertEqual(observed, [("stdout:input-ok\n", "stderr:ok\n", 0)])
+
+    def test_release_smoke_run_command_bounds_output(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_output_bound")
+        original_limit = smoke.COMMAND_OUTPUT_MAX_BYTES
+        smoke.COMMAND_OUTPUT_MAX_BYTES = 128
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                with self.assertRaises(SystemExit) as ctx:
+                    smoke.run_command(
+                        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 100000)"],
+                        cwd=root,
+                        env=os.environ.copy(),
+                        timeout=5,
+                        expect=lambda proc: self.fail(f"expect should not run after output overflow: {proc!r}"),
+                    )
+            self.assertIn("output exceeded", str(ctx.exception))
+        finally:
+            smoke.COMMAND_OUTPUT_MAX_BYTES = original_limit
+
+    def test_release_smoke_run_bounded_command_handles_large_stdin_and_output(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_large_io")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = smoke.run_bounded_command(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        "sys.stdout.write('o' * 200000); "
+                        "sys.stdout.flush(); "
+                        "data = sys.stdin.buffer.read(); "
+                        "print(len(data), file=sys.stderr)"
+                    ),
+                ],
+                cwd=root,
+                env=os.environ.copy(),
+                timeout=5,
+                input_text="i" * 200000,
+                max_output_bytes=250000,
+            )
+
+            self.assertEqual(result.proc.returncode, 0)
+            self.assertFalse(result.timed_out)
+            self.assertFalse(result.output_truncated)
+            self.assertEqual(len(result.proc.stdout), 200000)
+            self.assertEqual(result.proc.stderr.strip(), "200000")
+
+    def test_release_smoke_run_command_reports_nonzero_exit(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_nonzero")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.run_command(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; print('bounded failure detail', file=sys.stderr); sys.exit(7)",
+                    ],
+                    cwd=root,
+                    env=os.environ.copy(),
+                    timeout=5,
+                    expect=lambda proc: self.fail(f"expect should not run after nonzero exit: {proc!r}"),
+                )
+
+            message = str(ctx.exception)
+            self.assertIn("exited 7", message)
+            self.assertIn("bounded failure detail", message)
+
+    def test_release_smoke_run_command_timeout_after_command_closes_output(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_closed_output")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.run_command(
+                    [sys.executable, "-c", "import os, time; os.close(1); os.close(2); time.sleep(10.0)"],
+                    cwd=root,
+                    env=os.environ.copy(),
+                    timeout=1,
+                    expect=lambda proc: self.fail(f"expect should not run after timeout: {proc!r}"),
+                )
+
+            self.assertIn("timed out", str(ctx.exception))
+
+    @unittest.skipIf(os.name != "posix", "process-group timeout behavior is POSIX-specific")
+    def test_release_smoke_run_command_timeout_kills_process_group_children(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_pg_timeout")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sentinel = root / "child-survived.txt"
+            child_code = (
+                "import pathlib, sys, time; "
+                "time.sleep(2.0); "
+                "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+            )
+            parent_code = (
+                "import subprocess, sys, time; "
+                "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+                "time.sleep(10.0)"
+            )
+
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.run_command(
+                    [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                    cwd=root,
+                    env=os.environ.copy(),
+                    timeout=1,
+                    expect=lambda proc: self.fail(f"expect should not run after timeout: {proc!r}"),
+                )
+
+            self.assertIn("timed out", str(ctx.exception))
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not sentinel.exists():
+                time.sleep(0.05)
+            self.assertFalse(sentinel.exists())
+
+    @unittest.skipIf(os.name != "posix", "process-group timeout behavior is POSIX-specific")
+    def test_release_smoke_run_command_timeout_kills_pipe_holding_child_after_parent_exit(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_pipe_timeout")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sentinel = root / "pipe-child-survived.txt"
+            child_code = (
+                "import pathlib, sys, time; "
+                "time.sleep(2.0); "
+                "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+            )
+            parent_code = (
+                "import subprocess, sys; "
+                "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+            )
+
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.run_command(
+                    [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                    cwd=root,
+                    env=os.environ.copy(),
+                    timeout=1,
+                    expect=lambda proc: self.fail(f"expect should not run after timeout: {proc!r}"),
+                )
+
+            self.assertIn("timed out", str(ctx.exception))
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline and not sentinel.exists():
+                time.sleep(0.05)
+            self.assertFalse(sentinel.exists())
+
     def test_show_paths_help_warns_private_path_exposure(self):
         commands = [
             [sys.executable, str(KIT_DIR / "read_symbol.py"), "--help"],
