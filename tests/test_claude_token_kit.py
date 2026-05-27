@@ -7071,6 +7071,75 @@ for malformed in malformed_values:
         self.assertEqual(stdout, "")
         self.assertIn("OUTPUT_LIMIT exceeded", stderr)
 
+    @unittest.skipIf(os.name != "posix", "process-group teardown behavior is POSIX-specific")
+    def test_aux_delegate_provider_timeout_kills_child_after_parent_exit(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_provider_parent_exit_timeout_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "provider-child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+                    )
+
+                    rc, _stdout, stderr = aux.run_provider(
+                        "mock",
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        None,
+                        timeout_seconds=1,
+                        output_max_chars=1000,
+                    )
+
+                    self.assertEqual(rc, 124)
+                    self.assertIn("TIMEOUT", stderr)
+                    deadline = time.monotonic() + 3.0
+                    while time.monotonic() < deadline and not sentinel.exists():
+                        time.sleep(0.05)
+                    self.assertFalse(sentinel.exists())
+
+    @unittest.skipIf(os.name != "posix", "process-group teardown behavior is POSIX-specific")
+    def test_aux_delegate_provider_output_limit_kills_child_after_parent_exit(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_provider_parent_exit_output_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "provider-output-child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "sys.stdout.write('A' * 20000); "
+                        "sys.stdout.flush(); "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+                    )
+
+                    rc, stdout, stderr = aux.run_provider(
+                        "mock",
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        None,
+                        timeout_seconds=5,
+                        output_max_chars=1000,
+                    )
+
+                    self.assertEqual(rc, 125)
+                    self.assertLessEqual(len(stdout), 1000)
+                    self.assertIn("OUTPUT_LIMIT exceeded", stderr)
+                    deadline = time.monotonic() + 3.0
+                    while time.monotonic() < deadline and not sentinel.exists():
+                        time.sleep(0.05)
+                    self.assertFalse(sentinel.exists())
+
     def test_aux_delegate_nonfinite_config_budget_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
