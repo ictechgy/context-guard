@@ -5337,6 +5337,34 @@ for malformed in malformed_values:
                     self.assertIn("feature/token-hud", proc.stdout)
                     self.assertFalse(marker.exists())
 
+    def test_statusline_uses_safe_tmp_fallback_for_relative_missing_tmpdir(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 10},
+                        "cost": {"total_cost_usd": 0.0},
+                        "workspace": {"current_dir": str(root)},
+                    }
+                    for tmpdir in ("relative-missing-tmp", "/", "//"):
+                        with self.subTest(tmpdir=tmpdir):
+                            env = os.environ.copy()
+                            env["TMPDIR"] = tmpdir
+                            proc = subprocess.run(
+                                ["bash", str(script)],
+                                input=json.dumps(payload),
+                                text=True,
+                                capture_output=True,
+                                env=env,
+                                cwd=root,
+                                check=True,
+                            )
+                            self.assertNotIn("[input-error]", proc.stdout)
+                            self.assertIn("Sonnet", proc.stdout)
+                            self.assertFalse((root / "relative-missing-tmp").exists())
+
     def test_statusline_rejects_oversized_stdin_before_json_processing(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "claude-token-statusline"]:
             with self.subTest(script=script):
@@ -9621,6 +9649,29 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
         self.assertIn("[OMC] [31mred[0m", out)
         self.assertIn(" | cost $0.123", out)
         self.assertIn(" | cache 42%", out)
+
+    def test_relative_missing_tmpdir_does_not_block_wrapper_input(self):
+        for script in [KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as td:
+                    tmp = Path(td)
+                    for tmpdir in ("relative-missing-tmp", "/", "//"):
+                        with self.subTest(tmpdir=tmpdir):
+                            env = os.environ.copy()
+                            env["OMC_HUD_SCRIPT"] = str(tmp / "missing-omc.mjs")
+                            env["CLAUDE_TOKEN_STATUSLINE_BIN"] = str(tmp / "missing-token-statusline")
+                            env["TMPDIR"] = tmpdir
+                            proc = subprocess.run(
+                                ["bash", str(script)],
+                                input=self.SAMPLE_PAYLOAD,
+                                text=True,
+                                capture_output=True,
+                                env=env,
+                                cwd=tmp,
+                                check=True,
+                            )
+                            self.assertEqual(proc.stdout.strip(), "[hud unavailable]")
+                            self.assertFalse((tmp / "relative-missing-tmp").exists())
 
     def test_rejects_oversized_stdin_without_invoking_helpers(self):
         for script in [KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"]:
