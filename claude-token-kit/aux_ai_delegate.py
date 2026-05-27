@@ -1645,20 +1645,26 @@ def provider_process_group_alive(proc: subprocess.Popen[Any], pgid: int | None) 
         return True
 
 
-def signal_provider_process_group(proc: subprocess.Popen[Any], sig: int, pgid: int | None) -> None:
+def signal_provider_process_group(
+    proc: subprocess.Popen[Any], sig: int, pgid: int | None, *, force: bool = False
+) -> None:
     if os.name == "posix" and pgid is not None:
         try:
             os.killpg(pgid, sig)
-            return
         except ProcessLookupError:
-            return
+            pass
         except OSError:
             pass
     try:
-        if sig == PROVIDER_KILL_SIGNAL:
+        if force:
             proc.kill()
         else:
             proc.terminate()
+    except AttributeError:
+        try:
+            proc.terminate()
+        except (AttributeError, OSError):
+            pass
     except OSError:
         pass
 
@@ -1683,7 +1689,7 @@ def run_provider(
         if prompt is not None:
             stdin_path.write_text(prompt, encoding="utf-8")
             stdin_file = stdin_path.open("rb")
-        start = _dt.datetime.now()
+        start = _time.monotonic()
         killed_for_output = False
         timed_out = False
         termination_reason: str | None = None
@@ -1712,30 +1718,30 @@ def run_provider(
                     pass
                 else:
                     pgid = provider_process_group_id(proc)
-                    terminated_at: _dt.datetime | None = None
+                    terminated_at: float | None = None
                     sent_kill = False
                     while proc.poll() is None or provider_process_group_alive(proc, pgid):
-                        now = _dt.datetime.now()
-                        elapsed = (now - start).total_seconds()
+                        now = _time.monotonic()
+                        elapsed = now - start
                         if terminated_at is None:
                             current_size = provider_output_size(stdout_file, stderr_file)
                             if current_size > output_limit:
                                 killed_for_output = True
                                 termination_reason = "output"
                                 signal_provider_process_group(proc, signal.SIGTERM, pgid)
-                                terminated_at = _dt.datetime.now()
+                                terminated_at = _time.monotonic()
                             elif elapsed > timeout_seconds:
                                 timed_out = True
                                 termination_reason = "timeout"
                                 signal_provider_process_group(proc, signal.SIGTERM, pgid)
-                                terminated_at = _dt.datetime.now()
+                                terminated_at = _time.monotonic()
                         if terminated_at is not None and not sent_kill:
-                            grace = (_dt.datetime.now() - terminated_at).total_seconds()
+                            grace = _time.monotonic() - terminated_at
                             if grace >= PROVIDER_TERMINATE_GRACE_SECONDS:
-                                signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid)
+                                signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid, force=True)
                                 sent_kill = True
                         if sent_kill and terminated_at is not None:
-                            grace = (_dt.datetime.now() - terminated_at).total_seconds()
+                            grace = _time.monotonic() - terminated_at
                             if grace >= PROVIDER_TERMINATE_GRACE_SECONDS * 2:
                                 break
                         if proc.poll() is None:
@@ -1748,7 +1754,7 @@ def run_provider(
                     try:
                         returncode = proc.wait(timeout=PROVIDER_TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
-                        signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid)
+                        signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid, force=True)
                         try:
                             returncode = proc.wait(timeout=PROVIDER_TERMINATE_GRACE_SECONDS)
                         except subprocess.TimeoutExpired:

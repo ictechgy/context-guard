@@ -7130,35 +7130,71 @@ for malformed in malformed_values:
             aux.os.getpgid = original_getpgid
             aux.os.killpg = original_killpg
 
-    @unittest.skipIf(os.name != "posix", "SIGKILL escalation fixture is POSIX-specific")
-    def test_aux_delegate_provider_kill_signal_does_not_require_signal_sigkill_attr(self):
+    def test_aux_delegate_signal_falls_back_to_process_when_group_is_missing(self):
         aux = load_aux_module()
-        if not hasattr(aux.signal, "SIGKILL"):
-            self.skipTest("signal.SIGKILL is already unavailable")
+        if not hasattr(aux.os, "killpg"):
+            self.skipTest("process-group signaling is unavailable on this platform")
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = 0
+                self.killed = 0
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                self.killed += 1
+
+        original_killpg = aux.os.killpg
+        aux.os.killpg = lambda pgid, sig: (_ for _ in ()).throw(ProcessLookupError())
+        try:
+            graceful = FakeProc()
+            aux.signal_provider_process_group(graceful, aux.signal.SIGTERM, 123)
+            self.assertEqual(graceful.terminated, 1)
+            self.assertEqual(graceful.killed, 0)
+
+            forced = FakeProc()
+            aux.signal_provider_process_group(forced, aux.PROVIDER_KILL_SIGNAL, 123, force=True)
+            self.assertEqual(forced.terminated, 0)
+            self.assertEqual(forced.killed, 1)
+        finally:
+            aux.os.killpg = original_killpg
+
+    def test_aux_delegate_provider_kill_signal_fallback_uses_force_not_signal_identity(self):
+        aux = load_aux_module()
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = 0
+                self.killed = 0
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                self.killed += 1
 
         had_sigkill = hasattr(aux.signal, "SIGKILL")
         original_sigkill = aux.signal.SIGKILL if had_sigkill else None
-        original_grace = aux.PROVIDER_TERMINATE_GRACE_SECONDS
-        aux.PROVIDER_TERMINATE_GRACE_SECONDS = 0.05
-        delattr(aux.signal, "SIGKILL")
+        original_kill_signal = aux.PROVIDER_KILL_SIGNAL
+        aux.PROVIDER_KILL_SIGNAL = aux.signal.SIGTERM
+        if had_sigkill:
+            delattr(aux.signal, "SIGKILL")
         try:
-            command = [
-                sys.executable,
-                "-c",
-                (
-                    "import signal, time\n"
-                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-                    "time.sleep(5)\n"
-                ),
-            ]
-            rc, _stdout, stderr = aux.run_provider("mock", command, None, timeout_seconds=1, output_max_chars=1000)
+            graceful = FakeProc()
+            aux.signal_provider_process_group(graceful, aux.signal.SIGTERM, None)
+            self.assertEqual(graceful.terminated, 1)
+            self.assertEqual(graceful.killed, 0)
+
+            forced = FakeProc()
+            aux.signal_provider_process_group(forced, aux.PROVIDER_KILL_SIGNAL, None, force=True)
+            self.assertEqual(forced.terminated, 0)
+            self.assertEqual(forced.killed, 1)
         finally:
             if had_sigkill:
                 setattr(aux.signal, "SIGKILL", original_sigkill)
-            aux.PROVIDER_TERMINATE_GRACE_SECONDS = original_grace
-
-        self.assertEqual(rc, 124)
-        self.assertIn("TIMEOUT", stderr)
+            aux.PROVIDER_KILL_SIGNAL = original_kill_signal
 
     def test_aux_delegate_output_budget_tracks_unlinked_capture_fd(self):
         aux = load_aux_module()
