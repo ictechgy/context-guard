@@ -20,6 +20,19 @@
 #                              (미지정 시 자기 옆 디렉토리만 사용; PATH 탐색 안 함)
 set -u
 
+statusline_tmp_base() {
+  local candidate="${TMPDIR:-/tmp}" resolved
+  candidate="${candidate%/}"
+  if [[ -z "$candidate" || "$candidate" != /* || ! -d "$candidate" || ! -w "$candidate" ]]; then
+    candidate="/tmp"
+  fi
+  if resolved=$(cd "$candidate" 2>/dev/null && pwd -P); then
+    printf '%s\n' "${resolved%/}"
+  else
+    printf '/tmp\n'
+  fi
+}
+
 statusline_input_max_bytes() {
   local raw="${CLAUDE_TOKEN_STATUSLINE_INPUT_MAX_BYTES:-65536}" max=65536
   if [[ "$raw" =~ ^[0-9]+$ ]] && (( ${#raw} <= 7 )); then
@@ -34,8 +47,7 @@ statusline_input_max_bytes() {
 read_bounded_statusline_input() {
   local max input_len tmp_base
   max=$(statusline_input_max_bytes)
-  tmp_base="${TMPDIR:-/tmp}"
-  tmp_base="${tmp_base%/}"
+  tmp_base=$(statusline_tmp_base)
   statusline_input_tmp=$(mktemp "$tmp_base/claude-token-statusline.XXXXXX") || {
     printf '[input-error] could not create statusline input buffer\n'
     exit 0
