@@ -25,6 +25,7 @@ PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
 PLUGIN_BIN = PLUGIN_DIR / "bin"
 PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
+CHANGELOG = ROOT / "CHANGELOG.md"
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
@@ -207,6 +208,7 @@ def check_trusted_release_paths() -> None:
         ("plugin skills directory", SKILLS_DIR),
         ("plugin manifest", PLUGIN_MANIFEST),
         ("marketplace manifest", MARKETPLACE_MANIFEST),
+        ("release notes", CHANGELOG),
     ):
         symlink = first_symlink_component(lexical_absolute(path))
         if symlink is not None:
@@ -246,7 +248,7 @@ def skill_frontmatter(text: str, skill: Path) -> str:
     fail(f"skill metadata missing closing frontmatter: {skill_label(skill)}")
 
 
-def check_manifest() -> None:
+def check_manifest() -> dict:
     plugin = load_json(PLUGIN_MANIFEST)
     marketplace = load_json(MARKETPLACE_MANIFEST)
 
@@ -270,6 +272,30 @@ def check_manifest() -> None:
         fail(f"marketplace/plugin version mismatch: {entry.get('version')} != {plugin['version']}")
     if entry.get("license") != plugin["license"]:
         fail(f"marketplace/plugin license mismatch: {entry.get('license')} != {plugin['license']}")
+    return plugin
+
+
+def check_release_notes(version: str) -> None:
+    try:
+        text = CHANGELOG.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        fail(f"missing release notes: {safe_path_label(CHANGELOG)}")
+    except OSError as exc:
+        fail(
+            f"could not read release notes: {safe_path_label(CHANGELOG)}: "
+            f"{compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
+        )
+    version_heading = rf"(?:\[{re.escape(version)}\]|{re.escape(version)})"
+    heading = re.compile(rf"(?m)^##\s+{version_heading}(?:\s+-\s+\d{{4}}-\d{{2}}-\d{{2}})?\s*$")
+    match = heading.search(text)
+    if match is None:
+        fail(f"release notes missing version entry: {safe_path_label(CHANGELOG)}: {version}")
+    section = text[match.end() :]
+    next_heading = re.search(r"(?m)^##\s+", section)
+    if next_heading is not None:
+        section = section[: next_heading.start()]
+    if not any(line.strip() and not line.lstrip().startswith("<!--") for line in section.splitlines()):
+        fail(f"release notes entry is empty: {safe_path_label(CHANGELOG)}: {version}")
 
 
 def check_skill_allowed_tool_commands() -> None:
@@ -431,7 +457,8 @@ def main() -> int:
     apply_path_overrides()
     check_trusted_release_paths()
     check_package_symlinks()
-    check_manifest()
+    plugin = check_manifest()
+    check_release_notes(plugin["version"])
     check_bin_copies()
     check_skill_allowed_tool_commands()
     remove_generated_plugin_bin_python_caches()
