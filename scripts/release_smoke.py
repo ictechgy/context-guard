@@ -379,6 +379,11 @@ def run_bounded_command(
     elif output_truncated:
         returncode = 125
 
+    # Reader/writer daemon threads own pipe cleanup. Drop Popen's references so
+    # Popen finalization cannot contend with a thread blocked in pipe IO.
+    proc.stdin = None
+    proc.stdout = None
+    proc.stderr = None
     return BoundedCommandResult(
         proc=subprocess.CompletedProcess(
             argv,
