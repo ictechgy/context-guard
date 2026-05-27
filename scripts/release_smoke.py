@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import selectors
+import queue
 import signal
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, NoReturn
@@ -222,6 +223,14 @@ def signal_process_group(proc: subprocess.Popen[bytes], sig: int, pgid: int | No
             return
         except (ProcessLookupError, OSError):
             pass
+    if os.name == "nt" and sig == signal.SIGTERM:
+        ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", None)
+        if ctrl_break is not None:
+            try:
+                os.kill(proc.pid, ctrl_break)
+                return
+            except OSError:
+                pass
     try:
         if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
             proc.kill()
@@ -236,20 +245,40 @@ def write_child_input(proc: subprocess.Popen[bytes], input_text: str | None) -> 
         return
     try:
         proc.stdin.write(input_text.encode("utf-8"))
-        proc.stdin.close()
     except (BrokenPipeError, OSError):
         pass
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
 
 
-def close_stream(selector: selectors.BaseSelector, stream: Any) -> None:
-    try:
-        selector.unregister(stream)
-    except (KeyError, ValueError):
-        pass
+def close_pipe(stream: Any) -> None:
+    if stream is None:
+        return
     try:
         stream.close()
     except OSError:
         pass
+
+
+def read_child_stream(
+    name: str,
+    stream: Any,
+    chunks: queue.Queue[tuple[str, bytes | None]],
+) -> None:
+    try:
+        while True:
+            chunk = stream.read(COMMAND_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            chunks.put((name, chunk))
+    except OSError:
+        pass
+    finally:
+        chunks.put((name, None))
+        close_pipe(stream)
 
 
 def run_bounded_command(
@@ -277,73 +306,77 @@ def run_bounded_command(
     except OSError as exc:
         fail(f"{command_name(argv)} could not be launched: {exc}")
 
-    write_child_input(proc, input_text)
     pgid = process_group_id(proc)
-    selector = selectors.DefaultSelector()
+    chunks: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=32)
     buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+    live_streams = 0
     for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
         if stream is None:
             continue
-        try:
-            os.set_blocking(stream.fileno(), False)
-        except (AttributeError, OSError):
-            pass
-        selector.register(stream, selectors.EVENT_READ, name)
+        live_streams += 1
+        threading.Thread(
+            target=read_child_stream,
+            args=(name, stream, chunks),
+            daemon=True,
+        ).start()
+    if input_text is not None:
+        threading.Thread(
+            target=write_child_input,
+            args=(proc, input_text),
+            daemon=True,
+        ).start()
 
     timed_out = False
     output_truncated = False
     terminated_at: float | None = None
     sent_kill = False
     deadline = time.monotonic() + timeout
-    try:
-        while selector.get_map() or proc.poll() is None:
-            now = time.monotonic()
-            if now >= deadline:
-                timed_out = True
-                if terminated_at is None:
-                    signal_process_group(proc, signal.SIGTERM, pgid)
-                    terminated_at = now
-            if terminated_at is not None and not sent_kill:
-                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
-                    signal_process_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM), pgid)
-                    sent_kill = True
-
-            select_timeout = PROCESS_SELECT_TIMEOUT_SECONDS
+    while live_streams > 0 or proc.poll() is None:
+        now = time.monotonic()
+        if now >= deadline:
+            timed_out = True
             if terminated_at is None:
-                select_timeout = min(select_timeout, max(0.0, deadline - now))
-            events = selector.select(timeout=select_timeout) if selector.get_map() else []
-            if not events and not selector.get_map():
-                time.sleep(select_timeout)
-            for key, _ in events:
-                name = key.data
-                stream = key.fileobj
-                try:
-                    chunk = os.read(stream.fileno(), COMMAND_READ_CHUNK_BYTES)
-                except BlockingIOError:
-                    continue
-                except OSError:
-                    close_stream(selector, stream)
-                    continue
-                if not chunk:
-                    close_stream(selector, stream)
-                    continue
-                remaining = max_output_bytes - len(buffers[name])
-                if remaining > 0:
-                    buffers[name].extend(chunk[:remaining])
-                if len(chunk) > remaining:
-                    output_truncated = True
-                    if terminated_at is None:
-                        signal_process_group(proc, signal.SIGTERM, pgid)
-                        terminated_at = time.monotonic()
-    finally:
-        selector.close()
+                signal_process_group(proc, signal.SIGTERM, pgid)
+                terminated_at = now
+        if terminated_at is not None and not sent_kill:
+            if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
+                signal_process_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM), pgid)
+                sent_kill = True
+        if sent_kill and terminated_at is not None:
+            if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS * 2:
+                break
 
+        wait_timeout = PROCESS_SELECT_TIMEOUT_SECONDS
+        if terminated_at is None:
+            wait_timeout = min(wait_timeout, max(0.0, deadline - now))
+        try:
+            name, chunk = chunks.get(timeout=wait_timeout)
+        except queue.Empty:
+            continue
+        if chunk is None:
+            live_streams = max(0, live_streams - 1)
+            continue
+        remaining = max_output_bytes - len(buffers[name])
+        if remaining > 0:
+            buffers[name].extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            output_truncated = True
+            if terminated_at is None:
+                signal_process_group(proc, signal.SIGTERM, pgid)
+                terminated_at = time.monotonic()
+
+    close_pipe(proc.stdin)
+    close_pipe(proc.stdout)
+    close_pipe(proc.stderr)
     try:
         returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         timed_out = True
         signal_process_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM), pgid)
-        returncode = proc.wait()
+        try:
+            returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = 124
     if timed_out:
         returncode = 124
     elif output_truncated:
