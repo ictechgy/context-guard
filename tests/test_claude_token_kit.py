@@ -258,6 +258,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 prepublish.check_release_notes("0.2.0")
             self.assertIn("release notes entry is empty", str(empty_ctx.exception))
 
+            changelog.write_text("# Changelog\n\n## [0.2.0\n\n- Malformed heading.\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as malformed_ctx:
+                prepublish.check_release_notes("0.2.0")
+            self.assertIn("release notes missing version entry", str(malformed_ctx.exception))
+
+            prepublish.CHANGELOG = tmp / "missing-CHANGELOG.md"
+            with self.assertRaises(SystemExit) as missing_ctx:
+                prepublish.check_release_notes("0.2.0")
+            self.assertIn("missing release notes", str(missing_ctx.exception))
+            self.assertNotIn(str(tmp), str(missing_ctx.exception))
+
+            prepublish.CHANGELOG = changelog
             changelog.write_text("# Changelog\n\n## [0.1.0]\n\n- Previous.\n", encoding="utf-8")
             with self.assertRaises(SystemExit) as ctx:
                 prepublish.check_release_notes("0.2.0")

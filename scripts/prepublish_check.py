@@ -285,7 +285,8 @@ def check_release_notes(version: str) -> None:
             f"could not read release notes: {safe_path_label(CHANGELOG)}: "
             f"{compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
         )
-    heading = re.compile(rf"(?m)^##\s+\[?{re.escape(version)}\]?(?:\s+-\s+\d{{4}}-\d{{2}}-\d{{2}})?\s*$")
+    version_heading = rf"(?:\[{re.escape(version)}\]|{re.escape(version)})"
+    heading = re.compile(rf"(?m)^##\s+{version_heading}(?:\s+-\s+\d{{4}}-\d{{2}}-\d{{2}})?\s*$")
     match = heading.search(text)
     if match is None:
         fail(f"release notes missing version entry: {safe_path_label(CHANGELOG)}: {version}")
