@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import selectors
+import signal
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable, NamedTuple, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +53,10 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
 HOOK_STDIN = "{}"
 STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})
 STATUSLINE_MAX_CHARS = 1_000
+COMMAND_OUTPUT_MAX_BYTES = 64_000
+COMMAND_READ_CHUNK_BYTES = 65_536
+PROCESS_TERMINATE_GRACE_SECONDS = 2.0
+PROCESS_SELECT_TIMEOUT_SECONDS = 0.05
 PRESERVED_ENV_KEYS = (
     "PATH",
     "SYSTEMROOT",
@@ -64,6 +71,12 @@ PRESERVED_ENV_KEYS = (
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"release smoke failed: {message}")
+
+
+class BoundedCommandResult(NamedTuple):
+    proc: subprocess.CompletedProcess[str]
+    timed_out: bool
+    output_truncated: bool
 
 
 def validate_plugin_package(plugin_dir: Path) -> Path:
@@ -180,6 +193,174 @@ def assert_path_under(raw_path: str | None, parent: Path, label: str) -> None:
         fail(f"{label} escaped smoke project: {path}")
 
 
+def command_name(argv: list[str]) -> str:
+    return Path(argv[0]).name
+
+
+def process_group_kwargs() -> dict[str, Any]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    if os.name == "nt" and creation_flags:
+        return {"creationflags": creation_flags}
+    return {}
+
+
+def process_group_id(proc: subprocess.Popen[bytes]) -> int | None:
+    if os.name != "posix":
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except OSError:
+        return None
+
+
+def signal_process_group(proc: subprocess.Popen[bytes], sig: int, pgid: int | None) -> None:
+    if os.name == "posix" and pgid is not None:
+        try:
+            os.killpg(pgid, sig)
+            return
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
+            proc.kill()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+
+
+def write_child_input(proc: subprocess.Popen[bytes], input_text: str | None) -> None:
+    if input_text is None or proc.stdin is None:
+        return
+    try:
+        proc.stdin.write(input_text.encode("utf-8"))
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def close_stream(selector: selectors.BaseSelector, stream: Any) -> None:
+    try:
+        selector.unregister(stream)
+    except (KeyError, ValueError):
+        pass
+    try:
+        stream.close()
+    except OSError:
+        pass
+
+
+def run_bounded_command(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+    input_text: str | None = None,
+    max_output_bytes: int | None = None,
+) -> BoundedCommandResult:
+    if max_output_bytes is None:
+        max_output_bytes = COMMAND_OUTPUT_MAX_BYTES
+    stdin = subprocess.DEVNULL if input_text is None else subprocess.PIPE
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **process_group_kwargs(),
+        )
+    except OSError as exc:
+        fail(f"{command_name(argv)} could not be launched: {exc}")
+
+    write_child_input(proc, input_text)
+    pgid = process_group_id(proc)
+    selector = selectors.DefaultSelector()
+    buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+    for name, stream in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+        if stream is None:
+            continue
+        try:
+            os.set_blocking(stream.fileno(), False)
+        except (AttributeError, OSError):
+            pass
+        selector.register(stream, selectors.EVENT_READ, name)
+
+    timed_out = False
+    output_truncated = False
+    terminated_at: float | None = None
+    sent_kill = False
+    deadline = time.monotonic() + timeout
+    try:
+        while selector.get_map() or proc.poll() is None:
+            now = time.monotonic()
+            if now >= deadline:
+                timed_out = True
+                if terminated_at is None:
+                    signal_process_group(proc, signal.SIGTERM, pgid)
+                    terminated_at = now
+            if terminated_at is not None and not sent_kill:
+                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
+                    signal_process_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM), pgid)
+                    sent_kill = True
+
+            select_timeout = PROCESS_SELECT_TIMEOUT_SECONDS
+            if terminated_at is None:
+                select_timeout = min(select_timeout, max(0.0, deadline - now))
+            events = selector.select(timeout=select_timeout) if selector.get_map() else []
+            if not events and not selector.get_map():
+                time.sleep(select_timeout)
+            for key, _ in events:
+                name = key.data
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), COMMAND_READ_CHUNK_BYTES)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    close_stream(selector, stream)
+                    continue
+                if not chunk:
+                    close_stream(selector, stream)
+                    continue
+                remaining = max_output_bytes - len(buffers[name])
+                if remaining > 0:
+                    buffers[name].extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    output_truncated = True
+                    if terminated_at is None:
+                        signal_process_group(proc, signal.SIGTERM, pgid)
+                        terminated_at = time.monotonic()
+    finally:
+        selector.close()
+
+    try:
+        returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        signal_process_group(proc, getattr(signal, "SIGKILL", signal.SIGTERM), pgid)
+        returncode = proc.wait()
+    if timed_out:
+        returncode = 124
+    elif output_truncated:
+        returncode = 125
+
+    return BoundedCommandResult(
+        proc=subprocess.CompletedProcess(
+            argv,
+            returncode,
+            stdout=bytes(buffers["stdout"]).decode("utf-8", "replace"),
+            stderr=bytes(buffers["stderr"]).decode("utf-8", "replace"),
+        ),
+        timed_out=timed_out,
+        output_truncated=output_truncated,
+    )
+
+
 def run_command(
     argv: list[str],
     *,
@@ -189,25 +370,21 @@ def run_command(
     expect: Callable[[subprocess.CompletedProcess[str]], None],
     input_text: str | None = None,
 ) -> None:
-    stdin = subprocess.DEVNULL if input_text is None else None
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=cwd,
-            env=env,
-            text=True,
-            capture_output=True,
-            stdin=stdin,
-            input=input_text,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        fail(f"{Path(argv[0]).name} timed out after {timeout:g}s")
-    except OSError as exc:
-        fail(f"{Path(argv[0]).name} could not be launched: {exc}")
+    result = run_bounded_command(
+        argv,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        input_text=input_text,
+    )
+    proc = result.proc
+    if result.timed_out:
+        fail(f"{command_name(argv)} timed out after {timeout:g}s")
+    if result.output_truncated:
+        fail(f"{command_name(argv)} output exceeded {COMMAND_OUTPUT_MAX_BYTES} bytes per stream")
     if proc.returncode != 0:
         fail(
-            f"{Path(argv[0]).name} exited {proc.returncode}: "
+            f"{command_name(argv)} exited {proc.returncode}: "
             f"{(proc.stderr or proc.stdout).strip()[:500]}"
         )
     expect(proc)
