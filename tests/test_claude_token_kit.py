@@ -7053,6 +7053,113 @@ for malformed in malformed_values:
         self.assertIn("failed to read provider output safely", text)
         self.assertNotIn("SHOULD_NOT_LEAK", text)
 
+    def test_aux_delegate_provider_parent_exit_loop_sleeps_and_launches_session(self):
+        aux = load_aux_module()
+        popen_calls = []
+        sleep_calls = []
+        alive_results = [True, False]
+
+        class FakePopen:
+            pid = 123456789
+
+            def __init__(self, *args, **kwargs):
+                popen_calls.append(kwargs)
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        original_popen = aux.subprocess.Popen
+        original_alive = aux.provider_process_group_alive
+        original_sleep = aux._time.sleep
+
+        def fake_alive(proc, pgid):
+            return alive_results.pop(0) if alive_results else False
+
+        def recording_popen(*args, **kwargs):
+            if kwargs.get("start_new_session") is True:
+                return FakePopen(*args, **kwargs)
+            return original_popen(*args, **kwargs)
+
+        aux.subprocess.Popen = recording_popen
+        aux.provider_process_group_alive = fake_alive
+        aux._time.sleep = lambda seconds: sleep_calls.append(seconds)
+        try:
+            rc, stdout, stderr = aux.run_provider(
+                "mock", [sys.executable, "-c", ""], None, timeout_seconds=5, output_max_chars=1000
+            )
+        finally:
+            aux.subprocess.Popen = original_popen
+            aux.provider_process_group_alive = original_alive
+            aux._time.sleep = original_sleep
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertTrue(popen_calls)
+        self.assertIs(popen_calls[0].get("start_new_session"), True)
+        self.assertEqual(sleep_calls, [aux.PROVIDER_POLL_INTERVAL_SECONDS])
+
+    def test_aux_delegate_provider_group_helpers_fail_closed(self):
+        aux = load_aux_module()
+        if not hasattr(aux.os, "getpgid") or not hasattr(aux.os, "killpg"):
+            self.skipTest("process-group helpers are unavailable on this platform")
+
+        class FakeProc:
+            pid = 123
+
+            def poll(self):
+                return 0
+
+        original_getpgid = aux.os.getpgid
+        original_killpg = aux.os.killpg
+        aux.os.getpgid = lambda pid: (_ for _ in ()).throw(OSError("gone"))
+        aux.os.killpg = lambda pgid, sig: (_ for _ in ()).throw(PermissionError("denied"))
+        try:
+            self.assertIsNone(aux.provider_process_group_id(FakeProc()))
+            self.assertTrue(aux.provider_process_group_alive(FakeProc(), 123))
+        finally:
+            aux.os.getpgid = original_getpgid
+            aux.os.killpg = original_killpg
+
+    @unittest.skipIf(os.name != "posix", "SIGKILL escalation fixture is POSIX-specific")
+    def test_aux_delegate_provider_kill_signal_does_not_require_signal_sigkill_attr(self):
+        aux = load_aux_module()
+        if not hasattr(aux.signal, "SIGKILL"):
+            self.skipTest("signal.SIGKILL is already unavailable")
+
+        had_sigkill = hasattr(aux.signal, "SIGKILL")
+        original_sigkill = aux.signal.SIGKILL if had_sigkill else None
+        original_grace = aux.PROVIDER_TERMINATE_GRACE_SECONDS
+        aux.PROVIDER_TERMINATE_GRACE_SECONDS = 0.05
+        delattr(aux.signal, "SIGKILL")
+        try:
+            command = [
+                sys.executable,
+                "-c",
+                (
+                    "import signal, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "time.sleep(5)\n"
+                ),
+            ]
+            rc, _stdout, stderr = aux.run_provider("mock", command, None, timeout_seconds=1, output_max_chars=1000)
+        finally:
+            if had_sigkill:
+                setattr(aux.signal, "SIGKILL", original_sigkill)
+            aux.PROVIDER_TERMINATE_GRACE_SECONDS = original_grace
+
+        self.assertEqual(rc, 124)
+        self.assertIn("TIMEOUT", stderr)
+
     def test_aux_delegate_output_budget_tracks_unlinked_capture_fd(self):
         aux = load_aux_module()
         command = [
@@ -7099,7 +7206,7 @@ for malformed in malformed_values:
 
                     self.assertEqual(rc, 124)
                     self.assertIn("TIMEOUT", stderr)
-                    deadline = time.monotonic() + 3.0
+                    deadline = time.monotonic() + 5.0
                     while time.monotonic() < deadline and not sentinel.exists():
                         time.sleep(0.05)
                     self.assertFalse(sentinel.exists())
@@ -7135,7 +7242,7 @@ for malformed in malformed_values:
                     self.assertEqual(rc, 125)
                     self.assertLessEqual(len(stdout), 1000)
                     self.assertIn("OUTPUT_LIMIT exceeded", stderr)
-                    deadline = time.monotonic() + 3.0
+                    deadline = time.monotonic() + 5.0
                     while time.monotonic() < deadline and not sentinel.exists():
                         time.sleep(0.05)
                     self.assertFalse(sentinel.exists())
