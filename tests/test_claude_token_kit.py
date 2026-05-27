@@ -215,6 +215,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(stale_lib_pyc.exists())
         self.assertFalse(stale_lib_cache_pyc.exists())
 
+    def test_prepublish_check_rejects_shell_syntax_errors(self):
+        kit = KIT_DIR / "statusline.sh"
+        plugin = PLUGIN_BIN / "claude-token-statusline"
+        original_kit = kit.read_bytes()
+        original_plugin = plugin.read_bytes()
+        original_plugin_mode = stat.S_IMODE(plugin.stat().st_mode)
+        broken = b"#!/usr/bin/env bash\nif true; then\n  echo broken\n"
+        try:
+            kit.write_bytes(broken)
+            plugin.write_bytes(broken)
+            plugin.chmod(original_plugin_mode)
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+        finally:
+            kit.write_bytes(original_kit)
+            plugin.write_bytes(original_plugin)
+            plugin.chmod(original_plugin_mode)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("shell syntax failed", proc.stdout + proc.stderr)
+
     def test_prepublish_check_rejects_executable_plugin_helper(self):
         _kit, plugin = HELPER_PAIRS[0]
         original_mode = stat.S_IMODE(plugin.stat().st_mode)

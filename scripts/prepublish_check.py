@@ -346,6 +346,21 @@ def check_package_clean() -> None:
             fail(f"forbidden package cache artifact: {safe_path_label(rel)}")
 
 
+def check_shell_syntax() -> None:
+    bash = shutil.which("bash")
+    if bash is None:
+        fail("bash not found for shell syntax check")
+    for kit_name, bin_name in IMPLEMENTATION_PAIRS:
+        kit = KIT_DIR / kit_name
+        if kit.suffix != ".sh":
+            continue
+        for path in (kit, PLUGIN_BIN / bin_name):
+            proc = subprocess.run([bash, "-n", str(path)], cwd=ROOT, text=True, capture_output=True)
+            if proc.returncode != 0:
+                detail = compact_label_text((proc.stderr or proc.stdout or "syntax error").strip(), 200)
+                fail(f"shell syntax failed for {safe_path_label(path)}: {detail}")
+
+
 def check_python_compiles() -> None:
     # Shell wrappers are skipped by py_compile. Compile to a private temp
     # directory so a release gate does not dirty the source tree with
@@ -389,6 +404,7 @@ def main() -> int:
     remove_generated_plugin_bin_python_caches()
     check_package_clean()
     check_python_compiles()
+    check_shell_syntax()
     if not args.skip_tests:
         run_tests()
         remove_generated_plugin_bin_python_caches()
