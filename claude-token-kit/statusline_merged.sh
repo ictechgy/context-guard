@@ -20,14 +20,21 @@
 #                              (미지정 시 자기 옆 디렉토리만 사용; PATH 탐색 안 함)
 set -u
 
+statusline_input_tmp=''
+
 statusline_tmp_base() {
   local candidate="${TMPDIR:-/tmp}" resolved
-  candidate="${candidate%/}"
+  if [[ "$candidate" != "/" ]]; then
+    candidate="${candidate%/}"
+  fi
   if [[ -z "$candidate" || "$candidate" != /* || ! -d "$candidate" || ! -w "$candidate" ]]; then
     candidate="/tmp"
   fi
   if resolved=$(cd "$candidate" 2>/dev/null && pwd -P); then
-    printf '%s\n' "${resolved%/}"
+    if [[ "$resolved" != "/" ]]; then
+      resolved="${resolved%/}"
+    fi
+    printf '%s\n' "${resolved:-/}"
   else
     printf '/tmp\n'
   fi

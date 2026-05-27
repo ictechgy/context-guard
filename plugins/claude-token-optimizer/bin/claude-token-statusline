@@ -6,14 +6,21 @@ if [[ -t 0 ]]; then
   exit 0
 fi
 
+statusline_input_tmp=''
+
 statusline_tmp_base() {
   local candidate="${TMPDIR:-/tmp}" resolved
-  candidate="${candidate%/}"
+  if [[ "$candidate" != "/" ]]; then
+    candidate="${candidate%/}"
+  fi
   if [[ -z "$candidate" || "$candidate" != /* || ! -d "$candidate" || ! -w "$candidate" ]]; then
     candidate="/tmp"
   fi
   if resolved=$(cd "$candidate" 2>/dev/null && pwd -P); then
-    printf '%s\n' "${resolved%/}"
+    if [[ "$resolved" != "/" ]]; then
+      resolved="${resolved%/}"
+    fi
+    printf '%s\n' "${resolved:-/}"
   else
     printf '/tmp\n'
   fi
