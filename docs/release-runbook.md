@@ -62,6 +62,7 @@ Before publishing a versioned artifact, verify:
 
 - `plugins/claude-token-optimizer/.claude-plugin/plugin.json` has the intended version.
 - Repository-root `.claude-plugin/marketplace.json` lists the same plugin version and `Apache-2.0` license.
+- Repository-root `CHANGELOG.md` contains a release-notes entry for that exact plugin version.
 - `scripts/prepublish_check.py` passes without path overrides.
 - No generated caches, logs, or symlinks are inside `plugins/claude-token-optimizer/`.
 

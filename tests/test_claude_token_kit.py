@@ -243,6 +243,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("shell syntax failed", str(ctx.exception))
         self.assertNotIn(str(tmp), str(ctx.exception))
 
+    def test_prepublish_check_requires_versioned_release_notes(self):
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_release_notes_test")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            changelog = tmp / "CHANGELOG.md"
+            prepublish.CHANGELOG = changelog
+
+            changelog.write_text("# Changelog\n\n## [0.1.0] - 2026-05-27\n\n- Initial release candidate.\n", encoding="utf-8")
+            prepublish.check_release_notes("0.1.0")
+
+            changelog.write_text("# Changelog\n\n## [0.2.0] - 2026-05-27\n\n## [0.1.0]\n\n- Previous.\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as empty_ctx:
+                prepublish.check_release_notes("0.2.0")
+            self.assertIn("release notes entry is empty", str(empty_ctx.exception))
+
+            changelog.write_text("# Changelog\n\n## [0.1.0]\n\n- Previous.\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_release_notes("0.2.0")
+        self.assertIn("release notes missing version entry", str(ctx.exception))
+        self.assertNotIn(str(tmp), str(ctx.exception))
+
     def test_prepublish_check_rejects_executable_plugin_helper(self):
         _kit, plugin = HELPER_PAIRS[0]
         original_mode = stat.S_IMODE(plugin.stat().st_mode)
