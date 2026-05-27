@@ -240,18 +240,15 @@ def signal_process_group(proc: subprocess.Popen[bytes], sig: int, pgid: int | No
         pass
 
 
-def write_child_input(proc: subprocess.Popen[bytes], input_text: str | None) -> None:
-    if input_text is None or proc.stdin is None:
+def write_child_input(stream: Any, input_text: str | None) -> None:
+    if input_text is None or stream is None:
         return
     try:
-        proc.stdin.write(input_text.encode("utf-8"))
+        stream.write(input_text.encode("utf-8"))
     except (BrokenPipeError, OSError):
         pass
     finally:
-        try:
-            proc.stdin.close()
-        except OSError:
-            pass
+        close_pipe(stream)
 
 
 def close_pipe(stream: Any) -> None:
@@ -322,7 +319,7 @@ def run_bounded_command(
     if input_text is not None:
         threading.Thread(
             target=write_child_input,
-            args=(proc, input_text),
+            args=(proc.stdin, input_text),
             daemon=True,
         ).start()
 
