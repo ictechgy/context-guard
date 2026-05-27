@@ -215,6 +215,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(stale_lib_pyc.exists())
         self.assertFalse(stale_lib_cache_pyc.exists())
 
+    @unittest.skipIf(shutil.which("bash") is None, "bash is required for shell syntax gate")
+    def test_prepublish_check_rejects_shell_syntax_errors(self):
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_shell_syntax_test")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            kit_dir = tmp / "kit"
+            plugin_dir = tmp / "plugin"
+            plugin_bin = plugin_dir / "bin"
+            kit_dir.mkdir()
+            plugin_bin.mkdir(parents=True)
+            broken = "#!/usr/bin/env bash\nif true; then\n  echo broken\n"
+            (kit_dir / "statusline.sh").write_text(broken, encoding="utf-8")
+            plugin_copy = plugin_bin / "claude-token-statusline"
+            plugin_copy.write_text(broken, encoding="utf-8")
+            os.chmod(plugin_copy, stat.S_IRWXU)
+
+            prepublish.KIT_DIR = kit_dir
+            prepublish.PLUGIN_DIR = plugin_dir
+            prepublish.PLUGIN_BIN = plugin_bin
+            prepublish.IMPLEMENTATION_PAIRS = (("statusline.sh", "claude-token-statusline"),)
+            prepublish.HELPER_PAIRS = ()
+
+            prepublish.check_bin_copies()
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_shell_syntax()
+        self.assertIn("shell syntax failed", str(ctx.exception))
+        self.assertNotIn(str(tmp), str(ctx.exception))
+
     def test_prepublish_check_rejects_executable_plugin_helper(self):
         _kit, plugin = HELPER_PAIRS[0]
         original_mode = stat.S_IMODE(plugin.stat().st_mode)

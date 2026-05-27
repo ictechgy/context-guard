@@ -346,6 +346,54 @@ def check_package_clean() -> None:
             fail(f"forbidden package cache artifact: {safe_path_label(rel)}")
 
 
+def shell_syntax_paths() -> list[Path]:
+    paths: list[Path] = []
+    for kit_name, bin_name in IMPLEMENTATION_PAIRS:
+        kit = KIT_DIR / kit_name
+        if kit.suffix == ".sh":
+            paths.extend((kit, PLUGIN_BIN / bin_name))
+    return paths
+
+
+def shell_arg(path: Path) -> str:
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def shell_syntax_detail(path: Path, stdout: str, stderr: str) -> str:
+    raw = stderr.strip() or stdout.strip() or "syntax error"
+    label = safe_path_label(path)
+    for value in {str(path), path.as_posix()}:
+        if value:
+            raw = raw.replace(value, label)
+    return compact_label_text(raw, 200)
+
+
+def check_shell_syntax() -> None:
+    paths = shell_syntax_paths()
+    if not paths:
+        return
+    bash = shutil.which("bash")
+    if bash is None:
+        fail("bash not found for shell syntax check")
+    for path in paths:
+        try:
+            proc = subprocess.run(
+                [bash, "-n", shell_arg(path)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            fail(f"shell syntax check timed out for {safe_path_label(path)}")
+        if proc.returncode != 0:
+            detail = shell_syntax_detail(path, proc.stdout, proc.stderr)
+            fail(f"shell syntax failed for {safe_path_label(path)}: {detail}")
+
+
 def check_python_compiles() -> None:
     # Shell wrappers are skipped by py_compile. Compile to a private temp
     # directory so a release gate does not dirty the source tree with
@@ -389,6 +437,7 @@ def main() -> int:
     remove_generated_plugin_bin_python_caches()
     check_package_clean()
     check_python_compiles()
+    check_shell_syntax()
     if not args.skip_tests:
         run_tests()
         remove_generated_plugin_bin_python_caches()
