@@ -365,9 +365,6 @@ def run_bounded_command(
                 signal_process_group(proc, signal.SIGTERM, pgid)
                 terminated_at = time.monotonic()
 
-    close_pipe(proc.stdin)
-    close_pipe(proc.stdout)
-    close_pipe(proc.stderr)
     try:
         returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
