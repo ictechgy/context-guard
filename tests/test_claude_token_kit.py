@@ -7053,6 +7053,149 @@ for malformed in malformed_values:
         self.assertIn("failed to read provider output safely", text)
         self.assertNotIn("SHOULD_NOT_LEAK", text)
 
+    def test_aux_delegate_provider_parent_exit_loop_sleeps_and_launches_session(self):
+        aux = load_aux_module()
+        popen_calls = []
+        sleep_calls = []
+        alive_results = [True, False]
+
+        class FakePopen:
+            pid = 123456789
+
+            def __init__(self, *args, **kwargs):
+                popen_calls.append(kwargs)
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        original_popen = aux.subprocess.Popen
+        original_alive = aux.provider_process_group_alive
+        original_sleep = aux._time.sleep
+
+        def fake_alive(proc, pgid):
+            return alive_results.pop(0) if alive_results else False
+
+        def recording_popen(*args, **kwargs):
+            if kwargs.get("start_new_session") is True:
+                return FakePopen(*args, **kwargs)
+            return original_popen(*args, **kwargs)
+
+        aux.subprocess.Popen = recording_popen
+        aux.provider_process_group_alive = fake_alive
+        aux._time.sleep = lambda seconds: sleep_calls.append(seconds)
+        try:
+            rc, stdout, stderr = aux.run_provider(
+                "mock", [sys.executable, "-c", ""], None, timeout_seconds=5, output_max_chars=1000
+            )
+        finally:
+            aux.subprocess.Popen = original_popen
+            aux.provider_process_group_alive = original_alive
+            aux._time.sleep = original_sleep
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertTrue(popen_calls)
+        self.assertIs(popen_calls[0].get("start_new_session"), True)
+        self.assertEqual(sleep_calls, [aux.PROVIDER_POLL_INTERVAL_SECONDS])
+
+    def test_aux_delegate_provider_group_helpers_fail_closed(self):
+        aux = load_aux_module()
+        if not hasattr(aux.os, "getpgid") or not hasattr(aux.os, "killpg"):
+            self.skipTest("process-group helpers are unavailable on this platform")
+
+        class FakeProc:
+            pid = 123
+
+            def poll(self):
+                return 0
+
+        original_getpgid = aux.os.getpgid
+        original_killpg = aux.os.killpg
+        aux.os.getpgid = lambda pid: (_ for _ in ()).throw(OSError("gone"))
+        aux.os.killpg = lambda pgid, sig: (_ for _ in ()).throw(PermissionError("denied"))
+        try:
+            self.assertIsNone(aux.provider_process_group_id(FakeProc()))
+            self.assertTrue(aux.provider_process_group_alive(FakeProc(), 123))
+        finally:
+            aux.os.getpgid = original_getpgid
+            aux.os.killpg = original_killpg
+
+    def test_aux_delegate_signal_falls_back_to_process_when_group_is_missing(self):
+        aux = load_aux_module()
+        if not hasattr(aux.os, "killpg"):
+            self.skipTest("process-group signaling is unavailable on this platform")
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = 0
+                self.killed = 0
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                self.killed += 1
+
+        original_killpg = aux.os.killpg
+        aux.os.killpg = lambda pgid, sig: (_ for _ in ()).throw(ProcessLookupError())
+        try:
+            graceful = FakeProc()
+            aux.signal_provider_process_group(graceful, aux.signal.SIGTERM, 123)
+            self.assertEqual(graceful.terminated, 1)
+            self.assertEqual(graceful.killed, 0)
+
+            forced = FakeProc()
+            aux.signal_provider_process_group(forced, aux.PROVIDER_KILL_SIGNAL, 123, force=True)
+            self.assertEqual(forced.terminated, 0)
+            self.assertEqual(forced.killed, 1)
+        finally:
+            aux.os.killpg = original_killpg
+
+    def test_aux_delegate_provider_kill_signal_fallback_uses_force_not_signal_identity(self):
+        aux = load_aux_module()
+
+        class FakeProc:
+            def __init__(self):
+                self.terminated = 0
+                self.killed = 0
+
+            def terminate(self):
+                self.terminated += 1
+
+            def kill(self):
+                self.killed += 1
+
+        had_sigkill = hasattr(aux.signal, "SIGKILL")
+        original_sigkill = aux.signal.SIGKILL if had_sigkill else None
+        original_kill_signal = aux.PROVIDER_KILL_SIGNAL
+        aux.PROVIDER_KILL_SIGNAL = aux.signal.SIGTERM
+        if had_sigkill:
+            delattr(aux.signal, "SIGKILL")
+        try:
+            graceful = FakeProc()
+            aux.signal_provider_process_group(graceful, aux.signal.SIGTERM, None)
+            self.assertEqual(graceful.terminated, 1)
+            self.assertEqual(graceful.killed, 0)
+
+            forced = FakeProc()
+            aux.signal_provider_process_group(forced, aux.PROVIDER_KILL_SIGNAL, None, force=True)
+            self.assertEqual(forced.terminated, 0)
+            self.assertEqual(forced.killed, 1)
+        finally:
+            if had_sigkill:
+                setattr(aux.signal, "SIGKILL", original_sigkill)
+            aux.PROVIDER_KILL_SIGNAL = original_kill_signal
+
     def test_aux_delegate_output_budget_tracks_unlinked_capture_fd(self):
         aux = load_aux_module()
         command = [
@@ -7070,6 +7213,75 @@ for malformed in malformed_values:
         self.assertEqual(rc, 125)
         self.assertEqual(stdout, "")
         self.assertIn("OUTPUT_LIMIT exceeded", stderr)
+
+    @unittest.skipIf(os.name != "posix", "process-group teardown behavior is POSIX-specific")
+    def test_aux_delegate_provider_timeout_kills_child_after_parent_exit(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_provider_parent_exit_timeout_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "provider-child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+                    )
+
+                    rc, _stdout, stderr = aux.run_provider(
+                        "mock",
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        None,
+                        timeout_seconds=1,
+                        output_max_chars=1000,
+                    )
+
+                    self.assertEqual(rc, 124)
+                    self.assertIn("TIMEOUT", stderr)
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline and not sentinel.exists():
+                        time.sleep(0.05)
+                    self.assertFalse(sentinel.exists())
+
+    @unittest.skipIf(os.name != "posix", "process-group teardown behavior is POSIX-specific")
+    def test_aux_delegate_provider_output_limit_kills_child_after_parent_exit(self):
+        for index, script in enumerate(AUX_SCRIPTS):
+            with self.subTest(script=script):
+                aux = load_python_script_module(script, f"_aux_provider_parent_exit_output_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    sentinel = root / "provider-output-child-survived.txt"
+                    child_code = (
+                        "import pathlib, sys, time; "
+                        "sys.stdout.write('A' * 20000); "
+                        "sys.stdout.flush(); "
+                        "time.sleep(2.0); "
+                        "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')"
+                    )
+                    parent_code = (
+                        "import subprocess, sys; "
+                        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])"
+                    )
+
+                    rc, stdout, stderr = aux.run_provider(
+                        "mock",
+                        [sys.executable, "-c", parent_code, child_code, str(sentinel)],
+                        None,
+                        timeout_seconds=5,
+                        output_max_chars=1000,
+                    )
+
+                    self.assertEqual(rc, 125)
+                    self.assertLessEqual(len(stdout), 1000)
+                    self.assertIn("OUTPUT_LIMIT exceeded", stderr)
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline and not sentinel.exists():
+                        time.sleep(0.05)
+                    self.assertFalse(sentinel.exists())
 
     def test_aux_delegate_nonfinite_config_budget_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:

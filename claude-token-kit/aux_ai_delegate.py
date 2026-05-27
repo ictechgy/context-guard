@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time as _time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,9 @@ CONTEXT_MAX_CHARS_LIMIT = 1_000_000
 TIMEOUT_SECONDS_MAX = 600
 GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 WARNING_LABEL_MAX_CHARS = 120
+PROVIDER_TERMINATE_GRACE_SECONDS = 2.0
+PROVIDER_POLL_INTERVAL_SECONDS = 0.05
+PROVIDER_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 PROVIDER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_PROVIDER_SYMLINK_DEPTH = 40
 UNSUPPORTED_CONFIG_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
@@ -1620,6 +1624,51 @@ def provider_output_size(*files: Any) -> int:
     return total
 
 
+def provider_process_group_id(proc: subprocess.Popen[Any]) -> int | None:
+    if os.name != "posix":
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except OSError:
+        return None
+
+
+def provider_process_group_alive(proc: subprocess.Popen[Any], pgid: int | None) -> bool:
+    if os.name != "posix" or pgid is None:
+        return proc.poll() is None
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
+def signal_provider_process_group(
+    proc: subprocess.Popen[Any], sig: int, pgid: int | None, *, force: bool = False
+) -> None:
+    if os.name == "posix" and pgid is not None:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            pass
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except AttributeError:
+        try:
+            proc.terminate()
+        except (AttributeError, OSError):
+            pass
+    except OSError:
+        pass
+
+
 def run_provider(
     provider: str,
     command: list[str],
@@ -1640,8 +1689,10 @@ def run_provider(
         if prompt is not None:
             stdin_path.write_text(prompt, encoding="utf-8")
             stdin_file = stdin_path.open("rb")
-        start = _dt.datetime.now()
+        start = _time.monotonic()
         killed_for_output = False
+        timed_out = False
+        termination_reason: str | None = None
         returncode = 0
         try:
             with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
@@ -1666,51 +1717,68 @@ def run_provider(
                 if proc is None:
                     pass
                 else:
-                    while proc.poll() is None:
-                        elapsed = (_dt.datetime.now() - start).total_seconds()
-                        current_size = provider_output_size(stdout_file, stderr_file)
-                        if current_size > output_limit:
-                            killed_for_output = True
+                    pgid = provider_process_group_id(proc)
+                    terminated_at: float | None = None
+                    sent_kill = False
+                    while proc.poll() is None or provider_process_group_alive(proc, pgid):
+                        now = _time.monotonic()
+                        elapsed = now - start
+                        if terminated_at is None:
+                            current_size = provider_output_size(stdout_file, stderr_file)
+                            if current_size > output_limit:
+                                killed_for_output = True
+                                termination_reason = "output"
+                                signal_provider_process_group(proc, signal.SIGTERM, pgid)
+                                terminated_at = _time.monotonic()
+                            elif elapsed > timeout_seconds:
+                                timed_out = True
+                                termination_reason = "timeout"
+                                signal_provider_process_group(proc, signal.SIGTERM, pgid)
+                                terminated_at = _time.monotonic()
+                        if terminated_at is not None and not sent_kill:
+                            grace = _time.monotonic() - terminated_at
+                            if grace >= PROVIDER_TERMINATE_GRACE_SECONDS:
+                                signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid, force=True)
+                                sent_kill = True
+                        if sent_kill and terminated_at is not None:
+                            grace = _time.monotonic() - terminated_at
+                            if grace >= PROVIDER_TERMINATE_GRACE_SECONDS * 2:
+                                break
+                        if proc.poll() is None:
                             try:
-                                os.killpg(proc.pid, signal.SIGTERM)
-                            except (OSError, AttributeError):
-                                proc.terminate()
-                            break
-                        if elapsed > timeout_seconds:
-                            try:
-                                os.killpg(proc.pid, signal.SIGTERM)
-                            except (OSError, AttributeError):
-                                proc.terminate()
-                            break
-                        try:
-                            proc.wait(timeout=0.05)
-                        except subprocess.TimeoutExpired:
-                            pass
+                                proc.wait(timeout=PROVIDER_POLL_INTERVAL_SECONDS)
+                            except subprocess.TimeoutExpired:
+                                pass
+                        else:
+                            _time.sleep(PROVIDER_POLL_INTERVAL_SECONDS)
                     try:
-                        returncode = proc.wait(timeout=2)
+                        returncode = proc.wait(timeout=PROVIDER_TERMINATE_GRACE_SECONDS)
                     except subprocess.TimeoutExpired:
+                        signal_provider_process_group(proc, PROVIDER_KILL_SIGNAL, pgid, force=True)
                         try:
-                            os.killpg(proc.pid, signal.SIGKILL)
-                        except (OSError, AttributeError):
-                            proc.kill()
-                        returncode = proc.wait()
+                            returncode = proc.wait(timeout=PROVIDER_TERMINATE_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            if termination_reason == "timeout":
+                                returncode = 124
+                            elif termination_reason == "output":
+                                returncode = 125
+                            else:
+                                returncode = 137
         finally:
             if stdin_file is not None:
                 stdin_file.close()
         stdout, stdout_truncated = read_limited_output(stdout_path, output_limit)
         stderr, stderr_truncated = read_limited_output(stderr_path, output_limit)
-        elapsed = (_dt.datetime.now() - start).total_seconds()
-        if elapsed > timeout_seconds and returncode == 0:
-            returncode = 124
-        if elapsed > timeout_seconds:
+        if timed_out:
             stderr = (stderr.rstrip() + f"\n[TIMEOUT after {timeout_seconds}s]\n").lstrip()
-            returncode = 124
+            if returncode == 0 or termination_reason == "timeout":
+                returncode = 124
         if killed_for_output or stdout_truncated or stderr_truncated:
             stderr = (
                 stderr.rstrip()
                 + f"\n[OUTPUT_LIMIT exceeded; captured first {output_limit} chars per stream]\n"
             ).lstrip()
-            if returncode == 0 or killed_for_output:
+            if returncode == 0 or termination_reason == "output":
                 returncode = 125
         return returncode, stdout, stderr
 
