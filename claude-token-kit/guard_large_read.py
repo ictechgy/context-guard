@@ -48,6 +48,9 @@ MAX_BYTES_LIMIT = 1_000_000
 MAX_LINE_RANGE_LIMIT = 20_000
 OUTLINE_MAX_BYTES = 200_000
 OUTLINE_MAX_ITEMS = 12
+READ_GUARD_STATE_DIR = Path(".claude-token-optimizer")
+READ_GUARD_STATE_FILE = "read-guard-cache.json"
+READ_GUARD_STATE_MAX_ITEMS = 20
 GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
@@ -456,6 +459,81 @@ def progressive_read_ladder(path: Path, label: str, size: int, limit: int, read_
     return " ".join(parts)
 
 
+def read_guard_fingerprint(path: Path, label: str, size: int) -> str:
+    try:
+        stat_result = path.stat()
+        mtime = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
+    except OSError:
+        mtime = 0
+    basis = f"{label}\0{size}\0{mtime}"
+    return hashlib.sha256(basis.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def load_read_guard_state(root: Path) -> dict[str, Any]:
+    state_dir = root / READ_GUARD_STATE_DIR
+    state_file = state_dir / READ_GUARD_STATE_FILE
+    try:
+        if state_dir.is_symlink() or state_file.is_symlink() or not state_file.is_file():
+            return {}
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_read_guard_state(root: Path, state: dict[str, Any]) -> None:
+    state_dir = root / READ_GUARD_STATE_DIR
+    state_file = state_dir / READ_GUARD_STATE_FILE
+    try:
+        if state_dir.exists() and not state_dir.is_dir():
+            return
+        if state_dir.is_symlink() or state_file.is_symlink():
+            return
+        state_dir.mkdir(mode=0o700, exist_ok=True)
+        try:
+            os.chmod(state_dir, 0o700)
+        except OSError:
+            pass
+        tmp = state_file.with_name(f".read-guard-{os.getpid()}.tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False)
+        os.replace(tmp, state_file)
+        try:
+            os.chmod(state_file, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        return
+
+
+def record_read_guard_attempt(root: Path, fp: str) -> int:
+    state = load_read_guard_state(root)
+    attempts = state.get("attempts")
+    if not isinstance(attempts, dict):
+        attempts = {}
+    entry = attempts.get(fp)
+    if not isinstance(entry, dict):
+        entry = {"count": 0}
+    count = int(entry.get("count", 0) or 0) + 1
+    attempts[fp] = {"count": count}
+    if len(attempts) > READ_GUARD_STATE_MAX_ITEMS:
+        for key in list(attempts)[: len(attempts) - READ_GUARD_STATE_MAX_ITEMS]:
+            attempts.pop(key, None)
+    state["attempts"] = attempts
+    save_read_guard_state(root, state)
+    return count
+
+
+def repeated_read_hint(count: int) -> str:
+    if count < 2:
+        return ""
+    return (
+        f" Repeated-read dedup: this same oversized file fingerprint has been blocked {count} times; "
+        "reuse the previous ladder and query a symbol or line range instead of retrying full-file Read."
+    )
+
+
 def deny_response(reason: str) -> dict[str, Any]:
     return {
         "hookSpecificOutput": {
@@ -529,7 +607,8 @@ def main() -> int:
 
     label = safe_label(path, root)
     read_symbol = find_read_symbol_command()
-    reason = progressive_read_ladder(path, label, size, limit, read_symbol)
+    attempt_count = record_read_guard_attempt(root, read_guard_fingerprint(path, label, size))
+    reason = progressive_read_ladder(path, label, size, limit, read_symbol) + repeated_read_hint(attempt_count)
     print(json.dumps(deny_response(reason), ensure_ascii=False))
     return 0
 

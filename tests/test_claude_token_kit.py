@@ -3243,6 +3243,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     mode = state_files[0].stat().st_mode & 0o777
                     self.assertEqual(mode, 0o600)
 
+    def test_failed_attempt_nudge_adds_strategy_switch_after_three_failures(self):
+        for script in NUDGE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    cwd = Path(tmp)
+                    payload = {
+                        "session_id": "sess-strategy-switch",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "pytest tests/auth.py"},
+                        "tool_response": {"exitCode": 1},
+                    }
+                    outputs = [json.loads(run_hook_payload(script, payload, cwd=cwd).stdout) for _ in range(3)]
+                    self.assertEqual(outputs[0], {})
+                    self.assertNotIn("Strategy-switch signal", outputs[1]["hookSpecificOutput"]["additionalContext"])
+                    self.assertIn("Strategy-switch signal", outputs[2]["hookSpecificOutput"]["additionalContext"])
+
     def test_failed_attempt_nudge_resets_when_pivoting_to_different_command(self):
         for script in NUDGE_SCRIPTS:
             with self.subTest(script=script):
@@ -4025,6 +4041,22 @@ for malformed in malformed_values:
             self.assertIn("Progressive read ladder", reason)
             self.assertIn("Top-level outline: line 1: heading Overview", reason)
             self.assertIn("Read with offset=0 limit=", reason)
+
+    def test_large_read_guard_repeated_read_dedup_signal_after_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            big = root / "big.py"
+            big.write_text("def target():\n    pass\n" + ("# noise\n" * 8000), encoding="utf-8")
+            payload = {"tool_input": {"file_path": "big.py"}}
+            first = json.loads(run_hook_payload(KIT_DIR / "guard_large_read.py", payload, cwd=root).stdout)
+            second = json.loads(run_hook_payload(KIT_DIR / "guard_large_read.py", payload, cwd=root).stdout)
+            first_reason = first["hookSpecificOutput"]["permissionDecisionReason"]
+            second_reason = second["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertNotIn("Repeated-read dedup", first_reason)
+            self.assertIn("Repeated-read dedup", second_reason)
+            state_files = list((root / ".claude-token-optimizer").glob("read-guard-cache.json"))
+            self.assertEqual(len(state_files), 1)
+            self.assertEqual(stat.S_IMODE(state_files[0].stat().st_mode), 0o600)
 
     def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
         cases = {
