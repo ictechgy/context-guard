@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import Any
 
 SETTINGS_REL = Path(".claude/settings.json")
-STATE_DIR_REL = Path(".claude-token-optimizer")
-CONFIG_REL = STATE_DIR_REL / "config.json"
 
 RECOMMENDED_DENIES = [
     "Read(./node_modules/**)",
@@ -55,7 +53,6 @@ HELPER_GUARD_READ = "claude-token-guard-read"
 HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
-GIT_TRUST_CHECK_TIMEOUT_SECONDS = 2
 PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -70,8 +67,6 @@ class Choices:
     bash_hook: bool = True
     read_guard: bool = True
     model_defaults: bool = True
-    aux_provider: str = "none"
-    auto_delegate: bool = False
     # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — 새 기능이라 기본 OFF.
     failed_attempt_nudge: bool = False
 
@@ -85,8 +80,6 @@ class SetupResult:
     choices: Choices
     actions: list[str]
     backup_path: Path | None = None
-    aux_config_path: Path | None = None
-    aux_backup_path: Path | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -95,8 +88,6 @@ class SetupResult:
             "changed": self.changed,
             "applied": self.applied,
             "backup_path": str(self.backup_path) if self.backup_path else None,
-            "aux_config_path": str(self.aux_config_path) if self.aux_config_path else None,
-            "aux_backup_path": str(self.aux_backup_path) if self.aux_backup_path else None,
             "choices": self.choices.__dict__,
             "actions": self.actions,
         }
@@ -499,22 +490,6 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
     return actions
 
 
-def ensure_private_dir(path: Path) -> None:
-    try:
-        fd = _ensure_directory_no_symlink(path, PRIVATE_DIR_MODE)
-    except OSError as exc:
-        raise SystemExit(f"Could not create private directory safely: {path}: {exc}") from exc
-    try:
-        # owner-only directory access — 디렉터리에 자격증명/세션 상태가 들어갈 수 있어
-        # 의도적으로 가장 좁은 권한을 적용한다.
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, PRIVATE_DIR_MODE)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
-
-
 def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     if os.rename not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative atomic writes")
@@ -548,11 +523,6 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         os.close(parent_fd)
 
 
-def write_private_gitignore(state_dir: Path) -> None:
-    ensure_private_dir(state_dir)
-    atomic_write(state_dir / ".gitignore", "*\n!.gitignore\n", 0o600)
-
-
 def existing_mode_or_default(path: Path, default: int = 0o600) -> int:
     try:
         fd = _open_regular_no_symlink(path)
@@ -564,136 +534,6 @@ def existing_mode_or_default(path: Path, default: int = 0o600) -> int:
         return os.fstat(fd).st_mode & 0o777
     finally:
         os.close(fd)
-
-
-def load_aux_config(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(_read_text_no_follow(path))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
-    except FileNotFoundError:
-        return {}
-    except OSError as exc:
-        raise SystemExit(f"Could not read {path} without following symlinks: {exc}") from exc
-    if not isinstance(data, dict):
-        raise SystemExit(f"Auxiliary config must contain a JSON object: {path}")
-    return data
-
-
-class GitTrustCheckTimeout(RuntimeError):
-    pass
-
-
-def run_git_trust_check(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-    try:
-        return subprocess.run(
-            args,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=GIT_TRUST_CHECK_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise GitTrustCheckTimeout("git trust check timed out") from exc
-    except OSError:
-        return None
-
-
-def git_root_for(path: Path) -> Path | None:
-    proc = run_git_trust_check(
-        ["git", "-C", str(path if path.is_dir() else path.parent), "rev-parse", "--show-toplevel"]
-    )
-    if proc is None:
-        return None
-    if proc.returncode != 0:
-        return None
-    root = proc.stdout.strip()
-    return Path(root).resolve() if root else None
-
-
-def is_git_tracked(path: Path) -> bool:
-    root = git_root_for(path)
-    if root is None:
-        return False
-    try:
-        rel = path.resolve().relative_to(root)
-    except ValueError:
-        return False
-    proc = run_git_trust_check(
-        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", str(rel)],
-    )
-    if proc is None:
-        return False
-    return proc.returncode == 0
-
-
-def has_private_file_mode(path: Path) -> bool:
-    try:
-        st = path.stat()
-    except OSError:
-        return False
-    if hasattr(os, "getuid") and st.st_uid != os.getuid():
-        return False
-    return stat.S_IMODE(st.st_mode) & 0o077 == 0
-
-
-def aux_config_trust_error(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    try:
-        if is_git_tracked(path):
-            return f"tracked by git: {path}"
-    except GitTrustCheckTimeout:
-        return f"git tracking check timed out: {path}"
-    if not has_private_file_mode(path):
-        return f"not owner-only 0600: {path}"
-    return None
-
-
-def write_aux_config(
-    root: Path,
-    provider: str,
-    actions: list[str],
-    *,
-    auto_delegate: bool,
-    dry_run: bool,
-    backup: bool,
-) -> tuple[Path | None, Path | None]:
-    if provider == "none":
-        return None, None
-    config_path = root / CONFIG_REL
-    actions.append(f"enabled auxiliary AI delegation default_provider={provider}")
-    if auto_delegate:
-        actions.append("enabled automatic safe delegation for plugin skills")
-    trust_error = aux_config_trust_error(config_path)
-    if trust_error:
-        actions.append(f"reset untrusted auxiliary config instead of preserving it ({trust_error})")
-    if dry_run:
-        return config_path, None
-    if config_path.parent.exists() and config_path.parent.is_symlink():
-        raise SystemExit(f"Refusing to use symlinked optimizer state directory: {config_path.parent}")
-    if config_path.is_symlink():
-        raise SystemExit(f"Refusing to write through symlinked auxiliary config: {config_path}")
-    write_private_gitignore(config_path.parent)
-    if trust_error:
-        config: dict[str, Any] = {}
-    else:
-        config = load_aux_config(config_path)
-    policy = config.get("context_policy")
-    if policy is None:
-        config["context_policy"] = {"allow_sensitive_paths": [], "allow_outside_project_paths": []}
-    elif not isinstance(policy, dict):
-        raise SystemExit("Refusing to replace non-object aux context_policy; repair it manually first.")
-    config["aux_ai_enabled"] = True
-    config["default_provider"] = provider
-    config["auto_delegate_enabled"] = bool(auto_delegate)
-    if auto_delegate:
-        config["auto_delegate_provider"] = provider
-    else:
-        config.pop("auto_delegate_provider", None)
-    backup_path = backup_existing(config_path) if backup else None
-    atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n", 0o600)
-    return config_path, backup_path
 
 
 def backup_existing(path: Path) -> Path | None:
@@ -721,16 +561,6 @@ def prompt_bool(question: str, default: bool) -> bool:
         print("Please answer y or n.")
 
 
-def prompt_provider() -> str:
-    while True:
-        answer = input("Auxiliary AI provider [gemini/codex, default gemini] ").strip().lower()
-        if not answer:
-            return "gemini"
-        if answer in {"gemini", "codex"}:
-            return answer
-        print("Please choose gemini or codex.")
-
-
 def interactive_choices(defaults: Choices) -> Choices:
     print("Claude Token Optimizer setup wizard")
     print("Project-local changes only. Existing settings are merged, not replaced.\n")
@@ -740,18 +570,11 @@ def interactive_choices(defaults: Choices) -> Choices:
         bash_hook=prompt_bool("Enable Bash output trim + grep/diff sanitizer hook?", defaults.bash_hook),
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
-        aux_provider="none",
         failed_attempt_nudge=prompt_bool(
             "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; off by default)",
             defaults.failed_attempt_nudge,
         ),
     )
-    if prompt_bool("Enable auxiliary AI delegation now? This may send selected context to Gemini/Codex.", False):
-        choices.aux_provider = prompt_provider()
-        choices.auto_delegate = prompt_bool(
-            "Allow plugin skills to auto-delegate safe read-only project context when it saves Claude tokens?",
-            False,
-        )
     return choices
 
 
@@ -762,8 +585,6 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         bash_hook=not args.no_bash_hook,
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
-        aux_provider=args.aux_provider,
-        auto_delegate=args.auto_delegate,
         failed_attempt_nudge=args.failed_attempt_nudge,
     )
 
@@ -777,8 +598,6 @@ def render_text(result: SetupResult) -> str:
     ]
     if result.backup_path:
         lines.append(f"backup={result.backup_path}")
-    if result.aux_config_path:
-        lines.append(f"aux_config={result.aux_config_path}")
     lines.append("actions:")
     if result.actions:
         lines.extend(f"- {action}" for action in result.actions)
@@ -801,25 +620,13 @@ def run(args: argparse.Namespace) -> SetupResult:
     interactive = sys.stdin.isatty() and not args.yes and not args.plan and not args.dry_run
     if interactive:
         choices = interactive_choices(choices)
-    if choices.auto_delegate and choices.aux_provider == "none":
-        raise SystemExit("--auto-delegate requires --aux-provider gemini|codex")
 
     actions = apply_choices(settings, choices)
-    aux_actions: list[str] = []
-    aux_path, aux_backup_path = write_aux_config(
-        root,
-        choices.aux_provider,
-        aux_actions,
-        auto_delegate=choices.auto_delegate,
-        dry_run=True,
-        backup=False,
-    )
-    actions.extend(aux_actions)
-    changed = settings != original or choices.aux_provider != "none"
+    changed = settings != original
 
     applied = bool(args.yes and not args.dry_run and not args.plan)
     if interactive and changed:
-        preview = SetupResult(root, settings_path, changed, False, choices, actions, aux_config_path=aux_path)
+        preview = SetupResult(root, settings_path, changed, False, choices, actions)
         print("\n" + render_text(preview))
         applied = prompt_bool("Apply these project-local changes now?", True)
 
@@ -833,16 +640,8 @@ def run(args: argparse.Namespace) -> SetupResult:
                 json.dumps(settings, indent=2, sort_keys=True) + "\n",
                 existing_mode_or_default(settings_path, 0o600),
             )
-        aux_path, aux_backup_path = write_aux_config(
-            root,
-            choices.aux_provider,
-            [],
-            auto_delegate=choices.auto_delegate,
-            dry_run=False,
-            backup=not args.no_backup,
-        )
 
-    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, aux_path, aux_backup_path)
+    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -863,17 +662,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
-    parser.add_argument(
-        "--aux-provider",
-        choices=["none", "gemini", "codex"],
-        default="none",
-        help="optionally enable auxiliary AI delegation with this default provider",
-    )
-    parser.add_argument(
-        "--auto-delegate",
-        action="store_true",
-        help="also allow enabled plugin skills to auto-delegate safe read-only context; requires --aux-provider",
-    )
     parser.add_argument(
         "--failed-attempt-nudge",
         action="store_true",

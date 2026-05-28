@@ -1,6 +1,6 @@
 {
   "name": "claude-token-optimizer",
-  "description": "Claude Code token reduction skills and local helper commands for interactive setup, context hygiene, usage auditing, settings scanning, large-read guards, output trimming/sanitizing, queryable artifact escrow, and auxiliary AI delegation.",
+  "description": "Claude Code token reduction skills and local helper commands for interactive setup, context hygiene, usage auditing, settings scanning, large-read guards, output trimming/sanitizing, queryable artifact escrow.",
   "author": {
     "name": "jinhongan"
   },
@@ -16,10 +16,6 @@
     "large-read-guard",
     "statusline",
     "hooks",
-    "gemini",
-    "codex",
-    "auxiliary-ai",
-    "delegation",
     "sanitize-output",
     "grep-sanitizer",
     "diff-sanitizer",

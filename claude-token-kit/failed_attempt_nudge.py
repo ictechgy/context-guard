@@ -91,7 +91,7 @@ NUDGE_TEXT = (
     "prompt cache 도 매 retry 마다 재워밍됨을 의미합니다. "
     "재시도 전에 사용자에게 `/clear` 또는 `/compact focus on …` 으로 세션을 정리한 뒤 "
     "재현 명령·기대 결과·금지 사항을 더 좁혀 다시 prompt 하도록 안내하거나, "
-    "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 보조 AI 위임)을 제안하세요."
+    "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 더 작은 재현)을 제안하세요."
 )
 STRATEGY_SWITCH_TEXT = (
     " Strategy-switch signal: the same failure direction has now repeated at least three times. "
