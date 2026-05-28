@@ -115,7 +115,7 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 ./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
 ```
 
-감싼 명령의 exit code를 보존하며, pytest/Jest/Vitest/Go/Rust test 실패 요약을 우선 보존합니다. 감싼 명령은 기본 600초 후 timeout 처리되며(`--timeout-seconds`로 조정), 가능한 환경에서는 process group까지 종료한 뒤 124를 반환합니다. ANSI color code는 제거하고 absolute path는 기본적으로 익명화합니다.
+감싼 명령의 exit code를 보존하며, pytest/Jest/Vitest/Go/Rust test 실패 요약을 우선 보존합니다. head/tail 로그 대신 더 작은 의미 요약만 필요하면 `--digest markdown` 또는 `--digest json`을 추가하세요. digest mode는 status, exit code, truncation count, runner failure facts, 대표 라인, redaction count, 다음 query 제안을 남깁니다. 감싼 명령은 기본 600초 후 timeout 처리되며(`--timeout-seconds`로 조정), 가능한 환경에서는 process group까지 종료한 뒤 124를 반환합니다. ANSI color code는 제거하고 absolute path는 기본적으로 익명화합니다.
 
 ### grep/diff sanitizer
 
