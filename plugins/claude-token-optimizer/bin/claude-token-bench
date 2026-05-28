@@ -817,6 +817,8 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
         fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
         try:
             new_file = os.fstat(fd).st_size == 0
+            if not new_file:
+                validate_csv_schema(csv_path, read_csv_header_unlocked(csv_path))
             with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
                 fd = -1
                 writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
@@ -853,6 +855,32 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
             if fd != -1:
                 os.close(fd)
     return True
+
+
+def read_csv_header_unlocked(csv_path: Path) -> list[str] | None:
+    fd = _open_regular_no_symlink(csv_path)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", newline="") as handle:
+            fd = -1
+            reader = csv.reader(handle)
+            try:
+                return next(reader)
+            except StopIteration:
+                return None
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def validate_csv_schema(csv_path: Path, fieldnames: list[str] | None) -> None:
+    """Fail loudly instead of appending/reporting across incompatible CSV schemas."""
+    if not fieldnames:
+        return
+    if fieldnames != CSV_COLUMNS:
+        raise SystemExit(
+            f"CSV schema mismatch for {csv_path}; start a new --csv file or migrate the header "
+            f"to: {','.join(CSV_COLUMNS)}"
+        )
 
 
 def write_text_no_follow(path: Path, text: str) -> None:
@@ -905,6 +933,7 @@ def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
         with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
             fd = -1
             reader = csv.DictReader(f)
+            validate_csv_schema(csv_path, list(reader.fieldnames or []))
             for row in reader:
                 tid = row.get("task_id") or ""
                 var = row.get("variant") or ""
@@ -943,7 +972,9 @@ def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
     try:
         with os.fdopen(fd, "r", encoding="utf-8", newline="") as handle:
             fd = -1
-            return list(csv.DictReader(handle))
+            reader = csv.DictReader(handle)
+            validate_csv_schema(csv_path, list(reader.fieldnames or []))
+            return list(reader)
     finally:
         if fd != -1:
             os.close(fd)
@@ -1065,9 +1096,12 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 for item in comparisons
                 if isinstance(item.get("cost_savings_pct_with_shift"), (int, float))
             ]
-            shifted_cost_ok = not shifted_cost_savings or all(value > 0 for value in shifted_cost_savings)
+            all_shifted_cost_measured = len(shifted_cost_savings) == len(comparisons)
+            shifted_cost_ok = all_shifted_cost_measured and all(value > 0 for value in shifted_cost_savings)
             if token_savings_observed and shifted_cost_ok:
                 claim_status = "token_and_shifted_cost_savings_observed"
+            elif token_savings_observed and not all_shifted_cost_measured:
+                claim_status = "token_savings_observed_cost_unmeasured"
             elif token_savings_observed:
                 claim_status = "token_savings_observed_cost_shift_watch"
     return {
