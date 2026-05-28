@@ -142,6 +142,8 @@ The report compares successful baseline/variant runs by real token and
 `cost_usd + external_cost_usd`; byte reductions are recorded as proxy evidence,
 not treated as proof of savings. If cost fields are zero or unavailable, the
 report can still mark token savings but will not claim shifted-cost savings.
+Claims are paired by matched successful tasks and downgraded when failure-rate
+guardrails regress.
 
 ## Auxiliary AI delegation (optional)
 

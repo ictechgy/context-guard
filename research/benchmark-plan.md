@@ -96,7 +96,8 @@ G. Auxiliary AI delegation
 6. prompt cache 영향을 분리하려면 warm run/cold run을 나눠 2회씩 실행
 7. artifact escrow, subagent, 보조 AI를 쓴 실험군은 `external_tokens`, `external_cost_usd`,
    `artifacts_used`를 함께 기록한다. primary cost가 줄어도 외부 비용으로 옮겨간 경우
-   `total_cost_with_shift_usd` 기준으로 판정한다.
+   `total_cost_with_shift_usd` 기준으로 판정한다. 외부 token은 있지만 외부 cost가 측정되지
+   않았으면 shifted-cost 절감을 주장하지 않는다.
 
 ## 5. 판정 기준
 
@@ -105,14 +106,16 @@ G. Auxiliary AI delegation
 - secondary metric: `human_corrections_per_task`
 - cost-shift metric: `total_cost_with_shift_usd = cost_usd + external_cost_usd`
 - guardrail: 실패율이 10%p 이상 상승하면 해당 절감 기법은 task class별 opt-in으로 격하
+- report claim은 baseline에서 성공한 task가 variant에서도 성공한 matched task에 대해서만
+  절감으로 인정한다. 성공 task set이 줄거나 실패율 guardrail을 넘으면 quality watch로 둔다.
 - byte reduction은 token/cost 절감의 proxy일 뿐이다. `bytes_before/bytes_after`가 줄어도
   실제 `total_tokens` 또는 shifted cost가 줄지 않으면 "절감"으로 인정하지 않는다.
 
 ## 6. 기대 결과 템플릿
 
 ```csv
-date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,output_tokens,cache_read,cache_creation,cost_usd,turns,hook_triggers,bytes_before,bytes_after,artifacts_used,external_tokens,external_cost_usd,total_cost_with_shift_usd,success,corrections,notes
-2026-05-01,2.x,t01,baseline,opus,xhigh,0,0,0,0,0,0,0,0,0,0,0,0,0,0,true,0,
+date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,output_tokens,cache_read,cache_creation,cost_usd,cost_measured,turns,hook_triggers,bytes_before,bytes_after,artifacts_used,external_tokens,external_cost_usd,external_cost_measured,total_cost_with_shift_usd,success,corrections,notes
+2026-05-01,2.x,t01,baseline,opus,xhigh,0,0,0,0,0,0,true,0,0,0,0,0,0,0,true,0,true,0,
 ```
 
 `claude-token-bench --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json`

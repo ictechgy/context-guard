@@ -85,6 +85,7 @@ CSV_COLUMNS = [
     "cache_read",
     "cache_creation",
     "cost_usd",
+    "cost_measured",
     "turns",
     "hook_triggers",
     "bytes_before",
@@ -92,6 +93,7 @@ CSV_COLUMNS = [
     "artifacts_used",
     "external_tokens",
     "external_cost_usd",
+    "external_cost_measured",
     "total_cost_with_shift_usd",
     "success",
     "corrections",
@@ -332,6 +334,7 @@ class RunResult:
     success: bool
     notes: str
     corrections: int = 0
+    cost_measured: bool = False
     turns: int = 0
     hook_triggers: int = 0
     bytes_before: int = 0
@@ -339,6 +342,7 @@ class RunResult:
     artifacts_used: int = 0
     external_tokens: int = 0
     external_cost_usd: float = 0.0
+    external_cost_measured: bool = False
 
 
 @dataclass
@@ -463,7 +467,7 @@ def parse_variants(path: Path) -> list[Variant]:
     return variants
 
 
-def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
+def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
     """`claude -p --output-format json` 응답에서 token / cost 추출.
 
     의도된 정책: 한 응답에 top-level usage 와 nested per-message usage 가 동시에 있으면
@@ -499,14 +503,15 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
             queue.extend(cur.values())
         elif isinstance(cur, list):
             queue.extend(cur)
-    return tokens, cost
+    return tokens, cost, seen_cost
 
 
-def collect_shift_metrics(payload: Any) -> dict[str, int | float]:
+def collect_shift_metrics(payload: Any) -> dict[str, int | float | bool]:
     """Collect optional cost-shift / byte-saving metrics without requiring them."""
     metrics: dict[str, int | float] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
     seen: dict[str, bool] = {key: False for key, _ in SHIFT_METRIC_KEY_GROUPS}
     metrics["external_cost_usd"] = 0.0
+    metrics["external_cost_measured"] = False
     seen_external_cost = False
     queue: list[Any] = [payload]
     while queue:
@@ -526,6 +531,7 @@ def collect_shift_metrics(payload: Any) -> dict[str, int | float]:
                     cost = normalize_usage_cost(cur.get(key))
                     if cost is not None:
                         metrics["external_cost_usd"] = cost
+                        metrics["external_cost_measured"] = True
                         seen_external_cost = True
                         break
             queue.extend(cur.values())
@@ -793,12 +799,13 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude returned non-JSON: {exc.msg}",
         )
-    tokens, cost = collect_usage(payload)
+    tokens, cost, cost_measured = collect_usage(payload)
     shift_metrics = collect_shift_metrics(payload)
     success, success_note = run_success_command(task, project_root)
     return RunResult(
         task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
         tokens=tokens, cost_usd=cost, success=success, notes=success_note,
+        cost_measured=cost_measured,
         turns=int(shift_metrics["turns"]),
         hook_triggers=int(shift_metrics["hook_triggers"]),
         bytes_before=int(shift_metrics["bytes_before"]),
@@ -806,6 +813,7 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
         artifacts_used=int(shift_metrics["artifacts_used"]),
         external_tokens=int(shift_metrics["external_tokens"]),
         external_cost_usd=float(shift_metrics["external_cost_usd"]),
+        external_cost_measured=bool(shift_metrics["external_cost_measured"]),
     )
 
 
@@ -826,6 +834,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     writer.writeheader()
                 tokens = result.tokens
                 total = sum(tokens.values())
+                shifted_cost_known = cost_shift_measured(result)
                 writer.writerow({
                     "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "claude_version": claude_ver,
@@ -839,6 +848,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "cache_read": tokens.get("cache_read", 0),
                     "cache_creation": tokens.get("cache_creation", 0),
                     "cost_usd": f"{result.cost_usd:.6f}",
+                    "cost_measured": "true" if result.cost_measured else "false",
                     "turns": result.turns,
                     "hook_triggers": result.hook_triggers,
                     "bytes_before": result.bytes_before,
@@ -846,7 +856,10 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "artifacts_used": result.artifacts_used,
                     "external_tokens": result.external_tokens,
                     "external_cost_usd": f"{result.external_cost_usd:.6f}",
-                    "total_cost_with_shift_usd": f"{(result.cost_usd + result.external_cost_usd):.6f}",
+                    "external_cost_measured": "true" if result.external_cost_measured else "false",
+                    "total_cost_with_shift_usd": (
+                        f"{(result.cost_usd + result.external_cost_usd):.6f}" if shifted_cost_known else ""
+                    ),
                     "success": "true" if result.success else "false",
                     "corrections": result.corrections,
                     "notes": sanitize_csv_note(result.notes),
@@ -855,6 +868,10 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
             if fd != -1:
                 os.close(fd)
     return True
+
+
+def cost_shift_measured(result: RunResult) -> bool:
+    return result.cost_measured and (result.external_tokens == 0 or result.external_cost_measured)
 
 
 def read_csv_header_unlocked(csv_path: Path) -> list[str] | None:
@@ -895,15 +912,20 @@ def write_text_no_follow(path: Path, text: str) -> None:
 
 
 def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> None:
+    shifted_cost_known = cost_shift_measured(result)
     payload = {
         "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "claude_version": claude_ver,
         "task_id": result.task_id,
         "variant": result.variant,
         "success": result.success,
+        "primary_cost_measured": result.cost_measured,
         "primary_cost_usd": round(result.cost_usd, 6),
+        "external_cost_measured": result.external_cost_measured,
         "external_cost_usd": round(result.external_cost_usd, 6),
-        "total_cost_with_shift_usd": round(result.cost_usd + result.external_cost_usd, 6),
+        "total_cost_with_shift_usd": (
+            round(result.cost_usd + result.external_cost_usd, 6) if shifted_cost_known else None
+        ),
         "primary_tokens": sum(result.tokens.values()),
         "external_tokens": result.external_tokens,
         "artifacts_used": result.artifacts_used,
@@ -995,14 +1017,41 @@ def row_float(row: dict[str, str], key: str) -> float:
     return value if math.isfinite(value) else 0.0
 
 
+def row_optional_float(row: dict[str, str], key: str) -> float | None:
+    raw = row.get(key)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def row_bool(row: dict[str, str], key: str) -> bool:
+    return str(row.get(key) or "").strip().lower() == "true"
+
+
 def row_success(row: dict[str, str]) -> bool:
     return str(row.get("success") or "").strip().lower() == "true"
 
 
+def row_cost_shift_measured(row: dict[str, str]) -> bool:
+    return row_bool(row, "cost_measured") and (
+        row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured")
+    )
+
+
 def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) -> dict[str, Any]:
     by_variant: dict[str, dict[str, Any]] = {}
+    successful_rows_by_variant_task: dict[str, dict[str, list[dict[str, str]]]] = {}
+    seen_tasks_by_variant: dict[str, set[str]] = {}
+    successful_tasks_by_variant: dict[str, set[str]] = {}
+
     for row in rows:
         variant = row.get("variant") or "unknown"
+        task_id = row.get("task_id") or "unknown"
+        seen_tasks_by_variant.setdefault(variant, set()).add(task_id)
         bucket = by_variant.setdefault(
             variant,
             {
@@ -1011,8 +1060,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 "failed_runs": 0,
                 "total_tokens_successful": 0,
                 "primary_cost_successful_usd": 0.0,
+                "primary_cost_measured_successful": 0,
                 "external_cost_successful_usd": 0.0,
+                "external_cost_unknown_successful": 0,
                 "total_cost_with_shift_successful_usd": 0.0,
+                "total_cost_with_shift_measured_successful": 0,
                 "external_tokens_successful": 0,
                 "artifacts_used_successful": 0,
                 "bytes_before_successful": 0,
@@ -1026,13 +1078,20 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["failed_runs"] += 1
             continue
         bucket["successful_runs"] += 1
+        successful_tasks_by_variant.setdefault(variant, set()).add(task_id)
+        successful_rows_by_variant_task.setdefault(variant, {}).setdefault(task_id, []).append(row)
         bucket["total_tokens_successful"] += row_int(row, "total_tokens")
-        primary_cost = row_float(row, "cost_usd")
-        external_cost = row_float(row, "external_cost_usd")
-        shifted_cost = row_float(row, "total_cost_with_shift_usd") or (primary_cost + external_cost)
-        bucket["primary_cost_successful_usd"] += primary_cost
-        bucket["external_cost_successful_usd"] += external_cost
-        bucket["total_cost_with_shift_successful_usd"] += shifted_cost
+        if row_bool(row, "cost_measured"):
+            bucket["primary_cost_successful_usd"] += row_float(row, "cost_usd")
+            bucket["primary_cost_measured_successful"] += 1
+        if row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured"):
+            bucket["external_cost_successful_usd"] += row_float(row, "external_cost_usd")
+        else:
+            bucket["external_cost_unknown_successful"] += 1
+        shifted_cost = row_optional_float(row, "total_cost_with_shift_usd")
+        if row_cost_shift_measured(row) and shifted_cost is not None:
+            bucket["total_cost_with_shift_successful_usd"] += shifted_cost
+            bucket["total_cost_with_shift_measured_successful"] += 1
         bucket["external_tokens_successful"] += row_int(row, "external_tokens")
         bucket["artifacts_used_successful"] += row_int(row, "artifacts_used")
         bucket["bytes_before_successful"] += row_int(row, "bytes_before")
@@ -1040,14 +1099,26 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         bucket["turns_successful"] += row_int(row, "turns")
         bucket["hook_triggers_successful"] += row_int(row, "hook_triggers")
 
-    for bucket in by_variant.values():
+    for variant, bucket in by_variant.items():
         successes = bucket["successful_runs"]
+        runs = bucket["runs"]
+        bucket["failure_rate"] = (bucket["failed_runs"] / runs) if runs else None
+        bucket["task_count"] = len(seen_tasks_by_variant.get(variant, set()))
+        bucket["successful_task_count"] = len(successful_tasks_by_variant.get(variant, set()))
         if successes:
             bucket["tokens_per_successful_task"] = bucket["total_tokens_successful"] / successes
-            bucket["primary_cost_per_successful_task_usd"] = bucket["primary_cost_successful_usd"] / successes
-            bucket["total_cost_with_shift_per_successful_task_usd"] = (
-                bucket["total_cost_with_shift_successful_usd"] / successes
-            )
+            if bucket["primary_cost_measured_successful"] == successes:
+                bucket["primary_cost_per_successful_task_usd"] = (
+                    bucket["primary_cost_successful_usd"] / successes
+                )
+            else:
+                bucket["primary_cost_per_successful_task_usd"] = None
+            if bucket["total_cost_with_shift_measured_successful"] == successes:
+                bucket["total_cost_with_shift_per_successful_task_usd"] = (
+                    bucket["total_cost_with_shift_successful_usd"] / successes
+                )
+            else:
+                bucket["total_cost_with_shift_per_successful_task_usd"] = None
             bucket["external_tokens_per_successful_task"] = bucket["external_tokens_successful"] / successes
             bucket["artifacts_used_per_successful_task"] = bucket["artifacts_used_successful"] / successes
             before = bucket["bytes_before_successful"]
@@ -1061,35 +1132,107 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["artifacts_used_per_successful_task"] = None
             bucket["byte_reduction_ratio"] = None
 
+    def average_task_metric(variant: str, task_id: str, key: str) -> float | None:
+        values = [
+            row_optional_float(row, key)
+            for row in successful_rows_by_variant_task.get(variant, {}).get(task_id, [])
+        ]
+        known = [value for value in values if value is not None]
+        return (sum(known) / len(known)) if known else None
+
+    def average_paired_metric(
+        variant: str,
+        task_ids: set[str],
+        key: str,
+    ) -> tuple[float | None, float | None, int]:
+        baseline_values: list[float] = []
+        variant_values: list[float] = []
+        for task_id in sorted(task_ids):
+            baseline_value = average_task_metric(baseline_variant, task_id, key)
+            variant_value = average_task_metric(variant, task_id, key)
+            if baseline_value is None or variant_value is None:
+                continue
+            baseline_values.append(baseline_value)
+            variant_values.append(variant_value)
+        if not baseline_values:
+            return None, None, 0
+        return (
+            sum(baseline_values) / len(baseline_values),
+            sum(variant_values) / len(variant_values),
+            len(baseline_values),
+        )
+
     comparisons: list[dict[str, Any]] = []
     baseline = by_variant.get(baseline_variant)
-    baseline_tokens = baseline.get("tokens_per_successful_task") if baseline else None
-    baseline_cost = baseline.get("total_cost_with_shift_per_successful_task_usd") if baseline else None
+    baseline_successful_tasks = successful_tasks_by_variant.get(baseline_variant, set())
+    baseline_failure_rate = baseline.get("failure_rate") if baseline else None
     for variant, bucket in sorted(by_variant.items()):
         if variant == baseline_variant:
             continue
-        tokens = bucket.get("tokens_per_successful_task")
-        shifted_cost = bucket.get("total_cost_with_shift_per_successful_task_usd")
-        comparison: dict[str, Any] = {"variant": variant, "baseline_variant": baseline_variant}
-        if isinstance(baseline_tokens, (int, float)) and isinstance(tokens, (int, float)) and baseline_tokens:
-            comparison["token_delta_per_successful_task"] = tokens - baseline_tokens
-            comparison["token_savings_pct"] = (baseline_tokens - tokens) / baseline_tokens * 100.0
+        variant_successful_tasks = successful_tasks_by_variant.get(variant, set())
+        matched_tasks = baseline_successful_tasks & variant_successful_tasks
+        base_tokens, variant_tokens, token_task_count = average_paired_metric(variant, matched_tasks, "total_tokens")
+        base_cost, variant_cost, cost_task_count = average_paired_metric(
+            variant,
+            {
+                task_id for task_id in matched_tasks
+                if all(
+                    row_cost_shift_measured(row)
+                    for row in successful_rows_by_variant_task[baseline_variant][task_id]
+                )
+                and all(
+                    row_cost_shift_measured(row)
+                    for row in successful_rows_by_variant_task[variant][task_id]
+                )
+            },
+            "total_cost_with_shift_usd",
+        )
+        failure_rate = bucket.get("failure_rate")
+        failure_delta = None
+        if isinstance(baseline_failure_rate, (int, float)) and isinstance(failure_rate, (int, float)):
+            failure_delta = (failure_rate - baseline_failure_rate) * 100.0
+        missing_baseline_success_tasks = sorted(baseline_successful_tasks - variant_successful_tasks)
+        quality_gate = "pass"
+        if not baseline or not baseline.get("successful_runs"):
+            quality_gate = "insufficient_baseline"
+        elif not bucket.get("successful_runs"):
+            quality_gate = "insufficient_success"
+        elif missing_baseline_success_tasks:
+            quality_gate = "matched_task_regression"
+        elif failure_delta is not None and failure_delta >= 10.0:
+            quality_gate = "failure_rate_regression"
+        comparison: dict[str, Any] = {
+            "variant": variant,
+            "baseline_variant": baseline_variant,
+            "quality_gate": quality_gate,
+            "baseline_failure_rate": baseline_failure_rate,
+            "variant_failure_rate": failure_rate,
+            "failure_rate_delta_pp": failure_delta,
+            "matched_successful_task_count": len(matched_tasks),
+            "baseline_successful_task_count": len(baseline_successful_tasks),
+            "missing_baseline_success_tasks": missing_baseline_success_tasks,
+        }
+        if isinstance(base_tokens, (int, float)) and isinstance(variant_tokens, (int, float)) and base_tokens:
+            comparison["token_delta_per_successful_task"] = variant_tokens - base_tokens
+            comparison["token_savings_pct"] = (base_tokens - variant_tokens) / base_tokens * 100.0
+            comparison["paired_token_task_count"] = token_task_count
         else:
             comparison["token_savings_pct"] = None
-        if isinstance(baseline_cost, (int, float)) and isinstance(shifted_cost, (int, float)) and baseline_cost:
-            comparison["total_cost_with_shift_delta_usd"] = shifted_cost - baseline_cost
-            comparison["cost_savings_pct_with_shift"] = (baseline_cost - shifted_cost) / baseline_cost * 100.0
+            comparison["paired_token_task_count"] = 0
+        if isinstance(base_cost, (int, float)) and isinstance(variant_cost, (int, float)) and base_cost:
+            comparison["total_cost_with_shift_delta_usd"] = variant_cost - base_cost
+            comparison["cost_savings_pct_with_shift"] = (base_cost - variant_cost) / base_cost * 100.0
+            comparison["paired_cost_task_count"] = cost_task_count
         else:
             comparison["cost_savings_pct_with_shift"] = None
-        comparison["quality_gate"] = (
-            "pass" if bucket.get("successful_runs") and baseline and baseline.get("successful_runs") else "insufficient_success"
-        )
+            comparison["paired_cost_task_count"] = cost_task_count
         comparisons.append(comparison)
 
     claim_status = "insufficient_baseline"
     if baseline and baseline.get("successful_runs"):
         claim_status = "compare_variants" if comparisons else "baseline_only"
         if comparisons:
+            quality_ok = all(item.get("quality_gate") == "pass" for item in comparisons)
             token_savings_observed = all((item.get("token_savings_pct") or 0) > 0 for item in comparisons)
             shifted_cost_savings = [
                 item.get("cost_savings_pct_with_shift")
@@ -1098,7 +1241,9 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             ]
             all_shifted_cost_measured = len(shifted_cost_savings) == len(comparisons)
             shifted_cost_ok = all_shifted_cost_measured and all(value > 0 for value in shifted_cost_savings)
-            if token_savings_observed and shifted_cost_ok:
+            if not quality_ok:
+                claim_status = "quality_gate_watch"
+            elif token_savings_observed and shifted_cost_ok:
                 claim_status = "token_and_shifted_cost_savings_observed"
             elif token_savings_observed and not all_shifted_cost_measured:
                 claim_status = "token_savings_observed_cost_unmeasured"
@@ -1111,9 +1256,12 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         "summary_by_variant": by_variant,
         "comparisons": comparisons,
         "claim_status": claim_status,
-        "caveat": "Proxy byte reductions are reported separately from real token/cost metrics; external_cost_usd is included in shifted totals when present.",
+        "caveat": (
+            "Proxy byte reductions are reported separately from matched-task token/cost metrics; "
+            "shifted cost savings require measured primary cost and measured external cost when "
+            "external tokens are present."
+        ),
     }
-
 
 def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
     report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
