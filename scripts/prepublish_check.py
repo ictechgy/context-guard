@@ -57,6 +57,7 @@ PATH_LABEL_MAX_CHARS = 160
 IMPLEMENTATION_PAIRS = (
     ("aux_ai_delegate.py", "claude-token-delegate"),
     ("benchmark_runner.py", "claude-token-bench"),
+    ("context_escrow.py", "claude-token-artifact"),
     ("claude_transcript_cost_audit.py", "claude-token-audit"),
     ("claude_token_diet.py", "claude-token-diet"),
     ("failed_attempt_nudge.py", "claude-token-failed-nudge"),

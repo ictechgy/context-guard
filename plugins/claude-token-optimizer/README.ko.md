@@ -38,6 +38,8 @@ claude-token-setup --plan
 claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-token-setup
 claude-token-diet scan . --json
+claude-token-artifact store --command "long-command" --json < large.log
+claude-token-artifact get <artifact_id> --lines 1:80
 claude-trim-output --max-lines 120 -- npm test
 claude-read-symbol path/to/file.py TargetSymbol
 claude-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -94,6 +96,8 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 ### 대용량 Read guard와 symbol 읽기
 
 `claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n`과 `claude-read-symbol`을 사용하도록 안내합니다.
+
+`claude-token-artifact`는 큰 command output을 Claude context에 그대로 보내지 않고 로컬 sanitized artifact로 저장합니다. `store`는 stdin을 읽어 sanitizer로 secret/path 노출을 줄인 뒤 기본 `.claude-token-optimizer/artifacts` 아래 `0o600` 파일로 저장하고, `artifact_id`, byte/line count, top error lines, 대표 샘플, `get --lines` / `get --pattern` query 예시만 receipt로 출력합니다. `get`은 요청한 정확한 slice만 반환합니다.
 
 `claude-token-statusline`은 project settings로 활성화했을 때 token/cost/model 정보를 짧은 statusline으로 출력합니다. Claude Code statusline payload에 읽기 가능한 `transcript_path`가 포함되면 `cache <N>%`도 함께 표시됩니다 — 이는 transcript 끝부분에서 계산한 cache_read 비중입니다. transcript가 없거나 읽을 수 없거나 `python3`가 없으면 cache 라벨만 빠지고 나머지 statusline은 그대로 동작합니다.
 

@@ -28,6 +28,8 @@ When the plugin bin directory is on `PATH`, the commands are:
 claude-token-audit ~/.claude/projects --top 20 --recommend
 claude-token-setup
 claude-token-diet scan . --json
+claude-token-artifact store --command "long-command" --json < large.log
+claude-token-artifact get <artifact_id> --lines 1:80
 claude-trim-output --max-lines 120 -- npm test
 claude-read-symbol path/to/file.py TargetSymbol
 claude-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -59,6 +61,8 @@ The JSON output includes a `cache_metrics` block (`cache_hit_rate`, `cache_amort
 `claude-token-diet scan` is a local read-only scanner for project Claude settings and context bloat. It checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large/secret-like `CLAUDE.md` or `AGENTS.md` context files. It anonymizes the project root by default; use `--show-paths` only for local/private reports.
 
 `claude-token-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and suggests `rg -n` plus `claude-read-symbol` or small line-range reads. `claude-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
+
+`claude-token-artifact` stores large command output as a local sanitized artifact instead of sending the raw log into Claude context. `store` reads stdin, redacts/anonymizes with the same sanitizer family, writes private `0o600` artifact files under `.claude-token-optimizer/artifacts` by default, and returns a compact receipt with `artifact_id`, byte/line counts, top error lines, representative samples, and `get --lines` / `get --pattern` query examples. `get` returns only the requested exact slice.
 
 `claude-token-statusline` prints a compact token/cost/model statusline when enabled through project settings. When the Claude Code statusline payload includes a readable `transcript_path`, the line also appends `cache <N>%` — the cache-read share of input-side tokens computed from the transcript tail. The cache label is omitted (rather than failing) when the transcript is missing, unreadable, or `python3` is unavailable, so the statusline never breaks.
 

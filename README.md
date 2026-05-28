@@ -87,6 +87,13 @@ Read a symbol instead of an entire large file:
 ./plugins/claude-token-optimizer/bin/claude-read-symbol path/to/file.py TargetSymbol
 ```
 
+Store a large sanitized log outside the conversation and query exact slices later:
+
+```bash
+long-command 2>&1 | ./plugins/claude-token-optimizer/bin/claude-token-artifact store --command "long-command" --json
+./plugins/claude-token-optimizer/bin/claude-token-artifact get <artifact_id> --lines 1:80
+```
+
 Trim long test/build logs while preserving the exit code of the wrapped command:
 
 ```bash

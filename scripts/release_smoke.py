@@ -39,6 +39,7 @@ REQUIRED_COMMANDS = (
 ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "claude-read-symbol": {"args": ["--help"], "mode": "text"},
     "claude-sanitize-output": {"args": ["--help"], "mode": "text"},
+    "claude-token-artifact": {"args": ["--help"], "mode": "text"},
     "claude-token-audit": {"args": ["--help"], "mode": "text"},
     "claude-token-bench": {"args": ["--help"], "mode": "text"},
     "claude-token-delegate": {"args": ["--help"], "mode": "text"},

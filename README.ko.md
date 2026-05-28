@@ -87,6 +87,13 @@ claude-token-setup --plan
 ./plugins/claude-token-optimizer/bin/claude-read-symbol path/to/file.py TargetSymbol
 ```
 
+큰 로그를 대화 컨텍스트 밖의 로컬 artifact로 저장하고 필요한 줄만 다시 조회:
+
+```bash
+long-command 2>&1 | ./plugins/claude-token-optimizer/bin/claude-token-artifact store --command "long-command" --json
+./plugins/claude-token-optimizer/bin/claude-token-artifact get <artifact_id> --lines 1:80
+```
+
 긴 테스트·빌드 로그를 줄이면서 원래 명령의 종료 코드 보존:
 
 ```bash
