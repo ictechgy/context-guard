@@ -1336,6 +1336,26 @@ def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
     return targets
 
 
+def normalized_output_path(path: Path) -> Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return Path(os.path.normpath(str(_normalize_allowed_first_absolute_symlink(expanded))))
+
+
+def validate_distinct_output_paths(csv_path: Path, ledger_path: Path | None, report_path: Path | None) -> None:
+    outputs = [("csv", csv_path), ("ledger-jsonl", ledger_path), ("report-json", report_path)]
+    seen: dict[Path, str] = {}
+    for label, path in outputs:
+        if path is None:
+            continue
+        normalized = normalized_output_path(path)
+        previous = seen.get(normalized)
+        if previous is not None:
+            raise SystemExit(f"--{label} must not point to the same path as --{previous}: {normalized}")
+        seen[normalized] = label
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks", required=True, type=Path, help="task fixture JSON")
@@ -1361,6 +1381,7 @@ def main() -> int:
     args = parser.parse_args()
 
     require_no_follow_file_ops_supported()
+    validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json)
 
     if not args.dry_run and shutil.which(args.claude_bin) is None:
         # claude_bin 이 절대경로면 shutil.which 가 None 일 수 있으므로 추가 검사.
