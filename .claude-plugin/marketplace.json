@@ -8,7 +8,7 @@
     {
       "name": "claude-token-optimizer",
       "source": "./plugins/claude-token-optimizer",
-      "description": "Skills and local helper commands for reducing Claude Code token usage, including interactive setup, settings/context scanning, large-read guards, queryable artifact escrow, opt-in Gemini/Codex delegation, and grep/diff sanitizing before Claude sees secrets.",
+      "description": "Skills and local helper commands for reducing Claude Code token usage, including interactive setup, settings/context scanning, large-read guards, queryable artifact escrow, and grep/diff sanitizing before Claude sees secrets.",
       "license": "Apache-2.0",
       "keywords": [
         "claude-code",
@@ -20,9 +20,6 @@
         "read-symbol",
         "large-read-guard",
         "hooks",
-        "gemini",
-        "codex",
-        "auxiliary-ai",
         "sanitize-output",
         "grep-sanitizer",
         "diff-sanitizer",
@@ -40,9 +37,6 @@
         "context-management",
         "settings-scanner",
         "read-guard",
-        "auxiliary-ai",
-        "gemini",
-        "codex",
         "output-sanitizer",
         "secret-redaction",
         "setup-wizard",

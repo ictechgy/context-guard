@@ -74,10 +74,9 @@ Before publishing a versioned artifact, verify:
 claude-token-setup --plan --json
 claude-token-diet scan . --json
 claude-token-audit <temporary-project> --json
-claude-token-delegate status
 ```
 
-The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. Delegation must remain opt-in and project-local. If you perform an additional manual smoke after installing a marketplace artifact, run the same commands from a clean project and compare the success shape against the automated gate rather than bypassing it.
+The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. If you perform an additional manual smoke after installing a marketplace artifact, run the same commands from a clean project and compare the success shape against the automated gate rather than bypassing it.
 
 ## Rollback notes
 

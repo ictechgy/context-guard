@@ -34,7 +34,6 @@ REQUIRED_COMMANDS = (
     "claude-token-setup",
     "claude-token-diet",
     "claude-token-audit",
-    "claude-token-delegate",
 )
 ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "claude-read-symbol": {"args": ["--help"], "mode": "text"},
@@ -42,7 +41,6 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "claude-token-artifact": {"args": ["--help"], "mode": "text"},
     "claude-token-audit": {"args": ["--help"], "mode": "text"},
     "claude-token-bench": {"args": ["--help"], "mode": "text"},
-    "claude-token-delegate": {"args": ["--help"], "mode": "text"},
     "claude-token-diet": {"args": ["--help"], "mode": "text"},
     "claude-token-failed-nudge": {"args": [], "mode": "hook-json"},
     "claude-token-guard-read": {"args": [], "mode": "hook-json"},
@@ -169,30 +167,6 @@ def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
         }
     )
     return env
-
-
-def parse_key_value_lines(stdout: str) -> dict[str, str]:
-    items: dict[str, str] = {}
-    for line in stdout.splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            items[key.strip()] = value.strip()
-    return items
-
-
-def assert_path_under(raw_path: str | None, parent: Path, label: str) -> None:
-    if not raw_path:
-        fail(f"{label} missing from command output")
-    raw = Path(raw_path).expanduser()
-    if not raw.is_absolute():
-        raw = parent / raw
-    try:
-        path = raw.resolve()
-        root = parent.resolve()
-    except OSError as exc:
-        fail(f"{label} could not be resolved: {exc}")
-    if path != root and root not in path.parents:
-        fail(f"{label} escaped smoke project: {path}")
 
 
 def command_name(argv: list[str]) -> str:
@@ -472,14 +446,6 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 check_json_field(load_json(proc.stdout, "claude-token-audit"), "records", 1, "claude-token-audit")
             ),
         )
-        run_command(
-            [str(commands["claude-token-delegate"]), "status"],
-            cwd=project,
-            env=env,
-            timeout=timeout,
-            expect=lambda proc: check_delegate_status(proc.stdout, project),
-        )
-
         for name, plan in launch_plan.items():
             mode = str(plan["mode"])
             run_command(
@@ -490,14 +456,6 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 input_text=launch_stdin(mode),
                 expect=lambda proc, command=name, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
             )
-
-
-def check_delegate_status(stdout: str, project: Path) -> None:
-    fields = parse_key_value_lines(stdout)
-    if "aux_ai_enabled" not in fields:
-        fail("claude-token-delegate status missing aux_ai_enabled")
-    assert_path_under(fields.get("project_root"), project, "claude-token-delegate project_root")
-    assert_path_under(fields.get("config_path"), project, "claude-token-delegate config_path")
 
 
 def launch_stdin(mode: str) -> str | None:

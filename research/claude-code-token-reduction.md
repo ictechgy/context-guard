@@ -312,36 +312,9 @@ python3 claude-token-kit/claude_transcript_cost_audit.py ~/.claude/projects --to
 - model/effort/subagent 사용 패턴 확인
 - tool output이 많은 session 후보 찾기
 
-## 7.5 보조 AI 구독을 Claude 토큰 절감용으로 쓰기
+## 7.5 외부 AI 위임 제외
 
-Gemini CLI, Codex CLI 같은 별도 AI 구독이 있다면 Claude에게 큰 로그/넓은 탐색을 직접 먹이지 않고, 보조 AI에게 먼저 요약/triage를 맡기는 방식이 가능하다. 총 AI 사용량은 늘 수 있지만 **Claude 토큰**과 Claude context bloat는 줄일 수 있다.
-
-권장 사용처:
-
-- 긴 CI 로그, 테스트 로그, crash dump 요약
-- 대형 repo에서 “어느 파일부터 봐야 하는가” 후보 추리기
-- 구현 전 second-opinion plan 또는 risk review
-- 외부 문서/긴 release note 요약
-
-주의점:
-
-- 기능은 반드시 opt-in이어야 한다. 다른 provider로 파일 내용이 전송될 수 있기 때문이다.
-- secrets, 고객 데이터, 비공개 코드는 조직 정책상 허용될 때만 보낸다.
-- 보조 AI의 긴 답변 전체를 Claude context에 다시 붙이면 절감 효과가 사라진다. 짧은 preview만 Claude에 전달하고 full response는 파일로 저장한다.
-- destructive command 실행이 아니라 read-only 분석/계획으로 제한한다.
-
-이 repo/plugin에는 `claude-token-delegate`가 포함되어 있다.
-
-```bash
-claude-token-delegate status
-claude-token-delegate enable --provider gemini
-claude-token-delegate ask --provider gemini --prompt "Summarize likely root cause" --context ./ci.log
-claude-token-delegate enable --provider codex
-claude-token-delegate ask --provider codex --prompt "Which files should Claude inspect first?" --context ./error.log
-claude-token-delegate disable
-```
-
-기본 상태는 OFF이며, project-local `.claude-token-optimizer/config.json`에 enable/disable 상태를 저장한다.
+외부 AI CLI에 로그나 파일 triage를 맡기는 방식은 Claude 컨텍스트 토큰을 줄일 수 있지만, 전체 AI 토큰/비용을 줄인다고 볼 수 없다. 이 프로젝트의 목적은 원문을 로컬 artifact로 보관하고 필요한 slice만 조회하거나, 큰 Read를 좁은 검색·symbol·line-range 읽기로 바꾸는 것이다. 따라서 외부 AI 위임 기능은 제품 표면에서 제외한다.
 
 ## 8. 비추천/위험한 방법
 

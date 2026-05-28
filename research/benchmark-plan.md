@@ -22,7 +22,6 @@
 - hook trigger 수
 - 원본/Claude-visible byte 수
 - artifact/context escrow 사용 수
-- auxiliary AI call 수와 provider
 - auxiliary/subagent/provider token 및 cost
 - auxiliary response preview chars / saved full response chars
 - Bash output line 수
@@ -79,13 +78,6 @@ F. Subagent isolation
 - noisy 탐색/로그 분석만 subagent로 격리
 - agent team 미사용
 
-G. Auxiliary AI delegation
-
-- Gemini/Codex CLI를 opt-in으로 활성화
-- 긴 로그/광범위 탐색을 `claude-token-delegate ask --context ...`로 보조 AI에 위임
-- Claude에는 bounded preview만 전달
-- 품질, privacy risk, saved-response 재참조 빈도를 함께 기록
-
 ## 4. 실행 프로토콜
 
 1. Claude Code 버전 기록: `claude --version`
@@ -94,7 +86,7 @@ G. Auxiliary AI delegation
 4. 각 run 후 `/usage` 결과 또는 telemetry를 저장
 5. 실패한 run은 실패로 기록하고, 재시도 token까지 포함한 “성공까지 총 비용”도 별도 계산
 6. prompt cache 영향을 분리하려면 warm run/cold run을 나눠 2회씩 실행
-7. artifact escrow, subagent, 보조 AI를 쓴 실험군은 `external_tokens`, `external_cost_usd`,
+7. artifact escrow, subagent, 기타 외부 실행 표면을 쓴 실험군은 `external_tokens`, `external_cost_usd`,
    `artifacts_used`를 함께 기록한다. primary cost가 줄어도 외부 비용으로 옮겨간 경우
    `total_cost_with_shift_usd` 기준으로 판정한다. 외부 token은 있지만 외부 cost가 측정되지
    않았으면 shifted-cost 절감을 주장하지 않는다.

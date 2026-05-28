@@ -6,17 +6,16 @@ Korean documentation: [`README.ko.md`](README.ko.md)
 
 ## TL;DR
 
-Install the plugin, run `/claude-token-optimizer:setup` in your project, and Claude will automatically trim noisy output, guard against large file reads, and redact secrets — without touching your global settings. Optionally delegate read-only tasks to Gemini or Codex CLI to save even more tokens.
+Install the plugin, run `/claude-token-optimizer:setup` in your project, and Claude will automatically trim noisy output, guard against large file reads, and redact secrets — without touching your global settings.
 
 ## Features
 
-- **Claude Code plugin** — installable skills for guided setup, optimization, usage audits, and optional auxiliary AI delegation.
+- **Claude Code plugin** — installable skills for guided setup, optimization, and usage audits.
 - **Project-local setup wizard** — merges recommended `.claude/settings.json` options without touching global Claude settings.
 - **Context hygiene scanner** — finds missing guardrails, noisy hooks, expensive defaults, broad reads, excessive MCP servers, and large or secret-like context files.
 - **Large Read guard and symbol reader** — nudges Claude toward `rg` plus symbol/line-range reads instead of full-file reads.
 - **Output trimming and sanitizing** — keeps test, build, search, and diff output compact and redacts likely secrets before Claude sees them.
 - **Statusline and transcript audit helpers** — surfaces token/cost/model state and usage hotspots.
-- **Opt-in auxiliary AI delegation** — lets Gemini CLI or Codex CLI summarize safe read-only context; Claude receives only a bounded preview.
 
 ## Install in Claude Code
 
@@ -39,7 +38,6 @@ Available skills:
 /claude-token-optimizer:setup
 /claude-token-optimizer:optimize
 /claude-token-optimizer:audit
-/claude-token-optimizer:delegate
 ```
 
 The plugin does **not** auto-enable global hooks on install; setup is project-local and entirely opt-in. See `plugins/claude-token-optimizer/examples/settings.example.json` for an example settings file.
@@ -149,19 +147,6 @@ not treated as proof of savings. If cost fields are zero or unavailable, the
 report can still mark token savings but will not claim shifted-cost savings.
 Claims are paired by matched successful tasks and downgraded when failure-rate
 guardrails regress.
-
-## Auxiliary AI delegation (optional)
-
-With Gemini CLI or Codex CLI access, delegation uses another local AI as a read-only assistant for broad file triage, long-log summaries, root-cause hypotheses, or second-opinion planning.
-
-```text
-/claude-token-optimizer:delegate enable --provider gemini
-/claude-token-optimizer:delegate auto-enable
-/claude-token-optimizer:delegate ask --provider gemini --prompt "Summarize this failing test log" --context ./log.txt
-/claude-token-optimizer:delegate disable
-```
-
-Manual delegation is **off by default** and stores project-local state under `.claude-token-optimizer/`. Automatic delegation is a separate, provider-bound opt-in. Only delegate context you are permitted to share with the external provider — do not delegate secrets, customer data, or policy-restricted content. Treat auxiliary output as untrusted until verified.
 
 ## Repository layout
 
