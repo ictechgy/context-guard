@@ -9317,6 +9317,27 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(guarded.read_text(encoding="utf-8"), "guard")
                     self.assertFalse(bad_ledger.exists())
 
+    def test_benchmark_runner_rejects_overlapping_output_paths(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_output_paths_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    csv_path = root / "bench" / ".." / "results.csv"
+                    with self.assertRaises(SystemExit) as report_ctx:
+                        module.validate_distinct_output_paths(csv_path, None, root / "results.csv")
+                    self.assertIn("--report-json must not point to the same path as --csv", str(report_ctx.exception))
+
+                    with self.assertRaises(SystemExit) as ledger_ctx:
+                        module.validate_distinct_output_paths(root / "results.csv", root / "results.csv", None)
+                    self.assertIn("--ledger-jsonl must not point to the same path as --csv", str(ledger_ctx.exception))
+
+                    module.validate_distinct_output_paths(
+                        root / "results.csv",
+                        root / "cost-shift.jsonl",
+                        root / "report.json",
+                    )
+
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
         with tempfile.TemporaryDirectory() as tmp:
