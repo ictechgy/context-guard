@@ -488,10 +488,15 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
             for value in values:
                 lines.append(f"- {value}\n")
 
-    output, capped = cap_text("".join(lines), max_chars)
-    if capped:
-        output += "[claude-token-kit] digest capped by --max-chars.\n"
-    return output
+    text = "".join(lines)
+    output, capped = cap_text(text, max_chars)
+    if not capped:
+        return output
+    marker = "[claude-token-kit] digest capped by --max-chars.\n"
+    if max_chars <= len(marker):
+        return marker[:max_chars]
+    output, _ = cap_text(text, max_chars - len(marker))
+    return output + marker
 
 
 def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
@@ -515,13 +520,11 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
         values[:] = original[:best]
 
     def first_fitting(candidates: list[dict[str, object]]) -> str:
-        last = dumps(candidates[-1])
         for candidate in candidates:
             output = dumps(candidate)
             if len(output) <= max_chars:
                 return output
-            last = output
-        return last
+        return dumps(candidates[-1])
 
     output = dumps(payload)
     if len(output) <= max_chars:

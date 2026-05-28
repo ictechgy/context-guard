@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shlex
 import stat
 import sys
@@ -502,11 +503,30 @@ def save_read_guard_state(root: Path, state: dict[str, Any]) -> None:
             os.chmod(state_dir, 0o700)
         except OSError:
             pass
-        tmp = state_file.with_name(f".read-guard-{os.getpid()}.tmp")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False)
-        os.replace(tmp, state_file)
+        tmp = state_file.with_name(f".read-guard-{os.getpid()}-{secrets.token_hex(16)}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = -1
+        try:
+            fd = os.open(str(tmp), flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                json.dump(state, handle, ensure_ascii=False)
+            os.replace(tmp, state_file)
+        except OSError:
+            if fd != -1:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return
         try:
             os.chmod(state_file, 0o600)
         except OSError:

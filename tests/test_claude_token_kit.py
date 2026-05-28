@@ -1090,6 +1090,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("next_queries", proc.stdout)
                 self.assertLess(len(proc.stdout.splitlines()), 40)
 
+    def test_trim_digest_markdown_respects_tight_budget(self):
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script,
+                    "[print('noise ' + str(i) + ' ' + ('x' * 80)) for i in range(200)]",
+                    max_lines=18,
+                    extra_args=["--digest", "markdown", "--max-chars", "260"],
+                )
+                self.assertEqual(proc.returncode, 0)
+                self.assertLessEqual(len(proc.stdout), 260)
+                self.assertIn("digest capped", proc.stdout)
+
     def test_trim_digest_preserves_failure_summary_and_exit_code(self):
         code = (
             "import sys; "
@@ -1131,7 +1144,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertGreaterEqual(data["raw_output"]["redacted_lines"], 1)
                 self.assertIn("[REDACTED]", proc.stdout)
                 self.assertNotIn("ghp_A", proc.stdout)
-                self.assertLessEqual(len(proc.stdout), 2600)
+                self.assertLessEqual(len(proc.stdout), 2200)
 
     def test_trim_digest_json_remains_parseable_under_tight_budget(self):
         for index, script in enumerate(TRIM_SCRIPTS):
@@ -1223,6 +1236,37 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("ERROR bad widget", data["content"])
                     self.assertNotIn("ghp_A", query.stdout)
                     self.assertNotIn(generic_openai_key, query.stdout)
+
+                    content_path.write_text(content_text + "tampered\n", encoding="utf-8")
+                    tampered = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(Path(tmp) / "artifacts"),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "1:1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(tampered.returncode, 0)
+                    self.assertIn("checksum mismatch", tampered.stderr)
+
+    def test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load(self):
+        for index, script in enumerate(ARTIFACT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_artifact_sanitizer_fail_closed_{index}")
+                with mock.patch.object(
+                    module.importlib.machinery.SourceFileLoader,
+                    "exec_module",
+                    side_effect=RuntimeError("boom"),
+                ):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        module.sanitize_text("API_TOKEN=ghp_" + ("A" * 36))
+                self.assertIn("could not load sanitizer", str(ctx.exception))
 
     def test_artifact_escrow_pattern_query_and_list_are_bounded(self):
         raw = "".join(f"line {i}\n" for i in range(30)) + "FAILED target\n"
@@ -4116,6 +4160,27 @@ for malformed in malformed_values:
                     hook = json.loads(proc.stdout)["hookSpecificOutput"]
                     self.assertEqual(hook["permissionDecision"], "deny")
                     self.assertIn("Large Read blocked", hook["permissionDecisionReason"])
+
+    def test_large_read_guard_state_temp_file_uses_exclusive_nofollow(self):
+        for index, script in enumerate(READ_GUARD_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_read_guard_state_tmp_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    state_dir = root / module.READ_GUARD_STATE_DIR
+                    state_dir.mkdir()
+                    guarded = root / "guarded.txt"
+                    guarded.write_text("guard", encoding="utf-8")
+                    temp_name = f".read-guard-{os.getpid()}-fixed.tmp"
+                    temp_path = state_dir / temp_name
+                    try:
+                        temp_path.symlink_to(guarded)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    with mock.patch.object(module.secrets, "token_hex", return_value="fixed"):
+                        module.save_read_guard_state(root, {"attempts": {"x": {"count": 1}}})
+                    self.assertEqual(guarded.read_text(encoding="utf-8"), "guard")
+                    self.assertFalse((state_dir / module.READ_GUARD_STATE_FILE).exists())
 
     def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
         cases = {
@@ -9183,6 +9248,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "artifacts_used",
             "cost_measured",
             "external_tokens",
+            "external_tokens_measured",
             "external_cost_usd",
             "external_cost_measured",
             "total_cost_with_shift_usd",
@@ -9246,20 +9312,32 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 report = module.summarize_benchmark_rows(
                     [
                         {
+                            "task_id": "t01",
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
                             "cost_usd": "0",
+                            "cost_measured": "false",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
                             "external_cost_usd": "0",
+                            "external_cost_measured": "false",
                             "total_cost_with_shift_usd": "0",
+                            "corrections": "0",
                         },
                         {
+                            "task_id": "t01",
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
                             "cost_usd": "0",
+                            "cost_measured": "false",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
                             "external_cost_usd": "0",
+                            "external_cost_measured": "false",
                             "total_cost_with_shift_usd": "0",
+                            "corrections": "0",
                         },
                     ],
                     "baseline",
@@ -9281,9 +9359,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "cost_usd": "0.10",
                             "cost_measured": "true",
                             "external_tokens": "0",
+                            "external_tokens_measured": "true",
                             "external_cost_usd": "0",
                             "external_cost_measured": "false",
                             "total_cost_with_shift_usd": "0.10",
+                            "corrections": "0",
                         },
                         {
                             "task_id": "t01",
@@ -9293,9 +9373,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "cost_usd": "0.05",
                             "cost_measured": "true",
                             "external_tokens": "9",
+                            "external_tokens_measured": "true",
                             "external_cost_usd": "0",
                             "external_cost_measured": "false",
                             "total_cost_with_shift_usd": "",
+                            "corrections": "0",
                         },
                     ],
                     "baseline",
@@ -9319,8 +9401,58 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     }
                 )
                 self.assertEqual(metrics["external_tokens"], 15)
+                self.assertTrue(metrics["external_tokens_measured"])
                 self.assertTrue(metrics["external_cost_measured"])
                 self.assertAlmostEqual(metrics["external_cost_usd"], 0.06, places=6)
+                aggregate = module.collect_shift_metrics(
+                    {
+                        "metrics": {
+                            "external_tokens": 9,
+                            "external_cost_usd": 0.09,
+                            "calls": [{"subagent_tokens": 5, "subagent_cost_usd": 0.05}],
+                        },
+                    }
+                )
+                self.assertEqual(aggregate["external_tokens"], 9)
+                self.assertTrue(aggregate["external_tokens_measured"])
+                self.assertTrue(aggregate["external_cost_measured"])
+                self.assertAlmostEqual(aggregate["external_cost_usd"], 0.09, places=6)
+                partial = module.collect_shift_metrics({"metrics": {"auxiliary_tokens": 5}})
+                self.assertEqual(partial["external_tokens"], 5)
+                self.assertTrue(partial["external_tokens_measured"])
+                self.assertFalse(partial["external_cost_measured"])
+                leaf_only = module.collect_shift_metrics(
+                    {
+                        "metrics": {
+                            "auxiliary_tokens": 99,
+                            "auxiliary_cost_usd": 0.99,
+                            "children": [{"auxiliary_tokens": 4, "auxiliary_cost_usd": 0.04}],
+                        }
+                    }
+                )
+                self.assertEqual(leaf_only["external_tokens"], 4)
+                self.assertTrue(leaf_only["external_tokens_measured"])
+                self.assertTrue(leaf_only["external_cost_measured"])
+                self.assertAlmostEqual(leaf_only["external_cost_usd"], 0.04, places=6)
+
+    def test_benchmark_cost_shift_requires_explicit_external_token_telemetry(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_shift_measured_{index}")
+                result = module.RunResult(
+                    task_id="t01",
+                    variant="optimized",
+                    model="sonnet",
+                    effort=None,
+                    tokens={"input_tokens": 1, "output_tokens": 1, "cache_read": 0, "cache_creation": 0},
+                    cost_usd=0.01,
+                    cost_measured=True,
+                    success=True,
+                    notes="ok",
+                )
+                self.assertFalse(module.cost_shift_measured(result))
+                result.external_tokens_measured = True
+                self.assertTrue(module.cost_shift_measured(result))
 
     def test_benchmark_report_quality_gate_catches_failed_or_unmatched_tasks(self):
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -9391,6 +9523,34 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertEqual(report["claim_status"], "quality_gate_watch")
                 self.assertEqual(comparison["quality_gate"], "corrections_regression")
                 self.assertEqual(comparison["corrections_delta_per_successful_task"], 2.0)
+
+    def test_benchmark_report_quality_gate_requires_valid_corrections_data(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_corrections_missing_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "corrections": "0",
+                        },
+                        {
+                            "task_id": "t01",
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "50",
+                            "corrections": "nan",
+                        },
+                    ],
+                    "baseline",
+                )
+                comparison = report["comparisons"][0]
+                self.assertEqual(report["claim_status"], "quality_gate_watch")
+                self.assertEqual(comparison["quality_gate"], "insufficient_corrections_data")
+                self.assertEqual(comparison["paired_corrections_task_count"], 0)
 
     def test_benchmark_runner_locks_ledger_and_report_outputs(self):
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -9654,6 +9814,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(optimized["bytes_after"], "120")
                     self.assertEqual(optimized["artifacts_used"], "1")
                     self.assertEqual(optimized["external_tokens"], "5")
+                    self.assertEqual(optimized["external_tokens_measured"], "true")
                     self.assertEqual(optimized["cost_measured"], "true")
                     self.assertEqual(optimized["external_cost_measured"], "true")
                     self.assertAlmostEqual(float(optimized["external_cost_usd"]), 0.01, places=6)
@@ -9665,6 +9826,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(ledger_rows), 2)
                     optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
                     self.assertTrue(optimized_ledger["primary_cost_measured"])
+                    self.assertTrue(optimized_ledger["external_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_cost_measured"])
                     self.assertAlmostEqual(optimized_ledger["total_cost_with_shift_usd"], 0.07, places=6)
 

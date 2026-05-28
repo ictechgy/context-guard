@@ -92,12 +92,12 @@ def load_line_sanitizer(show_paths: bool) -> object:
             loader = importlib.machinery.SourceFileLoader(f"_claude_token_sanitize_{os.getpid()}", str(candidate))
             spec = importlib.util.spec_from_loader(loader.name, loader)
             if spec is None:
-                continue
+                raise RuntimeError("import spec unavailable")
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
             return module.LineSanitizer(show_paths=show_paths)
-        except Exception:
-            continue
+        except Exception as exc:
+            raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
     return FallbackLineSanitizer(show_paths=show_paths)
 
 
@@ -312,6 +312,13 @@ def get_command(args: argparse.Namespace) -> int:
         metadata = load_metadata(directory, artifact_id)
         content_path, _meta_path = artifact_paths(directory, artifact_id)
         content = content_path.read_text(encoding="utf-8", errors="replace")
+        stored_output = metadata.get("stored_output")
+        expected_sha = stored_output.get("sha256") if isinstance(stored_output, dict) else None
+        if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
+            raise ValueError(f"artifact metadata missing stored_output sha256: {artifact_id}")
+        actual_sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+        if actual_sha != expected_sha:
+            raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
         line_range = parse_line_range(args.lines)
         selected, query = query_content(content, line_range=line_range, pattern=args.pattern, max_lines=max_lines)
         selected, capped = cap_text(selected, max_chars)
@@ -389,7 +396,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except RuntimeError as exc:
+        print(f"claude-token-artifact: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
