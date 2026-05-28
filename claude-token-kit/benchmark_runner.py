@@ -93,6 +93,7 @@ CSV_COLUMNS = [
     "bytes_after",
     "artifacts_used",
     "external_tokens",
+    "external_tokens_measured",
     "external_cost_usd",
     "external_cost_measured",
     "total_cost_with_shift_usd",
@@ -140,9 +141,14 @@ SHIFT_METRIC_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("bytes_before", ("bytes_before", "bytesBefore", "raw_bytes_before")),
     ("bytes_after", ("bytes_after", "bytesAfter", "visible_bytes_after")),
     ("artifacts_used", ("artifacts_used", "artifact_count", "artifactsUsed")),
-    ("external_tokens", ("external_tokens", "auxiliary_tokens", "subagent_tokens", "provider_tokens")),
 )
-EXTERNAL_COST_KEYS = ("external_cost_usd", "auxiliary_cost_usd", "subagent_cost_usd", "provider_cost_usd")
+EXTERNAL_TOKEN_AGGREGATE_KEYS = ("external_tokens",)
+EXTERNAL_COST_AGGREGATE_KEYS = ("external_cost_usd",)
+EXTERNAL_SOURCE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("auxiliary", ("auxiliary_tokens",), ("auxiliary_cost_usd",)),
+    ("subagent", ("subagent_tokens",), ("subagent_cost_usd",)),
+    ("provider", ("provider_tokens",), ("provider_cost_usd",)),
+)
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
@@ -342,6 +348,7 @@ class RunResult:
     bytes_after: int = 0
     artifacts_used: int = 0
     external_tokens: int = 0
+    external_tokens_measured: bool = False
     external_cost_usd: float = 0.0
     external_cost_measured: bool = False
 
@@ -507,36 +514,109 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
     return tokens, cost, seen_cost
 
 
+def first_normalized_token(cur: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = normalize_usage_token(cur.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def first_normalized_cost(cur: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = normalize_usage_cost(cur.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def contains_external_source_tokens(value: Any) -> bool:
+    queue: collections.deque[Any] = collections.deque([value])
+    while queue:
+        cur = queue.popleft()
+        if isinstance(cur, dict):
+            for _source, token_keys, _cost_keys in EXTERNAL_SOURCE_KEY_GROUPS:
+                if first_normalized_token(cur, token_keys) is not None:
+                    return True
+            queue.extend(cur.values())
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return False
+
+
 def collect_shift_metrics(payload: Any) -> dict[str, int | float | bool]:
-    """Collect optional cost-shift / byte-saving metrics without requiring them."""
-    metrics: dict[str, int | float] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
-    first_seen_buckets = {key for key, _ in SHIFT_METRIC_KEY_GROUPS if key != "external_tokens"}
-    seen: dict[str, bool] = {key: False for key in first_seen_buckets}
+    """Collect optional cost-shift / byte-saving metrics without requiring them.
+
+    External work is reported by evolving Claude/runner payloads either as one
+    aggregate (`external_tokens` + `external_cost_usd`) or as explicit source
+    records (`auxiliary_*`, `subagent_*`, `provider_*`).  Do not mix those two
+    shapes: if an aggregate token count exists, it is authoritative; otherwise
+    sum only source-token records and mark cost measured only when every
+    positive source-token record carries its matching source cost.
+    """
+    metrics: dict[str, int | float | bool] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
+    seen: dict[str, bool] = {key: False for key, _ in SHIFT_METRIC_KEY_GROUPS}
+    aggregate_tokens: int | None = None
+    aggregate_cost = 0.0
+    aggregate_cost_measured = False
+    source_tokens = 0
+    source_tokens_measured = False
+    source_cost = 0.0
+    source_cost_covered = True
     metrics["external_cost_usd"] = 0.0
     metrics["external_cost_measured"] = False
+    metrics["external_tokens"] = 0
+    metrics["external_tokens_measured"] = False
     queue: collections.deque[Any] = collections.deque([payload])
     while queue:
         cur = queue.popleft()
         if isinstance(cur, dict):
             for bucket, keys in SHIFT_METRIC_KEY_GROUPS:
-                for key in keys:
-                    value = normalize_usage_token(cur.get(key))
-                    if value is not None:
-                        if bucket == "external_tokens":
-                            metrics[bucket] = int(metrics[bucket]) + value
-                        elif not seen[bucket]:
-                            metrics[bucket] = value
-                            seen[bucket] = True
-                        break
-            for key in EXTERNAL_COST_KEYS:
-                cost = normalize_usage_cost(cur.get(key))
-                if cost is not None:
-                    metrics["external_cost_usd"] = float(metrics["external_cost_usd"]) + cost
-                    metrics["external_cost_measured"] = True
-                    break
+                if seen[bucket]:
+                    continue
+                value = first_normalized_token(cur, keys)
+                if value is not None:
+                    metrics[bucket] = value
+                    seen[bucket] = True
+
+            if aggregate_tokens is None:
+                value = first_normalized_token(cur, EXTERNAL_TOKEN_AGGREGATE_KEYS)
+                if value is not None:
+                    aggregate_tokens = value
+                    cost = first_normalized_cost(cur, EXTERNAL_COST_AGGREGATE_KEYS)
+                    if cost is not None:
+                        aggregate_cost = cost
+                        aggregate_cost_measured = True
+
+            source_values = [
+                (value, cost_keys)
+                for _source, token_keys, cost_keys in EXTERNAL_SOURCE_KEY_GROUPS
+                for value in [first_normalized_token(cur, token_keys)]
+                if value is not None
+            ]
+            if source_values and not any(contains_external_source_tokens(value) for value in cur.values()):
+                for value, cost_keys in source_values:
+                    source_tokens += value
+                    source_tokens_measured = True
+                    cost = first_normalized_cost(cur, cost_keys)
+                    if cost is not None:
+                        source_cost += cost
+                    elif value > 0:
+                        source_cost_covered = False
             queue.extend(cur.values())
         elif isinstance(cur, list):
             queue.extend(cur)
+
+    if aggregate_tokens is not None:
+        metrics["external_tokens"] = aggregate_tokens
+        metrics["external_tokens_measured"] = True
+        metrics["external_cost_usd"] = aggregate_cost if aggregate_cost_measured else 0.0
+        metrics["external_cost_measured"] = aggregate_cost_measured
+    elif source_tokens_measured:
+        metrics["external_tokens"] = source_tokens
+        metrics["external_tokens_measured"] = True
+        metrics["external_cost_usd"] = source_cost
+        metrics["external_cost_measured"] = source_cost_covered
     return metrics
 
 
@@ -812,6 +892,7 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
         bytes_after=int(shift_metrics["bytes_after"]),
         artifacts_used=int(shift_metrics["artifacts_used"]),
         external_tokens=int(shift_metrics["external_tokens"]),
+        external_tokens_measured=bool(shift_metrics["external_tokens_measured"]),
         external_cost_usd=float(shift_metrics["external_cost_usd"]),
         external_cost_measured=bool(shift_metrics["external_cost_measured"]),
     )
@@ -855,6 +936,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "bytes_after": result.bytes_after,
                     "artifacts_used": result.artifacts_used,
                     "external_tokens": result.external_tokens,
+                    "external_tokens_measured": "true" if result.external_tokens_measured else "false",
                     "external_cost_usd": f"{result.external_cost_usd:.6f}",
                     "external_cost_measured": "true" if result.external_cost_measured else "false",
                     "total_cost_with_shift_usd": (
@@ -871,7 +953,11 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
 
 
 def cost_shift_measured(result: RunResult) -> bool:
-    return result.cost_measured and (result.external_tokens == 0 or result.external_cost_measured)
+    return (
+        result.cost_measured
+        and result.external_tokens_measured
+        and (result.external_tokens == 0 or result.external_cost_measured)
+    )
 
 
 def read_csv_header_unlocked(csv_path: Path) -> list[str] | None:
@@ -921,6 +1007,7 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
         "success": result.success,
         "primary_cost_measured": result.cost_measured,
         "primary_cost_usd": round(result.cost_usd, 6),
+        "external_tokens_measured": result.external_tokens_measured,
         "external_cost_measured": result.external_cost_measured,
         "external_cost_usd": round(result.external_cost_usd, 6),
         "total_cost_with_shift_usd": (
@@ -1012,6 +1099,19 @@ def row_int(row: dict[str, str], key: str) -> int:
         return 0
 
 
+def row_optional_nonnegative_int(row: dict[str, str], key: str) -> int | None:
+    raw = row.get(key)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not re.fullmatch(r"[0-9]+", text):
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def row_float(row: dict[str, str], key: str) -> float:
     try:
         value = float(row.get(key) or 0)
@@ -1040,8 +1140,10 @@ def row_success(row: dict[str, str]) -> bool:
 
 
 def row_cost_shift_measured(row: dict[str, str]) -> bool:
-    return row_bool(row, "cost_measured") and (
-        row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured")
+    return (
+        row_bool(row, "cost_measured")
+        and row_bool(row, "external_tokens_measured")
+        and (row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured"))
     )
 
 
@@ -1074,6 +1176,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 "total_cost_with_shift_successful_usd": 0.0,
                 "total_cost_with_shift_measured_successful": 0,
                 "external_tokens_successful": 0,
+                "external_tokens_measured_successful": 0,
                 "artifacts_used_successful": 0,
                 "corrections_successful": 0,
                 "bytes_before_successful": 0,
@@ -1101,14 +1204,18 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         if row_bool(row, "cost_measured"):
             bucket["primary_cost_successful_usd"] += row_float(row, "cost_usd")
             bucket["primary_cost_measured_successful"] += 1
-        if row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured"):
+        if row_bool(row, "external_tokens_measured") and (
+            row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured")
+        ):
             bucket["external_cost_successful_usd"] += row_float(row, "external_cost_usd")
         else:
             bucket["external_cost_unknown_successful"] += 1
         if row_cost_shift_measured(row) and shifted_cost is not None:
             bucket["total_cost_with_shift_successful_usd"] += shifted_cost
             bucket["total_cost_with_shift_measured_successful"] += 1
-        bucket["external_tokens_successful"] += row_int(row, "external_tokens")
+        if row_bool(row, "external_tokens_measured"):
+            bucket["external_tokens_successful"] += row_int(row, "external_tokens")
+            bucket["external_tokens_measured_successful"] += 1
         bucket["artifacts_used_successful"] += row_int(row, "artifacts_used")
         bucket["corrections_successful"] += row_int(row, "corrections")
         bucket["bytes_before_successful"] += row_int(row, "bytes_before")
@@ -1156,7 +1263,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 )
             else:
                 bucket["total_cost_with_shift_per_successful_task_usd"] = None
-            bucket["external_tokens_per_successful_task"] = bucket["external_tokens_successful"] / successes
+            bucket["external_tokens_per_successful_task"] = (
+                bucket["external_tokens_successful"] / successes
+                if bucket["external_tokens_measured_successful"] == successes
+                else None
+            )
             bucket["artifacts_used_per_successful_task"] = bucket["artifacts_used_successful"] / successes
             bucket["corrections_per_successful_task"] = bucket["corrections_successful"] / successes
             before = bucket["bytes_before_successful"]
@@ -1178,6 +1289,15 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         ]
         known = [value for value in values if value is not None]
         return (sum(known) / len(known)) if known else None
+
+    def average_task_int_metric(variant: str, task_id: str, key: str) -> float | None:
+        rows_for_task = successful_rows_by_variant_task.get(variant, {}).get(task_id, [])
+        if not rows_for_task:
+            return None
+        values = [row_optional_nonnegative_int(row, key) for row in rows_for_task]
+        if any(value is None for value in values):
+            return None
+        return sum(value for value in values if value is not None) / len(values)
 
     def average_paired_metric(
         variant: str,
@@ -1201,6 +1321,28 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             len(baseline_values),
         )
 
+    def average_paired_int_metric(
+        variant: str,
+        task_ids: set[str],
+        key: str,
+    ) -> tuple[float | None, float | None, int]:
+        baseline_values: list[float] = []
+        variant_values: list[float] = []
+        for task_id in sorted(task_ids):
+            baseline_value = average_task_int_metric(baseline_variant, task_id, key)
+            variant_value = average_task_int_metric(variant, task_id, key)
+            if baseline_value is None or variant_value is None:
+                continue
+            baseline_values.append(baseline_value)
+            variant_values.append(variant_value)
+        if not baseline_values:
+            return None, None, 0
+        return (
+            sum(baseline_values) / len(baseline_values),
+            sum(variant_values) / len(variant_values),
+            len(baseline_values),
+        )
+
     comparisons: list[dict[str, Any]] = []
     baseline = by_variant.get(baseline_variant)
     baseline_successful_tasks = successful_tasks_by_variant.get(baseline_variant, set())
@@ -1211,7 +1353,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         variant_successful_tasks = successful_tasks_by_variant.get(variant, set())
         matched_tasks = baseline_successful_tasks & variant_successful_tasks
         base_tokens, variant_tokens, token_task_count = average_paired_metric(variant, matched_tasks, "total_tokens")
-        base_corrections, variant_corrections, corrections_task_count = average_paired_metric(
+        base_corrections, variant_corrections, corrections_task_count = average_paired_int_metric(
             variant,
             matched_tasks,
             "corrections",
@@ -1245,6 +1387,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             quality_gate = "matched_task_regression"
         elif failure_delta is not None and failure_delta >= 10.0:
             quality_gate = "failure_rate_regression"
+        elif matched_tasks and corrections_task_count < len(matched_tasks):
+            quality_gate = "insufficient_corrections_data"
         elif (
             isinstance(base_corrections, (int, float))
             and isinstance(variant_corrections, (int, float))
