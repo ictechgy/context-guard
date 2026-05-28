@@ -1,12 +1,14 @@
 # claude-token-tools
 
-A Claude Code plugin and set of helper commands for reducing token usage, keeping context focused, and preventing large or sensitive output from reaching Claude.
+A Claude Code plugin and local helper toolkit for keeping Claude Code context small, focused, and safer to share with the model.
 
 Korean documentation: [`README.ko.md`](README.ko.md)
 
 ## TL;DR
 
-Install the plugin, run `/claude-token-optimizer:setup` in your project, and Claude will automatically trim noisy output, guard against large file reads, and redact secrets — without touching your global settings.
+Install the plugin, run `/claude-token-optimizer:setup` in a project, and Claude Code gets project-local guardrails for noisy command output, large file reads, repeated failed attempts, and secret-like grep/diff results — without touching global settings.
+
+This project is intentionally conservative about claims: it reduces common sources of token waste, and includes benchmark tooling for measuring real savings on your own tasks. It does **not** claim a fixed percentage reduction for every repository.
 
 ## Features
 
@@ -15,8 +17,9 @@ Install the plugin, run `/claude-token-optimizer:setup` in your project, and Cla
 - **Context hygiene scanner** — finds missing guardrails, noisy hooks, expensive defaults, broad reads, excessive MCP servers, and large or secret-like context files.
 - **Large Read guard and symbol reader** — nudges Claude toward `rg` plus symbol/line-range reads instead of full-file reads.
 - **Output trimming and sanitizing** — keeps test, build, search, and diff output compact and redacts likely secrets before Claude sees them.
+- **Queryable artifact escrow** — stores large sanitized logs outside the conversation and returns only compact receipts or exact slices.
 - **Repeated-failure nudge** — warns after repeated Bash failures so Claude switches strategy before stale logs bloat context.
-- **Statusline and transcript audit helpers** — surfaces token/cost/model state and usage hotspots.
+- **Statusline, transcript audit, and benchmark helpers** — surfaces token/cost/model state, usage hotspots, and conservative before/after evidence.
 
 ## Install in Claude Code
 
@@ -41,7 +44,7 @@ Available skills:
 /claude-token-optimizer:audit
 ```
 
-The plugin does **not** auto-enable global hooks on install; setup is project-local and entirely opt-in. See `plugins/claude-token-optimizer/examples/settings.example.json` for an example settings file.
+The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an example settings file.
 
 ## Local testing from this repository
 
@@ -73,6 +76,8 @@ claude-token-setup --plan
 ```
 
 ## Helper commands
+
+Most users should start with `/claude-token-optimizer:setup`. The commands below are useful for local testing, automation, or targeted debugging.
 
 Scan project context hygiene:
 
@@ -148,6 +153,13 @@ not treated as proof of savings. If cost fields are zero or unavailable, the
 report can still mark token savings but will not claim shifted-cost savings.
 Claims are paired by matched successful tasks and downgraded when failure-rate
 guardrails regress.
+
+## What this tool does not do
+
+- It does not guarantee a fixed token/cost reduction.
+- It does not send work to external AI providers to “save” Claude tokens.
+- It does not mutate global Claude settings during install.
+- It does not replace real before/after measurement when you need a savings claim.
 
 ## Repository layout
 

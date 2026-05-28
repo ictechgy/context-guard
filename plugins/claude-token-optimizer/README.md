@@ -1,6 +1,8 @@
 # claude-token-optimizer
 
-A Claude Code plugin with skills and helper commands for reducing token usage.
+A Claude Code plugin with skills and local helper commands for keeping context small, focused, and safer to send to Claude.
+
+Start with `/claude-token-optimizer:setup`. It applies project-local settings for safe defaults, then prints a read-only diet scan summary of remaining gaps. The plugin does not mutate global Claude settings and does not configure external AI offload.
 
 ## Skills
 
@@ -39,6 +41,8 @@ claude-token-statusline-merged
 claude-token-rewrite-bash
 claude-token-failed-nudge
 ```
+
+These helpers reduce common sources of token waste, but they do not guarantee a fixed percentage savings. Use `claude-token-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks.
 
 `claude-token-audit --recommend` anonymizes transcript paths and command strings by default (`basename#hash`, `command#hash`). Use `--show-paths` or `--show-commands` only for local/private reports.
 
