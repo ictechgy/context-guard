@@ -85,6 +85,14 @@ CSV_COLUMNS = [
     "cache_read",
     "cache_creation",
     "cost_usd",
+    "turns",
+    "hook_triggers",
+    "bytes_before",
+    "bytes_after",
+    "artifacts_used",
+    "external_tokens",
+    "external_cost_usd",
+    "total_cost_with_shift_usd",
     "success",
     "corrections",
     "notes",
@@ -123,6 +131,15 @@ USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cache_creation", ("cache_creation_input_tokens", "cacheCreation")),
 )
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
+SHIFT_METRIC_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("turns", ("turns", "num_turns", "total_turns")),
+    ("hook_triggers", ("hook_triggers", "hookTriggerCount", "hook_trigger_count")),
+    ("bytes_before", ("bytes_before", "bytesBefore", "raw_bytes_before")),
+    ("bytes_after", ("bytes_after", "bytesAfter", "visible_bytes_after")),
+    ("artifacts_used", ("artifacts_used", "artifact_count", "artifactsUsed")),
+    ("external_tokens", ("external_tokens", "auxiliary_tokens", "subagent_tokens", "provider_tokens")),
+)
+EXTERNAL_COST_KEYS = ("external_cost_usd", "auxiliary_cost_usd", "subagent_cost_usd", "provider_cost_usd")
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
@@ -315,6 +332,13 @@ class RunResult:
     success: bool
     notes: str
     corrections: int = 0
+    turns: int = 0
+    hook_triggers: int = 0
+    bytes_before: int = 0
+    bytes_after: int = 0
+    artifacts_used: int = 0
+    external_tokens: int = 0
+    external_cost_usd: float = 0.0
 
 
 @dataclass
@@ -476,6 +500,38 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float]:
         elif isinstance(cur, list):
             queue.extend(cur)
     return tokens, cost
+
+
+def collect_shift_metrics(payload: Any) -> dict[str, int | float]:
+    """Collect optional cost-shift / byte-saving metrics without requiring them."""
+    metrics: dict[str, int | float] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
+    seen: dict[str, bool] = {key: False for key, _ in SHIFT_METRIC_KEY_GROUPS}
+    metrics["external_cost_usd"] = 0.0
+    seen_external_cost = False
+    queue: list[Any] = [payload]
+    while queue:
+        cur = queue.pop(0)
+        if isinstance(cur, dict):
+            for bucket, keys in SHIFT_METRIC_KEY_GROUPS:
+                if seen[bucket]:
+                    continue
+                for key in keys:
+                    value = normalize_usage_token(cur.get(key))
+                    if value is not None:
+                        metrics[bucket] = value
+                        seen[bucket] = True
+                        break
+            if not seen_external_cost:
+                for key in EXTERNAL_COST_KEYS:
+                    cost = normalize_usage_cost(cur.get(key))
+                    if cost is not None:
+                        metrics["external_cost_usd"] = cost
+                        seen_external_cost = True
+                        break
+            queue.extend(cur.values())
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return metrics
 
 
 def claude_version(claude_bin: str) -> str:
@@ -738,10 +794,18 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             success=False, notes=f"claude returned non-JSON: {exc.msg}",
         )
     tokens, cost = collect_usage(payload)
+    shift_metrics = collect_shift_metrics(payload)
     success, success_note = run_success_command(task, project_root)
     return RunResult(
         task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
         tokens=tokens, cost_usd=cost, success=success, notes=success_note,
+        turns=int(shift_metrics["turns"]),
+        hook_triggers=int(shift_metrics["hook_triggers"]),
+        bytes_before=int(shift_metrics["bytes_before"]),
+        bytes_after=int(shift_metrics["bytes_after"]),
+        artifacts_used=int(shift_metrics["artifacts_used"]),
+        external_tokens=int(shift_metrics["external_tokens"]),
+        external_cost_usd=float(shift_metrics["external_cost_usd"]),
     )
 
 
@@ -773,6 +837,14 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "cache_read": tokens.get("cache_read", 0),
                     "cache_creation": tokens.get("cache_creation", 0),
                     "cost_usd": f"{result.cost_usd:.6f}",
+                    "turns": result.turns,
+                    "hook_triggers": result.hook_triggers,
+                    "bytes_before": result.bytes_before,
+                    "bytes_after": result.bytes_after,
+                    "artifacts_used": result.artifacts_used,
+                    "external_tokens": result.external_tokens,
+                    "external_cost_usd": f"{result.external_cost_usd:.6f}",
+                    "total_cost_with_shift_usd": f"{(result.cost_usd + result.external_cost_usd):.6f}",
                     "success": "true" if result.success else "false",
                     "corrections": result.corrections,
                     "notes": sanitize_csv_note(result.notes),
@@ -781,6 +853,46 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
             if fd != -1:
                 os.close(fd)
     return True
+
+
+def write_text_no_follow(path: Path, text: str) -> None:
+    fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o666, create_parent=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> None:
+    payload = {
+        "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "claude_version": claude_ver,
+        "task_id": result.task_id,
+        "variant": result.variant,
+        "success": result.success,
+        "primary_cost_usd": round(result.cost_usd, 6),
+        "external_cost_usd": round(result.external_cost_usd, 6),
+        "total_cost_with_shift_usd": round(result.cost_usd + result.external_cost_usd, 6),
+        "primary_tokens": sum(result.tokens.values()),
+        "external_tokens": result.external_tokens,
+        "artifacts_used": result.artifacts_used,
+        "bytes_before": result.bytes_before,
+        "bytes_after": result.bytes_after,
+        "hook_triggers": result.hook_triggers,
+        "turns": result.turns,
+        "notes": sanitize_csv_note(result.notes),
+    }
+    fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o666, create_parent=True)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    finally:
+        if fd != -1:
+            os.close(fd)
 
 
 def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
@@ -821,6 +933,158 @@ def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
         return set()
     with csv_file_lock(csv_path, create_parent=False):
         return _read_existing_keys_unlocked(csv_path)
+
+
+def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
+    try:
+        fd = _open_regular_no_symlink(csv_path)
+    except FileNotFoundError:
+        return []
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", newline="") as handle:
+            fd = -1
+            return list(csv.DictReader(handle))
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def row_int(row: dict[str, str], key: str) -> int:
+    try:
+        return int(float(row.get(key) or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def row_float(row: dict[str, str], key: str) -> float:
+    try:
+        value = float(row.get(key) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def row_success(row: dict[str, str]) -> bool:
+    return str(row.get("success") or "").strip().lower() == "true"
+
+
+def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) -> dict[str, Any]:
+    by_variant: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        variant = row.get("variant") or "unknown"
+        bucket = by_variant.setdefault(
+            variant,
+            {
+                "runs": 0,
+                "successful_runs": 0,
+                "failed_runs": 0,
+                "total_tokens_successful": 0,
+                "primary_cost_successful_usd": 0.0,
+                "external_cost_successful_usd": 0.0,
+                "total_cost_with_shift_successful_usd": 0.0,
+                "external_tokens_successful": 0,
+                "artifacts_used_successful": 0,
+                "bytes_before_successful": 0,
+                "bytes_after_successful": 0,
+                "turns_successful": 0,
+                "hook_triggers_successful": 0,
+            },
+        )
+        bucket["runs"] += 1
+        if not row_success(row):
+            bucket["failed_runs"] += 1
+            continue
+        bucket["successful_runs"] += 1
+        bucket["total_tokens_successful"] += row_int(row, "total_tokens")
+        primary_cost = row_float(row, "cost_usd")
+        external_cost = row_float(row, "external_cost_usd")
+        shifted_cost = row_float(row, "total_cost_with_shift_usd") or (primary_cost + external_cost)
+        bucket["primary_cost_successful_usd"] += primary_cost
+        bucket["external_cost_successful_usd"] += external_cost
+        bucket["total_cost_with_shift_successful_usd"] += shifted_cost
+        bucket["external_tokens_successful"] += row_int(row, "external_tokens")
+        bucket["artifacts_used_successful"] += row_int(row, "artifacts_used")
+        bucket["bytes_before_successful"] += row_int(row, "bytes_before")
+        bucket["bytes_after_successful"] += row_int(row, "bytes_after")
+        bucket["turns_successful"] += row_int(row, "turns")
+        bucket["hook_triggers_successful"] += row_int(row, "hook_triggers")
+
+    for bucket in by_variant.values():
+        successes = bucket["successful_runs"]
+        if successes:
+            bucket["tokens_per_successful_task"] = bucket["total_tokens_successful"] / successes
+            bucket["primary_cost_per_successful_task_usd"] = bucket["primary_cost_successful_usd"] / successes
+            bucket["total_cost_with_shift_per_successful_task_usd"] = (
+                bucket["total_cost_with_shift_successful_usd"] / successes
+            )
+            bucket["external_tokens_per_successful_task"] = bucket["external_tokens_successful"] / successes
+            bucket["artifacts_used_per_successful_task"] = bucket["artifacts_used_successful"] / successes
+            before = bucket["bytes_before_successful"]
+            after = bucket["bytes_after_successful"]
+            bucket["byte_reduction_ratio"] = (after / before) if before else None
+        else:
+            bucket["tokens_per_successful_task"] = None
+            bucket["primary_cost_per_successful_task_usd"] = None
+            bucket["total_cost_with_shift_per_successful_task_usd"] = None
+            bucket["external_tokens_per_successful_task"] = None
+            bucket["artifacts_used_per_successful_task"] = None
+            bucket["byte_reduction_ratio"] = None
+
+    comparisons: list[dict[str, Any]] = []
+    baseline = by_variant.get(baseline_variant)
+    baseline_tokens = baseline.get("tokens_per_successful_task") if baseline else None
+    baseline_cost = baseline.get("total_cost_with_shift_per_successful_task_usd") if baseline else None
+    for variant, bucket in sorted(by_variant.items()):
+        if variant == baseline_variant:
+            continue
+        tokens = bucket.get("tokens_per_successful_task")
+        shifted_cost = bucket.get("total_cost_with_shift_per_successful_task_usd")
+        comparison: dict[str, Any] = {"variant": variant, "baseline_variant": baseline_variant}
+        if isinstance(baseline_tokens, (int, float)) and isinstance(tokens, (int, float)) and baseline_tokens:
+            comparison["token_delta_per_successful_task"] = tokens - baseline_tokens
+            comparison["token_savings_pct"] = (baseline_tokens - tokens) / baseline_tokens * 100.0
+        else:
+            comparison["token_savings_pct"] = None
+        if isinstance(baseline_cost, (int, float)) and isinstance(shifted_cost, (int, float)) and baseline_cost:
+            comparison["total_cost_with_shift_delta_usd"] = shifted_cost - baseline_cost
+            comparison["cost_savings_pct_with_shift"] = (baseline_cost - shifted_cost) / baseline_cost * 100.0
+        else:
+            comparison["cost_savings_pct_with_shift"] = None
+        comparison["quality_gate"] = (
+            "pass" if bucket.get("successful_runs") and baseline and baseline.get("successful_runs") else "insufficient_success"
+        )
+        comparisons.append(comparison)
+
+    claim_status = "insufficient_baseline"
+    if baseline and baseline.get("successful_runs"):
+        claim_status = "compare_variants" if comparisons else "baseline_only"
+        if comparisons:
+            token_savings_observed = all((item.get("token_savings_pct") or 0) > 0 for item in comparisons)
+            shifted_cost_savings = [
+                item.get("cost_savings_pct_with_shift")
+                for item in comparisons
+                if isinstance(item.get("cost_savings_pct_with_shift"), (int, float))
+            ]
+            shifted_cost_ok = not shifted_cost_savings or all(value > 0 for value in shifted_cost_savings)
+            if token_savings_observed and shifted_cost_ok:
+                claim_status = "token_and_shifted_cost_savings_observed"
+            elif token_savings_observed:
+                claim_status = "token_savings_observed_cost_shift_watch"
+    return {
+        "schema": "claude-token-bench-report-v1",
+        "baseline_variant": baseline_variant,
+        "row_count": len(rows),
+        "summary_by_variant": by_variant,
+        "comparisons": comparisons,
+        "claim_status": claim_status,
+        "caveat": "Proxy byte reductions are reported separately from real token/cost metrics; external_cost_usd is included in shifted totals when present.",
+    }
+
+
+def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
+    report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
+    write_text_no_follow(report_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    return report
 
 
 def sanitize_note_text(value: Any) -> str:
@@ -872,6 +1136,12 @@ def main() -> int:
                         help="print the claude command without invoking it")
     parser.add_argument("--resume", action="store_true",
                         help="skip (task_id, variant) rows already present in --csv")
+    parser.add_argument("--ledger-jsonl", default=None, type=Path,
+                        help="optional JSONL ledger path for cost-shift accounting per run")
+    parser.add_argument("--report-json", default=None, type=Path,
+                        help="optional A/B summary report JSON path generated from --csv after real runs")
+    parser.add_argument("--baseline-variant", default="baseline",
+                        help="variant name used as the report baseline (default: baseline)")
     args = parser.parse_args()
 
     require_no_follow_file_ops_supported()
@@ -905,6 +1175,8 @@ def main() -> int:
         wrote = True
         if not args.dry_run:
             wrote = append_csv(args.csv, claude_ver, result, skip_existing=args.resume)
+            if wrote and args.ledger_jsonl is not None:
+                append_cost_shift_ledger(args.ledger_jsonl, claude_ver, result)
         completed += 1
         status = "ok" if result.success else "FAIL"
         if args.dry_run:
@@ -915,6 +1187,9 @@ def main() -> int:
             suffix = ""
         print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {sanitize_note_text(result.notes)}{suffix}")
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
+    if args.report_json is not None and not args.dry_run:
+        report = write_report_json(args.csv, args.report_json, args.baseline_variant)
+        print(f"report {args.report_json}: {report['claim_status']}")
     print(f"completed {completed} run(s); results in {target}")
     return 0
 
