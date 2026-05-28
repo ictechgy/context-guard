@@ -9302,6 +9302,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     module.write_report_json(csv_path, report_path, "baseline")
                     self.assertTrue(report_path.exists())
                     self.assertTrue(csv_path.with_name("results.csv.lock").exists())
+                    self.assertTrue(report_path.with_name("report.json.lock").exists())
 
                     ledger_path = root / "cost-shift.jsonl"
                     module.append_cost_shift_ledger(ledger_path, "test", result)
@@ -9316,6 +9317,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         module.append_cost_shift_ledger(bad_ledger, "test", result)
                     self.assertEqual(guarded.read_text(encoding="utf-8"), "guard")
                     self.assertFalse(bad_ledger.exists())
+
+                    bad_report = root / "bad-report.json"
+                    bad_report.with_name("bad-report.json.lock").symlink_to(guarded)
+                    with self.assertRaises(OSError):
+                        module.write_report_json(csv_path, bad_report, "baseline")
+                    self.assertEqual(guarded.read_text(encoding="utf-8"), "guard")
+                    self.assertFalse(bad_report.exists())
 
     def test_benchmark_runner_rejects_overlapping_output_paths(self):
         for index, script in enumerate(BENCH_SCRIPTS):
