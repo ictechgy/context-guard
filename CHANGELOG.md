@@ -2,6 +2,13 @@
 
 All notable changes for the Claude token optimizer plugin are documented here.
 
+## [0.1.1] - 2026-05-29
+
+- Hardened skill `allowed-tools` so arbitrary command wrappers are no longer granted from plugin skill frontmatter.
+- Made setup helper resolution, hook deduplication, and settings writes safer against PATH hijacking, basename collisions, and lost updates.
+- Tightened Bash rewrite, read guard, artifact escrow, benchmark, audit, trim/sanitize, and statusline paths with fail-closed behavior, bounded reads, symlink/TOCTOU checks, and stronger redaction.
+- Expanded release gates and regression coverage for the quad-review hardening findings.
+
 ## [0.1.0] - 2026-05-29
 
 - Initial marketplace-ready Claude Code plugin packaging for token reduction helpers, statusline integration, large-read guards, repeated-failure nudges, transcript auditing, and setup planning.
