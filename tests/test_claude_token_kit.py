@@ -2075,6 +2075,84 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIsNone(data["diet_scan"])
                     self.assertTrue((root / ".claude" / "settings.json").exists())
 
+    def test_setup_wizard_helper_argv_uses_resolved_path_for_direct_runs(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_argv_path")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "custom-token-helper"
+            fake.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+            fake.chmod(0o700)
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
+            try:
+                argv = setup.helper_argv("custom-token-helper", "missing_script.py")
+                command = setup.helper_command("custom-token-helper", "missing_script.py")
+            finally:
+                os.environ["PATH"] = old_path
+        self.assertEqual(argv, [str(fake)])
+        self.assertEqual(command, "custom-token-helper")
+
+    def test_setup_wizard_post_setup_diet_scan_failure_paths_do_not_abort_setup(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_diet_scan_failures")
+
+        def make_args(root: Path) -> argparse.Namespace:
+            return argparse.Namespace(
+                root=str(root),
+                allow_home_settings=False,
+                no_denies=False,
+                no_statusline=False,
+                no_bash_hook=False,
+                no_read_guard=False,
+                no_model_defaults=False,
+                failed_attempt_nudge=False,
+                yes=True,
+                plan=False,
+                dry_run=False,
+                no_backup=True,
+                no_diet_scan=False,
+            )
+
+        def completed(stdout: str, returncode: int = 0):
+            return subprocess.CompletedProcess(["claude-token-diet"], returncode, stdout=stdout, stderr="")
+
+        cases = [
+            (
+                "timeout",
+                lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))),
+                "timeout",
+            ),
+            ("nonzero", lambda *args, **kwargs: completed("", 7), "nonzero-exit"),
+            ("invalid-json", lambda *args, **kwargs: completed("{not json"), "invalid-json"),
+            ("invalid-report", lambda *args, **kwargs: completed(json.dumps({"findings": None})), "invalid-report"),
+        ]
+        for name, fake_run, expected_reason in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".claude").mkdir()
+                    with mock.patch.object(setup.subprocess, "run", side_effect=fake_run):
+                        result = setup.run(make_args(root))
+                    self.assertTrue(result.applied)
+                    self.assertEqual(result.diet_scan["status"], "failed")
+                    self.assertEqual(result.diet_scan["reason"], expected_reason)
+                    self.assertTrue((root / ".claude" / "settings.json").exists())
+
+    def test_setup_wizard_diet_scan_summary_uses_configured_top_count(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_diet_scan_top")
+        findings = [
+            {
+                "severity": "high" if idx % 2 == 0 else "medium",
+                "id": f"finding-{idx}",
+                "path": f"file-{idx}.py",
+                "message": "message",
+                "action": "action",
+            }
+            for idx in range(setup.DEFAULT_POST_SETUP_SCAN_TOP + 1)
+        ]
+        summary = setup.summarize_diet_report({"finding_count": len(findings), "findings": findings})
+        self.assertEqual(summary["finding_count"], len(findings))
+        self.assertEqual(len(summary["top_findings"]), setup.DEFAULT_POST_SETUP_SCAN_TOP)
+        self.assertEqual(summary["top_findings"][-1]["id"], f"finding-{setup.DEFAULT_POST_SETUP_SCAN_TOP - 1}")
+
     def test_setup_wizard_writes_settings_with_deterministic_key_order(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):

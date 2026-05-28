@@ -375,7 +375,7 @@ def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None) 
         return [*prefix, str(kit_path)]
     found = shutil.which(helper_name)
     if found:
-        return [helper_name]
+        return [found]
     return [helper_name]
 
 
@@ -386,8 +386,14 @@ def helper_command(helper_name: str, kit_script: str, *, shell: str | None = Non
     quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
     """
     argv = helper_argv(helper_name, kit_script, shell=shell)
-    if len(argv) == 1 and argv[0] == helper_name and shutil.which(helper_name):
-        return helper_name
+    if len(argv) == 1:
+        found = shutil.which(helper_name)
+        if found:
+            try:
+                if Path(argv[0]).resolve() == Path(found).resolve():
+                    return helper_name
+            except OSError:
+                pass
     return shlex.join(argv)
 
 
@@ -471,15 +477,25 @@ def _ensure_tool_hook(
     actions.append(f"enabled {label} hook via {command}")
 
 
-
 def summarize_diet_report(report: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        raise ValueError("report must be an object")
+    raw_findings = report.get("findings", [])
+    if not isinstance(raw_findings, list):
+        raise ValueError("findings must be a list")
+    findings: list[dict[str, Any]] = []
+    for finding in raw_findings:
+        if not isinstance(finding, dict):
+            raise ValueError("findings must contain objects")
+        findings.append(finding)
+
     counts = {"high": 0, "medium": 0, "low": 0}
-    for finding in report.get("findings", []):
+    for finding in findings:
         severity = str(finding.get("severity", "")).lower()
         if severity in counts:
             counts[severity] += 1
     top_findings = []
-    for finding in report.get("findings", [])[:3]:
+    for finding in findings[:DEFAULT_POST_SETUP_SCAN_TOP]:
         top_findings.append({
             "severity": finding.get("severity"),
             "id": finding.get("id"),
@@ -487,9 +503,14 @@ def summarize_diet_report(report: dict[str, Any]) -> dict[str, Any]:
             "message": finding.get("message"),
             "action": finding.get("action"),
         })
+    raw_finding_count = report.get("finding_count", len(findings))
+    try:
+        finding_count = int(raw_finding_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("finding_count must be an integer") from exc
     return {
         "status": "completed",
-        "finding_count": int(report.get("finding_count", len(report.get("findings", [])))),
+        "finding_count": finding_count,
         "severity_counts": counts,
         "top_findings": top_findings,
     }
@@ -514,6 +535,8 @@ def run_post_setup_diet_scan(root: Path) -> dict[str, Any]:
         )
     except subprocess.TimeoutExpired:
         return {"status": "failed", "reason": "timeout", "timeout_seconds": POST_SETUP_SCAN_TIMEOUT_SECONDS}
+    except UnicodeError:
+        return {"status": "failed", "reason": "decode-error"}
     except OSError as exc:
         return {"status": "failed", "reason": exc.__class__.__name__}
     if proc.returncode != 0:
@@ -522,7 +545,10 @@ def run_post_setup_diet_scan(root: Path) -> dict[str, Any]:
         report = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return {"status": "failed", "reason": "invalid-json"}
-    return summarize_diet_report(report)
+    try:
+        return summarize_diet_report(report)
+    except ValueError:
+        return {"status": "failed", "reason": "invalid-report"}
 
 
 def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
