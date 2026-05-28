@@ -108,6 +108,8 @@ G. Auxiliary AI delegation
 - guardrail: 실패율이 10%p 이상 상승하면 해당 절감 기법은 task class별 opt-in으로 격하
 - report claim은 baseline에서 성공한 task가 variant에서도 성공한 matched task에 대해서만
   절감으로 인정한다. 성공 task set이 줄거나 실패율 guardrail을 넘으면 quality watch로 둔다.
+- 실패/재시도를 포함한 총량은 `tokens_per_task_including_failures` 및
+  `total_cost_with_shift_per_task_including_failures_usd`로 별도 확인한다.
 - byte reduction은 token/cost 절감의 proxy일 뿐이다. `bytes_before/bytes_after`가 줄어도
   실제 `total_tokens` 또는 shifted cost가 줄지 않으면 "절감"으로 인정하지 않는다.
 
