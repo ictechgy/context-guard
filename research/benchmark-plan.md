@@ -19,7 +19,11 @@
 
 - tool call 수
 - 읽은 파일 수
+- hook trigger 수
+- 원본/Claude-visible byte 수
+- artifact/context escrow 사용 수
 - auxiliary AI call 수와 provider
+- auxiliary/subagent/provider token 및 cost
 - auxiliary response preview chars / saved full response chars
 - Bash output line 수
 - `/context` 상위 카테고리
@@ -90,17 +94,28 @@ G. Auxiliary AI delegation
 4. 각 run 후 `/usage` 결과 또는 telemetry를 저장
 5. 실패한 run은 실패로 기록하고, 재시도 token까지 포함한 “성공까지 총 비용”도 별도 계산
 6. prompt cache 영향을 분리하려면 warm run/cold run을 나눠 2회씩 실행
+7. artifact escrow, subagent, 보조 AI를 쓴 실험군은 `external_tokens`, `external_cost_usd`,
+   `artifacts_used`를 함께 기록한다. primary cost가 줄어도 외부 비용으로 옮겨간 경우
+   `total_cost_with_shift_usd` 기준으로 판정한다.
 
 ## 5. 판정 기준
 
 - 품질이 baseline과 같거나 더 좋은 경우만 절감으로 인정
 - primary metric: `tokens_per_successful_task`
 - secondary metric: `human_corrections_per_task`
+- cost-shift metric: `total_cost_with_shift_usd = cost_usd + external_cost_usd`
 - guardrail: 실패율이 10%p 이상 상승하면 해당 절감 기법은 task class별 opt-in으로 격하
+- byte reduction은 token/cost 절감의 proxy일 뿐이다. `bytes_before/bytes_after`가 줄어도
+  실제 `total_tokens` 또는 shifted cost가 줄지 않으면 "절감"으로 인정하지 않는다.
 
 ## 6. 기대 결과 템플릿
 
 ```csv
-date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,output_tokens,cache_read,cache_creation,cost_usd,success,corrections,notes
-2026-05-01,2.x,t01,baseline,opus,xhigh,0,0,0,0,0,0,true,0,
+date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,output_tokens,cache_read,cache_creation,cost_usd,turns,hook_triggers,bytes_before,bytes_after,artifacts_used,external_tokens,external_cost_usd,total_cost_with_shift_usd,success,corrections,notes
+2026-05-01,2.x,t01,baseline,opus,xhigh,0,0,0,0,0,0,0,0,0,0,0,0,0,0,true,0,
 ```
+
+`claude-token-bench --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json`
+를 사용하면 각 run의 cost-shift ledger와 baseline 대비 A/B report를 함께 남긴다. report의
+`claim_status`는 실제 성공 run의 token/cost 지표를 기준으로 하며, byte 절감은 별도 caveat로
+분리된다.

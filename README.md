@@ -130,6 +130,18 @@ The audit command skips oversized transcript files/JSONL records by default
 (`--max-file-bytes`, `--max-line-bytes`) and reports the skipped counts so a
 corrupt trace cannot dominate memory or hide scan gaps.
 
+Run a repeatable A/B token-savings benchmark and keep cost-shift evidence:
+
+```bash
+./plugins/claude-token-optimizer/bin/claude-token-bench \
+  --tasks bench/tasks.json --variants bench/variants.json --csv bench/results.csv \
+  --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
+```
+
+The report compares successful baseline/variant runs by real token and
+`cost_usd + external_cost_usd`; byte reductions are recorded as proxy evidence,
+not treated as proof of savings.
+
 ## Auxiliary AI delegation (optional)
 
 With Gemini CLI or Codex CLI access, delegation uses another local AI as a read-only assistant for broad file triage, long-log summaries, root-cause hypotheses, or second-opinion planning.

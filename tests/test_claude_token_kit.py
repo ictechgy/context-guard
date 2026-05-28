@@ -9248,6 +9248,90 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["success"], "true")
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
 
+    def test_benchmark_runner_writes_cost_shift_ledger_and_ab_report(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = root / "fake-claude"
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import json, sys\n"
+                        "optimized = '--optimized' in sys.argv\n"
+                        "usage = {'input_tokens': 50 if optimized else 100, 'output_tokens': 10 if optimized else 20}\n"
+                        "payload = {\n"
+                        "    'message': {'usage': usage},\n"
+                        "    'total_cost_usd': 0.06 if optimized else 0.12,\n"
+                        "    'metrics': {\n"
+                        "        'turns': 2 if optimized else 3,\n"
+                        "        'hook_triggers': 4 if optimized else 0,\n"
+                        "        'bytes_before': 1000 if optimized else 1000,\n"
+                        "        'bytes_after': 120 if optimized else 1000,\n"
+                        "        'artifacts_used': 1 if optimized else 0,\n"
+                        "        'external_tokens': 5 if optimized else 0,\n"
+                        "        'external_cost_usd': 0.01 if optimized else 0,\n"
+                        "    },\n"
+                        "}\n"
+                        "sys.stdout.write(json.dumps(payload))\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {"id": "t01", "prompt": "echo hi", "model": "sonnet",
+                         "max_turns": 1, "success_command": "true", "success_cwd": "."}
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                        {"name": "optimized", "extra_args": ["--optimized"]},
+                    ]))
+                    csv_path = root / "results.csv"
+                    ledger_path = root / "cost-shift-ledger.jsonl"
+                    report_path = root / "report.json"
+                    proc = subprocess.run(
+                        [sys.executable, str(script),
+                         "--tasks", str(root / "tasks.json"),
+                         "--variants", str(root / "variants.json"),
+                         "--csv", str(csv_path),
+                         "--ledger-jsonl", str(ledger_path),
+                         "--report-json", str(report_path),
+                         "--claude-bin", str(fake),
+                         "--project-root", str(root)],
+                        text=True, capture_output=True, check=True,
+                    )
+                    self.assertIn("report", proc.stdout)
+                    with csv_path.open(encoding="utf-8", newline="") as f:
+                        rows = {row["variant"]: row for row in csv.DictReader(f)}
+                    optimized = rows["optimized"]
+                    self.assertEqual(optimized["turns"], "2")
+                    self.assertEqual(optimized["hook_triggers"], "4")
+                    self.assertEqual(optimized["bytes_before"], "1000")
+                    self.assertEqual(optimized["bytes_after"], "120")
+                    self.assertEqual(optimized["artifacts_used"], "1")
+                    self.assertEqual(optimized["external_tokens"], "5")
+                    self.assertAlmostEqual(float(optimized["external_cost_usd"]), 0.01, places=6)
+                    self.assertAlmostEqual(float(optimized["total_cost_with_shift_usd"]), 0.07, places=6)
+
+                    ledger_rows = [
+                        json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                    ]
+                    self.assertEqual(len(ledger_rows), 2)
+                    optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
+                    self.assertAlmostEqual(optimized_ledger["total_cost_with_shift_usd"], 0.07, places=6)
+
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    self.assertEqual(report["schema"], "claude-token-bench-report-v1")
+                    self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
+                    comparison = next(item for item in report["comparisons"] if item["variant"] == "optimized")
+                    self.assertGreater(comparison["token_savings_pct"], 0)
+                    self.assertGreater(
+                        report["summary_by_variant"]["optimized"]["external_cost_successful_usd"],
+                        0,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["external_tokens_successful"],
+                        5,
+                    )
+
     def test_benchmark_runner_bounds_claude_stdout_before_json_parse(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):

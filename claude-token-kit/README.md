@@ -13,6 +13,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
 - `context_escrow.py` — 큰 command output을 sanitize 후 로컬 artifact로 저장하고 line/pattern query로 다시 조회
+- `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report 생성
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합
 - `settings.example.json` — project `.claude/settings.json` 예시
 - `aux_ai_delegate.py` — Gemini/Codex 같은 보조 AI CLI를 opt-in으로 호출해 Claude context를 절약
@@ -28,6 +29,7 @@ python3 claude-token-kit/claude_token_diet.py scan . --json
 python3 claude-token-kit/read_symbol.py path/to/file.py TargetSymbol
 long-command 2>&1 | python3 claude-token-kit/context_escrow.py store --command "long-command" --json
 python3 claude-token-kit/context_escrow.py get <artifact_id> --lines 1:80
+python3 claude-token-kit/benchmark_runner.py --tasks bench/tasks.json --variants bench/variants.json --csv bench/results.csv --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 python3 claude-token-kit/sanitize_output.py -- rg -n "TOKEN|SECRET" .
 python3 claude-token-kit/sanitize_output.py -- git diff
 python3 claude-token-kit/aux_ai_delegate.py status
@@ -39,6 +41,8 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 `trim_command_output.py`는 output이 budget을 넘을 때 runner별 failure summary를 먼저 보여줍니다. 예를 들어 pytest node id, Jest/Vitest 실패 파일/테스트, `go test`의 실패 test와 `_test.go:line`, `cargo test` panic 위치를 짧게 보존해 Claude가 전체 로그를 다시 읽지 않고도 다음에 수정할 파일을 고를 수 있게 합니다. head/tail 로그 대신 더 작은 의미 요약만 필요하면 `--digest markdown` 또는 `--digest json`을 추가하세요. digest mode는 status, exit code, truncation count, runner failure facts, 대표 라인, redaction count, 다음 query 제안을 남깁니다. 감싼 명령은 기본 600초 후 timeout 처리되며(`--timeout-seconds`로 조정), 가능한 환경에서는 process group까지 종료한 뒤 124를 반환합니다. ANSI color code는 제거하며, 절대경로는 기본적으로 `basename#path:<hash>`로 익명화합니다. 로컬 디버깅에서 원문 절대경로가 꼭 필요하면 `--show-paths`를 추가하세요.
 
 `context_escrow.py`는 대용량 output을 Claude context에 그대로 넣지 않고 `.claude-token-optimizer/artifacts` 아래 `0o600` 파일로 저장합니다. 저장 전에 sanitizer를 적용해 secret/path 노출을 줄이고, receipt에는 `artifact_id`, line/byte count, top error lines, 대표 head/tail, `get --lines`/`get --pattern` query 예시만 출력합니다. 저장된 artifact는 sanitize된 사본이며, 필요할 때만 `get <artifact_id> --lines 10:40`처럼 정확한 범위를 조회하세요.
+
+`benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 보조 AI·subagent·artifact 사용으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 시 안전하도록 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
 대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 노출됩니다.
