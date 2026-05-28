@@ -44,6 +44,7 @@ EXCLUDED_DIR_NAMES = {
     "vendor",
 }
 MAX_CONTEXT_READ_BYTES = 512_000
+MAX_SECRET_SCAN_BYTES = 5_000_000
 MAX_SETTINGS_READ_BYTES = 256_000
 DEFAULT_LARGE_CONTEXT_BYTES = 16_000
 DEFAULT_HUGE_CONTEXT_BYTES = 64_000
@@ -655,8 +656,15 @@ def read_text_prefix(path: Path, limit: int = MAX_CONTEXT_READ_BYTES, *, root: P
     return data.decode("utf-8", "replace"), truncated
 
 
-def file_contains_secret(path: Path, chunk_bytes: int = 64_000, *, root: Path | None = None) -> bool:
+def file_contains_secret(
+    path: Path,
+    chunk_bytes: int = 64_000,
+    *,
+    root: Path | None = None,
+    max_total_bytes: int = MAX_SECRET_SCAN_BYTES,
+) -> bool:
     carry = ""
+    bytes_read = 0
     opener = (
         _open_regular_under_root_no_follow(root, path, path_kind="context")
         if root is not None
@@ -664,9 +672,13 @@ def file_contains_secret(path: Path, chunk_bytes: int = 64_000, *, root: Path | 
     )
     with opener as handle:
         while True:
-            data = handle.read(chunk_bytes)
+            remaining = max_total_bytes - bytes_read
+            if remaining <= 0:
+                return False
+            data = handle.read(min(chunk_bytes, remaining))
             if not data:
                 return False
+            bytes_read += len(data)
             text = carry + data.decode("utf-8", "replace")
             if SECRET_CONTENT_RE.search(text):
                 return True

@@ -58,6 +58,7 @@ MIN_CONSECUTIVE = 2
 STRATEGY_SWITCH_MIN_CONSECUTIVE = 3
 FINGERPRINT_SELECTOR_FLAGS = {"-k", "-m", "--grep", "--testNamePattern", "--test-name-pattern"}
 DIAGNOSTIC_MAX_CHARS = 240
+MAX_HOOK_STDIN_BYTES = 1_000_000
 ANSI_ESCAPE_RE = re.compile(r"(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])")
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 UNSUPPORTED_STATE_IO_ERRNO = getattr(errno, "ENOTSUP", getattr(errno, "EOPNOTSUPP", errno.EINVAL))
@@ -442,6 +443,18 @@ def extract_exit_code(tool_response: dict) -> int | None:
     return None
 
 
+def read_bounded_stdin_text(limit: int = MAX_HOOK_STDIN_BYTES) -> tuple[str | None, bool]:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    data = stream.read(limit + 1)
+    if isinstance(data, str):
+        oversized = len(data.encode("utf-8", errors="replace")) > limit
+        return (None, True) if oversized else (data, False)
+    oversized = len(data) > limit
+    if oversized:
+        return None, True
+    return data.decode("utf-8", errors="replace"), False
+
+
 def update_entries(entries: list[dict], fp: str, success: bool) -> list[dict]:
     """성공한 fingerprint 는 카운트 리셋. 실패는 append.
 
@@ -471,8 +484,13 @@ def count_consecutive_failures(entries: list[dict], fp: str) -> int:
 
 
 def main() -> int:
+    raw_payload, oversized = read_bounded_stdin_text()
+    if oversized:
+        sys.stderr.write("claude-token-failed-nudge: oversized hook JSON skipped\n")
+        print("{}")
+        return 0
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(raw_payload or "")
     except json.JSONDecodeError:
         print("{}")
         return 0

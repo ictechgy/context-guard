@@ -102,7 +102,20 @@ CSV_COLUMNS = [
     "notes",
 ]
 MAX_CSV_NOTE_CHARS = 500
+MAX_CSV_ROWS = 100_000
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+PROTECTED_VARIANT_FLAGS = frozenset({
+    "--",
+    "-p",
+    "--print",
+    "--model",
+    "--max-turns",
+    "--output-format",
+    "--allowedTools",
+    "--allowed-tools",
+    "--max-budget-usd",
+    "--effort",
+})
 SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
 SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
 SECRET_NOTE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -294,7 +307,7 @@ def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
     if fcntl is None:
         raise OSError("platform does not support advisory CSV locks")
     lock_path = csv_path.with_name(f"{csv_path.name}.lock")
-    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o666, create_parent=create_parent)
+    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
     locked = False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -393,6 +406,16 @@ def parse_string_list(value: Any, *, field: str, owner: str) -> list[str]:
     return items
 
 
+def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[str]:
+    for index, arg in enumerate(extra_args):
+        flag = arg.split("=", 1)[0]
+        if flag in PROTECTED_VARIANT_FLAGS:
+            raise SystemExit(
+                f"{owner} extra_args[{index}] must not override runner-controlled Claude flags: {flag}"
+            )
+    return extra_args
+
+
 def normalize_usage_token(value: Any) -> int | None:
     """Return a safe non-negative token count, or None for invalid metrics."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -466,9 +489,12 @@ def parse_variants(path: Path) -> list[Variant]:
             raise SystemExit(f"variant entry must be a JSON object: {item}")
         variants.append(Variant(
             name=str(item["name"]),
-            extra_args=parse_string_list(
-                item.get("extra_args", []),
-                field="extra_args",
+            extra_args=validate_variant_extra_args(
+                parse_string_list(
+                    item.get("extra_args", []),
+                    field="extra_args",
+                    owner=f"variant {item.get('name')}",
+                ),
                 owner=f"variant {item.get('name')}",
             ),
         ))
@@ -649,6 +675,7 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     if task.allowed_tools:
         argv.extend(["--allowedTools", ",".join(task.allowed_tools)])
     argv.extend(variant.extra_args)
+    argv.append("--")
     argv.append(task.prompt)
     return argv
 
@@ -728,6 +755,10 @@ def run_bounded_command(
                 if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
                     _signal_process_group(proc, signal.SIGKILL, pgid)
                     sent_kill = True
+            if sent_kill and terminated_at is not None:
+                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS * 2:
+                    timed_out = True
+                    break
             events = selector.select(timeout=0.05)
             for key, _ in events:
                 name = key.data
@@ -759,7 +790,11 @@ def run_bounded_command(
         returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         _signal_process_group(proc, signal.SIGKILL, pgid)
-        returncode = proc.wait()
+        try:
+            returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = 124
+            timed_out = True
     if timed_out:
         returncode = 124
     elif output_truncated:
@@ -903,7 +938,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
         if skip_existing and (result.task_id, result.variant) in _read_existing_keys_unlocked(csv_path):
             return False
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
-        fd = _open_regular_no_symlink(csv_path, flags, 0o666, create_parent=True)
+        fd = _open_regular_no_symlink(csv_path, flags, 0o600, create_parent=True)
         try:
             new_file = os.fstat(fd).st_size == 0
             if not new_file:
@@ -917,12 +952,12 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                 total = sum(tokens.values())
                 shifted_cost_known = cost_shift_measured(result)
                 writer.writerow({
-                    "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                    "claude_version": claude_ver,
-                    "task_id": result.task_id,
-                    "variant": result.variant,
-                    "model": result.model,
-                    "effort": result.effort,
+                    "date": sanitize_csv_cell(_dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")),
+                    "claude_version": sanitize_csv_cell(claude_ver),
+                    "task_id": sanitize_csv_cell(result.task_id),
+                    "variant": sanitize_csv_cell(result.variant),
+                    "model": sanitize_csv_cell(result.model),
+                    "effort": sanitize_csv_cell(result.effort),
                     "total_tokens": total,
                     "input_tokens": tokens.get("input_tokens", 0),
                     "output_tokens": tokens.get("output_tokens", 0),
@@ -987,7 +1022,7 @@ def validate_csv_schema(csv_path: Path, fieldnames: list[str] | None) -> None:
 
 
 def write_text_no_follow(path: Path, text: str) -> None:
-    fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o666, create_parent=True)
+    fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600, create_parent=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
@@ -1023,7 +1058,7 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
         "notes": sanitize_csv_note(result.notes),
     }
     with csv_file_lock(path, create_parent=True):
-        fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o666, create_parent=True)
+        fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600, create_parent=True)
         try:
             with os.fdopen(fd, "a", encoding="utf-8") as handle:
                 fd = -1
@@ -1086,7 +1121,12 @@ def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
             reader = csv.DictReader(handle)
             fieldnames = list(reader.fieldnames) if reader.fieldnames is not None else None
             validate_csv_schema(csv_path, fieldnames)
-            return list(reader)
+            rows: list[dict[str, str]] = []
+            for index, row in enumerate(reader, start=1):
+                if index > MAX_CSV_ROWS:
+                    raise SystemExit(f"CSV row limit exceeded for {csv_path}: > {MAX_CSV_ROWS}")
+                rows.append(row)
+            return rows
     finally:
         if fd != -1:
             os.close(fd)
@@ -1499,6 +1539,14 @@ def sanitize_csv_note(value: Any) -> str:
     return text
 
 
+def sanitize_csv_cell(value: Any) -> str:
+    """Normalize short untrusted CSV labels and block spreadsheet formulas."""
+    text = sanitize_note_text(value)
+    if text.startswith(CSV_FORMULA_PREFIXES):
+        text = "'" + text
+    return text
+
+
 def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
                    only_task: str | None, only_variant: str | None) -> list[tuple[TaskFixture, Variant]]:
     targets: list[tuple[TaskFixture, Variant]] = []
@@ -1519,9 +1567,22 @@ def normalized_output_path(path: Path) -> Path:
     return Path(os.path.normpath(str(_normalize_allowed_first_absolute_symlink(expanded))))
 
 
+def existing_file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        fd = _open_regular_no_symlink(normalized_output_path(path))
+    except FileNotFoundError:
+        return None
+    try:
+        st = os.fstat(fd)
+        return (int(st.st_dev), int(st.st_ino))
+    finally:
+        os.close(fd)
+
+
 def validate_distinct_output_paths(csv_path: Path, ledger_path: Path | None, report_path: Path | None) -> None:
     outputs = [("csv", csv_path), ("ledger-jsonl", ledger_path), ("report-json", report_path)]
     seen: dict[Path, str] = {}
+    seen_identity: dict[tuple[int, int], str] = {}
     for label, path in outputs:
         if path is None:
             continue
@@ -1530,6 +1591,12 @@ def validate_distinct_output_paths(csv_path: Path, ledger_path: Path | None, rep
         if previous is not None:
             raise SystemExit(f"--{label} must not point to the same path as --{previous}: {normalized}")
         seen[normalized] = label
+        identity = existing_file_identity(normalized)
+        if identity is not None:
+            previous_identity = seen_identity.get(identity)
+            if previous_identity is not None:
+                raise SystemExit(f"--{label} must not point to the same file as --{previous_identity}: {normalized}")
+            seen_identity[identity] = label
 
 
 def main() -> int:

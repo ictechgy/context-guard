@@ -69,9 +69,27 @@ jq_get() {
   jq -r "$1 // empty" <<<"$input" 2>/dev/null || true
 }
 
+strip_terminal_sequences() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e[@-_][0-?]*[ -\/]*[@-~]//g'
+  else
+    cat
+  fi
+}
+
 sanitize_status() {
   # Statusline values may come from untrusted workspace metadata; keep one-line printable text.
-  LC_ALL=C tr -cd '[:print:]' <<<"$1" | cut -c 1-160
+  local cleaned
+  cleaned=$(printf '%s' "$1" \
+    | strip_terminal_sequences \
+    | LC_ALL=C tr '\r\n' '  ' \
+    | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177-\237' \
+    | cut -c 1-160)
+  if printf '%s' "$cleaned" | LC_ALL=C grep -Eiq '(gh[pousr]_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|sk-|npm_|AIza|Bearer[[:space:]]|Basic[[:space:]])'; then
+    printf '[redacted]'
+  else
+    printf '%s' "$cleaned"
+  fi
 }
 
 git_head_branch() {

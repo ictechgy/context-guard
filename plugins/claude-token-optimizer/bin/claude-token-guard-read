@@ -284,8 +284,8 @@ def lstat_at_no_follow(dir_fd: int, component: str) -> os.stat_result | None:
     return os.stat(component, dir_fd=dir_fd, follow_symlinks=False)
 
 
-def regular_file_size_no_symlink(path: Path) -> int:
-    """Return size for a regular file opened without following symlinks."""
+def open_regular_no_symlink(path: Path) -> int:
+    """Open a regular file after no-follow traversal of every path component."""
     path = normalize_allowed_first_absolute_symlink(path)
     if os.open not in getattr(os, "supports_dir_fd", set()):
         before = lstat_no_symlink_components(path)
@@ -297,9 +297,10 @@ def regular_file_size_no_symlink(path: Path) -> int:
             opened = os.fstat(fd)
             if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
                 raise OSError(errno.ELOOP, "requested path changed while opening", str(path))
-            return opened.st_size
-        finally:
+            return fd
+        except Exception:
             os.close(fd)
+            raise
 
     components = list(path.parts)
     if path.is_absolute() and components:
@@ -327,11 +328,21 @@ def regular_file_size_no_symlink(path: Path) -> int:
                     raise OSError(errno.ELOOP, "requested path changed while opening", str(path))
             elif not stat.S_ISREG(st.st_mode):
                 raise OSError(errno.EINVAL, "requested path must be a regular file", str(path))
-            return st.st_size
-        finally:
+            return fd
+        except Exception:
             os.close(fd)
+            raise
     finally:
         os.close(dir_fd)
+
+
+def regular_file_size_no_symlink(path: Path) -> int:
+    """Return size for a regular file opened without following symlinks."""
+    fd = open_regular_no_symlink(path)
+    try:
+        return os.fstat(fd).st_size
+    finally:
+        os.close(fd)
 
 
 def find_read_symbol_command() -> str:
@@ -351,10 +362,15 @@ def suggested_commands(label: str, read_symbol: str) -> tuple[str, str]:
 
 def read_prefix_for_outline(path: Path, max_bytes: int = OUTLINE_MAX_BYTES) -> tuple[str, bool]:
     try:
-        with path.open("rb") as handle:
+        fd = open_regular_no_symlink(path)
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
             data = handle.read(max_bytes + 1)
     except OSError:
         return "", False
+    finally:
+        if "fd" in locals() and fd != -1:
+            os.close(fd)
     truncated = len(data) > max_bytes
     if truncated:
         data = data[:max_bytes]
@@ -581,10 +597,12 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError as exc:
         print(f"claude-token-guard-read: invalid hook JSON: {exc}", file=sys.stderr)
-        print("{}")
+        reason = "[claude-token-kit] Read blocked because the hook payload was invalid JSON. Retry the tool call."
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
     if not isinstance(payload, dict):
-        print("{}")
+        reason = "[claude-token-kit] Read blocked because the hook payload was not a JSON object. Retry the tool call."
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
     current_tool = tool_name(payload)
     if current_tool and current_tool != "Read":
@@ -622,8 +640,14 @@ def main() -> int:
         if exc.errno in {errno.EINVAL, errno.ENOTDIR, errno.ENOENT}:
             print("{}")
             return 0
-        print(f"claude-token-guard-read: could not stat requested file: {exc.strerror or exc.__class__.__name__}", file=sys.stderr)
-        print("{}")
+        label = safe_label(path, root)
+        detail = compact_hook_text(exc.strerror or exc.__class__.__name__, 80)
+        print(f"claude-token-guard-read: could not safely inspect requested file: {detail}", file=sys.stderr)
+        reason = (
+            f"[claude-token-kit] Read blocked for {label}: the guard could not safely inspect the file "
+            f"({detail}). Use a bounded line range or verify the path locally first."
+        )
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
 
     limit = max_bytes()

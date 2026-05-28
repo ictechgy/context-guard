@@ -26,6 +26,12 @@ WRAPPER_BASENAMES = frozenset({
     "claude-sanitize-output",
 })
 FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
+FAIL_OPEN_VALUES = {"1", "true", "yes", "on"}
+UNPARSEABLE_SANITIZER_RISK_RE = re.compile(
+    r"(?i)(?:^|[\s;&|()])"
+    r"(?:rg|grep|egrep|fgrep|journalctl|kubectl|oc|docker|podman|docker-compose|git|find)"
+    r"(?:$|[\s;&|()])"
+)
 
 # kubectl/docker/podman/oc 글로벌 옵션 중 다음 토큰을 value로 소비하는 형태.
 # `-n prod`, `--context=prod`, `-f file.yml` 같은 케이스를 hub로 흡수해
@@ -73,6 +79,50 @@ def find_wrapper(kind: str) -> str | None:
         if os.path.exists(path):
             return path
     return None
+
+
+def fail_open_enabled() -> bool:
+    return os.environ.get(FAIL_OPEN_ENV, "").strip().lower() in FAIL_OPEN_VALUES
+
+
+def print_noop() -> None:
+    print("{}")
+
+
+def deny(reason: str) -> None:
+    print(f"claude-token-rewrite-bash: {reason}", file=sys.stderr)
+    if fail_open_enabled():
+        print(
+            f"claude-token-rewrite-bash: {FAIL_OPEN_ENV}=1 active; leaving command unchanged intentionally",
+            file=sys.stderr,
+        )
+        print_noop()
+        return
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }, ensure_ascii=False))
+
+
+def unparseable_command_needs_sanitizer(command: str) -> bool:
+    """Return True for shell-compound commands likely to print secret-bearing output."""
+    if not UNPARSEABLE_SANITIZER_RISK_RE.search(command):
+        return False
+    lowered = command.lower()
+    if re.search(r"(?:^|[\s;&|()])(?:rg|grep|egrep|fgrep)(?:$|[\s;&|()])", lowered):
+        return True
+    if re.search(r"(?:^|[\s;&|()])(?:journalctl|kubectl|oc|docker|podman|docker-compose)(?:$|[\s;&|()])", lowered):
+        return any(word in lowered for word in (" logs", " log ", "journalctl"))
+    if re.search(r"(?:^|[\s;&|()])git(?:$|[\s;&|()])", lowered):
+        return any(word in lowered for word in (" diff", " show", " grep", " log")) and (
+            " diff" in lowered or " show" in lowered or " grep" in lowered or " -p" in lowered or " --patch" in lowered
+        )
+    if re.search(r"(?:^|[\s;&|()])find(?:$|[\s;&|()])", lowered):
+        return any(action in lowered for action in (" -exec", " -execdir", " -ok", " -okdir", " -delete", " -fprint", " -fls"))
+    return False
 
 
 def split_single_safe_command(command: str) -> list[str] | None:
@@ -383,7 +433,14 @@ def main() -> int:
 
     argv = split_single_safe_command(command)
     if not argv:
-        print("{}")
+        if unparseable_command_needs_sanitizer(command):
+            deny(
+                "Search/diff/log command contains shell operators that cannot be safely rewritten. "
+                "Run the command through claude-sanitize-output explicitly, simplify it, or set "
+                f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
+            )
+            return 0
+        print_noop()
         return 0
 
     # argv 기반으로 이미 wrap 된 명령인지 검사한다. 단순 substring 매칭은 컨테이너명 등이
@@ -395,8 +452,11 @@ def main() -> int:
     if is_noisy_command(argv) or is_dir_traversal_command(argv):
         wrapper = find_wrapper("trim")
         if wrapper is None:
-            print("claude-token-rewrite-bash: trim wrapper not found; leaving command unchanged", file=sys.stderr)
-            print("{}")
+            deny(
+                "Noisy command blocked because claude-trim-output is not installed next to "
+                "claude-token-rewrite-bash. Install the trim wrapper or set "
+                f"{FAIL_OPEN_ENV}=1 to run untrimmed intentionally."
+            )
             return 0
         wrapped = build_wrapped_command(wrapper, command)
     elif is_sanitizable_output_command(argv) or is_log_streaming_command(argv):
@@ -407,17 +467,7 @@ def main() -> int:
                 "claude-token-rewrite-bash. Install the sanitizer or set "
                 f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
             )
-            print(f"claude-token-rewrite-bash: {reason}", file=sys.stderr)
-            if os.environ.get(FAIL_OPEN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
-                print("{}")
-                return 0
-            print(json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }, ensure_ascii=False))
+            deny(reason)
             return 0
         wrapped = build_sanitized_command(wrapper, command)
     else:

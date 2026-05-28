@@ -22,6 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - setup already requires POSIX no-follow file ops.
+    fcntl = None
+
 SETTINGS_REL = Path(".claude/settings.json")
 
 RECOMMENDED_DENIES = [
@@ -117,6 +122,8 @@ def resolve_setup_root(raw_root: str | None) -> Path:
     if raw_root is None:
         return find_project_root()
     root = Path(raw_root).expanduser().resolve()
+    if not root.exists():
+        raise SystemExit(f"Project root does not exist: {root}")
     return root.parent if root.is_file() else root
 
 
@@ -164,7 +171,7 @@ def no_follow_file_ops_supported() -> bool:
 
 
 def require_no_follow_file_ops_supported() -> None:
-    if not no_follow_file_ops_supported():
+    if not no_follow_file_ops_supported() or fcntl is None:
         raise SystemExit(
             "Setup requires POSIX no-follow file operations for safe project-local settings writes; "
             "this platform is not supported yet."
@@ -304,18 +311,29 @@ def _read_text_no_follow(path: Path) -> str:
             os.close(fd)
 
 
-def load_json_object(path: Path) -> dict[str, Any]:
+def _read_optional_text_no_follow(path: Path) -> str | None:
     try:
-        data = json.loads(_read_text_no_follow(path))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
+        return _read_text_no_follow(path)
     except FileNotFoundError:
-        return {}
+        return None
     except OSError as exc:
         raise SystemExit(f"Could not read {path} without following symlinks: {exc}") from exc
+
+
+def _parse_json_object_text(text: str | None, path: Path) -> dict[str, Any]:
+    if text is None:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {path}: line {exc.lineno}: {exc.msg}") from exc
     if not isinstance(data, dict):
         raise SystemExit(f"Settings file must contain a JSON object: {path}")
     return data
+
+
+def load_json_object(path: Path) -> dict[str, Any]:
+    return _parse_json_object_text(_read_optional_text_no_follow(path), path)
 
 
 def ensure_permissions(settings: dict[str, Any], actions: list[str]) -> None:
@@ -375,25 +393,19 @@ def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None) 
         return [*prefix, str(kit_path)]
     found = shutil.which(helper_name)
     if found:
-        return [found]
-    return [helper_name]
+        return [str(Path(found).resolve())]
+    raise SystemExit(
+        f"Could not resolve required helper {helper_name!r}; install the plugin or run from a checked-out repository."
+    )
 
 
 def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
     """hook 에 기록할 단일 셸 명령 문자열을 반환한다.
 
     경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
-    quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
+    quote 한다. PATH 에서 찾은 helper 도 절대 경로로 고정해 hook hijacking 을 막는다.
     """
     argv = helper_argv(helper_name, kit_script, shell=shell)
-    if len(argv) == 1:
-        found = shutil.which(helper_name)
-        if found:
-            try:
-                if Path(argv[0]).resolve() == Path(found).resolve():
-                    return helper_name
-            except OSError:
-                pass
     return shlex.join(argv)
 
 
@@ -425,11 +437,12 @@ def failed_nudge_setting() -> dict[str, Any]:
 def command_matches(existing: str, desired: str) -> bool:
     if existing == desired:
         return True
-    existing_parts = shlex.split(existing) if existing else []
-    desired_parts = shlex.split(desired) if desired else []
-    if not existing_parts or not desired_parts:
+    try:
+        existing_parts = shlex.split(existing) if existing else []
+        desired_parts = shlex.split(desired) if desired else []
+    except ValueError:
         return False
-    return Path(existing_parts[-1]).name == Path(desired_parts[-1]).name
+    return bool(existing_parts and desired_parts and existing_parts == desired_parts)
 
 
 def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> bool:
@@ -642,6 +655,40 @@ def backup_existing(path: Path) -> Path | None:
     return backup
 
 
+def acquire_settings_lock(path: Path) -> int:
+    """Take an exclusive project-local settings lock without following links."""
+    if fcntl is None:
+        raise OSError("platform does not support advisory file locks")
+    parent_fd = _ensure_directory_no_symlink(path.parent, PRIVATE_DIR_MODE)
+    lock_name = f".{path.name}.lock"
+    flags = os.O_CREAT | os.O_RDWR | _no_follow_flag()
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        fd = os.open(lock_name, flags, 0o600, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"settings lock is not a regular file: {path.with_name(lock_name)}")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def release_settings_lock(fd: int) -> None:
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def prompt_bool(question: str, default: bool) -> bool:
     suffix = "Y/n" if default else "y/N"
     while True:
@@ -725,7 +772,8 @@ def run(args: argparse.Namespace) -> SetupResult:
     root = resolve_setup_root(args.root)
     settings_path = root / SETTINGS_REL
     validate_settings_target(root, settings_path, allow_home_settings=args.allow_home_settings)
-    original = load_json_object(settings_path)
+    original_text = _read_optional_text_no_follow(settings_path)
+    original = _parse_json_object_text(original_text, settings_path)
     settings = json.loads(json.dumps(original))
 
     choices = choices_from_args(args)
@@ -744,14 +792,23 @@ def run(args: argparse.Namespace) -> SetupResult:
 
     backup_path = None
     if applied and changed:
-        if settings_path.exists() and not args.no_backup and settings != original:
-            backup_path = backup_existing(settings_path)
-        if settings != original:
-            atomic_write(
-                settings_path,
-                json.dumps(settings, indent=2, sort_keys=True) + "\n",
-                existing_mode_or_default(settings_path, 0o600),
-            )
+        lock_fd = acquire_settings_lock(settings_path)
+        try:
+            current_text = _read_optional_text_no_follow(settings_path)
+            if current_text != original_text:
+                raise SystemExit(
+                    f"Settings changed while setup was preparing changes; re-run setup to merge latest file: {settings_path}"
+                )
+            if original_text is not None and not args.no_backup and settings != original:
+                backup_path = backup_existing(settings_path)
+            if settings != original:
+                atomic_write(
+                    settings_path,
+                    json.dumps(settings, indent=2, sort_keys=True) + "\n",
+                    existing_mode_or_default(settings_path, 0o600),
+                )
+        finally:
+            release_settings_lock(lock_fd)
 
     diet_scan = None
     if applied and not getattr(args, "no_diet_scan", False):

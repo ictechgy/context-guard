@@ -39,7 +39,8 @@ DEFAULT_MAX_LINE_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES_LIMIT = 2 * 1024 * 1024 * 1024
 MAX_LINE_BYTES_LIMIT = 128 * 1024 * 1024
 SECRET_VALUE_RE = re.compile(
-    r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{8,}|"
+    r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"xox[abprs]-[A-Za-z0-9-]{8,}|(?:AKIA|ASIA)[0-9A-Z]{8,}|"
     r"AIza[0-9A-Za-z_\-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]+|"
     r"Basic\s+[A-Za-z0-9._~+/=-]+|"
     r"sk-ant-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{12,}|glpat-[A-Za-z0-9_-]{12,}|"
@@ -421,8 +422,8 @@ def add_usage(
         if local_tokens:
             summary.tokens.update(local_tokens)
             record.tokens.update(local_tokens)
-            model = first_string(d, MODEL_KEYS) or root_model or "unknown"
-            query_source = first_string(d, QUERY_SOURCE_KEYS) or root_query_source or "unknown"
+            model = sanitize_label(first_string(d, MODEL_KEYS) or root_model or "unknown", 80)
+            query_source = sanitize_label(first_string(d, QUERY_SOURCE_KEYS) or root_query_source or "unknown", 80)
             summary.by_model[model].update(local_tokens)
             summary.by_query_source[query_source].update(local_tokens)
 
