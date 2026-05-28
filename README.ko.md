@@ -93,6 +93,11 @@ claude-token-setup --plan
 ./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
 ```
 
+head/tail 로그 대신 더 작은 의미 요약만 필요하면 `--digest markdown` 또는
+`--digest json`을 사용하세요. digest mode는 원래 종료 코드를 보존하면서
+status, exit code, truncation count, runner failure facts, 대표 라인, redaction
+count, 다음에 볼 query 제안을 남깁니다.
+
 Claude에 전달하기 전에 검색·diff 출력 정제:
 
 ```bash

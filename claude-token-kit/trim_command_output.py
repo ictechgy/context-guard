@@ -11,10 +11,12 @@ import collections
 import hashlib
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import PurePosixPath
 import queue
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -315,6 +317,222 @@ class RunnerFailureSummary:
                 used_lines += 1
         return out
 
+    def as_dict(self) -> dict[str, list[str]]:
+        return {runner: list(items) for runner, items in sorted(self.items.items()) if items}
+
+
+def digest_line_items(lines: Iterable[str], *, limit: int, max_line_chars: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        item = strip_ansi(line).strip()
+        if not item or item in seen:
+            continue
+        capped, _ = cap_line(item, max_line_chars)
+        out.append(capped.strip())
+        seen.add(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def command_preview(command: list[str], sanitizer: object, max_line_chars: int) -> str:
+    try:
+        raw = shlex.join(command)
+    except Exception:
+        raw = " ".join(command)
+    sanitized, _ = sanitizer.sanitize(raw + "\n")  # type: ignore[attr-defined]
+    capped, _ = cap_line(sanitized.strip(), max_line_chars)
+    return capped.strip()
+
+
+def digest_next_queries(
+    *,
+    rc: int,
+    timed_out: bool,
+    raw_output_truncated: bool,
+    runner_items: dict[str, list[str]],
+    top_error_lines: list[str],
+) -> list[str]:
+    if timed_out:
+        return [
+            "Inspect timeout cause first; rerun with a narrower command or higher --timeout-seconds only if needed.",
+            "If the process spawned children, check whether the wrapped command handles termination cleanly.",
+        ]
+    if rc == 0:
+        if raw_output_truncated:
+            return [
+                "Treat this as success unless a specific assertion needs raw logs.",
+                "Query exact raw output only for the component named in the next task.",
+            ]
+        return ["No raw output follow-up needed; command completed successfully."]
+    queries: list[str] = []
+    if runner_items:
+        queries.append("Run the failing test/node from runner_failure_summary directly with minimal verbosity.")
+    if top_error_lines:
+        queries.append("Inspect top_error_lines before rerunning the full command.")
+    if raw_output_truncated:
+        queries.append("Rerun without trim only if these failure facts are insufficient.")
+    if not queries:
+        queries.append("Rerun with a narrower command or grep for the first error before requesting raw output.")
+    return queries
+
+
+def build_digest_payload(
+    *,
+    args: argparse.Namespace,
+    command: list[str],
+    rc: int,
+    timed_out: bool,
+    total: int,
+    raw_chars: int,
+    visible_chars: int,
+    any_line_capped: bool,
+    redacted_lines: int,
+    head: list[str],
+    tail: Iterable[str],
+    error_lines: list[str],
+    runner_summary: RunnerFailureSummary,
+    line_sanitizer: object,
+) -> dict[str, object]:
+    raw_output_truncated = total > args.max_lines or visible_chars > args.max_chars or any_line_capped
+    status = "timeout" if timed_out else ("success" if rc == 0 else "failure")
+    runner_items = runner_summary.as_dict() if rc != 0 else {}
+    top_error_lines = digest_line_items(error_lines, limit=12, max_line_chars=args.max_line_chars)
+    sample_limit = 8 if status == "success" else 10
+    tail_list = list(tail)
+    payload: dict[str, object] = {
+        "tool": "claude-token-kit.trim_command_output",
+        "digest_version": 1,
+        "status": status,
+        "exit_code": rc,
+        "timed_out": timed_out,
+        "raw_output": {
+            "lines": total,
+            "chars": raw_chars,
+            "visible_chars": visible_chars,
+            "truncated": raw_output_truncated,
+            "line_capped": any_line_capped,
+            "redacted_lines": redacted_lines,
+        },
+        "budget": {
+            "max_lines": args.max_lines,
+            "max_chars": args.max_chars,
+            "max_line_chars": args.max_line_chars,
+        },
+        "command_preview": command_preview(command, line_sanitizer, args.max_line_chars),
+        "runner_failure_summary": runner_items,
+        "top_error_lines": top_error_lines,
+        "representative_head": digest_line_items(head, limit=sample_limit, max_line_chars=args.max_line_chars),
+        "representative_tail": digest_line_items(
+            tail_list[-sample_limit:],
+            limit=sample_limit,
+            max_line_chars=args.max_line_chars,
+        ),
+    }
+    payload["next_queries"] = digest_next_queries(
+        rc=rc,
+        timed_out=timed_out,
+        raw_output_truncated=raw_output_truncated,
+        runner_items=runner_items,
+        top_error_lines=top_error_lines,
+    )
+    return payload
+
+
+def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
+    raw_output = payload.get("raw_output", {})
+    budget = payload.get("budget", {})
+    lines: list[str] = []
+    lines.append("[claude-token-kit] semantic digest\n")
+    lines.append(f"- status: {payload.get('status')}\n")
+    lines.append(f"- exit_code: {payload.get('exit_code')}\n")
+    lines.append(f"- timed_out: {str(payload.get('timed_out')).lower()}\n")
+    if isinstance(raw_output, dict):
+        lines.append(
+            "- raw_output: "
+            f"{raw_output.get('lines')} lines/{raw_output.get('chars')} chars"
+            f" (visible={raw_output.get('visible_chars')}, truncated={str(raw_output.get('truncated')).lower()})\n"
+        )
+        if raw_output.get("line_capped"):
+            lines.append(f"- line_capped: true\n")
+        if raw_output.get("redacted_lines"):
+            lines.append(f"- redacted_lines: {raw_output.get('redacted_lines')}\n")
+    if isinstance(budget, dict):
+        lines.append(
+            "- budget: "
+            f"{budget.get('max_lines')} lines/{budget.get('max_chars')} chars/"
+            f"line={budget.get('max_line_chars')} chars\n"
+        )
+    if payload.get("command_preview"):
+        lines.append(f"- command: `{payload.get('command_preview')}`\n")
+
+    runner_summary = payload.get("runner_failure_summary")
+    if isinstance(runner_summary, dict) and runner_summary:
+        lines.append("\n## runner_failure_summary\n")
+        for runner, items in sorted(runner_summary.items()):
+            lines.append(f"- runner={runner}\n")
+            if isinstance(items, list):
+                for item in items:
+                    lines.append(f"  - {item}\n")
+
+    for title, key in [
+        ("top_error_lines", "top_error_lines"),
+        ("representative_head", "representative_head"),
+        ("representative_tail", "representative_tail"),
+        ("next_queries", "next_queries"),
+    ]:
+        values = payload.get(key)
+        if isinstance(values, list) and values:
+            lines.append(f"\n## {title}\n")
+            for value in values:
+                lines.append(f"- {value}\n")
+
+    output, capped = cap_text("".join(lines), max_chars)
+    if capped:
+        output += "[claude-token-kit] digest capped by --max-chars.\n"
+    return output
+
+
+def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
+    def dumps(data: dict[str, object]) -> str:
+        return json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+    output = dumps(payload)
+    if len(output) <= max_chars:
+        return output
+
+    capped = json.loads(json.dumps(payload))
+    capped["digest_capped"] = True
+    for key in ("representative_tail", "representative_head", "top_error_lines", "next_queries"):
+        values = capped.get(key)
+        if isinstance(values, list):
+            while values and len(dumps(capped)) > max_chars:
+                values.pop()
+    runner_summary = capped.get("runner_failure_summary")
+    if isinstance(runner_summary, dict):
+        for runner in sorted(runner_summary):
+            values = runner_summary.get(runner)
+            if isinstance(values, list):
+                while values and len(dumps(capped)) > max_chars:
+                    values.pop()
+    output = dumps(capped)
+    if len(output) <= max_chars:
+        return output
+
+    minimal = {
+        "tool": payload.get("tool"),
+        "digest_version": payload.get("digest_version"),
+        "digest_capped": True,
+        "status": payload.get("status"),
+        "exit_code": payload.get("exit_code"),
+        "timed_out": payload.get("timed_out"),
+        "raw_output": payload.get("raw_output"),
+        "budget": payload.get("budget"),
+        "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
+    }
+    return dumps(minimal)
+
 
 _STREAM_END = object()
 
@@ -506,6 +724,15 @@ def main() -> int:
             f"(default: {DEFAULT_TIMEOUT_SECONDS}, max: {MAX_TIMEOUT_SECONDS})"
         ),
     )
+    parser.add_argument(
+        "--digest",
+        choices=("off", "markdown", "json"),
+        default="off",
+        help=(
+            "emit an opt-in semantic digest instead of raw/trimmed logs "
+            "(default: off; formats: markdown, json)"
+        ),
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     normalize_budgets(args)
@@ -593,6 +820,29 @@ def main() -> int:
         runner_summary.feed(line)
         if total <= args.max_lines:
             all_lines.append(visible_line)
+
+    if args.digest != "off":
+        payload = build_digest_payload(
+            args=args,
+            command=command,
+            rc=rc,
+            timed_out=command_stream.timed_out,
+            total=total,
+            raw_chars=raw_chars,
+            visible_chars=visible_chars,
+            any_line_capped=any_line_capped,
+            redacted_lines=redacted_lines,
+            head=head,
+            tail=list(tail),
+            error_lines=error_lines,
+            runner_summary=runner_summary,
+            line_sanitizer=line_sanitizer,
+        )
+        if args.digest == "json":
+            sys.stdout.write(render_digest_json(payload, args.max_chars))
+        else:
+            sys.stdout.write(render_digest_markdown(payload, args.max_chars))
+        return rc
 
     if total <= args.max_lines and visible_chars <= args.max_chars and not any_line_capped:
         sys.stdout.writelines(all_lines)

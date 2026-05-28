@@ -1060,6 +1060,62 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("ghp_A", proc.stdout)
         self.assertNotIn("opaque-token-value", proc.stdout)
 
+    def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            "[print(f'noise {i}') for i in range(120)]",
+            max_lines=18,
+            extra_args=["--digest", "markdown", "--max-chars", "2200"],
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("semantic digest", proc.stdout)
+        self.assertIn("- status: success", proc.stdout)
+        self.assertIn("- exit_code: 0", proc.stdout)
+        self.assertIn("raw_output:", proc.stdout)
+        self.assertIn("next_queries", proc.stdout)
+        self.assertLess(len(proc.stdout.splitlines()), 40)
+
+    def test_trim_digest_preserves_failure_summary_and_exit_code(self):
+        code = (
+            "import sys; "
+            "[print(f'noise {i}') for i in range(90)]; "
+            "print('FAILED tests/test_auth.py::test_expired_token - AssertionError: expired'); "
+            "print('tests/test_auth.py:42: AssertionError: expired'); "
+            "sys.exit(7)"
+        )
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_trim_python(
+                    script,
+                    code,
+                    max_lines=18,
+                    extra_args=["--digest", "markdown", "--max-chars", "2600"],
+                )
+                self.assertEqual(proc.returncode, 7)
+                self.assertIn("- status: failure", proc.stdout)
+                self.assertIn("- exit_code: 7", proc.stdout)
+                self.assertIn("runner_failure_summary", proc.stdout)
+                self.assertIn("runner=pytest", proc.stdout)
+                self.assertIn("tests/test_auth.py::test_expired_token", proc.stdout)
+                self.assertIn("tests/test_auth.py:42", proc.stdout)
+                self.assertIn("Run the failing test/node", proc.stdout)
+
+    def test_trim_digest_json_is_parseable_budgeted_and_redacted(self):
+        proc = run_trim_python(
+            KIT_DIR / "trim_command_output.py",
+            "print('API_TOKEN=ghp_' + 'A' * 36); [print(f'noise {i}') for i in range(80)]",
+            max_lines=18,
+            extra_args=["--digest", "json", "--max-chars", "2200"],
+        )
+        self.assertEqual(proc.returncode, 0)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["exit_code"], 0)
+        self.assertGreaterEqual(data["raw_output"]["redacted_lines"], 1)
+        self.assertIn("[REDACTED]", proc.stdout)
+        self.assertNotIn("ghp_A", proc.stdout)
+        self.assertLessEqual(len(proc.stdout), 2600)
+
     def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             trim = Path(tmp) / "claude-trim-output"
