@@ -9122,8 +9122,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "bytes_before",
             "bytes_after",
             "artifacts_used",
+            "cost_measured",
             "external_tokens",
             "external_cost_usd",
+            "external_cost_measured",
             "total_cost_with_shift_usd",
         }
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -9186,6 +9188,81 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
                 self.assertIsNone(report["comparisons"][0]["cost_savings_pct_with_shift"])
+
+    def test_benchmark_report_treats_missing_external_cost_as_unmeasured(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_external_cost_unknown_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "cost_usd": "0.10",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "false",
+                            "total_cost_with_shift_usd": "0.10",
+                        },
+                        {
+                            "task_id": "t01",
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "50",
+                            "cost_usd": "0.05",
+                            "cost_measured": "true",
+                            "external_tokens": "9",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "false",
+                            "total_cost_with_shift_usd": "",
+                        },
+                    ],
+                    "baseline",
+                )
+                self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
+                self.assertIsNone(report["comparisons"][0]["cost_savings_pct_with_shift"])
+                self.assertEqual(report["comparisons"][0]["paired_cost_task_count"], 0)
+
+    def test_benchmark_report_quality_gate_catches_failed_or_unmatched_tasks(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_quality_gate_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                        },
+                        {
+                            "task_id": "t02",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                        },
+                        {
+                            "task_id": "t01",
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "50",
+                        },
+                        {
+                            "task_id": "t02",
+                            "variant": "optimized",
+                            "success": "false",
+                            "total_tokens": "0",
+                        },
+                    ],
+                    "baseline",
+                )
+                comparison = report["comparisons"][0]
+                self.assertEqual(report["claim_status"], "quality_gate_watch")
+                self.assertEqual(comparison["quality_gate"], "matched_task_regression")
+                self.assertEqual(comparison["missing_baseline_success_tasks"], ["t02"])
 
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
@@ -9380,6 +9457,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(optimized["bytes_after"], "120")
                     self.assertEqual(optimized["artifacts_used"], "1")
                     self.assertEqual(optimized["external_tokens"], "5")
+                    self.assertEqual(optimized["cost_measured"], "true")
+                    self.assertEqual(optimized["external_cost_measured"], "true")
                     self.assertAlmostEqual(float(optimized["external_cost_usd"]), 0.01, places=6)
                     self.assertAlmostEqual(float(optimized["total_cost_with_shift_usd"]), 0.07, places=6)
 
@@ -9388,12 +9467,16 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     ]
                     self.assertEqual(len(ledger_rows), 2)
                     optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
+                    self.assertTrue(optimized_ledger["primary_cost_measured"])
+                    self.assertTrue(optimized_ledger["external_cost_measured"])
                     self.assertAlmostEqual(optimized_ledger["total_cost_with_shift_usd"], 0.07, places=6)
 
                     report = json.loads(report_path.read_text(encoding="utf-8"))
                     self.assertEqual(report["schema"], "claude-token-bench-report-v1")
                     self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
                     comparison = next(item for item in report["comparisons"] if item["variant"] == "optimized")
+                    self.assertEqual(comparison["quality_gate"], "pass")
+                    self.assertEqual(comparison["matched_successful_task_count"], 1)
                     self.assertGreater(comparison["token_savings_pct"], 0)
                     self.assertGreater(
                         report["summary_by_variant"]["optimized"]["external_cost_successful_usd"],
@@ -9911,12 +9994,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 }, "cost_usd": 9.0},
             ],
         }
-        tokens, cost = module.collect_usage(payload)
+        tokens, cost, cost_measured = module.collect_usage(payload)
         self.assertEqual(tokens["input_tokens"], 100)
         self.assertEqual(tokens["output_tokens"], 30)
         self.assertEqual(tokens["cache_read"], 800)
         self.assertEqual(tokens["cache_creation"], 50)
         self.assertAlmostEqual(cost, 0.05, places=6)
+        self.assertTrue(cost_measured)
 
     def test_collect_usage_skips_nonfinite_negative_and_huge_metrics(self):
         """Claude JSON 의 비정상 metric 은 CSV 에 NaN/Infinity/거대값으로 전파되면 안 된다."""
@@ -9941,12 +10025,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 }
             ],
         }
-        tokens, cost = module.collect_usage(payload)
+        tokens, cost, cost_measured = module.collect_usage(payload)
         self.assertEqual(tokens["input_tokens"], 7)
         self.assertEqual(tokens["output_tokens"], 3)
         self.assertEqual(tokens["cache_read"], 2)
         self.assertEqual(tokens["cache_creation"], 1)
         self.assertAlmostEqual(cost, 0.25, places=6)
+        self.assertTrue(cost_measured)
 
     def test_collect_usage_leaves_missing_or_all_invalid_metrics_zero(self):
         """모든 metric 후보가 비정상이면 safe zero 로 남겨 CSV 직렬화를 안정화한다."""
@@ -9958,7 +10043,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             },
             "cost_usd": -5,
         }
-        tokens, cost = module.collect_usage(payload)
+        tokens, cost, cost_measured = module.collect_usage(payload)
         self.assertEqual(tokens, {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -9966,6 +10051,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "cache_creation": 0,
         })
         self.assertEqual(cost, 0.0)
+        self.assertFalse(cost_measured)
 
 
 class StatuslineMergedWrapperTests(unittest.TestCase):
