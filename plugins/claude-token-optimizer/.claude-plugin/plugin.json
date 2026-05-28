@@ -1,6 +1,6 @@
 {
   "name": "claude-token-optimizer",
-  "description": "Claude Code token reduction skills and local helper commands for interactive setup, context hygiene, usage auditing, settings scanning, large-read guards, output trimming, grep/diff sanitizing, and auxiliary AI delegation.",
+  "description": "Claude Code token reduction skills and local helper commands for interactive setup, context hygiene, usage auditing, settings scanning, large-read guards, output trimming/sanitizing, queryable artifact escrow, and auxiliary AI delegation.",
   "author": {
     "name": "jinhongan"
   },
@@ -25,7 +25,10 @@
     "diff-sanitizer",
     "secret-redaction",
     "setup-wizard",
-    "interactive-setup"
+    "interactive-setup",
+    "artifact-escrow",
+    "context-escrow",
+    "queryable-logs"
   ],
   "version": "0.1.0"
 }

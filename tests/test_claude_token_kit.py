@@ -31,6 +31,7 @@ AUX_SCRIPTS = [KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delega
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "aux_ai_delegate.py", PLUGIN_BIN / "claude-token-delegate"),
     (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "claude-token-bench"),
+    (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "claude-token-artifact"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "claude-token-audit"),
     (KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "claude-token-failed-nudge"),
@@ -53,6 +54,7 @@ DIET_SCRIPTS = [KIT_DIR / "claude_token_diet.py", PLUGIN_BIN / "claude-token-die
 READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "claude-token-guard-read"]
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "claude-read-symbol"]
 NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "claude-token-failed-nudge"]
+ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "claude-token-artifact"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -670,11 +672,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
             [sys.executable, str(KIT_DIR / "read_symbol.py"), "--help"],
             [sys.executable, str(KIT_DIR / "trim_command_output.py"), "--help"],
             [sys.executable, str(KIT_DIR / "sanitize_output.py"), "--help"],
+            [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--help"],
             [sys.executable, str(KIT_DIR / "claude_token_diet.py"), "scan", "--help"],
             [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), "--help"],
             [str(PLUGIN_BIN / "claude-read-symbol"), "--help"],
             [str(PLUGIN_BIN / "claude-trim-output"), "--help"],
             [str(PLUGIN_BIN / "claude-sanitize-output"), "--help"],
+            [str(PLUGIN_BIN / "claude-token-artifact"), "store", "--help"],
             [str(PLUGIN_BIN / "claude-token-diet"), "scan", "--help"],
             [str(PLUGIN_BIN / "claude-token-audit"), "--help"],
         ]
@@ -1115,6 +1119,180 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("[REDACTED]", proc.stdout)
         self.assertNotIn("ghp_A", proc.stdout)
         self.assertLessEqual(len(proc.stdout), 2600)
+
+    def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
+        raw = "ok 1\nAPI_TOKEN=ghp_" + ("A" * 36) + "\nERROR bad widget\nok 4\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(Path(tmp) / "artifacts"),
+                            "store",
+                            "--command",
+                            "pytest tests --api-key ghp_" + ("B" * 36),
+                            "--json",
+                        ],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(proc.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    self.assertRegex(artifact_id, r"^[a-f0-9]{20}$")
+                    self.assertEqual(receipt["stored"], True)
+                    self.assertIn("ERROR bad widget", receipt["digest"]["top_error_lines"])
+                    self.assertGreaterEqual(receipt["digest"]["redacted_lines"], 1)
+                    self.assertIn("claude-token-artifact get", "\n".join(receipt["available_queries"]))
+                    self.assertNotIn("ghp_A", proc.stdout)
+                    self.assertNotIn("ghp_B", proc.stdout)
+                    content_path = Path(tmp) / "artifacts" / f"{artifact_id}.txt"
+                    metadata_path = Path(tmp) / "artifacts" / f"{artifact_id}.json"
+                    self.assertEqual(stat.S_IMODE(content_path.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(metadata_path.stat().st_mode), 0o600)
+                    self.assertNotIn("ghp_A", content_path.read_text(encoding="utf-8"))
+
+                    query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(Path(tmp) / "artifacts"),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "2:3",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(query.stdout)
+                    self.assertEqual(data["query"]["returned_lines"], 2)
+                    self.assertIn("API_TOKEN=[REDACTED]", data["content"])
+                    self.assertIn("ERROR bad widget", data["content"])
+                    self.assertNotIn("ghp_A", query.stdout)
+
+    def test_artifact_escrow_pattern_query_and_list_are_bounded(self):
+        raw = "".join(f"line {i}\n" for i in range(30)) + "FAILED target\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            store = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "context_escrow.py"),
+                    "--dir",
+                    str(artifact_dir),
+                    "store",
+                    "--json",
+                ],
+                input=raw,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            artifact_id = json.loads(store.stdout)["artifact_id"]
+            second_store = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "context_escrow.py"),
+                    "--dir",
+                    str(artifact_dir),
+                    "store",
+                    "--json",
+                ],
+                input=raw,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(second_store.stdout)["artifact_id"], artifact_id)
+            query = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "context_escrow.py"),
+                    "--dir",
+                    str(artifact_dir),
+                    "get",
+                    artifact_id,
+                    "--pattern",
+                    "FAILED",
+                    "--max-lines",
+                    "1",
+                    "--max-chars",
+                    "80",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(query.stdout)
+            self.assertEqual(data["query"]["matched_lines"], 1)
+            self.assertEqual(data["content"], "FAILED target\n")
+            listing = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "context_escrow.py"),
+                    "--dir",
+                    str(artifact_dir),
+                    "list",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(listing.stdout)["artifacts"][0]["artifact_id"], artifact_id)
+
+    def test_artifact_escrow_store_is_bounded_by_max_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "context_escrow.py"),
+                    "--dir",
+                    str(artifact_dir),
+                    "store",
+                    "--max-bytes",
+                    "12",
+                    "--json",
+                ],
+                input="0123456789abcdef",
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            receipt = json.loads(proc.stdout)
+            self.assertTrue(receipt["input"]["truncated"])
+            artifact_id = receipt["artifact_id"]
+            self.assertEqual((artifact_dir / f"{artifact_id}.txt").read_text(encoding="utf-8"), "0123456789ab")
+
+    def test_artifact_escrow_missing_or_bad_ids_fail_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for artifact_id in ["not-an-id", "a" * 20]:
+                with self.subTest(artifact_id=artifact_id):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(KIT_DIR / "context_escrow.py"),
+                            "--dir",
+                            str(Path(tmp) / "artifacts"),
+                            "get",
+                            artifact_id,
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("claude-token-artifact:", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr)
 
     def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
