@@ -47,6 +47,7 @@ dry-run 모드는 실제 호출은 하지 않고 어떤 명령이 실행될지�
 from __future__ import annotations
 
 import argparse
+import collections
 from contextlib import contextmanager
 import csv
 import datetime as _dt
@@ -480,9 +481,9 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
     cost = 0.0
     seen_cost = False
     # BFS 로 walk 해 top-level dict 가 nested dict 보다 먼저 평가되도록 한다.
-    queue: list[Any] = [payload]
+    queue: collections.deque[Any] = collections.deque([payload])
     while queue:
-        cur = queue.pop(0)
+        cur = queue.popleft()
         if isinstance(cur, dict):
             for bucket, keys in USAGE_KEY_GROUPS:
                 if seen_token[bucket]:
@@ -509,31 +510,30 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
 def collect_shift_metrics(payload: Any) -> dict[str, int | float | bool]:
     """Collect optional cost-shift / byte-saving metrics without requiring them."""
     metrics: dict[str, int | float] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
-    seen: dict[str, bool] = {key: False for key, _ in SHIFT_METRIC_KEY_GROUPS}
+    first_seen_buckets = {key for key, _ in SHIFT_METRIC_KEY_GROUPS if key != "external_tokens"}
+    seen: dict[str, bool] = {key: False for key in first_seen_buckets}
     metrics["external_cost_usd"] = 0.0
     metrics["external_cost_measured"] = False
-    seen_external_cost = False
-    queue: list[Any] = [payload]
+    queue: collections.deque[Any] = collections.deque([payload])
     while queue:
-        cur = queue.pop(0)
+        cur = queue.popleft()
         if isinstance(cur, dict):
             for bucket, keys in SHIFT_METRIC_KEY_GROUPS:
-                if seen[bucket]:
-                    continue
                 for key in keys:
                     value = normalize_usage_token(cur.get(key))
                     if value is not None:
-                        metrics[bucket] = value
-                        seen[bucket] = True
+                        if bucket == "external_tokens":
+                            metrics[bucket] = int(metrics[bucket]) + value
+                        elif not seen[bucket]:
+                            metrics[bucket] = value
+                            seen[bucket] = True
                         break
-            if not seen_external_cost:
-                for key in EXTERNAL_COST_KEYS:
-                    cost = normalize_usage_cost(cur.get(key))
-                    if cost is not None:
-                        metrics["external_cost_usd"] = cost
-                        metrics["external_cost_measured"] = True
-                        seen_external_cost = True
-                        break
+            for key in EXTERNAL_COST_KEYS:
+                cost = normalize_usage_cost(cur.get(key))
+                if cost is not None:
+                    metrics["external_cost_usd"] = float(metrics["external_cost_usd"]) + cost
+                    metrics["external_cost_measured"] = True
+                    break
             queue.extend(cur.values())
         elif isinstance(cur, list):
             queue.extend(cur)
@@ -956,7 +956,8 @@ def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
         with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
             fd = -1
             reader = csv.DictReader(f)
-            validate_csv_schema(csv_path, list(reader.fieldnames or []))
+            fieldnames = list(reader.fieldnames) if reader.fieldnames is not None else None
+            validate_csv_schema(csv_path, fieldnames)
             for row in reader:
                 tid = row.get("task_id") or ""
                 var = row.get("variant") or ""
@@ -996,7 +997,8 @@ def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
         with os.fdopen(fd, "r", encoding="utf-8", newline="") as handle:
             fd = -1
             reader = csv.DictReader(handle)
-            validate_csv_schema(csv_path, list(reader.fieldnames or []))
+            fieldnames = list(reader.fieldnames) if reader.fieldnames is not None else None
+            validate_csv_schema(csv_path, fieldnames)
             return list(reader)
     finally:
         if fd != -1:
@@ -1073,6 +1075,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 "total_cost_with_shift_measured_successful": 0,
                 "external_tokens_successful": 0,
                 "artifacts_used_successful": 0,
+                "corrections_successful": 0,
                 "bytes_before_successful": 0,
                 "bytes_after_successful": 0,
                 "turns_successful": 0,
@@ -1107,6 +1110,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["total_cost_with_shift_measured_successful"] += 1
         bucket["external_tokens_successful"] += row_int(row, "external_tokens")
         bucket["artifacts_used_successful"] += row_int(row, "artifacts_used")
+        bucket["corrections_successful"] += row_int(row, "corrections")
         bucket["bytes_before_successful"] += row_int(row, "bytes_before")
         bucket["bytes_after_successful"] += row_int(row, "bytes_after")
         bucket["turns_successful"] += row_int(row, "turns")
@@ -1154,6 +1158,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 bucket["total_cost_with_shift_per_successful_task_usd"] = None
             bucket["external_tokens_per_successful_task"] = bucket["external_tokens_successful"] / successes
             bucket["artifacts_used_per_successful_task"] = bucket["artifacts_used_successful"] / successes
+            bucket["corrections_per_successful_task"] = bucket["corrections_successful"] / successes
             before = bucket["bytes_before_successful"]
             after = bucket["bytes_after_successful"]
             bucket["byte_reduction_ratio"] = (after / before) if before else None
@@ -1163,6 +1168,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["total_cost_with_shift_per_successful_task_usd"] = None
             bucket["external_tokens_per_successful_task"] = None
             bucket["artifacts_used_per_successful_task"] = None
+            bucket["corrections_per_successful_task"] = None
             bucket["byte_reduction_ratio"] = None
 
     def average_task_metric(variant: str, task_id: str, key: str) -> float | None:
@@ -1205,6 +1211,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         variant_successful_tasks = successful_tasks_by_variant.get(variant, set())
         matched_tasks = baseline_successful_tasks & variant_successful_tasks
         base_tokens, variant_tokens, token_task_count = average_paired_metric(variant, matched_tasks, "total_tokens")
+        base_corrections, variant_corrections, corrections_task_count = average_paired_metric(
+            variant,
+            matched_tasks,
+            "corrections",
+        )
         base_cost, variant_cost, cost_task_count = average_paired_metric(
             variant,
             {
@@ -1234,6 +1245,12 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             quality_gate = "matched_task_regression"
         elif failure_delta is not None and failure_delta >= 10.0:
             quality_gate = "failure_rate_regression"
+        elif (
+            isinstance(base_corrections, (int, float))
+            and isinstance(variant_corrections, (int, float))
+            and variant_corrections > base_corrections
+        ):
+            quality_gate = "corrections_regression"
         comparison: dict[str, Any] = {
             "variant": variant,
             "baseline_variant": baseline_variant,
@@ -1244,7 +1261,12 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             "matched_successful_task_count": len(matched_tasks),
             "baseline_successful_task_count": len(baseline_successful_tasks),
             "missing_baseline_success_tasks": missing_baseline_success_tasks,
+            "baseline_corrections_per_successful_task": base_corrections,
+            "variant_corrections_per_successful_task": variant_corrections,
+            "paired_corrections_task_count": corrections_task_count,
         }
+        if isinstance(base_corrections, (int, float)) and isinstance(variant_corrections, (int, float)):
+            comparison["corrections_delta_per_successful_task"] = variant_corrections - base_corrections
         if isinstance(base_tokens, (int, float)) and isinstance(variant_tokens, (int, float)) and base_tokens:
             comparison["token_delta_per_successful_task"] = variant_tokens - base_tokens
             comparison["token_savings_pct"] = (base_tokens - variant_tokens) / base_tokens * 100.0
@@ -1266,6 +1288,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         claim_status = "compare_variants" if comparisons else "baseline_only"
         if comparisons:
             quality_ok = all(item.get("quality_gate") == "pass" for item in comparisons)
+            paired_token_data = all((item.get("paired_token_task_count") or 0) > 0 for item in comparisons)
             token_savings_observed = all((item.get("token_savings_pct") or 0) > 0 for item in comparisons)
             shifted_cost_savings = [
                 item.get("cost_savings_pct_with_shift")
@@ -1276,6 +1299,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             shifted_cost_ok = all_shifted_cost_measured and all(value > 0 for value in shifted_cost_savings)
             if not quality_ok:
                 claim_status = "quality_gate_watch"
+            elif not paired_token_data:
+                claim_status = "insufficient_paired_data"
             elif token_savings_observed and shifted_cost_ok:
                 claim_status = "token_and_shifted_cost_savings_observed"
             elif token_savings_observed and not all_shifted_cost_measured:
@@ -1297,6 +1322,9 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
     }
 
 def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
+    # Keep lock order stable across all report writes: source CSV first, derived
+    # report second. Do not introduce a report -> CSV path; that can deadlock
+    # concurrent report generation.
     with csv_file_lock(csv_path, create_parent=True):
         report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
         with csv_file_lock(report_path, create_parent=True):

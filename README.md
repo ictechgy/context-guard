@@ -100,6 +100,11 @@ long-command 2>&1 | ./plugins/claude-token-optimizer/bin/claude-token-artifact s
 ./plugins/claude-token-optimizer/bin/claude-token-artifact get <artifact_id> --lines 1:80
 ```
 
+Pipeline mode is for capture/query. Preserve the producer command's exit code
+explicitly (for example with shell `pipefail` or a saved `$?`) when using it in
+release checks; use `claude-trim-output -- ...` when exit-code preservation is
+the primary need.
+
 Trim long test/build logs while preserving the exit code of the wrapped command:
 
 ```bash

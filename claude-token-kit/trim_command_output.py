@@ -498,6 +498,31 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
     def dumps(data: dict[str, object]) -> str:
         return json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
+    def shrink_list_to_fit(data: dict[str, object], values: list[object]) -> None:
+        if len(dumps(data)) <= max_chars:
+            return
+        lo, hi = 0, len(values)
+        best = 0
+        original = list(values)
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            values[:] = original[:mid]
+            if len(dumps(data)) <= max_chars:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        values[:] = original[:best]
+
+    def first_fitting(candidates: list[dict[str, object]]) -> str:
+        last = dumps(candidates[-1])
+        for candidate in candidates:
+            output = dumps(candidate)
+            if len(output) <= max_chars:
+                return output
+            last = output
+        return last
+
     output = dumps(payload)
     if len(output) <= max_chars:
         return output
@@ -507,31 +532,47 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
     for key in ("representative_tail", "representative_head", "top_error_lines", "next_queries"):
         values = capped.get(key)
         if isinstance(values, list):
-            while values and len(dumps(capped)) > max_chars:
-                values.pop()
+            shrink_list_to_fit(capped, values)
     runner_summary = capped.get("runner_failure_summary")
     if isinstance(runner_summary, dict):
         for runner in sorted(runner_summary):
             values = runner_summary.get(runner)
             if isinstance(values, list):
-                while values and len(dumps(capped)) > max_chars:
-                    values.pop()
+                shrink_list_to_fit(capped, values)
     output = dumps(capped)
     if len(output) <= max_chars:
         return output
 
-    minimal = {
-        "tool": payload.get("tool"),
-        "digest_version": payload.get("digest_version"),
-        "digest_capped": True,
-        "status": payload.get("status"),
-        "exit_code": payload.get("exit_code"),
-        "timed_out": payload.get("timed_out"),
-        "raw_output": payload.get("raw_output"),
-        "budget": payload.get("budget"),
-        "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
-    }
-    return dumps(minimal)
+    return first_fitting(
+        [
+            {
+                "tool": payload.get("tool"),
+                "digest_version": payload.get("digest_version"),
+                "digest_capped": True,
+                "status": payload.get("status"),
+                "exit_code": payload.get("exit_code"),
+                "timed_out": payload.get("timed_out"),
+                "raw_output": payload.get("raw_output"),
+                "budget": payload.get("budget"),
+                "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
+            },
+            {
+                "digest_capped": True,
+                "status": payload.get("status"),
+                "exit_code": payload.get("exit_code"),
+                "timed_out": payload.get("timed_out"),
+                "raw_output": payload.get("raw_output"),
+                "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
+            },
+            {
+                "digest_capped": True,
+                "status": payload.get("status"),
+                "exit_code": payload.get("exit_code"),
+                "timed_out": payload.get("timed_out"),
+            },
+            {"digest_capped": True},
+        ]
+    )
 
 
 _STREAM_END = object()
