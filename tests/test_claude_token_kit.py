@@ -2027,7 +2027,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     commands = json.dumps(settings["hooks"])
                     self.assertIn("claude-token-rewrite-bash", commands)
                     self.assertIn("claude-token-guard-read", commands)
-                    self.assertIn("claude-token-failed-nudge", commands)
                     post = settings["hooks"]["PostToolUse"]
                     self.assertTrue(any(
                         entry.get("matcher") == "Bash"
@@ -2151,7 +2150,91 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     disabled_data = json.loads(disabled.stdout)
                     self.assertFalse(disabled_data["choices"]["failed_attempt_nudge"])
                     disabled_settings = json.loads((disabled_root / ".claude" / "settings.json").read_text(encoding="utf-8"))
-                    self.assertNotIn("claude-token-failed-nudge", json.dumps(disabled_settings))
+                    disabled_commands = json.dumps(disabled_settings)
+                    self.assertNotIn("claude-token-failed-nudge", disabled_commands)
+                    self.assertNotIn("failed_attempt_nudge.py", disabled_commands)
+
+                    explicit_root = root / "explicit"
+                    explicit_root.mkdir()
+                    explicit = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(explicit_root),
+                            "--yes", "--no-backup", "--json",
+                            "--failed-attempt-nudge",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    explicit_data = json.loads(explicit.stdout)
+                    self.assertTrue(explicit_data["choices"]["failed_attempt_nudge"])
+                    explicit_settings = json.loads((explicit_root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+                    self.assertTrue(any(
+                        entry.get("matcher") == "Bash"
+                        and any("claude-token-failed-nudge" in (h.get("command") or "")
+                                or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                for h in entry.get("hooks", []))
+                        for entry in explicit_settings["hooks"]["PostToolUse"]
+                    ))
+
+    def test_setup_wizard_upgrade_adds_default_failed_attempt_nudge_to_existing_settings(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_path = root / ".claude" / "settings.json"
+                    settings_path.parent.mkdir()
+                    legacy_settings = {
+                        "hooks": {
+                            "PreToolUse": [
+                                {"matcher": "Bash", "hooks": [{"type": "command", "command": "existing-bash-wrapper"}]},
+                                {"matcher": "Read", "hooks": [{"type": "command", "command": "existing-read-guard"}]},
+                            ]
+                        },
+                        "permissions": {"deny": ["Read(./custom/**)"]},
+                        "statusLine": {"type": "command", "command": "existing-statusline"},
+                    }
+                    settings_path.write_text(json.dumps(legacy_settings), encoding="utf-8")
+                    os.chmod(settings_path, 0o600)
+
+                    proc = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(root),
+                            "--yes", "--no-backup", "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["changed"])
+                    self.assertTrue(data["choices"]["failed_attempt_nudge"])
+                    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                    hooks_json = json.dumps(settings["hooks"])
+                    self.assertIn("existing-bash-wrapper", hooks_json)
+                    self.assertIn("existing-read-guard", hooks_json)
+                    self.assertTrue(any(
+                        entry.get("matcher") == "Bash"
+                        and any("claude-token-failed-nudge" in (h.get("command") or "")
+                                or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                for h in entry.get("hooks", []))
+                        for entry in settings["hooks"]["PostToolUse"]
+                    ))
+
+                    again = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(root),
+                            "--yes", "--no-backup", "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    again_data = json.loads(again.stdout)
+                    self.assertFalse(again_data["changed"])
 
     def test_setup_wizard_merges_existing_hooks_without_delegate_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6396,6 +6479,14 @@ for malformed in malformed_values:
         # by switching the example back to "claude-token-statusline".
         self.assertTrue((PLUGIN_BIN / "claude-token-statusline").exists())
         self.assertTrue(os.access(PLUGIN_BIN / "claude-token-statusline", os.X_OK))
+
+    def test_kit_settings_example_uses_existing_failed_nudge_script(self):
+        example = json.loads((ROOT / "claude-token-kit" / "settings.example.json").read_text())
+        post_hook_cmd = example["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        self.assertEqual(post_hook_cmd, "python3 claude-token-kit/failed_attempt_nudge.py")
+        script_path = ROOT / post_hook_cmd.split(maxsplit=1)[1]
+        self.assertTrue(script_path.exists())
+        self.assertTrue(os.access(script_path, os.X_OK))
 
 
 BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "claude-token-bench"]

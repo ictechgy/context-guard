@@ -53,6 +53,7 @@ HELPER_GUARD_READ = "claude-token-guard-read"
 HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
+DEFAULT_FAILED_ATTEMPT_NUDGE = True
 PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -68,7 +69,7 @@ class Choices:
     read_guard: bool = True
     model_defaults: bool = True
     # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — recommended setup 기본 ON.
-    failed_attempt_nudge: bool = True
+    failed_attempt_nudge: bool = DEFAULT_FAILED_ATTEMPT_NUDGE
 
 
 @dataclass
@@ -586,8 +587,8 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
         failed_attempt_nudge=(
-            Choices().failed_attempt_nudge
-            if getattr(args, "failed_attempt_nudge", None) is None
+            DEFAULT_FAILED_ATTEMPT_NUDGE
+            if args.failed_attempt_nudge is None
             else args.failed_attempt_nudge
         ),
     )
@@ -678,6 +679,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-failed-attempt-nudge",
         dest="failed_attempt_nudge",
         action="store_false",
+        default=None,
         help="skip the failed-attempt /clear nudge hook",
     )
     return parser
