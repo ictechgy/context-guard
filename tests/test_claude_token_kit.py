@@ -1994,6 +1994,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertTrue(data["changed"])
             self.assertIn("enabled token statusline", data["actions"])
             self.assertTrue(any("failed-attempt /clear nudge" in action for action in data["actions"]))
+            self.assertIsNone(data["diet_scan"])
             self.assertFalse((root / ".claude" / "settings.json").exists())
 
     def test_setup_wizard_apply_recommended_writes_project_settings_for_kit_and_plugin(self):
@@ -2017,6 +2018,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     data = json.loads(proc.stdout)
                     self.assertTrue(data["applied"])
+                    self.assertEqual(data["diet_scan"]["status"], "completed")
+                    self.assertEqual(data["diet_scan"]["finding_count"], 0)
                     settings = json.loads((root / ".claude" / "settings.json").read_text(encoding="utf-8"))
                     self.assertEqual(settings["model"], "sonnet")
                     self.assertEqual(settings["effortLevel"], "medium")
@@ -2045,6 +2048,32 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     again_data = json.loads(again.stdout)
                     self.assertFalse(again_data["changed"])
                     self.assertEqual(again_data["actions"], [])
+                    self.assertEqual(again_data["diet_scan"]["status"], "completed")
+
+    def test_setup_wizard_no_diet_scan_skips_post_apply_summary(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--root",
+                            str(root),
+                            "--yes",
+                            "--no-backup",
+                            "--no-diet-scan",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["applied"])
+                    self.assertIsNone(data["diet_scan"])
+                    self.assertTrue((root / ".claude" / "settings.json").exists())
 
     def test_setup_wizard_writes_settings_with_deterministic_key_order(self):
         for script in SETUP_SCRIPTS:

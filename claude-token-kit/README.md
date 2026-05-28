@@ -45,7 +45,7 @@ python3 claude-token-kit/sanitize_output.py -- git diff
 
 `claude_token_diet.py scan`은 항상 로컬에서만 읽는 read-only 스캐너입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
 
-`setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, 반복 실패 nudge, model/effort defaults를 project-local `.claude/settings.json`에 병합합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 반복 실패 nudge가 방해되는 프로젝트는 `--no-failed-attempt-nudge`로 제외할 수 있습니다.
+`setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, 반복 실패 nudge, model/effort defaults를 project-local `.claude/settings.json`에 병합합니다. `--yes` 적용 후에는 read-only `claude_token_diet.py scan` 요약을 자동으로 보여줘 남은 gap을 확인할 수 있습니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 반복 실패 nudge가 방해되는 프로젝트는 `--no-failed-attempt-nudge`로, post-setup scan이 불필요한 자동화는 `--no-diet-scan`으로 제외할 수 있습니다.
 
 `guard_large_read.py`는 opt-in Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 progressive read ladder를 반환해 `rg -n` 검색, `read_symbol.py` symbol slice, 작은 `offset`/`limit` Read 순서로 좁히게 합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다. 같은 oversized file fingerprint를 반복해서 읽으려 하면 repeated-read dedup 힌트를 추가해 이전 ladder를 재사용하게 합니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
 

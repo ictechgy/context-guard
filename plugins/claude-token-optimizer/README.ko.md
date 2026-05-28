@@ -61,7 +61,7 @@ claude-token-failed-nudge
 ./plugins/claude-token-optimizer/bin/claude-token-setup --yes
 ```
 
-마법사는 `.claude/settings.json`을 덮어쓰지 않고 병합합니다. 외부 AI 위임 설정은 더 이상 제공하지 않습니다.
+마법사는 `.claude/settings.json`을 덮어쓰지 않고 병합합니다. 외부 AI 위임 설정은 더 이상 제공하지 않습니다. `--yes` 적용 후에는 read-only `claude-token-diet scan` 요약을 자동으로 출력해 남은 gap을 확인합니다. 자동화에서 post-apply scan 요약이 불필요하면 `--no-diet-scan`을 사용하세요.
 
 ## 주요 기능
 

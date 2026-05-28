@@ -51,9 +51,12 @@ HELPER_STATUSLINE = "claude-token-statusline-merged"
 HELPER_REWRITE_BASH = "claude-token-rewrite-bash"
 HELPER_GUARD_READ = "claude-token-guard-read"
 HELPER_FAILED_NUDGE = "claude-token-failed-nudge"
+HELPER_DIET = "claude-token-diet"
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 DEFAULT_FAILED_ATTEMPT_NUDGE = True
+DEFAULT_POST_SETUP_SCAN_TOP = 5
+POST_SETUP_SCAN_TIMEOUT_SECONDS = 20
 PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -81,6 +84,7 @@ class SetupResult:
     choices: Choices
     actions: list[str]
     backup_path: Path | None = None
+    diet_scan: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +95,7 @@ class SetupResult:
             "backup_path": str(self.backup_path) if self.backup_path else None,
             "choices": self.choices.__dict__,
             "actions": self.actions,
+            "diet_scan": self.diet_scan,
         }
 
 
@@ -355,27 +360,35 @@ def matcher_covers(existing: Any, desired: str) -> bool:
     return not parts or "*" in parts or desired.lower() in parts
 
 
+def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None) -> list[str]:
+    """Return argv for a bundled helper without invoking a shell."""
+    script_dir = Path(__file__).resolve().parent
+    colocated = script_dir / helper_name
+    if colocated.exists() and os.access(colocated, os.X_OK):
+        return [str(colocated)]
+    repo_plugin = script_dir.parent / "plugins" / "claude-token-optimizer" / "bin" / helper_name
+    if repo_plugin.exists() and os.access(repo_plugin, os.X_OK):
+        return [str(repo_plugin)]
+    kit_path = script_dir / kit_script
+    if kit_path.exists():
+        prefix = [shell] if shell else [sys.executable]
+        return [*prefix, str(kit_path)]
+    found = shutil.which(helper_name)
+    if found:
+        return [helper_name]
+    return [helper_name]
+
+
 def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
     """hook 에 기록할 단일 셸 명령 문자열을 반환한다.
 
     경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
     quote 한다 (PATH 에서 찾은 bare helper name 만 quote 불필요).
     """
-    script_dir = Path(__file__).resolve().parent
-    colocated = script_dir / helper_name
-    if colocated.exists() and os.access(colocated, os.X_OK):
-        return shlex.join([str(colocated)])
-    repo_plugin = script_dir.parent / "plugins" / "claude-token-optimizer" / "bin" / helper_name
-    if repo_plugin.exists() and os.access(repo_plugin, os.X_OK):
-        return shlex.join([str(repo_plugin)])
-    kit_path = script_dir / kit_script
-    if kit_path.exists():
-        prefix = [shell] if shell else [sys.executable]
-        return shlex.join([*prefix, str(kit_path)])
-    found = shutil.which(helper_name)
-    if found:
+    argv = helper_argv(helper_name, kit_script, shell=shell)
+    if len(argv) == 1 and argv[0] == helper_name and shutil.which(helper_name):
         return helper_name
-    return helper_name
+    return shlex.join(argv)
 
 
 def statusline_setting() -> dict[str, str]:
@@ -456,6 +469,60 @@ def _ensure_tool_hook(
         return
     bucket.append(copy.deepcopy(hook))
     actions.append(f"enabled {label} hook via {command}")
+
+
+
+def summarize_diet_report(report: dict[str, Any]) -> dict[str, Any]:
+    counts = {"high": 0, "medium": 0, "low": 0}
+    for finding in report.get("findings", []):
+        severity = str(finding.get("severity", "")).lower()
+        if severity in counts:
+            counts[severity] += 1
+    top_findings = []
+    for finding in report.get("findings", [])[:3]:
+        top_findings.append({
+            "severity": finding.get("severity"),
+            "id": finding.get("id"),
+            "path": finding.get("path"),
+            "message": finding.get("message"),
+            "action": finding.get("action"),
+        })
+    return {
+        "status": "completed",
+        "finding_count": int(report.get("finding_count", len(report.get("findings", [])))),
+        "severity_counts": counts,
+        "top_findings": top_findings,
+    }
+
+
+def run_post_setup_diet_scan(root: Path) -> dict[str, Any]:
+    argv = [
+        *helper_argv(HELPER_DIET, "claude_token_diet.py"),
+        "scan",
+        str(root),
+        "--json",
+        "--top",
+        str(DEFAULT_POST_SETUP_SCAN_TOP),
+    ]
+    try:
+        proc = subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=POST_SETUP_SCAN_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "reason": "timeout", "timeout_seconds": POST_SETUP_SCAN_TIMEOUT_SECONDS}
+    except OSError as exc:
+        return {"status": "failed", "reason": exc.__class__.__name__}
+    if proc.returncode != 0:
+        return {"status": "failed", "reason": "nonzero-exit", "returncode": proc.returncode}
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"status": "failed", "reason": "invalid-json"}
+    return summarize_diet_report(report)
 
 
 def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
@@ -603,6 +670,20 @@ def render_text(result: SetupResult) -> str:
     ]
     if result.backup_path:
         lines.append(f"backup={result.backup_path}")
+    if result.diet_scan:
+        scan = result.diet_scan
+        lines.append("post-setup diet scan:")
+        if scan.get("status") == "completed":
+            counts = scan.get("severity_counts", {})
+            lines.append(
+                "- "
+                f"findings={scan.get('finding_count', 0)} "
+                f"high={counts.get('high', 0)} medium={counts.get('medium', 0)} low={counts.get('low', 0)}"
+            )
+            for finding in scan.get("top_findings", []):
+                lines.append(f"- [{str(finding.get('severity', '')).upper()}] {finding.get('id')} @ {finding.get('path')}")
+        else:
+            lines.append(f"- skipped/failed: {scan.get('reason', scan.get('status', 'unknown'))}")
     lines.append("actions:")
     if result.actions:
         lines.extend(f"- {action}" for action in result.actions)
@@ -646,7 +727,11 @@ def run(args: argparse.Namespace) -> SetupResult:
                 existing_mode_or_default(settings_path, 0o600),
             )
 
-    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path)
+    diet_scan = None
+    if applied and not getattr(args, "no_diet_scan", False):
+        diet_scan = run_post_setup_diet_scan(root)
+
+    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, diet_scan)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -667,6 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
+    parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")
     nudge_group = parser.add_mutually_exclusive_group()
     nudge_group.add_argument(
         "--failed-attempt-nudge",
