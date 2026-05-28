@@ -47,7 +47,9 @@ python3 claude-token-kit/aux_ai_delegate.py disable
 
 `setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, model/effort defaults, 선택적 Gemini/Codex delegation을 물어보고 project-local `.claude/settings.json`에 병합합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 보조 AI 수동 위임은 명시적으로 `--aux-provider gemini|codex`를 선택할 때만 켜지고, 자동 위임은 `--auto-delegate`를 함께 지정할 때만 해당 provider에 대해 켜집니다. `--aux-provider`만으로 다시 실행하면 이전 자동 위임 동의 상태는 해제됩니다.
 
-`guard_large_read.py`는 opt-in Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 progressive read ladder를 반환해 `rg -n` 검색, `read_symbol.py` symbol slice, 작은 `offset`/`limit` Read 순서로 좁히게 합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
+`guard_large_read.py`는 opt-in Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 progressive read ladder를 반환해 `rg -n` 검색, `read_symbol.py` symbol slice, 작은 `offset`/`limit` Read 순서로 좁히게 합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다. 같은 oversized file fingerprint를 반복해서 읽으려 하면 repeated-read dedup 힌트를 추가해 이전 ladder를 재사용하게 합니다. `CLAUDE_TOKEN_READ_GUARD=0`으로 로컬에서 일시 비활성화할 수 있습니다.
+
+`failed_attempt_nudge.py`는 같은 Bash 실패 방향이 두 번 반복되면 `/clear`/`/compact` 힌트를 주고, 세 번 이상 반복되면 strategy-switch signal을 추가해 동일 명령 재시도 대신 다른 가설·더 작은 재현·수정 후 재검증으로 전환하게 합니다.
 
 `sanitize_output.py`는 grep/diff output을 Claude에게 보여주기 전에 secret-like line, Authorization header, private key block, API token, credential URL을 `[REDACTED]`로 바꾸고, 긴 결과는 head / grep·diff·security anchor / tail만 남깁니다. 명령을 감싸는 wrapper mode는 원래 exit code를 보존합니다. stdin pipe도 지원하지만 producer exit code는 shell `pipefail` 없이는 알 수 없으므로 자동화에는 `python3 .../sanitize_output.py -- rg ...`처럼 wrapper mode를 선호하세요. 절대경로는 기본 익명화되고 로컬 디버깅에서만 `--show-paths`를 쓰세요. `rewrite_bash_for_token_budget.py` hook은 단일 argv 형태의 `rg`, `grep`, `git grep`, `git diff`, `git show`, `git log -p`를 자동으로 이 sanitizer에 감쌉니다.
 

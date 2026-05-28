@@ -89,7 +89,9 @@ Read a symbol instead of an entire large file:
 
 The optional Read guard now returns a progressive ladder for oversized files:
 search first, then symbol slice, then a small line range, with a bounded
-top-level outline when available.
+top-level outline when available. Repeated attempts to full-read the same
+oversized file get a dedup hint instead of repeating the same context-wasting
+path.
 
 Store a large sanitized log outside the conversation and query exact slices later:
 

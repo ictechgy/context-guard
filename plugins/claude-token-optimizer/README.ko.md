@@ -95,7 +95,7 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 
 ### 대용량 Read guard와 symbol 읽기
 
-`claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n` 검색 → `claude-read-symbol` symbol slice → 작은 line-range Read 순서의 progressive read ladder를 반환합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다.
+`claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n` 검색 → `claude-read-symbol` symbol slice → 작은 line-range Read 순서의 progressive read ladder를 반환합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다. 같은 oversized file fingerprint를 반복해서 읽으려 하면 repeated-read dedup 힌트를 추가해 이전 ladder를 재사용하게 합니다.
 
 `claude-token-artifact`는 큰 command output을 Claude context에 그대로 보내지 않고 로컬 sanitized artifact로 저장합니다. `store`는 stdin을 읽어 sanitizer로 secret/path 노출을 줄인 뒤 기본 `.claude-token-optimizer/artifacts` 아래 `0o600` 파일로 저장하고, `artifact_id`, byte/line count, top error lines, 대표 샘플, `get --lines` / `get --pattern` query 예시만 receipt로 출력합니다. `get`은 요청한 정확한 slice만 반환합니다.
 
@@ -103,7 +103,7 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 
 `claude-token-statusline-merged`는 `examples/settings.example.json`의 default statusline이며, [oh-my-claudecode (OMC)](https://github.com/Yeachan-Heo/oh-my-claudecode)가 함께 설치되어 있으면 OMC HUD와 자동으로 결합됩니다. wrapper는 `~/.claude/hud/omc-hud.mjs`의 OMC HUD를 자동 감지합니다 — 있으면 OMC의 5h/week/session 사용량 뒤에 본 플러그인의 `cost`/`cache`가 붙고, 없으면 평소 `claude-token-statusline`처럼만 동작하므로 OMC를 쓰지 않는 사용자에게는 동작 변화가 없습니다. 설치 레이아웃이 다르면 `OMC_HUD_SCRIPT`, `CLAUDE_TOKEN_STATUSLINE_BIN` 환경변수로 경로를 지정하세요.
 
-`claude-token-failed-nudge`는 같은 Bash 명령이 같은 세션에서 연속 두 번 실패하면 `/clear` (또는 `/compact focus on …`)을 권유하는 선택적 `PostToolUse` hook 입니다. 실패 시도가 누적되면 대화 컨텍스트가 오염되고 prompt cache 가 매 retry 마다 재워밍되어 토큰 비용이 급증합니다. 본 hook 은 두 번째 실패 시 짧은 추가 컨텍스트만 주입해 방향 전환을 유도합니다 (실행은 막지 않습니다). 기본 OFF이며 `claude-token-setup --failed-attempt-nudge` (또는 대화형 마법사의 "yes")로 명시적으로 켤 때만 활성화됩니다. 상태는 프로젝트 로컬 `.claude-token-optimizer/failures-<session>.json` (파일 모드 `0o600`)에 저장됩니다.
+`claude-token-failed-nudge`는 같은 Bash 명령이 같은 세션에서 연속 두 번 실패하면 `/clear` (또는 `/compact focus on …`)을 권유하는 선택적 `PostToolUse` hook 입니다. 세 번째 반복 실패부터는 strategy-switch signal을 추가해 동일 명령 경로 재시도 대신 다른 가설, 더 작은 재현, 다른 진단 범위로 전환하게 합니다. 실패 시도가 누적되면 대화 컨텍스트가 오염되고 prompt cache 가 매 retry 마다 재워밍되어 토큰 비용이 급증합니다. 본 hook 은 짧은 추가 컨텍스트만 주입해 방향 전환을 유도합니다 (실행은 막지 않습니다). 기본 OFF이며 `claude-token-setup --failed-attempt-nudge` (또는 대화형 마법사의 "yes")로 명시적으로 켤 때만 활성화됩니다. 상태는 프로젝트 로컬 `.claude-token-optimizer/failures-<session>.json` (파일 모드 `0o600`)에 저장됩니다.
 
 `claude-token-bench`는 `research/benchmark-plan.md` 실행을 자동화합니다. JSON fixture에서 task와 variant 정의를 읽어 각 조합에 대해 `claude -p --output-format json`을 호출하고, fixture 의 `success_command` 를 실행한 뒤 `tokens_per_successful_task` 측정용 CSV에 한 행을 append 합니다. `--dry-run` 은 실제 호출 없이 어떤 명령이 실행될지만 보여주고, `--resume` 은 CSV 에 이미 적재된 `(task_id, variant)` 쌍을 건너뜁니다. `success_command` 는 `shlex.split + shell=False` 로 실행되므로 fixture JSON 자체는 shell-injection 표면이 되지 않습니다 — 파이프·리디렉션이 필요한 검증은 별도 헬퍼 스크립트로 분리하고 그 경로를 `success_command` 로 둡니다.
 

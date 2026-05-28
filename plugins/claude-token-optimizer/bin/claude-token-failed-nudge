@@ -55,6 +55,7 @@ STATE_DIR = Path(".claude-token-optimizer")
 STATE_FILE_TEMPLATE = "failures-{session}.json"
 MAX_TRACKED = 5
 MIN_CONSECUTIVE = 2
+STRATEGY_SWITCH_MIN_CONSECUTIVE = 3
 FINGERPRINT_SELECTOR_FLAGS = {"-k", "-m", "--grep", "--testNamePattern", "--test-name-pattern"}
 DIAGNOSTIC_MAX_CHARS = 240
 ANSI_ESCAPE_RE = re.compile(r"(?:\x1b\[[0-?]*[ -/]*[@-~]|\x9b[0-?]*[ -/]*[@-~])")
@@ -91,6 +92,11 @@ NUDGE_TEXT = (
     "재시도 전에 사용자에게 `/clear` 또는 `/compact focus on …` 으로 세션을 정리한 뒤 "
     "재현 명령·기대 결과·금지 사항을 더 좁혀 다시 prompt 하도록 안내하거나, "
     "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 보조 AI 위임)을 제안하세요."
+)
+STRATEGY_SWITCH_TEXT = (
+    " Strategy-switch signal: the same failure direction has now repeated at least three times. "
+    "Stop retrying the identical command path; summarize the invariant failure, choose a different hypothesis "
+    "or smaller reproducer, and only rerun after changing code, inputs, or diagnostic scope."
 )
 
 
@@ -532,7 +538,7 @@ def main() -> int:
     response = {
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": NUDGE_TEXT,
+            "additionalContext": NUDGE_TEXT + (STRATEGY_SWITCH_TEXT if consecutive >= STRATEGY_SWITCH_MIN_CONSECUTIVE else ""),
         }
     }
     print(json.dumps(response, ensure_ascii=False))

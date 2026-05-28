@@ -89,6 +89,7 @@ claude-token-setup --plan
 
 선택형 Read guard는 큰 파일에 대해 검색 → symbol slice → 작은 line range
 순서의 progressive ladder와 가능한 경우 bounded top-level outline을 반환합니다.
+같은 큰 파일 전체 읽기를 반복하면 repeated-read dedup 힌트도 추가됩니다.
 
 큰 로그를 대화 컨텍스트 밖의 로컬 artifact로 저장하고 필요한 줄만 다시 조회:
 
