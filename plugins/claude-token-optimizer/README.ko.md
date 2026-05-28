@@ -95,7 +95,7 @@ JSON 출력은 `cache_metrics` 블록(`cache_hit_rate`, `cache_amortization`, `c
 
 ### 대용량 Read guard와 symbol 읽기
 
-`claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n`과 `claude-read-symbol`을 사용하도록 안내합니다.
+`claude-token-guard-read`는 opt-in `PreToolUse` Read hook입니다. 큰 파일 전체를 Claude context에 넣기 전에 `rg -n` 검색 → `claude-read-symbol` symbol slice → 작은 line-range Read 순서의 progressive read ladder를 반환합니다. Python/JS/TS/Go/Rust/Markdown 파일은 bounded prefix에서 top-level outline과 line estimate도 함께 보여줍니다.
 
 `claude-token-artifact`는 큰 command output을 Claude context에 그대로 보내지 않고 로컬 sanitized artifact로 저장합니다. `store`는 stdin을 읽어 sanitizer로 secret/path 노출을 줄인 뒤 기본 `.claude-token-optimizer/artifacts` 아래 `0o600` 파일로 저장하고, `artifact_id`, byte/line count, top error lines, 대표 샘플, `get --lines` / `get --pattern` query 예시만 receipt로 출력합니다. `get`은 요청한 정확한 slice만 반환합니다.
 

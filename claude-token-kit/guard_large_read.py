@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -45,6 +46,8 @@ DEFAULT_MAX_BYTES = 48_000
 DEFAULT_MAX_LINE_RANGE = 400
 MAX_BYTES_LIMIT = 1_000_000
 MAX_LINE_RANGE_LIMIT = 20_000
+OUTLINE_MAX_BYTES = 200_000
+OUTLINE_MAX_ITEMS = 12
 GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
@@ -334,6 +337,125 @@ def suggested_commands(label: str, read_symbol: str) -> tuple[str, str]:
     return rg_cmd, shlex.join(read_parts)
 
 
+def read_prefix_for_outline(path: Path, max_bytes: int = OUTLINE_MAX_BYTES) -> tuple[str, bool]:
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(max_bytes + 1)
+    except OSError:
+        return "", False
+    truncated = len(data) > max_bytes
+    if truncated:
+        data = data[:max_bytes]
+    return data.decode("utf-8", errors="replace"), truncated
+
+
+def outline_kind_for_suffix(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return "python"
+    if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        return "javascript"
+    if suffix == ".go":
+        return "go"
+    if suffix == ".rs":
+        return "rust"
+    if suffix in {".md", ".mdx", ".markdown"}:
+        return "markdown"
+    return "text"
+
+
+OUTLINE_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "python": (
+        ("class", r"^class\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+        ("function", r"^(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    "javascript": (
+        ("class", r"^(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b"),
+        (
+            "function",
+            r"^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\b",
+        ),
+        (
+            "const",
+            r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=",
+        ),
+    ),
+    "go": (
+        ("function", r"^func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\b"),
+        ("type", r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    "rust": (
+        ("function", r"^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+        ("type", r"^(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+    ),
+    "markdown": (
+        ("heading", r"^(#{1,3})\s+(.+?)\s*$"),
+    ),
+}
+
+
+def outline_items(path: Path, text: str, *, limit: int = OUTLINE_MAX_ITEMS) -> list[str]:
+    kind = outline_kind_for_suffix(path)
+    patterns = [(label, re) for label, re in OUTLINE_PATTERNS.get(kind, ())]
+    if not patterns:
+        return []
+    compiled = [(label, re.compile(pattern)) for label, pattern in patterns]
+    items: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if kind != "markdown" and line[:1].isspace():
+            continue
+        for label, pattern in compiled:
+            match = pattern.match(stripped)
+            if not match:
+                continue
+            name = match.group(2).strip() if kind == "markdown" else match.group(1)
+            items.append(f"line {line_number}: {label} {compact_hook_text(name, 80)}")
+            break
+        if len(items) >= limit:
+            break
+    return items
+
+
+def line_estimate(prefix: str, size: int, truncated: bool) -> str:
+    lines = prefix.count("\n") + (1 if prefix and not prefix.endswith("\n") else 0)
+    if not truncated or not prefix:
+        return str(lines)
+    avg = max(1.0, len(prefix.encode("utf-8", errors="replace")) / max(1, lines))
+    estimated = int(size / avg)
+    return f"~{estimated} (estimated from first {lines})"
+
+
+def progressive_read_ladder(path: Path, label: str, size: int, limit: int, read_symbol: str) -> str:
+    prefix, prefix_truncated = read_prefix_for_outline(path)
+    items = outline_items(path, prefix)
+    rg_cmd, symbol_cmd = suggested_commands(label, read_symbol)
+    range_limit = min(max_line_range(), 120)
+    parts = [
+        f"[claude-token-kit] Large Read blocked for {label} ({size} bytes > {limit} byte guard).",
+        "Progressive read ladder:",
+        f"1) Search names/errors: `{rg_cmd}`",
+    ]
+    if items:
+        first_name = items[0].split(" ", 3)[-1].split(" ", 1)[-1]
+        read_parts = shlex.split(read_symbol) + [label, first_name]
+        parts.append(f"2) Read a symbol slice: `{shlex.join(read_parts)}` (or `{symbol_cmd}`)")
+    else:
+        parts.append(f"2) Read a symbol slice when you know the name: `{symbol_cmd}`")
+    parts.append("Plugin installs can use `claude-read-symbol` directly.")
+    parts.append(f"3) If no symbol fits, use Read with offset=0 limit={range_limit} and then narrow further.")
+    parts.append(f"File outline: estimated_lines={line_estimate(prefix, size, prefix_truncated)}")
+    if items:
+        parts.append("Top-level outline: " + "; ".join(items))
+    else:
+        parts.append("Top-level outline: unavailable from the bounded prefix; search first.")
+    parts.append("Use full-file Read only after these smaller queries fail.")
+    parts.append(f"Set {GUARD_ENV}=0 only for a deliberate local override.")
+    return " ".join(parts)
+
+
 def deny_response(reason: str) -> dict[str, Any]:
     return {
         "hookSpecificOutput": {
@@ -407,15 +529,7 @@ def main() -> int:
 
     label = safe_label(path, root)
     read_symbol = find_read_symbol_command()
-    rg_cmd, symbol_cmd = suggested_commands(label, read_symbol)
-    reason = (
-        f"[claude-token-kit] Large Read blocked for {label} ({size} bytes > {limit} byte guard). "
-        "Use targeted context first: "
-        f"`{rg_cmd}` then `{symbol_cmd}`; "
-        "plugin installs can use `claude-read-symbol` directly. "
-        "or use the Read tool with offset/limit for a small line range if symbol extraction is not suitable. "
-        f"Set {GUARD_ENV}=0 only for a deliberate local override."
-    )
+    reason = progressive_read_ladder(path, label, size, limit, read_symbol)
     print(json.dumps(deny_response(reason), ensure_ascii=False))
     return 0
 
