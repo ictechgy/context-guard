@@ -1299,7 +1299,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
 def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
     with csv_file_lock(csv_path, create_parent=True):
         report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
-        write_text_no_follow(report_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        with csv_file_lock(report_path, create_parent=True):
+            write_text_no_follow(
+                report_path,
+                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            )
     return report
 
 
