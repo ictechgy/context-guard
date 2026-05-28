@@ -87,6 +87,7 @@ INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"), "[REDACTED]"),
     (re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
     (re.compile(r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
+    (re.compile(r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}"), "[REDACTED]"),
     (re.compile(r"npm_[A-Za-z0-9]{20,}"), "[REDACTED]"),
     (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED]"),
     (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "[REDACTED]"),

@@ -76,6 +76,14 @@ def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(number, minimum), maximum)
 
 
+def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
 def max_bytes() -> int:
     return bounded_env_int(MAX_BYTES_ENV, DEFAULT_MAX_BYTES, 1, MAX_BYTES_LIMIT)
 
@@ -399,7 +407,7 @@ OUTLINE_PATTERNS: dict[str, tuple[tuple[str, str], ...]] = {
 
 def outline_items(path: Path, text: str, *, limit: int = OUTLINE_MAX_ITEMS) -> list[str]:
     kind = outline_kind_for_suffix(path)
-    patterns = [(label, re) for label, re in OUTLINE_PATTERNS.get(kind, ())]
+    patterns = [(label, pattern) for label, pattern in OUTLINE_PATTERNS.get(kind, ())]
     if not patterns:
         return []
     compiled = [(label, re.compile(pattern)) for label, pattern in patterns]
@@ -414,7 +422,7 @@ def outline_items(path: Path, text: str, *, limit: int = OUTLINE_MAX_ITEMS) -> l
             match = pattern.match(stripped)
             if not match:
                 continue
-            name = match.group(2).strip() if kind == "markdown" else match.group(1)
+            name = "<heading>" if kind == "markdown" else match.group(1)
             items.append(f"line {line_number}: {label} {compact_hook_text(name, 80)}")
             break
         if len(items) >= limit:
@@ -515,7 +523,8 @@ def record_read_guard_attempt(root: Path, fp: str) -> int:
     entry = attempts.get(fp)
     if not isinstance(entry, dict):
         entry = {"count": 0}
-    count = int(entry.get("count", 0) or 0) + 1
+    count = bounded_int(entry.get("count", 0), 0, 0, 1_000_000) + 1
+    attempts.pop(fp, None)
     attempts[fp] = {"count": count}
     if len(attempts) > READ_GUARD_STATE_MAX_ITEMS:
         for key in list(attempts)[: len(attempts) - READ_GUARD_STATE_MAX_ITEMS]:
@@ -607,7 +616,10 @@ def main() -> int:
 
     label = safe_label(path, root)
     read_symbol = find_read_symbol_command()
-    attempt_count = record_read_guard_attempt(root, read_guard_fingerprint(path, label, size))
+    try:
+        attempt_count = record_read_guard_attempt(root, read_guard_fingerprint(path, label, size))
+    except Exception:
+        attempt_count = 1
     reason = progressive_read_ladder(path, label, size, limit, read_symbol) + repeated_read_hint(attempt_count)
     print(json.dumps(deny_response(reason), ensure_ascii=False))
     return 0

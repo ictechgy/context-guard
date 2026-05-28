@@ -29,7 +29,8 @@ ERROR_RE = re.compile(
 SECRET_VALUE_RE = re.compile(
     r"(?i)(Bearer\s+\S+|Basic\s+\S+|gh[pousr]_[A-Za-z0-9_]{20,}|"
     r"github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|"
-    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_\-]{20,}|"
+    r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|"
+    r"AIza[0-9A-Za-z_\-]{20,}|"
     r"([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|pwd)[A-Za-z0-9_.-]*\s*[:=]\s*)\S+)"
 )
 
@@ -109,11 +110,6 @@ def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
         out.append(sanitized)
         if did_redact:
             redacted += 1
-    if text and not text.endswith(("\n", "\r")) and not out:
-        sanitized, did_redact = sanitizer.sanitize(text)  # type: ignore[attr-defined]
-        out.append(sanitized)
-        if did_redact:
-            redacted += 1
     return "".join(out), redacted
 
 
@@ -132,8 +128,9 @@ def ensure_private_dir(path: Path) -> None:
 
 def write_private_text(path: Path, text: str) -> None:
     ensure_private_dir(path.parent)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{time.time_ns()}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(tmp), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
@@ -143,7 +140,14 @@ def write_private_text(path: Path, text: str) -> None:
         except FileNotFoundError:
             pass
         raise
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     try:
         os.chmod(path, 0o600)
     except OSError:

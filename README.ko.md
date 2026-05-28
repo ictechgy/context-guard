@@ -98,6 +98,10 @@ long-command 2>&1 | ./plugins/claude-token-optimizer/bin/claude-token-artifact s
 ./plugins/claude-token-optimizer/bin/claude-token-artifact get <artifact_id> --lines 1:80
 ```
 
+파이프라인 모드는 capture/query 용도입니다. release check에서 producer 명령의
+종료 코드가 중요하면 shell `pipefail` 또는 별도 `$?` 저장으로 직접 보존하세요.
+종료 코드 보존이 핵심이면 `claude-trim-output -- ...` 래퍼를 쓰는 편이 안전합니다.
+
 긴 테스트·빌드 로그를 줄이면서 원래 명령의 종료 코드 보존:
 
 ```bash
