@@ -35,8 +35,14 @@ PATH_OVERRIDE_ENVS = (
     "CLAUDE_TOKEN_PREPUBLISH_MARKETPLACE_MANIFEST",
     "CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR",
 )
-BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^\s)]+)")
+BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^)]*)\)")
 PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
+FORBIDDEN_SKILL_ALLOWED_HELPERS = {
+    # These wrappers intentionally execute an arbitrary trailing command. They
+    # are useful as examples but are too broad for skill frontmatter grants.
+    "claude-trim-output",
+    "claude-sanitize-output",
+}
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 URL_USERINFO_RE = re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE)
 SENSITIVE_LABEL_RE = re.compile(
@@ -303,17 +309,32 @@ def check_skill_allowed_tool_commands() -> None:
         fail(f"missing plugin skills directory: {safe_path_label(SKILLS_DIR)}")
     if not PLUGIN_BIN.is_dir():
         fail(f"missing plugin bin directory: {safe_path_label(PLUGIN_BIN)}")
-    available = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+    available = {path.name: path for path in PLUGIN_BIN.iterdir() if path.is_file()}
     for skill in sorted(SKILLS_DIR.glob("*/SKILL.md")):
         try:
             text = skill.read_text(encoding="utf-8")
         except OSError as exc:
             fail(f"could not read skill metadata: {skill_label(skill)}: {compact_label_text(str(exc), 120)}")
-        for command in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text, skill)):
+        for spec in BASH_ALLOWED_TOOL_RE.findall(skill_frontmatter(text, skill)):
+            parts = spec.strip().split(None, 1)
+            if not parts:
+                continue
+            command = parts[0]
             if not PLUGIN_HELPER_COMMAND_RE.match(command):
                 continue
+            if command in FORBIDDEN_SKILL_ALLOWED_HELPERS:
+                fail(
+                    "skill allowed-tools must not grant arbitrary command wrapper helper: "
+                    f"{skill_label(skill)}: {command}"
+                )
             if command not in available:
                 fail(f"skill allowed-tools references missing plugin bin command: {skill_label(skill)}: {command}")
+            mode = stat.S_IMODE(available[command].stat().st_mode)
+            if mode & stat.S_IXUSR == 0:
+                fail(
+                    "skill allowed-tools references non-executable plugin bin command: "
+                    f"{skill_label(skill)}: {command} mode={oct(mode)}"
+                )
 
 
 def check_bin_copies() -> None:

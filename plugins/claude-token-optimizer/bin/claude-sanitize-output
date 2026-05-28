@@ -21,7 +21,13 @@ import threading
 import time
 from typing import Iterable, Iterator, TextIO
 
-ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+TERMINAL_CONTROL_RE = re.compile(
+    r"(?:"
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|"  # OSC title/clipboard controls
+    r"\x1b[@-_][0-?]*[ -/]*[@-~]|"          # CSI and other ESC sequences
+    r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f-\x9f]"
+    r")"
+)
 # Match plausible absolute file paths without treating operators (`//`) or
 # tiny string literals (`"/"`) as paths. Requiring at least one directory plus
 # one leaf keeps the sanitizer from corrupting code while still anonymizing
@@ -132,7 +138,7 @@ def normalize_budgets(args: argparse.Namespace) -> None:
 
 
 def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text)
+    return TERMINAL_CONTROL_RE.sub("", text)
 
 
 def stable_hash(value: str, length: int = 12) -> str:

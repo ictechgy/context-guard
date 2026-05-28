@@ -74,13 +74,28 @@ read_bounded_statusline_input() {
 
 read_bounded_statusline_input
 
+strip_terminal_sequences() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -pe 's/\e\][^\a\e]*(?:\a|\e\\)//g; s/\e[@-_][0-?]*[ -\/]*[@-~]//g'
+  else
+    cat
+  fi
+}
+
 sanitize_statusline() {
   # Claude statusline output must stay a single bounded terminal line. Treat
   # helper output as display data, not trusted terminal control text.
-  printf '%s' "$1" \
+  local cleaned
+  cleaned=$(printf '%s' "$1" \
+    | strip_terminal_sequences \
     | LC_ALL=C tr '\r\n' '  ' \
-    | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' \
-    | cut -c 1-1000
+    | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177-\237' \
+    | cut -c 1-1000)
+  if printf '%s' "$cleaned" | LC_ALL=C grep -Eiq '(gh[pousr]_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|sk-|npm_|AIza|Bearer[[:space:]]|Basic[[:space:]])'; then
+    printf '[redacted]'
+  else
+    printf '%s' "$cleaned"
+  fi
 }
 
 # ── 1) OMC HUD 출력 ──────────────────────────────────────────────────────────

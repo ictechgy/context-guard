@@ -749,6 +749,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
             )
             self.assertIn("prepublish check: OK", proc.stdout)
 
+    def test_prepublish_rejects_arbitrary_wrapper_allowed_tool_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills" / "wrapper"
+            skills_dir.mkdir(parents=True)
+            (skills_dir / "SKILL.md").write_text(
+                "---\ndescription: test\nallowed-tools: Bash(claude-trim-output *)\n---\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"] = "1"
+            env["CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR"] = str(Path(tmp) / "skills")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("must not grant arbitrary command wrapper helper", proc.stdout + proc.stderr)
+
     def test_prepublish_rejects_malformed_skill_frontmatter(self):
         cases = {
             "missing-frontmatter": "# Body only\n",
@@ -2088,8 +2108,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 command = setup.helper_command("custom-token-helper", "missing_script.py")
             finally:
                 os.environ["PATH"] = old_path
-        self.assertEqual(argv, [str(fake)])
-        self.assertEqual(command, "custom-token-helper")
+        self.assertEqual(argv, [str(fake.resolve())])
+        self.assertEqual(command, str(fake.resolve()))
 
     def test_setup_wizard_post_setup_diet_scan_failure_paths_do_not_abort_setup(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_diet_scan_failures")
@@ -2640,10 +2660,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             resolved_root = root.resolve()
             outside = Path(tmp) / "outside"
             outside.mkdir()
-            original_load = setup.load_json_object
+            original_read = setup._read_optional_text_no_follow
 
             def swap_parent_after_read(path):
-                data = original_load(path)
+                data = original_read(path)
                 if path == resolved_root / ".claude" / "settings.json" and not (resolved_root / ".claude").exists():
                     (resolved_root / ".claude").symlink_to(outside, target_is_directory=True)
                 return data
@@ -2662,12 +2682,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 dry_run=False,
                 no_backup=True,
             )
-            setup.load_json_object = swap_parent_after_read
+            setup._read_optional_text_no_follow = swap_parent_after_read
             try:
                 with self.assertRaises(OSError):
                     setup.run(args)
             finally:
-                setup.load_json_object = original_load
+                setup._read_optional_text_no_follow = original_read
             self.assertFalse((outside / "settings.json").exists())
 
     def test_setup_wizard_backup_rejects_parent_swap_before_copy(self):
@@ -2684,12 +2704,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
             outside = Path(tmp) / "outside"
             outside.mkdir()
             (outside / "settings.json").write_text(json.dumps({"secret": "outside"}), encoding="utf-8")
-            original_load = setup.load_json_object
+            original_read = setup._read_optional_text_no_follow
             original_backup = setup.backup_existing
             race_state = {"swapped": False, "backup_called": False}
 
             def swap_parent_after_read(path):
-                data = original_load(path)
+                data = original_read(path)
                 if path == resolved_root / ".claude" / "settings.json" and settings_dir.exists():
                     swapped = resolved_root / ".claude-original"
                     settings_dir.rename(swapped)
@@ -2715,16 +2735,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 dry_run=False,
                 no_backup=False,
             )
-            setup.load_json_object = swap_parent_after_read
+            setup._read_optional_text_no_follow = swap_parent_after_read
             setup.backup_existing = record_backup
             try:
                 with self.assertRaises(OSError) as ctx:
                     setup.run(args)
             finally:
-                setup.load_json_object = original_load
+                setup._read_optional_text_no_follow = original_read
                 setup.backup_existing = original_backup
             self.assertTrue(race_state["swapped"])
-            self.assertTrue(race_state["backup_called"])
+            self.assertFalse(race_state["backup_called"])
             self.assertIn(".claude", str(ctx.exception))
             self.assertEqual(json.loads((outside / "settings.json").read_text(encoding="utf-8")), {"secret": "outside"})
             self.assertEqual(list(outside.glob("settings.json.bak-*")), [])
@@ -2851,7 +2871,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 if isinstance(hook, dict) and "command" in hook
             ]
             self.assertIn("claude-token-rewrite-bash-v2", bash_commands)
-            self.assertEqual(sum(command.endswith("claude-token-rewrite-bash") for command in all_commands), 1)
+            self.assertEqual(sum(command.endswith("claude-token-rewrite-bash") for command in all_commands), 2)
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
@@ -3053,7 +3073,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "pytest > out.log",
             "pytest &> out.log",
             "pytest &>> out.log",
-            "grep x <<<foo",
             "pytest >&2",
             "pytest >| out.log",
             "pytest <<-EOF",
@@ -3063,20 +3082,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(hook_json(KIT_REWRITE, command), {})
 
+    def test_rewrite_hook_blocks_compound_secret_bearing_commands(self):
+        for command in ["grep x <<<foo", "git diff | cat", "kubectl logs pod | tee out.log"]:
+            with self.subTest(command=command):
+                data = hook_json(KIT_REWRITE, command)
+                hook = data["hookSpecificOutput"]
+                self.assertEqual(hook["permissionDecision"], "deny")
+                self.assertIn("shell operators", hook["permissionDecisionReason"])
+
     def test_rewrite_hook_avoids_double_wrapping(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
             with self.subTest(script=script):
                 self.assertEqual(hook_json(script, "claude-trim-output --max-lines 10 -- pytest"), {})
                 self.assertEqual(hook_json(script, "claude-sanitize-output --max-lines 10 -- git diff"), {})
 
-    def test_rewrite_hook_noops_when_wrapper_missing(self):
+    def test_rewrite_hook_blocks_noisy_when_wrapper_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             script = tmp_path / "claude-token-rewrite-bash"
             script.write_bytes(KIT_REWRITE.read_bytes())
             proc = run_hook(script, "pytest tests -q", cwd=tmp_path)
+            data = json.loads(proc.stdout)
+            hook = data["hookSpecificOutput"]
+            self.assertEqual(hook["permissionDecision"], "deny")
+            self.assertIn("claude-trim-output is not installed", hook["permissionDecisionReason"])
+            self.assertIn("Noisy command blocked", proc.stderr)
+
+    def test_rewrite_hook_fail_open_env_is_visible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            script = tmp_path / "claude-token-rewrite-bash"
+            script.write_bytes(KIT_REWRITE.read_bytes())
+            env = os.environ.copy()
+            env["CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"] = "1"
+            proc = run_hook_payload(script, {"tool_input": {"command": "pytest tests -q"}}, cwd=tmp_path, env=env)
             self.assertEqual(json.loads(proc.stdout), {})
-            self.assertIn("trim wrapper not found", proc.stderr)
+            self.assertIn("FAIL_OPEN", proc.stderr.upper())
 
     def test_rewrite_hook_blocks_search_when_sanitizer_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -7887,6 +7928,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "--strict-mcp-config",
             ["--strict-mcp-config", 123],
             ["--strict-mcp-config", ""],
+            ["--output-format", "text"],
             None,
         ]
         for bad in cases:
@@ -8200,7 +8242,7 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
         self.assertNotIn("\n", out)
         self.assertNotIn("\x1b", out)
         self.assertLessEqual(len(out), 1000 + len(" | cost $0.123 | cache 42%"))
-        self.assertIn("[OMC] [31mred[0m", out)
+        self.assertIn("[OMC] red", out)
         self.assertIn(" | cost $0.123", out)
         self.assertIn(" | cache 42%", out)
 

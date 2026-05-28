@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import time
 from typing import Iterable
@@ -17,10 +18,15 @@ from typing import Iterable
 DEFAULT_ARTIFACT_DIR = ".claude-token-optimizer/artifacts"
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
+MAX_METADATA_BYTES = 64_000
 DEFAULT_MAX_LINES = 80
 DEFAULT_MAX_CHARS = 20_000
 MAX_LINE_CHARS = 2_000
 ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 ERROR_RE = re.compile(
     r"(FAIL|FAILED|ERROR|Error:|Exception|Traceback|AssertionError|panic:|fatal:|"
     r"segmentation fault|not ok|\bE\s+assert|\[ERROR\]|✗|✖)",
@@ -48,6 +54,31 @@ def cap_line(line: str, limit: int = MAX_LINE_CHARS) -> str:
         return line
     marker = f"...[line trimmed: {len(line)} chars]"
     return line[: max(0, limit - len(marker))] + marker
+
+
+def normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
 
 
 def compact_items(lines: Iterable[str], *, limit: int) -> list[str]:
@@ -119,14 +150,67 @@ def sanitize_one_line(text: str, *, show_paths: bool = False) -> str:
 
 
 def ensure_private_dir(path: Path) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
+    reject_symlink_components(path)
     path.mkdir(parents=True, exist_ok=True)
+    reject_symlink_components(path)
     try:
         os.chmod(path, 0o700)
     except OSError:
         pass
 
 
+def reject_symlink_components(path: Path) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    for part in path.parts:
+        if path.is_absolute() and part == path.anchor:
+            continue
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(st.st_mode):
+            raise RuntimeError(f"refusing artifact path with symlink component: {current}")
+        if not stat.S_ISDIR(st.st_mode) and current != path:
+            raise RuntimeError(f"refusing artifact path through non-directory component: {current}")
+
+
+def regular_private_file_size(path: Path) -> int:
+    path = normalize_allowed_first_absolute_symlink(path)
+    reject_symlink_components(path.parent)
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise ValueError(f"artifact file must not be a symlink: {path.name}")
+    if not stat.S_ISREG(st.st_mode):
+        raise ValueError(f"artifact file must be a regular file: {path.name}")
+    return int(st.st_size)
+
+
+def read_bounded_private_text(path: Path, max_bytes: int) -> str:
+    path = normalize_allowed_first_absolute_symlink(path)
+    size = regular_private_file_size(path)
+    if size > max_bytes:
+        raise ValueError(f"artifact file exceeds trusted size cap: {path.name}: {size} > {max_bytes}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"artifact file must be a regular file: {path.name}")
+        if st.st_size > max_bytes:
+            raise ValueError(f"artifact file exceeds trusted size cap: {path.name}: {st.st_size} > {max_bytes}")
+        data = os.read(fd, max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError(f"artifact file exceeds trusted size cap: {path.name}: > {max_bytes}")
+        return data.decode("utf-8", errors="replace")
+    finally:
+        os.close(fd)
+
+
 def write_private_text(path: Path, text: str) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
     ensure_private_dir(path.parent)
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{time.time_ns()}")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -165,6 +249,7 @@ def read_bounded_stdin(max_bytes: int) -> tuple[str, bool, int]:
 def artifact_paths(directory: Path, artifact_id: str) -> tuple[Path, Path]:
     if not ARTIFACT_ID_RE.fullmatch(artifact_id):
         raise ValueError("artifact id must be 16-64 lowercase hex chars")
+    directory = normalize_allowed_first_absolute_symlink(directory)
     return directory / f"{artifact_id}.txt", directory / f"{artifact_id}.json"
 
 
@@ -199,7 +284,7 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
 
 
 def store_command(args: argparse.Namespace) -> int:
-    directory = Path(args.dir).expanduser()
+    directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     max_bytes = bounded_int(args.max_bytes, DEFAULT_MAX_BYTES, 1, MAX_MAX_BYTES)
     raw_text, input_truncated, input_bytes = read_bounded_stdin(max_bytes)
     sanitized_text, redacted_lines = sanitize_text(raw_text, show_paths=args.show_paths)
@@ -255,9 +340,12 @@ def store_command(args: argparse.Namespace) -> int:
 
 def load_metadata(directory: Path, artifact_id: str) -> dict[str, object]:
     content_path, meta_path = artifact_paths(directory, artifact_id)
-    if not content_path.is_file() or not meta_path.is_file():
+    try:
+        regular_private_file_size(content_path)
+        meta_text = read_bounded_private_text(meta_path, MAX_METADATA_BYTES)
+    except FileNotFoundError as exc:
         raise FileNotFoundError(f"artifact not found: {artifact_id}")
-    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    data = json.loads(meta_text)
     if not isinstance(data, dict) or data.get("artifact_id") != artifact_id:
         raise ValueError(f"artifact metadata mismatch: {artifact_id}")
     return data
@@ -304,18 +392,24 @@ def query_content(content: str, *, line_range: tuple[int, int] | None, pattern: 
 
 
 def get_command(args: argparse.Namespace) -> int:
-    directory = Path(args.dir).expanduser()
+    directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     artifact_id = args.artifact_id
     max_lines = bounded_int(args.max_lines, DEFAULT_MAX_LINES, 1, 5_000)
     max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, 1, 1_000_000)
     try:
         metadata = load_metadata(directory, artifact_id)
         content_path, _meta_path = artifact_paths(directory, artifact_id)
-        content = content_path.read_text(encoding="utf-8", errors="replace")
         stored_output = metadata.get("stored_output")
         expected_sha = stored_output.get("sha256") if isinstance(stored_output, dict) else None
         if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
             raise ValueError(f"artifact metadata missing stored_output sha256: {artifact_id}")
+        expected_bytes = stored_output.get("bytes") if isinstance(stored_output, dict) else None
+        if not isinstance(expected_bytes, int) or expected_bytes < 0 or expected_bytes > MAX_MAX_BYTES:
+            raise ValueError(f"artifact metadata has invalid stored_output bytes: {artifact_id}")
+        actual_size = regular_private_file_size(content_path)
+        if actual_size != expected_bytes:
+            raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
+        content = read_bounded_private_text(content_path, expected_bytes)
         actual_sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
         if actual_sha != expected_sha:
             raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
@@ -340,13 +434,18 @@ def get_command(args: argparse.Namespace) -> int:
 
 
 def list_command(args: argparse.Namespace) -> int:
-    directory = Path(args.dir).expanduser()
+    directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     items: list[dict[str, object]] = []
-    if directory.is_dir():
+    try:
+        reject_symlink_components(directory)
+        directory_is_safe = directory.is_dir() and not directory.is_symlink()
+    except RuntimeError:
+        directory_is_safe = False
+    if directory_is_safe:
         for meta_path in sorted(directory.glob("*.json")):
             try:
-                data = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                data = json.loads(read_bounded_private_text(meta_path, MAX_METADATA_BYTES))
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
                 continue
             if isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(str(data.get("artifact_id", ""))):
                 items.append(receipt_for(data))

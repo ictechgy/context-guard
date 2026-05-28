@@ -58,7 +58,13 @@ def normalize_budgets(args: argparse.Namespace) -> None:
         MAX_TIMEOUT_SECONDS,
     )
 
-ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+TERMINAL_CONTROL_RE = re.compile(
+    r"(?:"
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|"  # OSC title/clipboard controls
+    r"\x1b[@-_][0-?]*[ -/]*[@-~]|"          # CSI and other ESC sequences
+    r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f-\x9f]"
+    r")"
+)
 ABSOLUTE_PATH_RE = re.compile(r"(?P<prefix>^|[\s('\"=])(?P<path>/(?:[^\s:(),]+/)*[^\s:(),]+)")
 SECRET_KEY = (
     r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
@@ -68,8 +74,18 @@ FALLBACK_INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"(?i)\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"(?i)\bglpat-[A-Za-z0-9_-]{12,}\b"), "[REDACTED]"),
     (re.compile(r"(?i)\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED]"),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED]"),
+    (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"), "[REDACTED]"),
+    (re.compile(r"\bsk-(?:ant|proj)-[A-Za-z0-9_-]{12,}\b"), "[REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b"), "[REDACTED]"),
     (re.compile(r"(?i)\bAIza[0-9A-Za-z_\-]{20,}\b"), "[REDACTED]"),
+    (re.compile(r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b"), "[REDACTED]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "[REDACTED]"),
+    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
     (re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
     (re.compile(rf"(?i)(\b(?:{SECRET_KEY})\s*[:=]\s*)[^\s]+"), r"\1[REDACTED]"),
 )
@@ -100,7 +116,7 @@ RUST_THREAD_RE = re.compile(
 
 
 def strip_ansi(text: str) -> str:
-    return ANSI_RE.sub("", text)
+    return TERMINAL_CONTROL_RE.sub("", text)
 
 
 def anonymize_absolute_paths(text: str) -> str:
