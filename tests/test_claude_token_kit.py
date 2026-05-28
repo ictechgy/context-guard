@@ -9161,6 +9161,15 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(rows[0], old_columns)
                     self.assertEqual(len(rows), 2)
 
+                    blank_header_csv = Path(tmp) / "blank-header-results.csv"
+                    blank_header_csv.write_text("\nold,row\n", encoding="utf-8")
+                    with self.assertRaises(SystemExit) as blank_append_ctx:
+                        module.append_csv(blank_header_csv, "test", result)
+                    self.assertIn("CSV schema mismatch", str(blank_append_ctx.exception))
+                    with self.assertRaises(SystemExit) as blank_report_ctx:
+                        module.read_csv_rows(blank_header_csv)
+                    self.assertIn("CSV schema mismatch", str(blank_report_ctx.exception))
+
     def test_benchmark_report_does_not_claim_shifted_cost_when_cost_unmeasured(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -9254,7 +9263,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "task_id": "t02",
                             "variant": "optimized",
                             "success": "false",
-                            "total_tokens": "0",
+                            "total_tokens": "25",
                         },
                     ],
                     "baseline",
@@ -9263,6 +9272,50 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertEqual(report["claim_status"], "quality_gate_watch")
                 self.assertEqual(comparison["quality_gate"], "matched_task_regression")
                 self.assertEqual(comparison["missing_baseline_success_tasks"], ["t02"])
+                self.assertEqual(
+                    report["summary_by_variant"]["optimized"]["tokens_per_task_including_failures"],
+                    37.5,
+                )
+
+    def test_benchmark_runner_locks_ledger_and_report_outputs(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_output_locks_{index}")
+                if module.fcntl is None:
+                    self.skipTest("fcntl unavailable")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    result = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 1, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.01,
+                        cost_measured=True,
+                        success=True,
+                        notes="ok",
+                    )
+                    csv_path = root / "results.csv"
+                    module.append_csv(csv_path, "test", result)
+                    report_path = root / "report.json"
+                    module.write_report_json(csv_path, report_path, "baseline")
+                    self.assertTrue(report_path.exists())
+                    self.assertTrue(csv_path.with_name("results.csv.lock").exists())
+
+                    ledger_path = root / "cost-shift.jsonl"
+                    module.append_cost_shift_ledger(ledger_path, "test", result)
+                    self.assertTrue(ledger_path.exists())
+                    self.assertTrue(ledger_path.with_name("cost-shift.jsonl.lock").exists())
+
+                    guarded = root / "guarded"
+                    guarded.write_text("guard", encoding="utf-8")
+                    bad_ledger = root / "bad-ledger.jsonl"
+                    bad_ledger.with_name("bad-ledger.jsonl.lock").symlink_to(guarded)
+                    with self.assertRaises(OSError):
+                        module.append_cost_shift_ledger(bad_ledger, "test", result)
+                    self.assertEqual(guarded.read_text(encoding="utf-8"), "guard")
+                    self.assertFalse(bad_ledger.exists())
 
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")

@@ -891,7 +891,7 @@ def read_csv_header_unlocked(csv_path: Path) -> list[str] | None:
 
 def validate_csv_schema(csv_path: Path, fieldnames: list[str] | None) -> None:
     """Fail loudly instead of appending/reporting across incompatible CSV schemas."""
-    if not fieldnames:
+    if fieldnames is None:
         return
     if fieldnames != CSV_COLUMNS:
         raise SystemExit(
@@ -935,14 +935,15 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
         "turns": result.turns,
         "notes": sanitize_csv_note(result.notes),
     }
-    fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o666, create_parent=True)
-    try:
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-    finally:
-        if fd != -1:
-            os.close(fd)
+    with csv_file_lock(path, create_parent=True):
+        fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o666, create_parent=True)
+        try:
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        finally:
+            if fd != -1:
+                os.close(fd)
 
 
 def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
@@ -1058,6 +1059,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 "runs": 0,
                 "successful_runs": 0,
                 "failed_runs": 0,
+                "total_tokens_all_runs": 0,
+                "primary_cost_all_runs_usd": 0.0,
+                "primary_cost_measured_runs": 0,
+                "total_cost_with_shift_all_runs_usd": 0.0,
+                "total_cost_with_shift_measured_runs": 0,
                 "total_tokens_successful": 0,
                 "primary_cost_successful_usd": 0.0,
                 "primary_cost_measured_successful": 0,
@@ -1074,6 +1080,14 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             },
         )
         bucket["runs"] += 1
+        bucket["total_tokens_all_runs"] += row_int(row, "total_tokens")
+        if row_bool(row, "cost_measured"):
+            bucket["primary_cost_all_runs_usd"] += row_float(row, "cost_usd")
+            bucket["primary_cost_measured_runs"] += 1
+        shifted_cost = row_optional_float(row, "total_cost_with_shift_usd")
+        if row_cost_shift_measured(row) and shifted_cost is not None:
+            bucket["total_cost_with_shift_all_runs_usd"] += shifted_cost
+            bucket["total_cost_with_shift_measured_runs"] += 1
         if not row_success(row):
             bucket["failed_runs"] += 1
             continue
@@ -1088,7 +1102,6 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["external_cost_successful_usd"] += row_float(row, "external_cost_usd")
         else:
             bucket["external_cost_unknown_successful"] += 1
-        shifted_cost = row_optional_float(row, "total_cost_with_shift_usd")
         if row_cost_shift_measured(row) and shifted_cost is not None:
             bucket["total_cost_with_shift_successful_usd"] += shifted_cost
             bucket["total_cost_with_shift_measured_successful"] += 1
@@ -1105,6 +1118,26 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         bucket["failure_rate"] = (bucket["failed_runs"] / runs) if runs else None
         bucket["task_count"] = len(seen_tasks_by_variant.get(variant, set()))
         bucket["successful_task_count"] = len(successful_tasks_by_variant.get(variant, set()))
+        if bucket["task_count"]:
+            bucket["tokens_per_task_including_failures"] = (
+                bucket["total_tokens_all_runs"] / bucket["task_count"]
+            )
+            if bucket["primary_cost_measured_runs"] == runs:
+                bucket["primary_cost_per_task_including_failures_usd"] = (
+                    bucket["primary_cost_all_runs_usd"] / bucket["task_count"]
+                )
+            else:
+                bucket["primary_cost_per_task_including_failures_usd"] = None
+            if bucket["total_cost_with_shift_measured_runs"] == runs:
+                bucket["total_cost_with_shift_per_task_including_failures_usd"] = (
+                    bucket["total_cost_with_shift_all_runs_usd"] / bucket["task_count"]
+                )
+            else:
+                bucket["total_cost_with_shift_per_task_including_failures_usd"] = None
+        else:
+            bucket["tokens_per_task_including_failures"] = None
+            bucket["primary_cost_per_task_including_failures_usd"] = None
+            bucket["total_cost_with_shift_per_task_including_failures_usd"] = None
         if successes:
             bucket["tokens_per_successful_task"] = bucket["total_tokens_successful"] / successes
             if bucket["primary_cost_measured_successful"] == successes:
@@ -1264,8 +1297,9 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
     }
 
 def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
-    report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
-    write_text_no_follow(report_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    with csv_file_lock(csv_path, create_parent=True):
+        report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
+        write_text_no_follow(report_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return report
 
 
