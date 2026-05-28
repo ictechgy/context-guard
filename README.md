@@ -140,7 +140,8 @@ Run a repeatable A/B token-savings benchmark and keep cost-shift evidence:
 
 The report compares successful baseline/variant runs by real token and
 `cost_usd + external_cost_usd`; byte reductions are recorded as proxy evidence,
-not treated as proof of savings.
+not treated as proof of savings. If cost fields are zero or unavailable, the
+report can still mark token savings but will not claim shifted-cost savings.
 
 ## Auxiliary AI delegation (optional)
 

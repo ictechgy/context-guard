@@ -9115,6 +9115,78 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(rows[0]["notes"], "first")
 
+    def test_benchmark_runner_rejects_incompatible_existing_csv_schema(self):
+        shift_columns = {
+            "turns",
+            "hook_triggers",
+            "bytes_before",
+            "bytes_after",
+            "artifacts_used",
+            "external_tokens",
+            "external_cost_usd",
+            "total_cost_with_shift_usd",
+        }
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_schema_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    old_columns = [column for column in module.CSV_COLUMNS if column not in shift_columns]
+                    old_row = [
+                        "2026-05-01T00:00:00", "test", "t00", "baseline", "sonnet", "",
+                        "10", "5", "5", "0", "0", "0.000000", "true", "0", "old schema",
+                    ]
+                    csv_path.write_text(",".join(old_columns) + "\n" + ",".join(old_row) + "\n", encoding="utf-8")
+                    result = module.RunResult(
+                        task_id="t01",
+                        variant="optimized",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="ok",
+                    )
+
+                    with self.assertRaises(SystemExit) as append_ctx:
+                        module.append_csv(csv_path, "test", result)
+                    self.assertIn("CSV schema mismatch", str(append_ctx.exception))
+                    with self.assertRaises(SystemExit) as report_ctx:
+                        module.read_csv_rows(csv_path)
+                    self.assertIn("CSV schema mismatch", str(report_ctx.exception))
+                    with csv_path.open(encoding="utf-8") as f:
+                        rows = list(csv.reader(f))
+                    self.assertEqual(rows[0], old_columns)
+                    self.assertEqual(len(rows), 2)
+
+    def test_benchmark_report_does_not_claim_shifted_cost_when_cost_unmeasured(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_cost_unmeasured_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "cost_usd": "0",
+                            "external_cost_usd": "0",
+                            "total_cost_with_shift_usd": "0",
+                        },
+                        {
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "50",
+                            "cost_usd": "0",
+                            "external_cost_usd": "0",
+                            "total_cost_with_shift_usd": "0",
+                        },
+                    ],
+                    "baseline",
+                )
+                self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
+                self.assertIsNone(report["comparisons"][0]["cost_savings_pct_with_shift"])
+
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
         with tempfile.TemporaryDirectory() as tmp:
