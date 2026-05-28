@@ -21,6 +21,7 @@ claude-token-setup --plan
    - token/cost statusline,
    - Bash trim + grep/diff sanitizer hook,
    - large Read guard,
+   - failed-attempt nudge for repeated Bash failures,
    - missing model/effort defaults.
 3. If the user wants the recommended project-local setup, run:
 

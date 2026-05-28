@@ -50,6 +50,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 claude-token-kit/failed_attempt_nudge.py"
+          }
+        ]
+      }
     ]
   }
 }

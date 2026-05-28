@@ -67,8 +67,8 @@ class Choices:
     bash_hook: bool = True
     read_guard: bool = True
     model_defaults: bool = True
-    # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — 새 기능이라 기본 OFF.
-    failed_attempt_nudge: bool = False
+    # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — recommended setup 기본 ON.
+    failed_attempt_nudge: bool = True
 
 
 @dataclass
@@ -571,7 +571,7 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
-            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; off by default)",
+            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; recommended default)",
             defaults.failed_attempt_nudge,
         ),
     )
@@ -585,7 +585,11 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         bash_hook=not args.no_bash_hook,
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
-        failed_attempt_nudge=args.failed_attempt_nudge,
+        failed_attempt_nudge=(
+            Choices().failed_attempt_nudge
+            if getattr(args, "failed_attempt_nudge", None) is None
+            else args.failed_attempt_nudge
+        ),
     )
 
 
@@ -662,10 +666,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
-    parser.add_argument(
+    nudge_group = parser.add_mutually_exclusive_group()
+    nudge_group.add_argument(
         "--failed-attempt-nudge",
+        dest="failed_attempt_nudge",
         action="store_true",
-        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (off by default)",
+        default=None,
+        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (recommended default)",
+    )
+    nudge_group.add_argument(
+        "--no-failed-attempt-nudge",
+        dest="failed_attempt_nudge",
+        action="store_false",
+        help="skip the failed-attempt /clear nudge hook",
     )
     return parser
 

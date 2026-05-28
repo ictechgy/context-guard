@@ -1993,6 +1993,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertFalse(data["applied"])
             self.assertTrue(data["changed"])
             self.assertIn("enabled token statusline", data["actions"])
+            self.assertTrue(any("failed-attempt /clear nudge" in action for action in data["actions"]))
             self.assertFalse((root / ".claude" / "settings.json").exists())
 
     def test_setup_wizard_apply_recommended_writes_project_settings_for_kit_and_plugin(self):
@@ -2026,6 +2027,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     commands = json.dumps(settings["hooks"])
                     self.assertIn("claude-token-rewrite-bash", commands)
                     self.assertIn("claude-token-guard-read", commands)
+                    self.assertIn("claude-token-failed-nudge", commands)
+                    post = settings["hooks"]["PostToolUse"]
+                    self.assertTrue(any(
+                        entry.get("matcher") == "Bash"
+                        and any("claude-token-failed-nudge" in (h.get("command") or "")
+                                or "failed_attempt_nudge.py" in (h.get("command") or "")
+                                for h in entry.get("hooks", []))
+                        for entry in post
+                    ), f"PostToolUse 에 nudge hook 이 추가되어야 한다 (got {post})")
 
                     again = subprocess.run(
                         [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--json"],
@@ -2036,9 +2046,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     again_data = json.loads(again.stdout)
                     self.assertFalse(again_data["changed"])
                     self.assertEqual(again_data["actions"], [])
-                    # 새 nudge hook 은 기본 OFF 라 PostToolUse 가 추가되지 않아야 한다.
-                    self.assertNotIn("PostToolUse", settings.get("hooks", {}))
-                    self.assertNotIn("claude-token-failed-nudge", json.dumps(settings))
 
     def test_setup_wizard_writes_settings_with_deterministic_key_order(self):
         for script in SETUP_SCRIPTS:
@@ -2088,8 +2095,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("plugins/claude-token-optimizer/bin/claude-token-statusline-merged", command)
         self.assertNotEqual(command, "claude-token-statusline-merged")
 
-    def test_setup_wizard_enables_failed_attempt_nudge_only_with_opt_in_flag(self):
-        """기본 실행은 nudge 를 추가하지 않고, --failed-attempt-nudge 를 줘야 PostToolUse 에 등록된다."""
+    def test_setup_wizard_allows_disabling_failed_attempt_nudge_default(self):
+        """recommended setup 은 nudge 를 켜고, --no-failed-attempt-nudge 로만 제외한다."""
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -2099,7 +2106,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             sys.executable, str(script),
                             "--root", str(root),
                             "--yes", "--no-backup", "--json",
-                            "--failed-attempt-nudge",
                         ],
                         text=True,
                         capture_output=True,
@@ -2121,7 +2127,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             sys.executable, str(script),
                             "--root", str(root),
                             "--yes", "--no-backup", "--json",
-                            "--failed-attempt-nudge",
                         ],
                         text=True,
                         capture_output=True,
@@ -2129,6 +2134,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     again_data = json.loads(again.stdout)
                     self.assertFalse(again_data["changed"])
+
+                    disabled_root = root / "disabled"
+                    disabled_root.mkdir()
+                    disabled = subprocess.run(
+                        [
+                            sys.executable, str(script),
+                            "--root", str(disabled_root),
+                            "--yes", "--no-backup", "--json",
+                            "--no-failed-attempt-nudge",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    disabled_data = json.loads(disabled.stdout)
+                    self.assertFalse(disabled_data["choices"]["failed_attempt_nudge"])
+                    disabled_settings = json.loads((disabled_root / ".claude" / "settings.json").read_text(encoding="utf-8"))
+                    self.assertNotIn("claude-token-failed-nudge", json.dumps(disabled_settings))
 
     def test_setup_wizard_merges_existing_hooks_without_delegate_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6355,15 +6378,19 @@ for malformed in malformed_values:
         example = json.loads((ROOT / "plugins" / "claude-token-optimizer" / "examples" / "settings.example.json").read_text())
         status_cmd = example["statusLine"]["command"]
         hook_cmd = example["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        post_hook_cmd = example["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         # Default statusline is the OMC-aware merged wrapper. It auto-falls-back to
         # `claude-token-statusline` when OMC HUD is absent, so non-OMC users still
         # get the same compact line.
         self.assertEqual(status_cmd, "claude-token-statusline-merged")
         self.assertEqual(hook_cmd, "claude-token-rewrite-bash")
+        self.assertEqual(post_hook_cmd, "claude-token-failed-nudge")
         self.assertTrue((PLUGIN_BIN / status_cmd).exists())
         self.assertTrue((PLUGIN_BIN / hook_cmd).exists())
+        self.assertTrue((PLUGIN_BIN / post_hook_cmd).exists())
         self.assertTrue(os.access(PLUGIN_BIN / status_cmd, os.X_OK))
         self.assertTrue(os.access(PLUGIN_BIN / hook_cmd, os.X_OK))
+        self.assertTrue(os.access(PLUGIN_BIN / post_hook_cmd, os.X_OK))
         # The plain (non-merged) statusline must still ship in bin/ so the wrapper
         # can locate it as a sibling and so users can opt out of the OMC integration
         # by switching the example back to "claude-token-statusline".

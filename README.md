@@ -15,6 +15,7 @@ Install the plugin, run `/claude-token-optimizer:setup` in your project, and Cla
 - **Context hygiene scanner** — finds missing guardrails, noisy hooks, expensive defaults, broad reads, excessive MCP servers, and large or secret-like context files.
 - **Large Read guard and symbol reader** — nudges Claude toward `rg` plus symbol/line-range reads instead of full-file reads.
 - **Output trimming and sanitizing** — keeps test, build, search, and diff output compact and redacts likely secrets before Claude sees them.
+- **Repeated-failure nudge** — warns after repeated Bash failures so Claude switches strategy before stale logs bloat context.
 - **Statusline and transcript audit helpers** — surfaces token/cost/model state and usage hotspots.
 
 ## Install in Claude Code
