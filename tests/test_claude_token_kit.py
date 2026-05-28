@@ -3928,6 +3928,10 @@ for malformed in malformed_values:
                     hook = data["hookSpecificOutput"]
                     self.assertEqual(hook["permissionDecision"], "deny")
                     self.assertIn("Large Read blocked", hook["permissionDecisionReason"])
+                    self.assertIn("Progressive read ladder", hook["permissionDecisionReason"])
+                    self.assertIn("Top-level outline", hook["permissionDecisionReason"])
+                    self.assertIn("line 1: function target", hook["permissionDecisionReason"])
+                    self.assertIn("Read with offset=0 limit=", hook["permissionDecisionReason"])
                     self.assertIn("claude-read-symbol", hook["permissionDecisionReason"])
                     self.assertNotIn(str(root), hook["permissionDecisionReason"])
 
@@ -4010,6 +4014,17 @@ for malformed in malformed_values:
             self.assertIn(shlex.quote(bad.name), reason)
             self.assertIn("rg -n '<symbol-or-error>' --", reason)
             self.assertNotIn(f" {bad.name}`", reason)
+
+    def test_large_read_guard_progressive_ladder_handles_non_python_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "notes.md"
+            doc.write_text("# Overview\n\n" + ("body\n" * 20000), encoding="utf-8")
+            proc = run_hook_payload(KIT_DIR / "guard_large_read.py", {"tool_input": {"file_path": "notes.md"}}, cwd=root)
+            reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("Progressive read ladder", reason)
+            self.assertIn("Top-level outline: line 1: heading Overview", reason)
+            self.assertIn("Read with offset=0 limit=", reason)
 
     def test_large_read_guard_redacts_sensitive_or_control_path_labels(self):
         cases = {
