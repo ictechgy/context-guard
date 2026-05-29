@@ -139,6 +139,19 @@ The audit command skips oversized transcript files/JSONL records by default
 (`--max-file-bytes`, `--max-line-bytes`) and reports the skipped counts so a
 corrupt trace cannot dominate memory or hide scan gaps.
 
+Use the Claude Code statusline to watch live context and cache health:
+
+```text
+[Sonnet] repo | main | ctx 86% ⚠ | cost $0.123 | cache 80% | reuse 8.0x
+```
+
+`cache N%` is the cache-read share of observed input-side tokens in the
+bounded transcript tail and stays hidden until there is at least one cache
+read. `reuse X.Yx` is `cache_read / cache_creation` and is shown only when
+cache read is positive and cache creation is non-zero. The `⚠` marker appears
+when context usage reaches the warning threshold, defaulting to 80%; set
+`CLAUDE_TOKEN_STATUSLINE_CTX_WARN=90` to tune it for a project or shell.
+
 Run a repeatable A/B token-savings benchmark and keep cost-shift evidence:
 
 ```bash
