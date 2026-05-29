@@ -5884,6 +5884,7 @@ for malformed in malformed_values:
                 check=True,
             )
             self.assertIn("cache 80%", proc.stdout)
+            self.assertIn("reuse 8.0x", proc.stdout)
 
     def test_statusline_recognizes_camelcase_cache_aliases(self):
         """OpenTelemetry-style camelCase 별칭 (cacheRead/cacheCreation) 도 인식해야 한다."""
@@ -5912,6 +5913,129 @@ for malformed in malformed_values:
                 check=True,
             )
             self.assertIn("cache 75%", proc.stdout)
+            self.assertIn("reuse 6.0x", proc.stdout)
+
+    def test_statusline_hides_reuse_when_cache_creation_is_zero(self):
+        """cache write가 없으면 cache hit은 보여도 reuse 배수는 divide-by-zero 없이 숨긴다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            transcript.write_text(
+                json.dumps({"message": {"usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 0,
+                }}}) + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "model": {"display_name": "Sonnet"},
+                "context_window": {"used_percentage": 10},
+                "cost": {"total_cost_usd": 0.0},
+                "workspace": {"current_dir": str(transcript.parent)},
+                "transcript_path": str(transcript),
+            }
+            proc = subprocess.run(
+                ["bash", str(KIT_DIR / "statusline.sh")],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("cache 33%", proc.stdout)
+            self.assertNotIn("reuse ", proc.stdout)
+
+    def test_statusline_hides_cache_metrics_until_cache_read_is_positive(self):
+        """cache read가 없으면 기존 cold-cache UX대로 cache/reuse 라벨을 숨긴다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "session.jsonl"
+            transcript.write_text(
+                json.dumps({"message": {"usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 50,
+                }}}) + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "model": {"display_name": "Sonnet"},
+                "context_window": {"used_percentage": 10},
+                "cost": {"total_cost_usd": 0.0},
+                "workspace": {"current_dir": str(transcript.parent)},
+                "transcript_path": str(transcript),
+            }
+            proc = subprocess.run(
+                ["bash", str(KIT_DIR / "statusline.sh")],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertNotIn("cache ", proc.stdout)
+            self.assertNotIn("reuse ", proc.stdout)
+
+    def test_statusline_marks_context_at_default_warning_threshold(self):
+        payload = {
+            "model": {"display_name": "Sonnet"},
+            "context_window": {"used_percentage": 86},
+            "cost": {"total_cost_usd": 0.0},
+            "workspace": {"current_dir": "/tmp/foo"},
+        }
+        proc = subprocess.run(
+            ["bash", str(KIT_DIR / "statusline.sh")],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("ctx 86% ⚠", proc.stdout)
+
+    def test_statusline_context_warning_threshold_env_override_and_malformed_fallback(self):
+        payload = {
+            "model": {"display_name": "Sonnet"},
+            "context_window": {"used_percentage": 86},
+            "cost": {"total_cost_usd": 0.0},
+            "workspace": {"current_dir": "/tmp/foo"},
+        }
+
+        env = os.environ.copy()
+        env["CLAUDE_TOKEN_STATUSLINE_CTX_WARN"] = "90"
+        proc = subprocess.run(
+            ["bash", str(KIT_DIR / "statusline.sh")],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=True,
+        )
+        self.assertIn("ctx 86% |", proc.stdout)
+        self.assertNotIn("⚠", proc.stdout)
+
+        env["CLAUDE_TOKEN_STATUSLINE_CTX_WARN"] = "not-a-number"
+        proc = subprocess.run(
+            ["bash", str(KIT_DIR / "statusline.sh")],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=True,
+        )
+        self.assertIn("ctx 86% ⚠", proc.stdout)
+
+    def test_statusline_preserves_unknown_context_without_warning_marker(self):
+        payload = {
+            "model": {"display_name": "Sonnet"},
+            "cost": {"total_cost_usd": 0.0},
+            "workspace": {"current_dir": "/tmp/foo"},
+        }
+        proc = subprocess.run(
+            ["bash", str(KIT_DIR / "statusline.sh")],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("ctx ?%", proc.stdout)
+        self.assertNotIn("⚠", proc.stdout)
 
     def test_statusline_omits_cache_label_when_transcript_is_empty_or_malformed(self):
         """빈 transcript / 모두 malformed JSONL인 경우 cache 라벨을 조용히 생략한다."""
@@ -8142,13 +8266,14 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
             omc = self._make_fake_omc_hud(tmp, "[OMC#test] | 5h:10% | session:5m | ctx:47%")
             tok = self._make_fake_token_statusline(
                 tmp,
-                "[Opus 4.7] dir | main | ctx 47% | cost $0.123 | cache 27%",
+                "[Opus 4.7] dir | main | ctx 47% | cost $0.123 | cache 27% | reuse 4.0x",
             )
             out = self._run_wrapper(omc_script=omc, tok_bin=tok)
-        # OMC HUD 라인이 그대로 보존되고 cost/cache 만 뒤에 붙는다.
+        # OMC HUD 라인이 그대로 보존되고 compact token extras 만 뒤에 붙는다.
         self.assertTrue(out.startswith("[OMC#test] | 5h:10% | session:5m | ctx:47%"), out)
         self.assertIn(" | cost $0.123", out)
         self.assertIn(" | cache 27%", out)
+        self.assertIn(" | reuse 4.0x", out)
         # token 출력의 model/dir/branch/ctx 는 OMC HUD 와 중복이라 결합 시 제거되어야 한다.
         self.assertNotIn("[Opus 4.7]", out)
         self.assertNotIn(" | main ", out)
@@ -8236,15 +8361,16 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
             omc = self._make_fake_omc_hud(tmp, "[OMC]\n\x1b[31mred\x1b[0m")
             tok = self._make_fake_token_statusline(
                 tmp,
-                "[Opus]\nbranch | cost $0.123 | cache 42%",
+                "[Opus]\nbranch | cost $0.123 | cache 42% | reuse 2.5x",
             )
             out = self._run_wrapper(omc_script=omc, tok_bin=tok)
         self.assertNotIn("\n", out)
         self.assertNotIn("\x1b", out)
-        self.assertLessEqual(len(out), 1000 + len(" | cost $0.123 | cache 42%"))
+        self.assertLessEqual(len(out), 1000 + len(" | cost $0.123 | cache 42% | reuse 2.5x"))
         self.assertIn("[OMC] red", out)
         self.assertIn(" | cost $0.123", out)
         self.assertIn(" | cache 42%", out)
+        self.assertIn(" | reuse 2.5x", out)
 
     def test_relative_missing_tmpdir_does_not_block_wrapper_input(self):
         for script in [KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "claude-token-statusline-merged"]:

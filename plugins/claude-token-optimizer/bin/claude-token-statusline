@@ -37,6 +37,19 @@ statusline_input_max_bytes() {
   printf '%s\n' "$max"
 }
 
+statusline_context_warn_threshold() {
+  local raw="${CLAUDE_TOKEN_STATUSLINE_CTX_WARN:-80}" threshold=80
+  if [[ "$raw" =~ ^[0-9]{1,3}$ ]]; then
+    threshold=$((10#$raw))
+    if (( threshold < 1 )); then
+      threshold=1
+    elif (( threshold > 100 )); then
+      threshold=100
+    fi
+  fi
+  printf '%s\n' "$threshold"
+}
+
 read_bounded_statusline_input() {
   local max input_len tmp_base
   max=$(statusline_input_max_bytes)
@@ -143,11 +156,27 @@ model=${model:-$(jq_get '.model.id')}
 model=${model:-unknown}
 model=$(sanitize_status "$model")
 
-context_pct=$(jq_get '.context_window.used_percentage')
-if [[ -n "$context_pct" ]]; then
-  context_pct=$(printf '%.0f' "$context_pct" 2>/dev/null || sanitize_status "$context_pct")
+context_raw=$(jq_get '.context_window.used_percentage')
+context_is_numeric=0
+if [[ -n "$context_raw" ]]; then
+  if context_pct=$(printf '%.0f' "$context_raw" 2>/dev/null); then
+    if [[ "$context_pct" =~ ^-?[0-9]+$ ]]; then
+      context_is_numeric=1
+    else
+      context_pct=$(sanitize_status "$context_raw")
+    fi
+  else
+    context_pct=$(sanitize_status "$context_raw")
+  fi
 else
   context_pct="?"
+fi
+context_label="${context_pct}%"
+if (( context_is_numeric )); then
+  context_warn_threshold=$(statusline_context_warn_threshold)
+  if (( context_pct >= context_warn_threshold )); then
+    context_label="${context_label} ⚠"
+  fi
 fi
 
 cost=$(jq_get '.cost.total_cost_usd')
@@ -170,14 +199,14 @@ if [[ -n "$b" ]]; then
   branch=" | ${b}"
 fi
 
-# Cache hit rate from the transcript tail (best-effort, fast — reads only the last 1MB).
+# Cache metrics from the transcript tail (best-effort, fast — reads only the last 1MB).
 # Stays empty when transcript is unavailable or python3 fails so the status line never breaks.
 # NOTE: keep the token-key list and usage-extraction shape in sync with claude_transcript_cost_audit.py
 # so the statusline metric matches the audit metric for the same transcript.
-cache_label=''
+metrics_label=''
 transcript_path=$(jq_get '.transcript_path')
 if [[ -n "$transcript_path" && -r "$transcript_path" ]] && command -v python3 >/dev/null 2>&1; then
-  rate=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF' || true
+  transcript_metrics=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF' || true
 import json
 import os
 import stat
@@ -301,16 +330,33 @@ try:
     if denom <= 0 or cache_read <= 0:
         sys.exit(0)
     pct = max(0.0, min(100.0, cache_read / denom * 100))
-    print(f"{pct:.0f}")
+    parts = [f"cache_pct={pct:.0f}"]
+    if cache_creation > 0:
+        parts.append(f"reuse_x={cache_read / cache_creation:.1f}")
+    print(" ".join(parts))
 except Exception:
     sys.exit(0)
 PYEOF
   )
-  if [[ -n "$rate" ]]; then
-    rate=$(sanitize_status "$rate")
-    cache_label=" | cache ${rate}%"
+  if [[ -n "$transcript_metrics" ]]; then
+    cache_pct=''
+    reuse_x=''
+    for metric in $transcript_metrics; do
+      case "$metric" in
+        cache_pct=*) cache_pct="${metric#cache_pct=}" ;;
+        reuse_x=*) reuse_x="${metric#reuse_x=}" ;;
+      esac
+    done
+    if [[ -n "$cache_pct" ]]; then
+      cache_pct=$(sanitize_status "$cache_pct")
+      metrics_label=" | cache ${cache_pct}%"
+      if [[ -n "$reuse_x" ]]; then
+        reuse_x=$(sanitize_status "$reuse_x")
+        metrics_label+=" | reuse ${reuse_x}x"
+      fi
+    fi
   fi
 fi
 
 # Keep it one line and cheap: this script runs locally and should not do expensive git status.
-echo "[$model] ${dir}${branch} | ctx ${context_pct}% | cost ${cost}${cache_label}"
+echo "[$model] ${dir}${branch} | ctx ${context_label} | cost ${cost}${metrics_label}"
