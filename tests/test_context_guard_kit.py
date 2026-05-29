@@ -1331,6 +1331,37 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         check=True,
                     )
                     artifact_id = json.loads(store.stdout)["artifact_id"]
+                    slash_query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            ".context-guard/artifacts/",
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "2:2",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    self.assertEqual(json.loads(slash_query.stdout)["content"], "legacy hit\n")
+
+                    new_dir = root / ".context-guard" / "artifacts"
+                    new_dir.mkdir(parents=True)
+                    new_content = "first\nnew hit\nthird\n"
+                    new_metadata = json.loads((legacy_dir / f"{artifact_id}.json").read_text(encoding="utf-8"))
+                    new_metadata["stored_output"]["bytes"] = len(new_content.encode("utf-8"))
+                    new_metadata["stored_output"]["lines"] = 3
+                    new_metadata["stored_output"]["sha256"] = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+                    (new_dir / f"{artifact_id}.txt").write_text(new_content, encoding="utf-8")
+                    (new_dir / f"{artifact_id}.json").write_text(json.dumps(new_metadata), encoding="utf-8")
+                    os.chmod(new_dir / f"{artifact_id}.txt", 0o600)
+                    os.chmod(new_dir / f"{artifact_id}.json", 0o600)
+
                     query = subprocess.run(
                         [sys.executable, str(script), "get", artifact_id, "--lines", "2:2", "--json"],
                         text=True,
@@ -1339,7 +1370,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         check=True,
                     )
                     data = json.loads(query.stdout)
-                    self.assertEqual(data["content"], "legacy hit\n")
+                    self.assertEqual(data["content"], "new hit\n")
                     listing = subprocess.run(
                         [sys.executable, str(script), "list", "--json"],
                         text=True,
@@ -2922,11 +2953,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         json.dumps({
                             "hooks": {
                                 "PreToolUse": [
-                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]},
-                                    {"matcher": "Read", "hooks": [{"type": "command", "command": "claude-token-guard-read"}]},
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 -u /tmp/claude-token-rewrite-bash"}]},
+                                    {"matcher": "Read", "hooks": [{"type": "command", "command": "bash -c 'claude-token-guard-read'"}]},
                                 ],
                                 "PostToolUse": [
-                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-failed-nudge"}]}
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "env SESSION=1 claude-token-failed-nudge"}]}
                                 ],
                             }
                         }),
@@ -2946,12 +2977,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         for hook in entry.get("hooks", [])
                         if isinstance(hook, dict) and "command" in hook
                     ]
-                    self.assertIn("claude-token-rewrite-bash", commands)
-                    self.assertIn("claude-token-guard-read", commands)
-                    self.assertIn("claude-token-failed-nudge", commands)
+                    self.assertIn("python3 -u /tmp/claude-token-rewrite-bash", commands)
+                    self.assertIn("bash -c 'claude-token-guard-read'", commands)
+                    self.assertIn("env SESSION=1 claude-token-failed-nudge", commands)
                     self.assertFalse(any(command.endswith("context-guard-rewrite-bash") for command in commands))
                     self.assertFalse(any(command.endswith("context-guard-guard-read") for command in commands))
                     self.assertFalse(any(command.endswith("context-guard-failed-nudge") for command in commands))
+
+    def test_setup_wizard_extracts_helper_basenames_from_interpreters(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_basename_test")
+        self.assertEqual(setup.command_helper_basenames("python3 -u /tmp/claude-token-rewrite-bash"), {"claude-token-rewrite-bash"})
+        self.assertEqual(setup.command_helper_basenames("bash -c 'claude-token-guard-read'"), {"claude-token-guard-read"})
+        self.assertEqual(setup.command_helper_basenames("env SESSION=1 claude-token-failed-nudge"), {"claude-token-failed-nudge"})
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
@@ -3205,6 +3242,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(json.loads(proc.stdout), {})
             self.assertIn("CLAUDE_TOKEN_SANITIZER_FAIL_OPEN=1 active", proc.stderr)
             self.assertIn("FAIL_OPEN", proc.stderr.upper())
+
+    def test_rewrite_hook_canonical_fail_open_env_overrides_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            script = tmp_path / "context-guard-rewrite-bash"
+            script.write_bytes(KIT_REWRITE.read_bytes())
+            env = os.environ.copy()
+            env["CONTEXT_GUARD_SANITIZER_FAIL_OPEN"] = "0"
+            env["CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"] = "1"
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                input=json.dumps({"tool_input": {"command": "pytest tests -q"}}),
+                text=True,
+                capture_output=True,
+                cwd=tmp_path,
+                env=env,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertNotIn("ACTIVE; LEAVING COMMAND UNCHANGED", proc.stderr.upper())
 
     def test_rewrite_hook_blocks_search_when_sanitizer_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6396,7 +6454,7 @@ for malformed in malformed_values:
                 json.dumps({
                     "model": "sonnet",
                     "effortLevel": "medium",
-                    "statusLine": {"type": "command", "command": "claude-token-statusline-merged"},
+                    "statusLine": {"type": "command", "command": "bash context-guard-kit/statusline_merged.sh"},
                     "permissions": {"deny": deny},
                     "hooks": {
                         "PreToolUse": [

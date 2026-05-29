@@ -85,9 +85,11 @@ def find_wrapper(kind: str) -> str | None:
 
 
 def fail_open_source_env() -> str | None:
-    for name in (FAIL_OPEN_ENV, LEGACY_FAIL_OPEN_ENV):
-        if os.environ.get(name, "").strip().lower() in FAIL_OPEN_VALUES:
-            return name
+    canonical_value = os.environ.get(FAIL_OPEN_ENV)
+    if canonical_value is not None:
+        return FAIL_OPEN_ENV if canonical_value.strip().lower() in FAIL_OPEN_VALUES else None
+    if os.environ.get(LEGACY_FAIL_OPEN_ENV, "").strip().lower() in FAIL_OPEN_VALUES:
+        return LEGACY_FAIL_OPEN_ENV
     return None
 
 

@@ -492,8 +492,17 @@ def command_helper_basenames(command: str) -> set[str]:
     interpreter_heads = {"bash", "sh"}
     if re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", head):
         interpreter_heads.add(head)
-    if head in interpreter_heads and index + 1 < len(parts):
-        return {os.path.basename(parts[index + 1])}
+    if head in interpreter_heads:
+        for token_index in range(index + 1, len(parts)):
+            token = parts[token_index]
+            if token == "-c":
+                if token_index + 1 < len(parts):
+                    return command_helper_basenames(parts[token_index + 1])
+                return set()
+            if token.startswith("-"):
+                continue
+            return {os.path.basename(token)}
+        return set()
     return {head}
 
 

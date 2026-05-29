@@ -5,7 +5,7 @@ All notable changes for the ContextGuard plugin are documented here.
 ## [0.2.0] - 2026-05-29
 
 - Renamed the public plugin identity to ContextGuard with `/context-guard:*` skills and `context-guard-*` helper commands.
-- Kept legacy `claude-token-*` CLI wrappers for existing automation, while documenting that the old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code.
+- Kept legacy CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) for existing automation, while documenting that the old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code.
 - Preserved artifact query compatibility by letting `context-guard-artifact get/list` read the legacy `.claude-token-optimizer/artifacts` default while new stores use `.context-guard/artifacts`.
 - Added legacy-state deny rules and legacy helper detection so setup/diet scans stay clean for users upgrading from the previous naming.
 - Documented the temporary marketplace add slug caveat: the plugin is `context-guard`, but the GitHub repository slug remains `ictechgy/claude-token-tools` until an external repo rename.

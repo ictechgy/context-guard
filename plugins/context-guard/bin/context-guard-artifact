@@ -264,7 +264,7 @@ def artifact_read_directories(raw_dir: str) -> list[Path]:
     """
     primary = normalize_allowed_first_absolute_symlink(Path(raw_dir).expanduser())
     directories = [primary]
-    if raw_dir == DEFAULT_ARTIFACT_DIR:
+    if Path(raw_dir).expanduser() == Path(DEFAULT_ARTIFACT_DIR):
         legacy = normalize_allowed_first_absolute_symlink(Path(LEGACY_ARTIFACT_DIR).expanduser())
         if legacy != primary:
             directories.append(legacy)
@@ -480,6 +480,7 @@ def list_command(args: argparse.Namespace) -> int:
             if isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(artifact_id) and artifact_id not in seen:
                 items.append(receipt_for(data))
                 seen.add(artifact_id)
+    items.sort(key=lambda item: str(item.get("artifact_id", "")))
     if args.json:
         print(json.dumps({"artifacts": items}, ensure_ascii=False, indent=2, sort_keys=True))
     else:

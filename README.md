@@ -48,7 +48,7 @@ Available skills:
 /context-guard:audit
 ```
 
-The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. The old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code; use `/context-guard:*` after installing this plugin. CLI compatibility wrappers for legacy `claude-token-*` commands still ship in `bin/`. See `plugins/context-guard/examples/settings.example.json` for an example settings file.
+The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. The old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code; use `/context-guard:*` after installing this plugin. CLI compatibility wrappers for legacy commands (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin`. See `plugins/context-guard/examples/settings.example.json` for an example settings file.
 
 ## Local testing from this repository
 
@@ -81,7 +81,7 @@ context-guard-setup --plan
 
 ## Helper commands
 
-The primary helper prefix is now `context-guard-*`. Legacy `claude-token-*` wrappers remain in `bin/` so existing automation keeps working during the rebrand.
+The primary helper prefix is now `context-guard-*`. Legacy wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) remain in `bin/` so existing automation keeps working during the rebrand.
 
 Most users should start with `/context-guard:setup`. The commands below are useful for local testing, automation, or targeted debugging.
 

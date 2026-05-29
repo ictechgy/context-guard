@@ -104,6 +104,7 @@ STATUSLINE_COMMAND_MARKERS = (
     "context-guard-statusline",
     "claude-token-statusline",
     "statusline.sh",
+    "statusline_merged.sh",
 )
 
 

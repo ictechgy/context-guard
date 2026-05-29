@@ -5,8 +5,9 @@ A Claude Code plugin with skills and local helper commands for keeping context s
 Start with `/context-guard:setup`. It applies project-local settings for safe defaults, then prints a read-only diet scan summary of remaining gaps. The plugin does not mutate global Claude settings and does not configure external AI offload.
 
 Rebrand note: Claude Code does not alias the old `/claude-token-optimizer:*`
-plugin slash-command namespace. Use `/context-guard:*`; legacy `claude-token-*`
-CLI wrappers remain in `bin/` for existing automation.
+plugin slash-command namespace. Use `/context-guard:*`; legacy wrappers
+(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and
+`claude-sanitize-output`) remain in `bin/` for existing automation.
 
 ## Skills
 
@@ -20,7 +21,7 @@ After installation, use:
 
 ## Helper commands
 
-The primary helper prefix is now `context-guard-*`. Legacy `claude-token-*` wrappers remain in `bin/` so existing automation keeps working during the rebrand.
+The primary helper prefix is now `context-guard-*`. Legacy wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) remain in `bin/` so existing automation keeps working during the rebrand.
 
 The plugin includes executables under `bin/`. Claude Code can call them from plugin skills, but your normal shell may not automatically add plugin `bin/` to `PATH`. If a command is not found, either run it by path from this repository root or add the bin directory to `PATH` for the current shell:
 

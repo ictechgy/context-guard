@@ -48,7 +48,7 @@ marketplace add slug를 `ictechgy/context-guard`로 바꿀 수 있습니다.
 /context-guard:audit
 ```
 
-플러그인은 설치만으로 전역 훅을 자동 활성화하지 않습니다. 설정은 프로젝트 단위이며 사용자가 명시적으로 적용해야 합니다. 외부 AI 위임/offload도 설정하지 않습니다. 토큰 절감 헬퍼는 로컬에서 동작합니다. 예전 `/claude-token-optimizer:*` 플러그인 slash-command namespace는 Claude Code에서 alias되지 않으므로 설치 후에는 `/context-guard:*`를 사용하세요. 기존 자동화용 legacy `claude-token-*` CLI wrapper는 `bin/`에 계속 포함됩니다. 예시는 `plugins/context-guard/examples/settings.example.json`을 참고하세요.
+플러그인은 설치만으로 전역 훅을 자동 활성화하지 않습니다. 설정은 프로젝트 단위이며 사용자가 명시적으로 적용해야 합니다. 외부 AI 위임/offload도 설정하지 않습니다. 토큰 절감 헬퍼는 로컬에서 동작합니다. 예전 `/claude-token-optimizer:*` 플러그인 slash-command namespace는 Claude Code에서 alias되지 않으므로 설치 후에는 `/context-guard:*`를 사용하세요. 기존 자동화용 legacy CLI wrapper(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 `bin/`에 계속 포함됩니다. 예시는 `plugins/context-guard/examples/settings.example.json`을 참고하세요.
 
 ## 저장소에서 로컬 테스트
 
@@ -81,7 +81,7 @@ context-guard-setup --plan
 
 ## 자주 쓰는 헬퍼 명령
 
-기본 헬퍼 명령 prefix는 이제 `context-guard-*`입니다. 기존 자동화가 깨지지 않도록 legacy `claude-token-*` wrapper도 `bin/`에 함께 남겨둡니다.
+기본 헬퍼 명령 prefix는 이제 `context-guard-*`입니다. 기존 자동화가 깨지지 않도록 legacy wrapper(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)도 `bin/`에 함께 남겨둡니다.
 
 대부분의 사용자는 `/context-guard:setup`부터 시작하면 됩니다. 아래 명령은 로컬 테스트, 자동화, 특정 문제 진단에 유용합니다.
 
