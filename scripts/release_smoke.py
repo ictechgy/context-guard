@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free smoke gate for the packaged Claude token optimizer plugin."""
+"""Dependency-free smoke gate for the packaged ContextGuard plugin."""
 from __future__ import annotations
 
 import argparse
@@ -19,8 +19,8 @@ from typing import Any, Callable, NamedTuple, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
-PLUGIN_BIN = ROOT / "plugins" / "claude-token-optimizer" / "bin"
+PLUGIN_DIR = ROOT / "plugins" / "context-guard"
+PLUGIN_BIN = ROOT / "plugins" / "context-guard" / "bin"
 PACKAGE_REQUIRED_FILES = (".claude-plugin/plugin.json",)
 PACKAGE_REQUIRED_DIRS = ("bin", "lib", "skills")
 PACKAGE_COPY_IGNORE_NAMES = {
@@ -31,11 +31,25 @@ PACKAGE_COPY_IGNORE_NAMES = {
     ".DS_Store",
 }
 REQUIRED_COMMANDS = (
-    "claude-token-setup",
-    "claude-token-diet",
-    "claude-token-audit",
+    "context-guard-setup",
+    "context-guard-diet",
+    "context-guard-audit",
 )
 ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
+    "context-guard-read-symbol": {"args": ["--help"], "mode": "text"},
+    "context-guard-sanitize-output": {"args": ["--help"], "mode": "text"},
+    "context-guard-artifact": {"args": ["--help"], "mode": "text"},
+    "context-guard-audit": {"args": ["--help"], "mode": "text"},
+    "context-guard-bench": {"args": ["--help"], "mode": "text"},
+    "context-guard-diet": {"args": ["--help"], "mode": "text"},
+    "context-guard-failed-nudge": {"args": [], "mode": "hook-json"},
+    "context-guard-guard-read": {"args": [], "mode": "hook-json"},
+    "context-guard-rewrite-bash": {"args": [], "mode": "hook-json"},
+    "context-guard-setup": {"args": ["--help"], "mode": "text"},
+    "context-guard-statusline": {"args": [], "mode": "statusline"},
+    "context-guard-statusline-merged": {"args": [], "mode": "statusline"},
+    "context-guard-trim-output": {"args": ["--help"], "mode": "text"},
+    # Legacy wrappers kept so existing automation does not break during the rebrand.
     "claude-read-symbol": {"args": ["--help"], "mode": "text"},
     "claude-sanitize-output": {"args": ["--help"], "mode": "text"},
     "claude-token-artifact": {"args": ["--help"], "mode": "text"},
@@ -407,7 +421,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
     launch_plan = entrypoint_smoke_plan(plugin_bin)
 
-    with tempfile.TemporaryDirectory(prefix="claude-token-release-smoke-") as td:
+    with tempfile.TemporaryDirectory(prefix="context-guard-release-smoke-") as td:
         project = Path(td) / "project"
         smoke_home = Path(td) / "home"
         smoke_tmp = Path(td) / "tmp"
@@ -420,30 +434,30 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         env = smoke_environment(smoke_home, smoke_tmp)
 
         run_command(
-            [str(commands["claude-token-setup"]), "--root", str(project), "--plan", "--json"],
+            [str(commands["context-guard-setup"]), "--root", str(project), "--plan", "--json"],
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: (
-                check_json_field(load_json(proc.stdout, "claude-token-setup"), "applied", False, "claude-token-setup")
+                check_json_field(load_json(proc.stdout, "context-guard-setup"), "applied", False, "context-guard-setup")
             ),
         )
         run_command(
-            [str(commands["claude-token-diet"]), "scan", str(project), "--json"],
+            [str(commands["context-guard-diet"]), "scan", str(project), "--json"],
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: (
-                check_json_field(load_json(proc.stdout, "claude-token-diet"), "tool", "claude-token-diet", "claude-token-diet")
+                check_json_field(load_json(proc.stdout, "context-guard-diet"), "tool", "context-guard-diet", "context-guard-diet")
             ),
         )
         run_command(
-            [str(commands["claude-token-audit"]), str(project), "--json"],
+            [str(commands["context-guard-audit"]), str(project), "--json"],
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: (
-                check_json_field(load_json(proc.stdout, "claude-token-audit"), "records", 1, "claude-token-audit")
+                check_json_field(load_json(proc.stdout, "context-guard-audit"), "records", 1, "context-guard-audit")
             ),
         )
         for name, plan in launch_plan.items():
@@ -497,8 +511,8 @@ def main() -> int:
     if args.plugin_bin is not None:
         run_smoke(args.plugin_bin, args.timeout)
     else:
-        with tempfile.TemporaryDirectory(prefix="claude-token-package-smoke-") as td:
-            staged = copy_plugin_package_for_smoke(args.plugin_dir, Path(td) / "claude-token-optimizer")
+        with tempfile.TemporaryDirectory(prefix="context-guard-package-smoke-") as td:
+            staged = copy_plugin_package_for_smoke(args.plugin_dir, Path(td) / "context-guard")
             run_smoke(staged / "bin", args.timeout)
     print("release smoke: OK")
     return 0

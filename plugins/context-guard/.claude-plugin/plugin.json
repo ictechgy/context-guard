@@ -1,0 +1,33 @@
+{
+  "name": "context-guard",
+  "description": "ContextGuard keeps Claude Code context lean, safe, and auditable with project-local setup, context scans, large-read guards, output trimming/sanitizing, queryable log artifacts, statusline visibility, and usage audits.",
+  "author": {
+    "name": "jinhongan"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "context-safety",
+    "context-hygiene",
+    "context-guard",
+    "claude-code",
+    "tokens",
+    "cost",
+    "context",
+    "settings",
+    "diet",
+    "read-symbol",
+    "large-read-guard",
+    "statusline",
+    "hooks",
+    "sanitize-output",
+    "grep-sanitizer",
+    "diff-sanitizer",
+    "secret-redaction",
+    "setup-wizard",
+    "interactive-setup",
+    "artifact-escrow",
+    "context-escrow",
+    "queryable-logs"
+  ],
+  "version": "0.1.1"
+}

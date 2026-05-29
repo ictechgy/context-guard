@@ -1,4 +1,4 @@
-# claude-token-tools
+# ContextGuard
 
 A Claude Code plugin and local helper toolkit for keeping Claude Code context small, focused, and safer to share with the model.
 
@@ -6,7 +6,7 @@ Korean documentation: [`README.ko.md`](README.ko.md)
 
 ## TL;DR
 
-Install the plugin, run `/claude-token-optimizer:setup` in a project, and Claude Code gets project-local guardrails for noisy command output, large file reads, repeated failed attempts, and secret-like grep/diff results — without touching global settings.
+Install the plugin, run `/context-guard:setup` in a project, and Claude Code gets project-local guardrails for noisy command output, large file reads, repeated failed attempts, and secret-like grep/diff results — without touching global settings.
 
 This project is intentionally conservative about claims: it reduces common sources of token waste, and includes benchmark tooling for measuring real savings on your own tasks. It does **not** claim a fixed percentage reduction for every repository.
 
@@ -26,69 +26,71 @@ This project is intentionally conservative about claims: it reduces common sourc
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ictechgy/claude-token-tools
-/plugin install claude-token-optimizer@claude-token-tools
+/plugin marketplace add ictechgy/context-guard
+/plugin install context-guard@context-guard
 ```
 
 Then run the guided setup inside Claude Code:
 
 ```text
-/claude-token-optimizer:setup
+/context-guard:setup
 ```
 
 Available skills:
 
 ```text
-/claude-token-optimizer:setup
-/claude-token-optimizer:optimize
-/claude-token-optimizer:audit
+/context-guard:setup
+/context-guard:optimize
+/context-guard:audit
 ```
 
-The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. See `plugins/claude-token-optimizer/examples/settings.example.json` for an example settings file.
+The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. See `plugins/context-guard/examples/settings.example.json` for an example settings file.
 
 ## Local testing from this repository
 
 Run Claude Code with the plugin directory:
 
 ```bash
-claude --plugin-dir ./plugins/claude-token-optimizer
+claude --plugin-dir ./plugins/context-guard
 ```
 
 To test marketplace installation from the repository root:
 
 ```text
 /plugin marketplace add ./
-/plugin install claude-token-optimizer@claude-token-tools
+/plugin install context-guard@context-guard
 ```
 
 Plugin helper binaries are not added to `PATH` by default. For local testing, invoke them using their full path:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-token-setup --plan
-./plugins/claude-token-optimizer/bin/claude-token-setup --yes
+./plugins/context-guard/bin/context-guard-setup --plan
+./plugins/context-guard/bin/context-guard-setup --yes
 ```
 
 To use shorter commands during local development, add the plugin bin directory to your `PATH`:
 
 ```bash
-export PATH="$PWD/plugins/claude-token-optimizer/bin:$PATH"
-claude-token-setup --plan
+export PATH="$PWD/plugins/context-guard/bin:$PATH"
+context-guard-setup --plan
 ```
 
 ## Helper commands
 
-Most users should start with `/claude-token-optimizer:setup`. The commands below are useful for local testing, automation, or targeted debugging.
+The primary helper prefix is now `context-guard-*`. Legacy `claude-token-*` wrappers remain in `bin/` so existing automation keeps working during the rebrand.
+
+Most users should start with `/context-guard:setup`. The commands below are useful for local testing, automation, or targeted debugging.
 
 Scan project context hygiene:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-token-diet scan .
+./plugins/context-guard/bin/context-guard-diet scan .
 ```
 
 Read a symbol instead of an entire large file:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-read-symbol path/to/file.py TargetSymbol
+./plugins/context-guard/bin/context-guard-read-symbol path/to/file.py TargetSymbol
 ```
 
 The optional Read guard now returns a progressive ladder for oversized files:
@@ -100,19 +102,19 @@ path.
 Store a large sanitized log outside the conversation and query exact slices later:
 
 ```bash
-long-command 2>&1 | ./plugins/claude-token-optimizer/bin/claude-token-artifact store --command "long-command" --json
-./plugins/claude-token-optimizer/bin/claude-token-artifact get <artifact_id> --lines 1:80
+long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --command "long-command" --json
+./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
 ```
 
 Pipeline mode is for capture/query. Preserve the producer command's exit code
 explicitly (for example with shell `pipefail` or a saved `$?`) when using it in
-release checks; use `claude-trim-output -- ...` when exit-code preservation is
+release checks; use `context-guard-trim-output -- ...` when exit-code preservation is
 the primary need.
 
 Trim long test/build logs while preserving the exit code of the wrapped command:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-trim-output --max-lines 120 -- npm test
+./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
 Use `--digest markdown` or `--digest json` when you want a compact semantic digest
@@ -125,14 +127,14 @@ or stuck command cannot hang a Claude session indefinitely.
 Sanitize search or diff output before sending it to Claude:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-sanitize-output -- rg -n "TOKEN|SECRET" .
-./plugins/claude-token-optimizer/bin/claude-sanitize-output -- git diff
+./plugins/context-guard/bin/context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
+./plugins/context-guard/bin/context-guard-sanitize-output -- git diff
 ```
 
 Audit local Claude transcript usage:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-token-audit ~/.claude/projects --top 20 --recommend
+./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
 The audit command skips oversized transcript files/JSONL records by default
@@ -150,12 +152,12 @@ bounded transcript tail and stays hidden until there is at least one cache
 read. `reuse X.Yx` is `cache_read / cache_creation` and is shown only when
 cache read is positive and cache creation is non-zero. The `⚠` marker appears
 when context usage reaches the warning threshold, defaulting to 80%; set
-`CLAUDE_TOKEN_STATUSLINE_CTX_WARN=90` to tune it for a project or shell.
+`CONTEXT_GUARD_STATUSLINE_CTX_WARN=90` to tune it for a project or shell.
 
 Run a repeatable A/B token-savings benchmark and keep cost-shift evidence:
 
 ```bash
-./plugins/claude-token-optimizer/bin/claude-token-bench \
+./plugins/context-guard/bin/context-guard-bench \
   --tasks bench/tasks.json --variants bench/variants.json --csv bench/results.csv \
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
@@ -177,8 +179,8 @@ guardrails regress.
 ## Repository layout
 
 - `.claude-plugin/marketplace.json` — Claude Code marketplace manifest
-- `plugins/claude-token-optimizer/` — installable Claude Code plugin package
-- `claude-token-kit/` — underlying Python/Bash helper tools
+- `plugins/context-guard/` — installable Claude Code plugin package
+- `context-guard-kit/` — underlying Python/Bash helper tools
 - `tests/` — regression tests for helper behavior
 
 ## Release checks
@@ -190,7 +192,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-`prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` then executes representative packaged entrypoints from `plugins/claude-token-optimizer/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
+`prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` then executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
 
 Versioned release notes live in [CHANGELOG.md](CHANGELOG.md); the prepublish gate requires an entry matching the plugin manifest version before publishing.
 

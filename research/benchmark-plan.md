@@ -114,7 +114,7 @@ date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,outpu
 2026-05-01,2.x,t01,baseline,opus,xhigh,0,0,0,0,0,0,true,0,0,0,0,0,0,0,true,0,true,0,
 ```
 
-`claude-token-bench --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json`
+`context-guard-bench --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json`
 를 사용하면 각 run의 cost-shift ledger와 baseline 대비 A/B report를 함께 남긴다. report의
 `claim_status`는 실제 성공 run의 token/cost 지표를 기준으로 하며, byte 절감은 별도 caveat로
 분리된다. cost field가 0이거나 없으면 token 절감만 별도 상태로 표시하고 shifted-cost

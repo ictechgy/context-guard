@@ -1,0 +1,66 @@
+{
+  "model": "sonnet",
+  "effortLevel": "medium",
+  "statusLine": {
+    "type": "command",
+    "command": "context-guard-statusline-merged"
+  },
+  "permissions": {
+    "deny": [
+      "Read(./node_modules/**)",
+      "Read(./dist/**)",
+      "Read(./build/**)",
+      "Read(./coverage/**)",
+      "Read(./logs/**)",
+      "Read(./tmp/**)",
+      "Read(./target/**)",
+      "Read(./.next/**)",
+      "Read(./.venv/**)",
+      "Read(./vendor/**)",
+      "Read(./.npmrc)",
+      "Read(./.pypirc)",
+      "Read(./.netrc)",
+      "Read(./.context-guard/**)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.docker/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-guard-rewrite-bash"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-guard-guard-read"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-guard-failed-nudge"
+          }
+        ]
+      }
+    ]
+  }
+}
