@@ -159,7 +159,7 @@ model=$(sanitize_status "$model")
 context_raw=$(jq_get '.context_window.used_percentage')
 context_is_numeric=0
 if [[ -n "$context_raw" ]]; then
-  if context_pct=$(printf '%.0f' "$context_raw" 2>/dev/null); then
+  if context_pct=$(LC_NUMERIC=C printf '%.0f' "$context_raw" 2>/dev/null); then
     if [[ "$context_pct" =~ ^-?[0-9]+$ ]]; then
       context_is_numeric=1
     else
