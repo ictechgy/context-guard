@@ -60,20 +60,20 @@ Before merge or publish, capture enough evidence that another maintainer can rep
 
 Before publishing a versioned artifact, verify:
 
-- `plugins/claude-token-optimizer/.claude-plugin/plugin.json` has the intended version.
+- `plugins/context-guard/.claude-plugin/plugin.json` has the intended version.
 - Repository-root `.claude-plugin/marketplace.json` lists the same plugin version and `Apache-2.0` license.
 - Repository-root `CHANGELOG.md` contains a release-notes entry for that exact plugin version.
 - `scripts/prepublish_check.py` passes without path overrides.
-- No generated caches, logs, or symlinks are inside `plugins/claude-token-optimizer/`.
+- No generated caches, logs, or symlinks are inside `plugins/context-guard/`.
 
 ## Clean-install smoke coverage
 
 `release_smoke.py` automates the read-only subset of the clean-install smoke by staging the plugin into a temporary package copy and running:
 
 ```bash
-claude-token-setup --plan --json
-claude-token-diet scan . --json
-claude-token-audit <temporary-project> --json
+context-guard-setup --plan --json
+context-guard-diet scan . --json
+context-guard-audit <temporary-project> --json
 ```
 
 The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. If you perform an additional manual smoke after installing a marketplace artifact, run the same commands from a clean project and compare the success shape against the automated gate rather than bypassing it.

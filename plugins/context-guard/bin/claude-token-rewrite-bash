@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Legacy ContextGuard compatibility wrapper. Prefer `context-guard-rewrite-bash`.
+set -eu
+script_dir=$(dirname "$0")
+script_dir=$(cd "$script_dir" && pwd)
+exec "$script_dir/context-guard-rewrite-bash" "$@"

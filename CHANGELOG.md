@@ -1,6 +1,14 @@
 # Changelog
 
-All notable changes for the Claude token optimizer plugin are documented here.
+All notable changes for the ContextGuard plugin are documented here.
+
+## [0.2.0] - 2026-05-29
+
+- Renamed the public plugin identity to ContextGuard with `/context-guard:*` skills and `context-guard-*` helper commands.
+- Kept legacy CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) for existing automation, while documenting that the old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code.
+- Preserved artifact query compatibility by letting `context-guard-artifact get/list` read the legacy `.claude-token-optimizer/artifacts` default while new stores use `.context-guard/artifacts`.
+- Added legacy-state deny rules and legacy helper detection so setup/diet scans stay clean for users upgrading from the previous naming.
+- Documented the temporary marketplace add slug caveat: the plugin is `context-guard`, but the GitHub repository slug remains `ictechgy/claude-token-tools` until an external repo rename.
 
 ## [0.1.1] - 2026-05-29
 
@@ -13,7 +21,7 @@ All notable changes for the Claude token optimizer plugin are documented here.
 
 - Initial marketplace-ready Claude Code plugin packaging for token reduction helpers, statusline integration, large-read guards, repeated-failure nudges, transcript auditing, and setup planning.
 - Recommended setup enables the repeated-failure nudge by default, with `--no-failed-attempt-nudge` for projects that prefer a quieter hook set.
-- Recommended setup now runs a read-only post-apply `claude-token-diet scan` and prints a summary by default, with `--no-diet-scan` for automation that only wants settings changes.
+- Recommended setup now runs a read-only post-apply `context-guard-diet scan` and prints a summary by default, with `--no-diet-scan` for automation that only wants settings changes.
 - Added release gates for source/plugin binary parity, manifest consistency, package cleanliness, Python compilation, shell syntax checks, full regression tests, and staged plugin smoke execution.
 - Hardened helper execution and file handling around symlink rejection, no-follow/nonblocking reads, bounded subprocess output, process-group teardown, diagnostic redaction, and owner-only setup/config writes.
 - Documented the release runbook, evidence checklist, rollback policy, and clean-install smoke expectations used before publishing.

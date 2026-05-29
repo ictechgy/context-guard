@@ -1,16 +1,19 @@
 {
-  "name": "claude-token-tools",
-  "description": "Marketplace for Claude Code token and context reduction tools.",
+  "name": "context-guard",
+  "description": "Marketplace for ContextGuard: Claude Code context hygiene, token/cost visibility, and local guardrails.",
   "owner": {
     "name": "jinhongan"
   },
   "plugins": [
     {
-      "name": "claude-token-optimizer",
-      "source": "./plugins/claude-token-optimizer",
-      "description": "Skills and local helper commands for reducing Claude Code token usage, including interactive setup, settings/context scanning, large-read guards, queryable artifact escrow, and grep/diff sanitizing before Claude sees secrets.",
+      "name": "context-guard",
+      "source": "./plugins/context-guard",
+      "description": "ContextGuard keeps Claude Code context lean, safe, and auditable with project-local setup, context scans, large-read guards, output trimming/sanitizing, queryable log artifacts, statusline visibility, and usage audits.",
       "license": "Apache-2.0",
       "keywords": [
+        "context-safety",
+        "context-hygiene",
+        "context-guard",
         "claude-code",
         "tokens",
         "cost",
@@ -32,6 +35,9 @@
       ],
       "category": "developer-tools",
       "tags": [
+        "context-safety",
+        "context-hygiene",
+        "context-guard",
         "token-optimization",
         "cost-management",
         "context-management",
@@ -45,7 +51,7 @@
         "context-escrow",
         "queryable-logs"
       ],
-      "version": "0.1.1"
+      "version": "0.2.0"
     }
   ]
 }

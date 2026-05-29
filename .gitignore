@@ -4,6 +4,8 @@ HANDOFF.md
 .omc/
 .remember/
 .omx/
+.context-guard/
+# Legacy state dir from pre-ContextGuard releases
 .claude-token-optimizer/
 .serena/
 

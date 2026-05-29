@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repository-local release gate for the Claude token optimizer plugin.
+"""Repository-local release gate for the ContextGuard plugin.
 
 The check is intentionally dependency-free so it can run in GitHub Actions and
 from a maintainer shell before publishing the marketplace/plugin package.
@@ -20,8 +20,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-KIT_DIR = ROOT / "claude-token-kit"
-PLUGIN_DIR = ROOT / "plugins" / "claude-token-optimizer"
+KIT_DIR = ROOT / "context-guard-kit"
+PLUGIN_DIR = ROOT / "plugins" / "context-guard"
 PLUGIN_BIN = PLUGIN_DIR / "bin"
 PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
@@ -36,10 +36,12 @@ PATH_OVERRIDE_ENVS = (
     "CLAUDE_TOKEN_PREPUBLISH_SKILLS_DIR",
 )
 BASH_ALLOWED_TOOL_RE = re.compile(r"Bash\(([^)]*)\)")
-PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:claude-token-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
+PLUGIN_HELPER_COMMAND_RE = re.compile(r"^(?:(?:context-guard|claude-token)-|claude-(?:read-symbol|trim-output|sanitize-output)$)")
 FORBIDDEN_SKILL_ALLOWED_HELPERS = {
     # These wrappers intentionally execute an arbitrary trailing command. They
     # are useful as examples but are too broad for skill frontmatter grants.
+    "context-guard-trim-output",
+    "context-guard-sanitize-output",
     "claude-trim-output",
     "claude-sanitize-output",
 }
@@ -61,19 +63,19 @@ SENSITIVE_LABEL_RE = re.compile(
 PATH_LABEL_MAX_CHARS = 160
 
 IMPLEMENTATION_PAIRS = (
-    ("benchmark_runner.py", "claude-token-bench"),
-    ("context_escrow.py", "claude-token-artifact"),
-    ("claude_transcript_cost_audit.py", "claude-token-audit"),
-    ("claude_token_diet.py", "claude-token-diet"),
-    ("failed_attempt_nudge.py", "claude-token-failed-nudge"),
-    ("guard_large_read.py", "claude-token-guard-read"),
-    ("read_symbol.py", "claude-read-symbol"),
-    ("rewrite_bash_for_token_budget.py", "claude-token-rewrite-bash"),
-    ("sanitize_output.py", "claude-sanitize-output"),
-    ("setup_wizard.py", "claude-token-setup"),
-    ("statusline.sh", "claude-token-statusline"),
-    ("statusline_merged.sh", "claude-token-statusline-merged"),
-    ("trim_command_output.py", "claude-trim-output"),
+    ("benchmark_runner.py", "context-guard-bench"),
+    ("context_escrow.py", "context-guard-artifact"),
+    ("claude_transcript_cost_audit.py", "context-guard-audit"),
+    ("context_guard_diet.py", "context-guard-diet"),
+    ("failed_attempt_nudge.py", "context-guard-failed-nudge"),
+    ("guard_large_read.py", "context-guard-guard-read"),
+    ("read_symbol.py", "context-guard-read-symbol"),
+    ("rewrite_bash_for_token_budget.py", "context-guard-rewrite-bash"),
+    ("sanitize_output.py", "context-guard-sanitize-output"),
+    ("setup_wizard.py", "context-guard-setup"),
+    ("statusline.sh", "context-guard-statusline"),
+    ("statusline_merged.sh", "context-guard-statusline-merged"),
+    ("trim_command_output.py", "context-guard-trim-output"),
 )
 HELPER_PAIRS = (
     ("hook_secret_patterns.py", "lib/hook_secret_patterns.py"),
@@ -261,7 +263,7 @@ def check_manifest() -> dict:
     for key in ("name", "description", "version", "license"):
         if not isinstance(plugin.get(key), str) or not plugin[key].strip():
             fail(f"plugin manifest missing non-empty string field: {key}")
-    if plugin["name"] != "claude-token-optimizer":
+    if plugin["name"] != "context-guard":
         fail(f"unexpected plugin name: {plugin['name']}")
     if plugin["license"] != "Apache-2.0":
         fail(f"unexpected plugin license: {plugin['license']}")
@@ -271,8 +273,8 @@ def check_manifest() -> dict:
         fail("marketplace manifest must contain at least one plugin")
     entry = next((item for item in plugins if isinstance(item, dict) and item.get("name") == plugin["name"]), None)
     if entry is None:
-        fail("marketplace manifest does not list claude-token-optimizer")
-    if entry.get("source") != "./plugins/claude-token-optimizer":
+        fail("marketplace manifest does not list context-guard")
+    if entry.get("source") != "./plugins/context-guard":
         fail(f"unexpected marketplace source: {entry.get('source')!r}")
     if entry.get("version") != plugin["version"]:
         fail(f"marketplace/plugin version mismatch: {entry.get('version')} != {plugin['version']}")
@@ -445,7 +447,7 @@ def check_python_compiles() -> None:
     # Shell wrappers are skipped by py_compile. Compile to a private temp
     # directory so a release gate does not dirty the source tree with
     # __pycache__ artifacts before packaging.
-    with tempfile.TemporaryDirectory(prefix="claude-token-prepublish-pyc-") as td:
+    with tempfile.TemporaryDirectory(prefix="context-guard-prepublish-pyc-") as td:
         pyc_dir = Path(td)
         for kit_name in [name for name, _bin_name in IMPLEMENTATION_PAIRS] + [name for name, _rel in HELPER_PAIRS]:
             path = KIT_DIR / kit_name
@@ -461,7 +463,7 @@ def run_tests() -> None:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "tests" / "test_claude_token_kit.py")],
+        [sys.executable, str(ROOT / "tests" / "test_context_guard_kit.py")],
         cwd=ROOT,
         text=True,
         env=env,
