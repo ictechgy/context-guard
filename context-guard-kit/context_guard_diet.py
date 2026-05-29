@@ -62,6 +62,7 @@ HEAVY_PROJECT_DENIES: tuple[tuple[str, str, str], ...] = (
     (".venv", ".venv", "Read(./.venv/**)"),
     ("vendor", "vendor", "Read(./vendor/**)"),
     (".context-guard", ".context-guard", "Read(./.context-guard/**)"),
+    (".claude-token-optimizer", ".claude-token-optimizer", "Read(./.claude-token-optimizer/**)"),
 )
 SENSITIVE_PROJECT_DENIES: tuple[tuple[str, str, str], ...] = (
     (".env", ".env", "Read(./.env)"),
@@ -89,6 +90,21 @@ SECRET_CONTENT_RE = re.compile(
     r")"
 )
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
+BASH_TRIM_COMMAND_MARKERS = (
+    "context-guard-rewrite-bash",
+    "claude-token-rewrite-bash",
+    "rewrite_bash_for_token_budget.py",
+)
+LARGE_READ_GUARD_COMMAND_MARKERS = (
+    "context-guard-guard-read",
+    "claude-token-guard-read",
+    "guard_large_read.py",
+)
+STATUSLINE_COMMAND_MARKERS = (
+    "context-guard-statusline",
+    "claude-token-statusline",
+    "statusline.sh",
+)
 
 
 @dataclass
@@ -573,7 +589,7 @@ def has_bash_trim_hook(settings: dict[str, Any]) -> bool:
             + string_values(entry.get("command"))
             + string_values(entry.get("commands"))
         )
-        if any("context-guard-rewrite-bash" in cmd or "rewrite_bash_for_token_budget.py" in cmd for cmd in commands):
+        if any(any(marker in cmd for marker in BASH_TRIM_COMMAND_MARKERS) for cmd in commands):
             return True
     return False
 
@@ -601,7 +617,7 @@ def has_large_read_guard(settings: dict[str, Any]) -> bool:
             + string_values(entry.get("command"))
             + string_values(entry.get("commands"))
         )
-        if any("context-guard-guard-read" in cmd or "guard_large_read.py" in cmd for cmd in commands):
+        if any(any(marker in cmd for marker in LARGE_READ_GUARD_COMMAND_MARKERS) for cmd in commands):
             return True
     return False
 
@@ -616,7 +632,7 @@ def has_statusline(settings: dict[str, Any]) -> bool:
     if not isinstance(status, dict):
         return False
     command = status.get("command")
-    return isinstance(command, str) and ("context-guard-statusline" in command or "statusline.sh" in command)
+    return isinstance(command, str) and any(marker in command for marker in STATUSLINE_COMMAND_MARKERS)
 
 
 def should_scan_context_file(path: Path, root: Path) -> bool:

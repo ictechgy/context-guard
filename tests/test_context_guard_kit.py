@@ -1315,6 +1315,43 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertEqual(json.loads(listing.stdout)["artifacts"][0]["artifact_id"], artifact_id)
 
+    def test_artifact_escrow_default_reads_legacy_artifact_directory(self):
+        raw = "first\nlegacy hit\nthird\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    legacy_dir = root / ".claude-token-optimizer" / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(legacy_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    artifact_id = json.loads(store.stdout)["artifact_id"]
+                    query = subprocess.run(
+                        [sys.executable, str(script), "get", artifact_id, "--lines", "2:2", "--json"],
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    data = json.loads(query.stdout)
+                    self.assertEqual(data["content"], "legacy hit\n")
+                    listing = subprocess.run(
+                        [sys.executable, str(script), "list", "--json"],
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    self.assertEqual(
+                        [item["artifact_id"] for item in json.loads(listing.stdout)["artifacts"]],
+                        [artifact_id],
+                    )
+
     def test_artifact_escrow_store_is_bounded_by_max_bytes(self):
         for script in ARTIFACT_SCRIPTS:
             with self.subTest(script=script):
@@ -2046,6 +2083,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("context-guard-statusline-merged", settings["statusLine"]["command"])
                     deny = settings["permissions"]["deny"]
                     self.assertIn("Read(./node_modules/**)", deny)
+                    self.assertIn("Read(./.claude-token-optimizer/**)", deny)
                     self.assertIn("Read(./.env)", deny)
                     commands = json.dumps(settings["hooks"])
                     self.assertIn("context-guard-rewrite-bash", commands)
@@ -2828,7 +2866,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotEqual(proc.returncode, 0)
                     self.assertIn("Refusing to replace", proc.stderr)
 
-    def test_setup_wizard_hook_dedup_uses_matcher_and_exact_command(self):
+    def test_setup_wizard_hook_dedup_uses_matcher_and_helper_basename(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             settings_path = root / ".claude" / "settings.json"
@@ -2871,7 +2909,49 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 if isinstance(hook, dict) and "command" in hook
             ]
             self.assertIn("context-guard-rewrite-bash-v2", bash_commands)
-            self.assertEqual(sum(command.endswith("context-guard-rewrite-bash") for command in all_commands), 2)
+            self.assertEqual(sum(command.endswith("context-guard-rewrite-bash") for command in all_commands), 1)
+
+    def test_setup_wizard_dedupes_legacy_helper_aliases(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_path = root / ".claude" / "settings.json"
+                    settings_path.parent.mkdir()
+                    settings_path.write_text(
+                        json.dumps({
+                            "hooks": {
+                                "PreToolUse": [
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]},
+                                    {"matcher": "Read", "hooks": [{"type": "command", "command": "claude-token-guard-read"}]},
+                                ],
+                                "PostToolUse": [
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-failed-nudge"}]}
+                                ],
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                    subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--no-diet-scan"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                    commands = [
+                        hook["command"]
+                        for event in settings["hooks"].values()
+                        for entry in event
+                        for hook in entry.get("hooks", [])
+                        if isinstance(hook, dict) and "command" in hook
+                    ]
+                    self.assertIn("claude-token-rewrite-bash", commands)
+                    self.assertIn("claude-token-guard-read", commands)
+                    self.assertIn("claude-token-failed-nudge", commands)
+                    self.assertFalse(any(command.endswith("context-guard-rewrite-bash") for command in commands))
+                    self.assertFalse(any(command.endswith("context-guard-guard-read") for command in commands))
+                    self.assertFalse(any(command.endswith("context-guard-failed-nudge") for command in commands))
 
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
@@ -3093,8 +3173,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_rewrite_hook_avoids_double_wrapping(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
             with self.subTest(script=script):
-                self.assertEqual(hook_json(script, "context-guard-trim-output --max-lines 10 -- pytest"), {})
-                self.assertEqual(hook_json(script, "context-guard-sanitize-output --max-lines 10 -- git diff"), {})
+                for command in [
+                    "context-guard-trim-output --max-lines 10 -- pytest",
+                    "context-guard-sanitize-output --max-lines 10 -- git diff",
+                    "claude-trim-output --max-lines 10 -- pytest",
+                    "claude-sanitize-output --max-lines 10 -- git diff",
+                ]:
+                    with self.subTest(command=command):
+                        self.assertEqual(hook_json(script, command), {})
 
     def test_rewrite_hook_blocks_noisy_when_wrapper_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3117,6 +3203,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             env["CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"] = "1"
             proc = run_hook_payload(script, {"tool_input": {"command": "pytest tests -q"}}, cwd=tmp_path, env=env)
             self.assertEqual(json.loads(proc.stdout), {})
+            self.assertIn("CLAUDE_TOKEN_SANITIZER_FAIL_OPEN=1 active", proc.stderr)
             self.assertIn("FAIL_OPEN", proc.stderr.upper())
 
     def test_rewrite_hook_blocks_search_when_sanitizer_missing(self):
@@ -6198,6 +6285,7 @@ for malformed in malformed_values:
                 "Read(./.venv/**)",
                 "Read(./vendor/**)",
                 "Read(./.context-guard/**)",
+                "Read(./.claude-token-optimizer/**)",
                 "Read(./.env)",
                 "Read(./.env.*)",
                 "Read(./.npmrc)",
@@ -6275,6 +6363,65 @@ for malformed in malformed_values:
             self.assertTrue(data["settings"]["has_bash_trim_hook"])
             self.assertTrue(data["settings"]["has_large_read_guard"])
             self.assertIn("missing-project-settings", finding_ids)
+
+    def test_token_diet_accepts_legacy_helper_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            deny = [
+                "Read(./node_modules/**)",
+                "Read(./dist/**)",
+                "Read(./build/**)",
+                "Read(./coverage/**)",
+                "Read(./logs/**)",
+                "Read(./tmp/**)",
+                "Read(./target/**)",
+                "Read(./.next/**)",
+                "Read(./.venv/**)",
+                "Read(./vendor/**)",
+                "Read(./.context-guard/**)",
+                "Read(./.claude-token-optimizer/**)",
+                "Read(./.env)",
+                "Read(./.env.*)",
+                "Read(./.npmrc)",
+                "Read(./.pypirc)",
+                "Read(./.netrc)",
+                "Read(~/.ssh/**)",
+                "Read(~/.aws/**)",
+                "Read(~/.gnupg/**)",
+                "Read(~/.kube/**)",
+                "Read(~/.docker/**)",
+            ]
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({
+                    "model": "sonnet",
+                    "effortLevel": "medium",
+                    "statusLine": {"type": "command", "command": "claude-token-statusline-merged"},
+                    "permissions": {"deny": deny},
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]},
+                            {"matcher": "Read", "hooks": [{"type": "command", "command": "claude-token-guard-read"}]},
+                        ]
+                    },
+                }),
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "context_guard_diet.py"), "scan", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            finding_ids = {item["id"] for item in data["findings"]}
+            self.assertTrue(data["settings"]["has_bash_trim_hook"])
+            self.assertTrue(data["settings"]["has_large_read_guard"])
+            self.assertTrue(data["settings"]["has_statusline"])
+            self.assertNotIn("missing-bash-trim-hook", finding_ids)
+            self.assertNotIn("missing-large-read-guard", finding_ids)
+            self.assertNotIn("missing-token-statusline", finding_ids)
+            self.assertFalse([item for item in data["findings"] if item["id"].startswith("missing-heavy-deny")])
 
     def test_token_diet_streams_secret_scan_beyond_context_prefix(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6728,6 +6875,7 @@ for malformed in malformed_values:
             with self.subTest(example=example_path):
                 example = json.loads(example_path.read_text())
                 self.assertIn("Read(./.context-guard/**)", example["permissions"]["deny"])
+                self.assertIn("Read(./.claude-token-optimizer/**)", example["permissions"]["deny"])
 
     def test_plugin_settings_example_uses_plugin_bin_commands(self):
         example = json.loads((ROOT / "plugins" / "context-guard" / "examples" / "settings.example.json").read_text())

@@ -4,6 +4,10 @@ A Claude Code plugin with skills and local helper commands for keeping context s
 
 Start with `/context-guard:setup`. It applies project-local settings for safe defaults, then prints a read-only diet scan summary of remaining gaps. The plugin does not mutate global Claude settings and does not configure external AI offload.
 
+Rebrand note: Claude Code does not alias the old `/claude-token-optimizer:*`
+plugin slash-command namespace. Use `/context-guard:*`; legacy `claude-token-*`
+CLI wrappers remain in `bin/` for existing automation.
+
 ## Skills
 
 After installation, use:
@@ -64,7 +68,7 @@ The JSON output includes a `cache_metrics` block (`cache_hit_rate`, `cache_amort
 
 `context-guard-guard-read` is an opt-in PreToolUse Read hook that blocks large whole-file reads and returns a progressive read ladder: search with `rg -n`, read a symbol slice with `context-guard-read-symbol`, then use a small line-range Read only if needed. For Python, JavaScript/TypeScript, Go, Rust, and Markdown files it also includes a bounded-prefix top-level outline and line estimate. If the same oversized file fingerprint is retried, the guard adds a repeated-read dedup hint so Claude reuses the previous ladder instead of retrying full-file Read. `context-guard-read-symbol` extracts a function/class/type-sized slice from Python, JavaScript/TypeScript, Go, or Rust files.
 
-`context-guard-artifact` stores large command output as a local sanitized artifact instead of sending the raw log into Claude context. `store` reads stdin, redacts/anonymizes with the same sanitizer family, writes private `0o600` artifact files under `.context-guard/artifacts` by default, and returns a compact receipt with `artifact_id`, byte/line counts, top error lines, representative samples, and `get --lines` / `get --pattern` query examples. `get` returns only the requested exact slice. Pipeline mode is for capture/query; preserve the producer command's exit code explicitly with shell `pipefail` or a saved `$?` in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+`context-guard-artifact` stores large command output as a local sanitized artifact instead of sending the raw log into Claude context. `store` reads stdin, redacts/anonymizes with the same sanitizer family, writes private `0o600` artifact files under `.context-guard/artifacts` by default, and returns a compact receipt with `artifact_id`, byte/line counts, top error lines, representative samples, and `get --lines` / `get --pattern` query examples. `get` and `list` also read the legacy `.claude-token-optimizer/artifacts` default so old receipts remain queryable after the rebrand. `get` returns only the requested exact slice. Pipeline mode is for capture/query; preserve the producer command's exit code explicitly with shell `pipefail` or a saved `$?` in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
 
 `context-guard-statusline` prints a compact token/cost/model statusline when enabled through project settings. When the Claude Code statusline payload includes a readable `transcript_path`, the line also appends `cache <N>%` — the cache-read share of input-side tokens computed from the transcript tail. The cache label is omitted (rather than failing) when the transcript is missing, unreadable, or `python3` is unavailable, so the statusline never breaks.
 

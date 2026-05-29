@@ -26,9 +26,13 @@ This project is intentionally conservative about claims: it reduces common sourc
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ictechgy/context-guard
+/plugin marketplace add ictechgy/claude-token-tools
 /plugin install context-guard@context-guard
 ```
+
+The plugin is named `context-guard`, but the GitHub repository still lives at
+`ictechgy/claude-token-tools` during the rebrand. If the repository is renamed
+later, the marketplace-add slug can become `ictechgy/context-guard`.
 
 Then run the guided setup inside Claude Code:
 
@@ -44,7 +48,7 @@ Available skills:
 /context-guard:audit
 ```
 
-The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. See `plugins/context-guard/examples/settings.example.json` for an example settings file.
+The plugin does **not** auto-enable global hooks on install. Setup is project-local, explicit, and reversible. It also does not configure external model delegation/offload; all token-reduction helpers run locally. The old `/claude-token-optimizer:*` plugin slash-command namespace is not aliased by Claude Code; use `/context-guard:*` after installing this plugin. CLI compatibility wrappers for legacy `claude-token-*` commands still ship in `bin/`. See `plugins/context-guard/examples/settings.example.json` for an example settings file.
 
 ## Local testing from this repository
 

@@ -22,8 +22,10 @@ ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
 WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
     "context-guard-trim-output",
+    "claude-trim-output",
     "sanitize_output.py",
     "context-guard-sanitize-output",
+    "claude-sanitize-output",
 })
 FAIL_OPEN_ENV = "CONTEXT_GUARD_SANITIZER_FAIL_OPEN"
 LEGACY_FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
@@ -82,11 +84,15 @@ def find_wrapper(kind: str) -> str | None:
     return None
 
 
+def fail_open_source_env() -> str | None:
+    for name in (FAIL_OPEN_ENV, LEGACY_FAIL_OPEN_ENV):
+        if os.environ.get(name, "").strip().lower() in FAIL_OPEN_VALUES:
+            return name
+    return None
+
+
 def fail_open_enabled() -> bool:
-    value = os.environ.get(FAIL_OPEN_ENV)
-    if value is None:
-        value = os.environ.get(LEGACY_FAIL_OPEN_ENV, "")
-    return value.strip().lower() in FAIL_OPEN_VALUES
+    return fail_open_source_env() is not None
 
 
 def print_noop() -> None:
@@ -95,9 +101,10 @@ def print_noop() -> None:
 
 def deny(reason: str) -> None:
     print(f"context-guard-rewrite-bash: {reason}", file=sys.stderr)
-    if fail_open_enabled():
+    fail_open_env = fail_open_source_env()
+    if fail_open_env is not None:
         print(
-            f"context-guard-rewrite-bash: {FAIL_OPEN_ENV}=1 active; leaving command unchanged intentionally",
+            f"context-guard-rewrite-bash: {fail_open_env}=1 active; leaving command unchanged intentionally",
             file=sys.stderr,
         )
         print_noop()

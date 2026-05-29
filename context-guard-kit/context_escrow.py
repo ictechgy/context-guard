@@ -16,6 +16,7 @@ import time
 from typing import Iterable
 
 DEFAULT_ARTIFACT_DIR = ".context-guard/artifacts"
+LEGACY_ARTIFACT_DIR = ".claude-token-optimizer/artifacts"
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
 MAX_METADATA_BYTES = 64_000
@@ -115,7 +116,7 @@ class FallbackLineSanitizer:
 
 def load_line_sanitizer(show_paths: bool) -> object:
     script_dir = Path(__file__).resolve().parent
-    for name in ("sanitize_output.py", "context-guard-sanitize-output"):
+    for name in ("sanitize_output.py", "context-guard-sanitize-output", "claude-sanitize-output"):
         candidate = script_dir / name
         if not candidate.exists():
             continue
@@ -251,6 +252,23 @@ def artifact_paths(directory: Path, artifact_id: str) -> tuple[Path, Path]:
         raise ValueError("artifact id must be 16-64 lowercase hex chars")
     directory = normalize_allowed_first_absolute_symlink(directory)
     return directory / f"{artifact_id}.txt", directory / f"{artifact_id}.json"
+
+
+def artifact_read_directories(raw_dir: str) -> list[Path]:
+    """Return primary plus legacy read fallback for the default artifact dir.
+
+    Rebranded ContextGuard stores new artifacts under `.context-guard/artifacts`,
+    but users may still have receipts from the old `.claude-token-optimizer`
+    default. Reads and listings include that legacy default so old receipts keep
+    working; stores intentionally continue to use only the new path.
+    """
+    primary = normalize_allowed_first_absolute_symlink(Path(raw_dir).expanduser())
+    directories = [primary]
+    if raw_dir == DEFAULT_ARTIFACT_DIR:
+        legacy = normalize_allowed_first_absolute_symlink(Path(LEGACY_ARTIFACT_DIR).expanduser())
+        if legacy != primary:
+            directories.append(legacy)
+    return directories
 
 
 def build_digest(sanitized_text: str, *, redacted_lines: int) -> dict[str, object]:
@@ -392,13 +410,22 @@ def query_content(content: str, *, line_range: tuple[int, int] | None, pattern: 
 
 
 def get_command(args: argparse.Namespace) -> int:
-    directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     artifact_id = args.artifact_id
     max_lines = bounded_int(args.max_lines, DEFAULT_MAX_LINES, 1, 5_000)
     max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, 1, 1_000_000)
     try:
-        metadata = load_metadata(directory, artifact_id)
-        content_path, _meta_path = artifact_paths(directory, artifact_id)
+        last_missing: FileNotFoundError | None = None
+        for directory in artifact_read_directories(args.dir):
+            try:
+                metadata = load_metadata(directory, artifact_id)
+                content_path, _meta_path = artifact_paths(directory, artifact_id)
+                break
+            except FileNotFoundError as exc:
+                last_missing = exc
+        else:
+            if last_missing is not None:
+                raise last_missing
+            raise FileNotFoundError(f"artifact not found: {artifact_id}")
         stored_output = metadata.get("stored_output")
         expected_sha = stored_output.get("sha256") if isinstance(stored_output, dict) else None
         if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
@@ -434,21 +461,25 @@ def get_command(args: argparse.Namespace) -> int:
 
 
 def list_command(args: argparse.Namespace) -> int:
-    directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     items: list[dict[str, object]] = []
-    try:
-        reject_symlink_components(directory)
-        directory_is_safe = directory.is_dir() and not directory.is_symlink()
-    except RuntimeError:
-        directory_is_safe = False
-    if directory_is_safe:
+    seen: set[str] = set()
+    for directory in artifact_read_directories(args.dir):
+        try:
+            reject_symlink_components(directory)
+            directory_is_safe = directory.is_dir() and not directory.is_symlink()
+        except RuntimeError:
+            directory_is_safe = False
+        if not directory_is_safe:
+            continue
         for meta_path in sorted(directory.glob("*.json")):
             try:
                 data = json.loads(read_bounded_private_text(meta_path, MAX_METADATA_BYTES))
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
                 continue
-            if isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(str(data.get("artifact_id", ""))):
+            artifact_id = str(data.get("artifact_id", "")) if isinstance(data, dict) else ""
+            if isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(artifact_id) and artifact_id not in seen:
                 items.append(receipt_for(data))
+                seen.add(artifact_id)
     if args.json:
         print(json.dumps({"artifacts": items}, ensure_ascii=False, indent=2, sort_keys=True))
     else:

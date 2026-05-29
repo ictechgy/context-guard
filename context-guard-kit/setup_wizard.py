@@ -12,6 +12,7 @@ import copy
 import datetime as _dt
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -41,6 +42,7 @@ RECOMMENDED_DENIES = [
     "Read(./.venv/**)",
     "Read(./vendor/**)",
     "Read(./.context-guard/**)",
+    "Read(./.claude-token-optimizer/**)",
     "Read(./.env)",
     "Read(./.env.*)",
     "Read(./.npmrc)",
@@ -57,6 +59,33 @@ HELPER_REWRITE_BASH = "context-guard-rewrite-bash"
 HELPER_GUARD_READ = "context-guard-guard-read"
 HELPER_FAILED_NUDGE = "context-guard-failed-nudge"
 HELPER_DIET = "context-guard-diet"
+HELPER_EQUIVALENT_BASENAMES = {
+    "context-guard-rewrite-bash": {
+        "context-guard-rewrite-bash",
+        "claude-token-rewrite-bash",
+        "rewrite_bash_for_token_budget.py",
+    },
+    "context-guard-guard-read": {
+        "context-guard-guard-read",
+        "claude-token-guard-read",
+        "guard_large_read.py",
+    },
+    "context-guard-failed-nudge": {
+        "context-guard-failed-nudge",
+        "claude-token-failed-nudge",
+        "failed_attempt_nudge.py",
+    },
+    "context-guard-statusline-merged": {
+        "context-guard-statusline-merged",
+        "claude-token-statusline-merged",
+        "statusline_merged.sh",
+    },
+    "context-guard-statusline": {
+        "context-guard-statusline",
+        "claude-token-statusline",
+        "statusline.sh",
+    },
+}
 DEFAULT_MODEL = "sonnet"
 DEFAULT_EFFORT = "medium"
 DEFAULT_FAILED_ATTEMPT_NUDGE = True
@@ -445,11 +474,51 @@ def command_matches(existing: str, desired: str) -> bool:
     return bool(existing_parts and desired_parts and existing_parts == desired_parts)
 
 
+def command_helper_basenames(command: str) -> set[str]:
+    try:
+        parts = shlex.split(command) if command else []
+    except ValueError:
+        return set()
+    if not parts:
+        return set()
+    index = 0
+    if os.path.basename(parts[index]) == "env":
+        index += 1
+        while index < len(parts) and "=" in parts[index] and not parts[index].startswith("-"):
+            index += 1
+    if index >= len(parts):
+        return set()
+    head = os.path.basename(parts[index])
+    interpreter_heads = {"bash", "sh"}
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", head):
+        interpreter_heads.add(head)
+    if head in interpreter_heads and index + 1 < len(parts):
+        return {os.path.basename(parts[index + 1])}
+    return {head}
+
+
+def equivalent_helper_basenames(command: str) -> set[str]:
+    bases = command_helper_basenames(command)
+    equivalents = set(bases)
+    for base in bases:
+        equivalents.update(HELPER_EQUIVALENT_BASENAMES.get(base, ()))
+    return equivalents
+
+
+def command_matches_existing_or_equivalent(existing: str, desired: str) -> bool:
+    if command_matches(existing, desired):
+        return True
+    desired_helpers = equivalent_helper_basenames(desired)
+    if not desired_helpers:
+        return False
+    return bool(command_helper_basenames(existing) & desired_helpers)
+
+
 def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> bool:
     for entry in pre_tool_use:
         if not isinstance(entry, dict) or not matcher_covers(entry.get("matcher"), matcher):
             continue
-        if any(command_matches(value, command) for value in command_values(entry)):
+        if any(command_matches_existing_or_equivalent(value, command) for value in command_values(entry)):
             return True
     return False
 
