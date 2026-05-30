@@ -12,6 +12,11 @@ Install the plugin, run `/context-guard:setup` inside a project, and ContextGuar
 ```text
 /plugin marketplace add ictechgy/context-guard
 /plugin install context-guard@context-guard
+```
+
+Then apply setup inside the project you want to protect.
+
+```text
 /context-guard:setup
 ```
 
