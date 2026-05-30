@@ -3,7 +3,7 @@
 ContextGuard is a Claude Code plugin and local helper toolkit that keeps Claude Code context focused. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, usage visibility, and repeatable token/cost measurement.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
-- Static landing page: [`docs/index.html`](docs/index.html)
+- Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
