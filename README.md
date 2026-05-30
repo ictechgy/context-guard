@@ -26,13 +26,10 @@ This project is intentionally conservative about claims: it reduces common sourc
 Add the marketplace and install the plugin:
 
 ```text
-/plugin marketplace add ictechgy/claude-token-tools
+/plugin marketplace add ictechgy/context-guard
 /plugin install context-guard@context-guard
 ```
 
-The plugin is named `context-guard`, but the GitHub repository still lives at
-`ictechgy/claude-token-tools` during the rebrand. If the repository is renamed
-later, the marketplace-add slug can become `ictechgy/context-guard`.
 
 Then run the guided setup inside Claude Code:
 
