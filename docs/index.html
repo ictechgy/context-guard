@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ContextGuard는 Claude Code 컨텍스트를 필요한 내용에 집중시키는 프로젝트 단위 가드레일 플러그인입니다.">
+  <title>ContextGuard — Claude Code 컨텍스트 위생</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b12;
+      --panel: rgba(255,255,255,.075);
+      --panel-strong: rgba(255,255,255,.12);
+      --line: rgba(255,255,255,.14);
+      --text: #f4f7fb;
+      --muted: #aeb8c7;
+      --soft: #dce7f7;
+      --accent: #7dd3fc;
+      --accent-2: #a78bfa;
+      --accent-3: #34d399;
+      --warn: #fbbf24;
+      --shadow: 0 24px 80px rgba(0,0,0,.42);
+      --radius: 24px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 18% 10%, rgba(125,211,252,.22), transparent 34rem),
+        radial-gradient(circle at 82% 0%, rgba(167,139,250,.20), transparent 32rem),
+        radial-gradient(circle at 50% 86%, rgba(52,211,153,.10), transparent 34rem),
+        var(--bg);
+      line-height: 1.65;
+    }
+
+    a { color: inherit; }
+    .shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(18px);
+      background: rgba(8, 11, 18, .72);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 68px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      letter-spacing: -.02em;
+      text-decoration: none;
+    }
+    .logo {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #07111f;
+      font-weight: 900;
+      box-shadow: 0 10px 28px rgba(125,211,252,.25);
+    }
+    .nav-links { display: flex; align-items: center; gap: 18px; color: var(--muted); font-size: 14px; }
+    .nav-links a { text-decoration: none; }
+    .nav-links a:hover { color: var(--text); }
+
+    .hero { padding: 96px 0 56px; }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(320px, .95fr);
+      gap: 34px;
+      align-items: center;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.06);
+      color: var(--soft);
+      font-size: 14px;
+    }
+    h1 {
+      margin: 22px 0 14px;
+      font-size: clamp(48px, 8vw, 92px);
+      line-height: .9;
+      letter-spacing: -.075em;
+    }
+    .tagline {
+      margin: 0;
+      max-width: 770px;
+      color: var(--soft);
+      font-size: clamp(24px, 4vw, 42px);
+      line-height: 1.16;
+      letter-spacing: -.045em;
+      font-weight: 750;
+    }
+    .subtitle {
+      max-width: 680px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .button.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #07111f; border: none; }
+    .button.secondary { background: rgba(255,255,255,.06); color: var(--soft); }
+
+    .terminal-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(15,23,42,.92), rgba(15,23,42,.68));
+      box-shadow: var(--shadow);
+    }
+    .terminal-card::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      background: radial-gradient(circle at top left, rgba(125,211,252,.22), transparent 24rem);
+      pointer-events: none;
+    }
+    .terminal-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #fb7185; }
+    .dot:nth-child(2) { background: #fbbf24; }
+    .dot:nth-child(3) { background: #34d399; }
+    pre {
+      margin: 0;
+      padding: 22px;
+      overflow-x: auto;
+      color: #dff6ff;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+    code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+    .prompt { color: var(--accent-3); }
+    .comment { color: #8da2bd; }
+
+    section { padding: 58px 0; }
+    .section-head { max-width: 760px; margin-bottom: 24px; }
+    .section-head h2 {
+      margin: 0 0 10px;
+      font-size: clamp(30px, 5vw, 48px);
+      letter-spacing: -.055em;
+      line-height: 1.05;
+    }
+    .section-head p { margin: 0; color: var(--muted); font-size: 17px; }
+
+    .problem-grid, .feature-grid, .steps, .trust-grid {
+      display: grid;
+      gap: 16px;
+    }
+    .problem-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .feature-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); counter-reset: step; }
+    .trust-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      padding: 22px;
+      box-shadow: 0 18px 60px rgba(0,0,0,.18);
+    }
+    .card h3 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.02em; }
+    .card p { margin: 0; color: var(--muted); }
+    .icon {
+      display: inline-grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      margin-bottom: 16px;
+      border-radius: 15px;
+      background: rgba(125,211,252,.12);
+      border: 1px solid rgba(125,211,252,.22);
+      color: var(--accent);
+      font-weight: 900;
+    }
+    .step { position: relative; }
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      margin-bottom: 16px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #07111f;
+      font-weight: 900;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: .9fr 1.1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .statusline {
+      display: inline-block;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(0,0,0,.24);
+      border: 1px solid var(--line);
+      color: #dff6ff;
+      font-size: 14px;
+      margin-top: 14px;
+    }
+    .warning-card {
+      border-color: rgba(251,191,36,.32);
+      background: rgba(251,191,36,.08);
+    }
+    .warning-card .icon { color: var(--warn); background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.24); }
+
+    .footer {
+      padding: 44px 0 58px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+    }
+    .footer-inner { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .footer a { color: var(--soft); text-decoration: none; }
+
+    @media (max-width: 900px) {
+      .hero-grid, .split, .problem-grid, .feature-grid, .steps, .trust-grid { grid-template-columns: 1fr; }
+      .hero { padding-top: 70px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav">
+    <div class="shell nav-inner">
+      <a class="brand" href="#top" aria-label="ContextGuard home"><span class="logo">CG</span> ContextGuard</a>
+      <div class="nav-links" aria-label="페이지 이동">
+        <a href="#problem">문제</a>
+        <a href="#features">기능</a>
+        <a href="#setup">설치</a>
+        <a href="#trust">원칙</a>
+        <a href="../README.ko.md">한국어 README</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="top">
+    <header class="hero shell">
+      <div class="hero-grid">
+        <div>
+          <span class="eyebrow">Claude Code 플러그인 · 로컬 가드레일</span>
+          <h1>ContextGuard</h1>
+          <p class="tagline">Claude Code 컨텍스트를 필요한 내용에 집중시킵니다.</p>
+          <p class="subtitle">
+            잡음 많은 명령 출력, 대용량 파일 읽기, 반복 실패 로그, 민감 정보로 보이는 값을
+            프로젝트 단위 가드레일로 줄이는 Claude Code 플러그인입니다.
+          </p>
+          <div class="cta-row">
+            <a class="button primary" href="#setup">빠른 시작</a>
+            <a class="button secondary" href="https://github.com/ictechgy/context-guard">GitHub 보기</a>
+          </div>
+        </div>
+        <div class="terminal-card" aria-label="설치 명령">
+          <div class="terminal-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>install</span></div>
+          <pre><code><span class="prompt">/plugin marketplace add</span> ictechgy/context-guard
+<span class="prompt">/plugin install</span> context-guard@context-guard
+
+<span class="comment"># 프로젝트에서 명시적으로 적용</span>
+<span class="prompt">/context-guard:setup</span></code></pre>
+        </div>
+      </div>
+    </header>
+
+    <section id="problem" class="shell">
+      <div class="section-head">
+        <h2>컨텍스트가 커질수록 판단은 흐려집니다.</h2>
+        <p>긴 로그, 전체 파일 읽기, 반복 실패 출력, 민감 정보가 섞인 검색 결과는 Claude Code 세션을 빠르게 무겁게 만듭니다.</p>
+      </div>
+      <div class="problem-grid">
+        <article class="card"><span class="icon">01</span><h3>긴 출력</h3><p>테스트·빌드 로그가 대화에 그대로 들어오면 중요한 실패 원인이 묻힙니다.</p></article>
+        <article class="card"><span class="icon">02</span><h3>대용량 읽기</h3><p>필요한 함수 하나를 찾으려고 파일 전체를 읽으면 컨텍스트가 금방 소모됩니다.</p></article>
+        <article class="card"><span class="icon">03</span><h3>민감 정보</h3><p>grep·diff 결과에 토큰, 키, 비밀번호처럼 보이는 값이 포함될 수 있습니다.</p></article>
+      </div>
+    </section>
+
+    <section id="features" class="shell">
+      <div class="section-head">
+        <h2>ContextGuard가 하는 일</h2>
+        <p>설치는 간단하지만, 적용은 명시적입니다. 전역 설정을 건드리지 않고 프로젝트 안에서만 동작합니다.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="card"><span class="icon">↧</span><h3>출력 축약</h3><p>긴 로그를 head/tail 또는 의미 요약으로 줄이고 원래 명령의 종료 코드는 보존합니다.</p></article>
+        <article class="card"><span class="icon">✦</span><h3>민감 정보 정제</h3><p>Claude에 전달되기 전 토큰·키·비밀번호처럼 보이는 값을 가립니다.</p></article>
+        <article class="card"><span class="icon">⌁</span><h3>대용량 파일 가드</h3><p>전체 파일 읽기 대신 검색, 심볼 구간, 작은 줄 범위 읽기를 안내합니다.</p></article>
+        <article class="card"><span class="icon">▣</span><h3>로컬 아티팩트 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
+        <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
+        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 트랜스크립트 감사, A/B 벤치마크로 사용량과 절감 근거를 확인합니다.</p></article>
+      </div>
+    </section>
+
+    <section id="setup" class="shell">
+      <div class="section-head">
+        <h2>3단계로 시작하기</h2>
+        <p>마켓플레이스 설치 후 프로젝트에서 직접 설정을 적용하세요.</p>
+      </div>
+      <div class="steps">
+        <article class="card step"><h3>플러그인 설치</h3><p><code>/plugin marketplace add ictechgy/context-guard</code><br><code>/plugin install context-guard@context-guard</code></p></article>
+        <article class="card step"><h3>프로젝트 설정</h3><p><code>/context-guard:setup</code><br>전역 설정은 변경하지 않고 현재 프로젝트에만 가드레일을 적용합니다.</p></article>
+        <article class="card step"><h3>감사와 측정</h3><p><code>/context-guard:audit</code><br>필요하면 벤치마크로 실제 토큰·비용 변화를 측정합니다.</p></article>
+      </div>
+    </section>
+
+    <section class="shell">
+      <div class="split">
+        <div class="section-head">
+          <h2>세션 상태를 한눈에</h2>
+          <p>상태표시줄은 모델, 저장소, 브랜치, 컨텍스트 사용률, 비용, 캐시 재사용 신호를 짧게 보여줍니다.</p>
+          <span class="statusline">[Sonnet] repo | main | ctx 86% ⚠ | cost $0.123 | cache 80% | reuse 8.0x</span>
+        </div>
+        <div class="terminal-card">
+          <div class="terminal-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>helpers</span></div>
+          <pre><code><span class="comment"># 컨텍스트 위생 검사</span>
+./plugins/context-guard/bin/context-guard-diet scan .
+
+<span class="comment"># 긴 로그를 로컬 아티팩트로 저장</span>
+long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact store --json
+
+<span class="comment"># 출력 축약과 종료 코드 보존</span>
+./plugins/context-guard/bin/context-guard-trim-output -- npm test</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="trust" class="shell">
+      <div class="section-head">
+        <h2>과장하지 않는 도구</h2>
+        <p>ContextGuard는 “항상 몇 퍼센트 절감” 같은 약속 대신, 줄일 수 있는 컨텍스트 팽창을 줄이고 직접 측정할 수 있는 증거를 남깁니다.</p>
+      </div>
+      <div class="trust-grid">
+        <article class="card warning-card"><span class="icon">!</span><h3>고정 절감률을 보장하지 않습니다</h3><p>저장소와 작업 방식에 따라 효과가 달라집니다. 벤치마크 도구로 직접 측정하세요.</p></article>
+        <article class="card warning-card"><span class="icon">↯</span><h3>외부 AI로 작업을 보내지 않습니다</h3><p>토큰을 줄이기 위해 작업을 다른 AI 서비스로 보내거나 대신 실행하지 않습니다. 헬퍼는 로컬에서 동작합니다.</p></article>
+        <article class="card warning-card"><span class="icon">⌂</span><h3>전역 설정을 자동 변경하지 않습니다</h3><p>설정은 프로젝트 단위로, 사용자가 명시적으로 적용할 때만 반영됩니다.</p></article>
+        <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼는 계속 제공합니다.</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="shell footer-inner">
+      <span>Apache License 2.0 · ContextGuard</span>
+      <span><a href="../README.ko.md">한국어 README</a> · <a href="../README.md">English README</a> · <a href="https://github.com/ictechgy/context-guard">GitHub</a></span>
+    </div>
+  </footer>
+</body>
+</html>
