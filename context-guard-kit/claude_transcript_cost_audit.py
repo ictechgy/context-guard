@@ -211,9 +211,16 @@ def finite_nonnegative_number(value: Any, *, clamp_negative: bool) -> int | floa
     return None
 
 
-def normalize_token_bucket(raw: str) -> str | None:
-    bucket = TOKEN_TYPE_ALIASES.get(raw, raw)
-    return bucket if bucket in KNOWN_TOKEN_BUCKETS else None
+def normalize_token_bucket(raw: str) -> str:
+    return TOKEN_TYPE_ALIASES.get(raw, raw)
+
+
+def stable_token_counter(tokens: Counter[str]) -> dict[str, int]:
+    return {bucket: tokens[bucket] for bucket in sorted(KNOWN_TOKEN_BUCKETS) if tokens.get(bucket, 0) != 0}
+
+
+def stable_token_presence(presence: Counter[str]) -> dict[str, int]:
+    return {bucket: presence[bucket] for bucket in sorted(KNOWN_TOKEN_BUCKETS) if presence.get(bucket, 0) > 0}
 
 
 def add_token_groups(local_tokens: Counter[str], d: dict[str, Any]) -> set[str]:
@@ -444,9 +451,8 @@ def add_usage(
             metric = finite_nonnegative_number(value, clamp_negative=True)
             if metric is not None:
                 bucket = normalize_token_bucket(str(token_type))
-                if bucket is not None:
-                    local_tokens[bucket] += int(metric)
-                    present_buckets.add(bucket)
+                local_tokens[bucket] += int(metric)
+                present_buckets.add(bucket)
 
         for bucket in present_buckets:
             summary.token_field_presence[bucket] += 1
@@ -587,7 +593,7 @@ def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
 
 
 def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
-    token_presence = dict(summary.token_field_presence)
+    token_presence = stable_token_presence(summary.token_field_presence)
     has_any_token = bool(token_presence)
     has_cache_read = summary.token_field_presence.get("cache_read", 0) > 0
     has_cache_creation = summary.token_field_presence.get("cache_creation", 0) > 0
@@ -661,6 +667,8 @@ def feasibility_json(
     base = summary_json(summary, top, include_recommendations=include_recommendations, limits=limits)
     availability = build_metric_availability(summary)
     integrity = scan_integrity(summary)
+    stable_tokens = stable_token_counter(summary.tokens)
+    stable_total_tokens = sum(stable_tokens.values())
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -703,8 +711,8 @@ def feasibility_json(
         },
         "context_availability": availability["context"],
         "totals": {
-            "total_tokens": summary.total_tokens,
-            "tokens": dict(summary.tokens),
+            "total_tokens": stable_total_tokens,
+            "tokens": stable_tokens,
             "cost_usd_observed": summary.cost_usd,
             "cache_read_share": summary.cache_hit_rate,
             "cache_reuse_ratio": summary.cache_amortization if summary.cache_amortization_defined else None,

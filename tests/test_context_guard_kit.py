@@ -5352,7 +5352,28 @@ for malformed in malformed_values:
                     self.assertNotIn("output", data["tokens"])
                     self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
 
-    def test_transcript_audit_ignores_unknown_otel_token_types(self):
+    def test_transcript_audit_preserves_unknown_otel_token_types_in_legacy_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
+                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tokens"]["mystery"], 9)
+                    self.assertEqual(data["tokens"]["cache_read"], 3)
+                    self.assertEqual(data["total_tokens"], 12)
+
+    def test_transcript_audit_feasibility_filters_unknown_otel_token_types(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
             sample.write_text(
@@ -5370,7 +5391,10 @@ for malformed in malformed_values:
                     )
                     data = json.loads(proc.stdout)
                     self.assertEqual(data["totals"]["tokens"], {"cache_read": 3})
+                    self.assertEqual(data["totals"]["total_tokens"], 3)
                     self.assertEqual(data["metric_availability"]["tokens"]["present_fields"], {"cache_read": 1})
+                    self.assertNotIn("mystery", data["metric_availability"]["tokens"]["present_fields"])
+                    self.assertEqual(data["summary"]["tokens"]["mystery"], 9)
 
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:
