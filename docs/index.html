@@ -180,12 +180,14 @@
     }
     .section-head p { margin: 0; color: var(--muted); font-size: 17px; }
 
-    .problem-grid, .feature-grid, .steps, .trust-grid {
+    .problem-grid, .feature-grid, .comparison-grid, .fit-grid, .steps, .trust-grid {
       display: grid;
       gap: 16px;
     }
     .problem-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .feature-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .comparison-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .fit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); counter-reset: step; }
     .trust-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
@@ -198,6 +200,8 @@
     }
     .card h3 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.02em; }
     .card p { margin: 0; color: var(--muted); }
+    .card ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); }
+    .card li + li { margin-top: 8px; }
     .icon {
       display: inline-grid;
       place-items: center;
@@ -255,8 +259,12 @@
     .footer-inner { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
     .footer a { color: var(--soft); text-decoration: none; }
 
+    @media (max-width: 1120px) and (min-width: 901px) {
+      .comparison-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
     @media (max-width: 900px) {
-      .hero-grid, .split, .problem-grid, .feature-grid, .steps, .trust-grid { grid-template-columns: 1fr; }
+      .hero-grid, .split, .problem-grid, .feature-grid, .comparison-grid, .fit-grid, .steps, .trust-grid { grid-template-columns: 1fr; }
       .hero { padding-top: 70px; }
       .nav-links { display: none; }
     }
@@ -269,8 +277,11 @@
       <div class="nav-links" aria-label="페이지 이동">
         <a href="#problem">문제</a>
         <a href="#features">기능</a>
+        <a href="#positioning">차이</a>
+        <a href="#fit">적합성</a>
         <a href="#setup">설치</a>
         <a href="#trust">원칙</a>
+        <a href="https://github.com/ictechgy/context-guard/blob/main/README.md">English README</a>
         <a href="https://github.com/ictechgy/context-guard/blob/main/README.ko.md">한국어 README</a>
       </div>
     </div>
@@ -327,6 +338,44 @@
         <article class="card"><span class="icon">▣</span><h3>로컬 아티팩트 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
         <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
         <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 트랜스크립트 감사, A/B 벤치마크로 사용량과 절감 근거를 확인합니다.</p></article>
+      </div>
+    </section>
+
+    <section id="positioning" class="shell">
+      <div class="section-head">
+        <h2>캐시 도구를 대체하지 않고, 그 앞단의 낭비를 줄입니다.</h2>
+        <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 불필요한 파일·로그·출력을 Claude 컨텍스트에 들어가기 전에 걸러내는 로컬 가드레일입니다.</p>
+      </div>
+      <div class="comparison-grid">
+        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕습니다.</p></article>
+        <article class="card"><span class="icon" title="Semantic response cache">S</span><h3>Semantic response cache</h3><p>같거나 비슷한 요청의 이전 답변을 재사용합니다. ContextGuard는 AI 답변 캐시를 제공하지 않습니다.</p></article>
+        <article class="card"><span class="icon" title="Prompt compression">C</span><h3>Prompt compression</h3><p>이미 선택된 텍스트를 더 짧게 만듭니다. ContextGuard는 로컬 출력 축약과 요약을 제공하지만 무손실 의미 압축을 보장하지 않습니다.</p></article>
+        <article class="card"><span class="icon" title="ContextGuard">G</span><h3>ContextGuard</h3><p>큰 파일, 긴 로그, 반복 실패, 잡음 많은 출력을 Claude 컨텍스트에 들어가기 전에 줄이도록 안내하고 전후 비교 근거를 남깁니다.</p></article>
+      </div>
+    </section>
+
+    <section id="fit" class="shell">
+      <div class="section-head">
+        <h2>언제 특히 잘 맞을까요?</h2>
+        <p>ContextGuard는 모든 작업에서 같은 절감률을 약속하지 않습니다. 대신 컨텍스트가 커지는 경로가 분명한 작업에서 측정 가능한 근거를 남깁니다.</p>
+      </div>
+      <div class="fit-grid">
+        <article class="card"><span class="icon">✓</span><h3>효과를 확인하기 쉬운 경우</h3>
+          <ul>
+            <li>테스트·빌드 로그가 길고 실패 원인이 묻히는 프로젝트</li>
+            <li>큰 파일에서 필요한 함수나 설정 일부만 자주 찾는 작업</li>
+            <li>같은 실패 명령을 반복하는 디버깅 세션</li>
+            <li>Claude 트랜스크립트의 토큰·비용 집중 지점을 확인하려는 팀</li>
+          </ul>
+        </article>
+        <article class="card warning-card"><span class="icon">!</span><h3>효과가 제한적인 경우</h3>
+          <ul>
+            <li>이미 작은 저장소에서 짧은 자연어 질문만 주고받는 경우</li>
+            <li>provider prompt cache 적중률이 이미 높고 입력이 안정적인 워크플로</li>
+            <li>비슷한 질문의 답변 재사용이 핵심인 semantic cache 용도</li>
+            <li>직접 측정 없이 고정된 토큰·비용 절감률을 기대하는 경우</li>
+          </ul>
+        </article>
       </div>
     </section>
 

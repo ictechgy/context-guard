@@ -22,6 +22,39 @@ Then apply setup inside the project you want to protect.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure real before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
+## How ContextGuard reduces token waste
+
+ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches Claude Code, then gives you signals to measure whether that helped.
+
+| Waste path | ContextGuard guardrail |
+| --- | --- |
+| Whole-file reads for one function | Suggest search, symbol slices, bounded outlines, and small line ranges before a full read. |
+| Long test, build, search, or diff output | Trim output, emit structured digests, or store large logs locally and return compact receipts. |
+| Repeated failing commands | Warn after repeated Bash failures so Claude changes strategy before more stale logs enter context. |
+| Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
+| Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
+
+## How it fits with caching and compression tools
+
+ContextGuard is complementary to provider and semantic caches, and adjacent to prompt compression. It focuses on **not sending unnecessary files, logs, or output in the first place**.
+
+| Tool category | Saves by | ContextGuard relationship |
+| --- | --- | --- |
+| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner. |
+| Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
+| Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
+| ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter Claude context. | Local Claude Code guardrails plus measurement. |
+
+## What to measure
+
+When you need a savings claim, measure it on your own tasks:
+
+- full-file reads versus symbol or line-range reads
+- raw logs versus digest output or artifact receipts
+- transcript hotspots reported by `context-guard-audit`
+- statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
+- matched successful baseline/variant runs from `context-guard-bench`
+
 ## What ContextGuard does not do
 
 - It does not guarantee a fixed token or cost reduction.
@@ -141,6 +174,15 @@ The audit command skips oversized transcript files and JSONL records by default 
 ```
 
 The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress.
+
+## Future opportunities
+
+The market around token-saving tools points to useful follow-up work, but these are **not shipped features** unless documented elsewhere:
+
+- instruction-bloat scanning for large `AGENTS.md`, `CLAUDE.md`, and project rule files,
+- cache-friendly prompt audits that flag frequently changing content near the front of prompts,
+- ignore recommendation generation for files that should stay out of AI context,
+- sample before/after benchmark reports for common Claude Code workflows.
 
 ## Repository layout
 
