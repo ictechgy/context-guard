@@ -4,6 +4,10 @@ ContextGuard is a Claude Code plugin and local helper toolkit for keeping Claude
 
 Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context hygiene scan, does not mutate global Claude settings, and does not configure external AI offload.
 
+## Token-waste paths it targets
+
+ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat by steering large file reads toward search/symbol/line-range slices, trimming or digesting long command output, storing large logs as local artifact receipts, redacting noisy secret-like values, warning on repeated Bash failures, and surfacing audit/benchmark evidence for your own tasks.
+
 ## Rebrand note
 
 Claude Code does not alias the old `/claude-token-optimizer:*` plugin slash-command namespace. Use `/context-guard:*` after installing this plugin.
