@@ -29,6 +29,7 @@ TOKEN_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cache_creation", ("cache_creation_input_tokens", "cacheCreation")),
     ("cache_read", ("cache_read_input_tokens", "cacheRead")),
 )
+KNOWN_TOKEN_BUCKETS = {bucket for bucket, _ in TOKEN_KEY_GROUPS}
 TOKEN_TYPE_ALIASES = {
     "input": "input",
     "input_tokens": "input",
@@ -210,8 +211,9 @@ def finite_nonnegative_number(value: Any, *, clamp_negative: bool) -> int | floa
     return None
 
 
-def normalize_token_bucket(raw: str) -> str:
-    return TOKEN_TYPE_ALIASES.get(raw, raw)
+def normalize_token_bucket(raw: str) -> str | None:
+    bucket = TOKEN_TYPE_ALIASES.get(raw, raw)
+    return bucket if bucket in KNOWN_TOKEN_BUCKETS else None
 
 
 def add_token_groups(local_tokens: Counter[str], d: dict[str, Any]) -> set[str]:
@@ -442,8 +444,9 @@ def add_usage(
             metric = finite_nonnegative_number(value, clamp_negative=True)
             if metric is not None:
                 bucket = normalize_token_bucket(str(token_type))
-                local_tokens[bucket] += int(metric)
-                present_buckets.add(bucket)
+                if bucket is not None:
+                    local_tokens[bucket] += int(metric)
+                    present_buckets.add(bucket)
 
         for bucket in present_buckets:
             summary.token_field_presence[bucket] += 1
@@ -551,7 +554,7 @@ def counter_json(counter: Counter[str], top: int) -> list[dict[str, Any]]:
 
 
 def utc_now_iso() -> str:
-    return _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def availability_status(*, present: bool, skipped: bool = False, partial: bool = False) -> str:

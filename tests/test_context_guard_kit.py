@@ -5352,6 +5352,26 @@ for malformed in malformed_values:
                     self.assertNotIn("output", data["tokens"])
                     self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
 
+    def test_transcript_audit_ignores_unknown_otel_token_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
+                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["totals"]["tokens"], {"cache_read": 3})
+                    self.assertEqual(data["metric_availability"]["tokens"]["present_fields"], {"cache_read": 1})
+
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -5792,7 +5812,9 @@ for malformed in malformed_values:
                 "socket.create_connection = _blocked\n",
                 encoding="utf-8",
             )
-            env = {**os.environ, "PYTHONPATH": str(root)}
+            env = {**os.environ}
+            existing_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = str(root) if not existing_pythonpath else str(root) + os.pathsep + existing_pythonpath
             proc = subprocess.run(
                 [
                     sys.executable,
