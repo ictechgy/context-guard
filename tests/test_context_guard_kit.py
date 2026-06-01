@@ -4790,7 +4790,14 @@ for malformed in malformed_values:
                     old_stdin, old_stdout, old_stderr = guard.sys.stdin, guard.sys.stdout, guard.sys.stderr
                     old_cwd = Path.cwd()
                     stdout, stderr = io.StringIO(), io.StringIO()
-                    patch_env = {guard.GUARD_ENV: "1", guard.LEGACY_GUARD_ENV: "1"}
+                    patch_env = {
+                        guard.GUARD_ENV: "1",
+                        guard.LEGACY_GUARD_ENV: "1",
+                        guard.MAX_BYTES_ENV: str(guard.DEFAULT_MAX_BYTES),
+                        guard.LEGACY_MAX_BYTES_ENV: str(guard.DEFAULT_MAX_BYTES),
+                        guard.MAX_LINE_RANGE_ENV: str(guard.DEFAULT_MAX_LINE_RANGE),
+                        guard.LEGACY_MAX_LINE_RANGE_ENV: str(guard.DEFAULT_MAX_LINE_RANGE),
+                    }
                     if env is not None:
                         patch_env.update(env)
                     try:
@@ -4828,10 +4835,16 @@ for malformed in malformed_values:
 
                     small = root / "small.py"
                     small.write_text("print('ok')\n", encoding="utf-8")
-                    self.assertEqual(
-                        invoke(json.dumps({"tool_name": "Read", "tool_input": {"file_path": "small.py"}}), root)[1],
-                        "{}\n",
-                    )
+                    small_payload = {"tool_name": "Read", "tool_input": {"file_path": "small.py"}}
+                    self.assertEqual(invoke(json.dumps(small_payload), root)[1], "{}\n")
+                    ambient_env = {
+                        guard.MAX_BYTES_ENV: "1",
+                        guard.LEGACY_MAX_BYTES_ENV: "1",
+                        guard.MAX_LINE_RANGE_ENV: "1",
+                        guard.LEGACY_MAX_LINE_RANGE_ENV: "1",
+                    }
+                    with mock.patch.dict(os.environ, ambient_env, clear=False):
+                        self.assertEqual(invoke(json.dumps(small_payload), root)[1], "{}\n")
 
                     original_size = guard.regular_file_size_no_symlink
                     try:
