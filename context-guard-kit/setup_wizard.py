@@ -592,14 +592,18 @@ def _ensure_tool_hook(
     if not isinstance(bucket, list):
         raise SystemExit(f"Refusing to replace non-list settings.hooks.{event}; repair it manually first.")
     matcher = str(hook.get("matcher") or "")
+    found_any = False
+    changed_any = False
     for entry in bucket:
         if not isinstance(entry, dict) or not matcher_covers(entry.get("matcher"), matcher):
             continue
         found, changed = canonicalize_equivalent_command(entry, command)
-        if found:
-            if changed:
-                actions.append(f"migrated {label} hook to {command}")
-            return
+        found_any = found_any or found
+        changed_any = changed_any or changed
+    if found_any:
+        if changed_any:
+            actions.append(f"migrated {label} hook to {command}")
+        return
     bucket.append(copy.deepcopy(hook))
     actions.append(f"enabled {label} hook via {command}")
 

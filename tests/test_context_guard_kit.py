@@ -2985,6 +2985,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("claude-token-guard-read", joined)
                     self.assertNotIn("claude-token-failed-nudge", joined)
 
+    def test_setup_wizard_migrates_later_duplicate_legacy_hooks(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings_path = root / ".claude" / "settings.json"
+                    settings_path.parent.mkdir()
+                    settings_path.write_text(
+                        json.dumps({
+                            "hooks": {
+                                "PreToolUse": [
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "context-guard-rewrite-bash"}]},
+                                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]},
+                                ]
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                    subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--yes", "--no-backup", "--no-diet-scan"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                    commands = [
+                        hook["command"]
+                        for entry in settings["hooks"]["PreToolUse"]
+                        if entry.get("matcher") == "Bash"
+                        for hook in entry.get("hooks", [])
+                        if isinstance(hook, dict) and "command" in hook
+                    ]
+                    joined = "\n".join(commands)
+                    self.assertNotIn("claude-token-rewrite-bash", joined)
+                    self.assertGreaterEqual(sum("context-guard-rewrite-bash" in command for command in commands), 2)
+
     def test_setup_wizard_extracts_helper_basenames_from_interpreters(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_basename_test")
         self.assertEqual(setup.command_helper_basenames("python3 -u /tmp/claude-token-rewrite-bash"), {"claude-token-rewrite-bash"})
