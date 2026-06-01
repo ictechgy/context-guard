@@ -770,61 +770,71 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
             plugin_manifest = root / "plugin.json"
             marketplace = root / "marketplace.json"
-            prepublish.PLUGIN_MANIFEST = plugin_manifest
-            prepublish.MARKETPLACE_MANIFEST = marketplace
-            plugin_manifest.write_text(
-                json.dumps({"name": "context-guard", "description": "d", "version": "1.0.0", "license": "Apache-2.0"}),
-                encoding="utf-8",
-            )
-            for market_data, expected in (
-                ({}, "marketplace manifest must contain"),
-                ({"plugins": [{"name": "other"}]}, "does not list context-guard"),
-                ({"plugins": [{"name": "context-guard", "source": "./wrong", "version": "1.0.0", "license": "Apache-2.0"}]}, "unexpected marketplace source"),
-                ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "2.0.0", "license": "Apache-2.0"}]}, "version mismatch"),
-                ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "1.0.0", "license": "MIT"}]}, "license mismatch"),
-            ):
-                with self.subTest(market=expected):
-                    marketplace.write_text(json.dumps(market_data), encoding="utf-8")
-                    with self.assertRaises(SystemExit) as ctx:
-                        prepublish.check_manifest()
-                    self.assertIn(expected, str(ctx.exception))
+            old_manifest = prepublish.PLUGIN_MANIFEST
+            old_marketplace = prepublish.MARKETPLACE_MANIFEST
+            old_plugin_bin = prepublish.PLUGIN_BIN
+            old_skills_dir = prepublish.SKILLS_DIR
+            try:
+                prepublish.PLUGIN_MANIFEST = plugin_manifest
+                prepublish.MARKETPLACE_MANIFEST = marketplace
+                plugin_manifest.write_text(
+                    json.dumps({"name": "context-guard", "description": "d", "version": "1.0.0", "license": "Apache-2.0"}),
+                    encoding="utf-8",
+                )
+                for market_data, expected in (
+                    ({}, "marketplace manifest must contain"),
+                    ({"plugins": [{"name": "other"}]}, "does not list context-guard"),
+                    ({"plugins": [{"name": "context-guard", "source": "./wrong", "version": "1.0.0", "license": "Apache-2.0"}]}, "unexpected marketplace source"),
+                    ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "2.0.0", "license": "Apache-2.0"}]}, "version mismatch"),
+                    ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "1.0.0", "license": "MIT"}]}, "license mismatch"),
+                ):
+                    with self.subTest(market=expected):
+                        marketplace.write_text(json.dumps(market_data), encoding="utf-8")
+                        with self.assertRaises(SystemExit) as ctx:
+                            prepublish.check_manifest()
+                        self.assertIn(expected, str(ctx.exception))
 
-            prepublish.PLUGIN_BIN = root / "plugin-bin"
-            prepublish.SKILLS_DIR = root / "skills"
-            with self.assertRaises(SystemExit) as ctx:
-                prepublish.check_skill_allowed_tool_commands()
-            self.assertIn("missing plugin skills directory", str(ctx.exception))
-            prepublish.SKILLS_DIR.mkdir()
-            with self.assertRaises(SystemExit) as ctx:
-                prepublish.check_skill_allowed_tool_commands()
-            self.assertIn("missing plugin bin directory", str(ctx.exception))
-            prepublish.PLUGIN_BIN.mkdir()
-            (prepublish.PLUGIN_BIN / "context-guard-setup").write_text("#!/bin/sh\n", encoding="utf-8")
-            (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o600)
-            skill_dir = prepublish.SKILLS_DIR / "demo"
-            skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text(
-                "---\ndescription: demo\nallowed-tools: Bash(context-guard-setup --help)\n---\n",
-                encoding="utf-8",
-            )
-            with self.assertRaises(SystemExit) as ctx:
-                prepublish.check_skill_allowed_tool_commands()
-            self.assertIn("non-executable", str(ctx.exception))
-            (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o700)
-            (skill_dir / "SKILL.md").write_text(
-                "---\ndescription: demo\nallowed-tools: Bash(context-guard-trim-output -- pytest)\n---\n",
-                encoding="utf-8",
-            )
-            with self.assertRaises(SystemExit) as ctx:
-                prepublish.check_skill_allowed_tool_commands()
-            self.assertIn("must not grant arbitrary command wrapper", str(ctx.exception))
-            (skill_dir / "SKILL.md").write_text(
-                "---\ndescription: demo\nallowed-tools: Bash(context-guard-missing --help)\n---\n",
-                encoding="utf-8",
-            )
-            with self.assertRaises(SystemExit) as ctx:
-                prepublish.check_skill_allowed_tool_commands()
-            self.assertIn("references missing plugin bin command", str(ctx.exception))
+                prepublish.PLUGIN_BIN = root / "plugin-bin"
+                prepublish.SKILLS_DIR = root / "skills"
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_skill_allowed_tool_commands()
+                self.assertIn("missing plugin skills directory", str(ctx.exception))
+                prepublish.SKILLS_DIR.mkdir()
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_skill_allowed_tool_commands()
+                self.assertIn("missing plugin bin directory", str(ctx.exception))
+                prepublish.PLUGIN_BIN.mkdir()
+                (prepublish.PLUGIN_BIN / "context-guard-setup").write_text("#!/bin/sh\n", encoding="utf-8")
+                (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o600)
+                skill_dir = prepublish.SKILLS_DIR / "demo"
+                skill_dir.mkdir()
+                (skill_dir / "SKILL.md").write_text(
+                    "---\ndescription: demo\nallowed-tools: Bash(context-guard-setup --help)\n---\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_skill_allowed_tool_commands()
+                self.assertIn("non-executable", str(ctx.exception))
+                (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o700)
+                (skill_dir / "SKILL.md").write_text(
+                    "---\ndescription: demo\nallowed-tools: Bash(context-guard-trim-output -- pytest)\n---\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_skill_allowed_tool_commands()
+                self.assertIn("must not grant arbitrary command wrapper", str(ctx.exception))
+                (skill_dir / "SKILL.md").write_text(
+                    "---\ndescription: demo\nallowed-tools: Bash(context-guard-missing --help)\n---\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_skill_allowed_tool_commands()
+                self.assertIn("references missing plugin bin command", str(ctx.exception))
+            finally:
+                prepublish.PLUGIN_MANIFEST = old_manifest
+                prepublish.MARKETPLACE_MANIFEST = old_marketplace
+                prepublish.PLUGIN_BIN = old_plugin_bin
+                prepublish.SKILLS_DIR = old_skills_dir
 
     def test_show_paths_help_warns_private_path_exposure(self):
         commands = [
@@ -4727,8 +4737,7 @@ for malformed in malformed_values:
                     self.assertEqual(guard.bounded_env_int(guard.MAX_BYTES_ENV, guard.LEGACY_MAX_BYTES_ENV, 7, 1, 20), 7)
                 with mock.patch.dict(os.environ, {
                     guard.LEGACY_MAX_LINE_RANGE_ENV: "999999",
-                }, clear=False):
-                    os.environ.pop(guard.MAX_LINE_RANGE_ENV, None)
+                }, clear=True):
                     self.assertEqual(
                         guard.bounded_env_int(guard.MAX_LINE_RANGE_ENV, guard.LEGACY_MAX_LINE_RANGE_ENV, 7, 1, 20),
                         20,
