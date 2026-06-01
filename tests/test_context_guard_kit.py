@@ -1699,10 +1699,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
             artifact.ensure_private_dir(duplicate_legacy)
             shutil.copy2(content_path, duplicate_legacy / content_path.name)
             shutil.copy2(meta_path, duplicate_legacy / meta_path.name)
+            old_default = artifact.DEFAULT_ARTIFACT_DIR
+            old_legacy = artifact.LEGACY_ARTIFACT_DIR
             stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                self.assertEqual(artifact.list_command(argparse.Namespace(dir=artifact.DEFAULT_ARTIFACT_DIR, json=True)), 0)
-            self.assertLessEqual(len(json.loads(stdout.getvalue())["artifacts"]), 1)
+            try:
+                artifact.DEFAULT_ARTIFACT_DIR = str(artifact_dir)
+                artifact.LEGACY_ARTIFACT_DIR = str(duplicate_legacy)
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(artifact.list_command(argparse.Namespace(dir=artifact.DEFAULT_ARTIFACT_DIR, json=True)), 0)
+            finally:
+                artifact.DEFAULT_ARTIFACT_DIR = old_default
+                artifact.LEGACY_ARTIFACT_DIR = old_legacy
+            listed = json.loads(stdout.getvalue())["artifacts"]
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["artifact_id"], artifact_id)
 
     def test_trim_digest_and_fallback_helpers_keep_output_bounded(self):
         # Protects wrapper reliability: fallback sanitization, digest guidance,
@@ -4780,16 +4790,16 @@ for malformed in malformed_values:
                     old_stdin, old_stdout, old_stderr = guard.sys.stdin, guard.sys.stdout, guard.sys.stderr
                     old_cwd = Path.cwd()
                     stdout, stderr = io.StringIO(), io.StringIO()
+                    patch_env = {guard.GUARD_ENV: "1", guard.LEGACY_GUARD_ENV: "1"}
+                    if env is not None:
+                        patch_env.update(env)
                     try:
                         os.chdir(cwd)
                         guard.sys.stdin = io.StringIO(stdin_text)
                         guard.sys.stdout = stdout
                         guard.sys.stderr = stderr
-                        if env is None:
+                        with mock.patch.dict(os.environ, patch_env, clear=False):
                             rc = guard.main()
-                        else:
-                            with mock.patch.dict(os.environ, env, clear=False):
-                                rc = guard.main()
                         return rc, stdout.getvalue(), stderr.getvalue()
                     finally:
                         os.chdir(old_cwd)
