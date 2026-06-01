@@ -2977,12 +2977,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         for hook in entry.get("hooks", [])
                         if isinstance(hook, dict) and "command" in hook
                     ]
-                    self.assertIn("python3 -u /tmp/claude-token-rewrite-bash", commands)
-                    self.assertIn("bash -c 'claude-token-guard-read'", commands)
-                    self.assertIn("env SESSION=1 claude-token-failed-nudge", commands)
-                    self.assertFalse(any(command.endswith("context-guard-rewrite-bash") for command in commands))
-                    self.assertFalse(any(command.endswith("context-guard-guard-read") for command in commands))
-                    self.assertFalse(any(command.endswith("context-guard-failed-nudge") for command in commands))
+                    joined = "\n".join(commands)
+                    self.assertIn("context-guard-rewrite-bash", joined)
+                    self.assertIn("context-guard-guard-read", joined)
+                    self.assertIn("context-guard-failed-nudge", joined)
+                    self.assertNotIn("claude-token-rewrite-bash", joined)
+                    self.assertNotIn("claude-token-guard-read", joined)
+                    self.assertNotIn("claude-token-failed-nudge", joined)
 
     def test_setup_wizard_extracts_helper_basenames_from_interpreters(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_basename_test")

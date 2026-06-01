@@ -523,6 +523,36 @@ def command_matches_existing_or_equivalent(existing: str, desired: str) -> bool:
     return bool(command_helper_basenames(existing) & desired_helpers)
 
 
+def canonicalize_equivalent_command(value: Any, desired: str) -> tuple[bool, bool]:
+    """Return (found_equivalent, changed), rewriting legacy/bare helpers to desired.
+
+    Older project settings may contain bare `claude-token-*` hook commands from
+    the pre-ContextGuard plugin. Treating those as equivalent for deduplication
+    is useful, but preserving them can leave Claude Code hooks pointing at a
+    command that no longer exists on PATH. When a matching command field is
+    found, pin it to the current canonical helper command instead.
+    """
+    found = False
+    changed = False
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "command" and isinstance(item, str) and command_matches_existing_or_equivalent(item, desired):
+                found = True
+                if not command_matches(item, desired):
+                    value[key] = desired
+                    changed = True
+                continue
+            child_found, child_changed = canonicalize_equivalent_command(item, desired)
+            found = found or child_found
+            changed = changed or child_changed
+    elif isinstance(value, list):
+        for item in value:
+            child_found, child_changed = canonicalize_equivalent_command(item, desired)
+            found = found or child_found
+            changed = changed or child_changed
+    return found, changed
+
+
 def has_hook_command(pre_tool_use: list[Any], matcher: str, command: str) -> bool:
     for entry in pre_tool_use:
         if not isinstance(entry, dict) or not matcher_covers(entry.get("matcher"), matcher):
@@ -562,8 +592,14 @@ def _ensure_tool_hook(
     if not isinstance(bucket, list):
         raise SystemExit(f"Refusing to replace non-list settings.hooks.{event}; repair it manually first.")
     matcher = str(hook.get("matcher") or "")
-    if has_hook_command(bucket, matcher, command):
-        return
+    for entry in bucket:
+        if not isinstance(entry, dict) or not matcher_covers(entry.get("matcher"), matcher):
+            continue
+        found, changed = canonicalize_equivalent_command(entry, command)
+        if found:
+            if changed:
+                actions.append(f"migrated {label} hook to {command}")
+            return
     bucket.append(copy.deepcopy(hook))
     actions.append(f"enabled {label} hook via {command}")
 
