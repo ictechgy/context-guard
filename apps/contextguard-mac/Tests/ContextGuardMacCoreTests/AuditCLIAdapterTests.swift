@@ -50,12 +50,33 @@ final class AuditCLIAdapterTests: XCTestCase {
 
     func testNonZeroExitIncludesBoundedStderr() throws {
         let temp = try temporaryDirectory()
-        let helper = try writeHelper(in: temp, body: "echo 'boom' >&2\nexit 7\n")
+        let stderrPayload = String(repeating: "x", count: 5_000)
+        let stderrFile = temp.appendingPathComponent("stderr.txt")
+        try stderrPayload.write(to: stderrFile, atomically: true, encoding: .utf8)
+        let helper = try writeHelper(in: temp, body: "/bin/cat \(shellSingleQuoted(stderrFile.path)) >&2\nexit 7\n")
         let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, environment: ["PATH": ""])
 
         XCTAssertThrowsError(try adapter.runRaw(transcriptDirectory: temp)) { error in
-            XCTAssertEqual(error as? AuditCLIAdapterError, .nonZeroExit(7, stderr: "boom\n"))
+            guard case AuditCLIAdapterError.nonZeroExit(7, let stderr) = error else {
+                return XCTFail("expected nonZeroExit, got \(error)")
+            }
+            XCTAssertLessThan(stderr.count, stderrPayload.count)
+            XCTAssertLessThanOrEqual(stderr.count, 4_000)
+            XCTAssertTrue(stderr.hasSuffix("...[truncated]"))
         }
+    }
+
+    func testRunRawDrainsLargeStdoutWhileProcessIsRunning() throws {
+        let temp = try temporaryDirectory()
+        let payload = String(repeating: "x", count: 200_000)
+        let payloadFile = temp.appendingPathComponent("large-output.txt")
+        try payload.write(to: payloadFile, atomically: true, encoding: .utf8)
+        let helper = try writeHelper(in: temp, body: "/bin/cat \(shellSingleQuoted(payloadFile.path))\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, environment: ["PATH": ""])
+
+        let output = try adapter.runRaw(transcriptDirectory: temp)
+
+        XCTAssertEqual(output.count, payload.count)
     }
 
     func testTimeoutDoesNotHang() throws {
@@ -83,6 +104,9 @@ final class AuditCLIAdapterTests: XCTestCase {
             .appendingPathComponent("contextguard-mac-tests-")
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
         return directory
     }
 
@@ -91,5 +115,9 @@ final class AuditCLIAdapterTests: XCTestCase {
         try ("#!/bin/sh\n" + body).write(to: helper, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
         return helper
+    }
+
+    private func shellSingleQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 }

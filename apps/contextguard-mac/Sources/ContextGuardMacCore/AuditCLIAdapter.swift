@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
     case executableNotFound
@@ -94,18 +97,22 @@ public struct AuditCLIAdapter {
         process.standardError = stderr
 
         try process.run()
+        let stdoutReader = PipeReader(stdout)
+        let stderrReader = PipeReader(stderr)
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
 
         if process.isRunning {
-            process.terminate()
+            terminate(process)
+            stdoutReader.wait()
+            stderrReader.wait()
             throw AuditCLIAdapterError.timedOut(timeout)
         }
 
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let stdoutData = stdoutReader.data()
+        let stderrData = stderrReader.data()
         guard let stdoutText = String(data: stdoutData, encoding: .utf8) else {
             throw AuditCLIAdapterError.invalidUTF8
         }
@@ -117,11 +124,48 @@ public struct AuditCLIAdapter {
         return stdoutText
     }
 
+    private func terminate(_ process: Process) {
+        process.terminate()
+        let deadline = Date().addingTimeInterval(0.5)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+#if canImport(Darwin)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+#endif
+        process.waitUntilExit()
+    }
+
     private func bounded(_ value: String, limit: Int = 4_000) -> String {
         if value.count <= limit {
             return value
         }
         let end = value.index(value.startIndex, offsetBy: max(0, limit - 15))
         return String(value[..<end]) + "...[truncated]"
+    }
+}
+
+private final class PipeReader {
+    private let group = DispatchGroup()
+    private var output = Data()
+
+    init(_ pipe: Pipe) {
+        group.enter()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            self?.output = data
+            self?.group.leave()
+        }
+    }
+
+    func data() -> Data {
+        wait()
+        return output
+    }
+
+    func wait() {
+        group.wait()
     }
 }
