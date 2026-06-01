@@ -2,6 +2,13 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.3.0] - 2026-06-01
+
+- Added `context-guard-audit --feasibility-json` as a stable local data contract for Mac/GUI visibility prototypes.
+- Exposed scan integrity, metric availability, source freshness, redaction mode, and stable token/cost totals while keeping the embedded legacy summary diagnostic and backward-compatible.
+- Distinguished missing cache fields from observed zero cache fields and labeled partial scans when transcript files or records are skipped.
+- Documented the Mac visibility data-spike findings and limitations for local transcript-derived metrics versus official billing data.
+
 ## [0.2.0] - 2026-05-29
 
 - Renamed the public plugin identity to ContextGuard with `/context-guard:*` skills and `context-guard-*` helper commands.
