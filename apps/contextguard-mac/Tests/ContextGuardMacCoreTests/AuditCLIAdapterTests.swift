@@ -50,7 +50,7 @@ final class AuditCLIAdapterTests: XCTestCase {
 
     func testNonZeroExitIncludesBoundedStderr() throws {
         let temp = try temporaryDirectory()
-        let stderrPayload = String(repeating: "x", count: 5_000)
+        let stderrPayload = String(repeating: "x", count: 200_000)
         let stderrFile = temp.appendingPathComponent("stderr.txt")
         try stderrPayload.write(to: stderrFile, atomically: true, encoding: .utf8)
         let helper = try writeHelper(in: temp, body: "/bin/cat \(shellSingleQuoted(stderrFile.path)) >&2\nexit 7\n")

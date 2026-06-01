@@ -86,19 +86,27 @@ public struct AuditCLIAdapter {
 
     public func runRaw(transcriptDirectory: URL, includeRecommendations: Bool = true) throws -> String {
         let executableURL = try resolveExecutable()
+        let outputDirectory = try makeTemporaryOutputDirectory()
+        defer { try? fileManager.removeItem(at: outputDirectory) }
+        let stdoutURL = outputDirectory.appendingPathComponent("stdout.json")
+        let stderrURL = outputDirectory.appendingPathComponent("stderr.txt")
+        fileManager.createFile(atPath: stdoutURL.path, contents: nil)
+        fileManager.createFile(atPath: stderrURL.path, contents: nil)
+        let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
+        let stderrHandle = try FileHandle(forWritingTo: stderrURL)
+        defer {
+            try? stdoutHandle.close()
+            try? stderrHandle.close()
+        }
+
         let process = Process()
         process.executableURL = executableURL
         process.arguments = [transcriptDirectory.path, "--feasibility-json"] + (includeRecommendations ? ["--recommend"] : [])
         process.environment = environment
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
+        process.standardOutput = stdoutHandle
+        process.standardError = stderrHandle
 
         try process.run()
-        let stdoutReader = PipeReader(stdout)
-        let stderrReader = PipeReader(stderr)
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
@@ -106,13 +114,13 @@ public struct AuditCLIAdapter {
 
         if process.isRunning {
             terminate(process)
-            stdoutReader.wait()
-            stderrReader.wait()
             throw AuditCLIAdapterError.timedOut(timeout)
         }
 
-        let stdoutData = stdoutReader.data()
-        let stderrData = stderrReader.data()
+        try stdoutHandle.close()
+        try stderrHandle.close()
+        let stdoutData = try Data(contentsOf: stdoutURL)
+        let stderrData = try Data(contentsOf: stderrURL)
         guard let stdoutText = String(data: stdoutData, encoding: .utf8) else {
             throw AuditCLIAdapterError.invalidUTF8
         }
@@ -122,6 +130,13 @@ public struct AuditCLIAdapter {
             throw AuditCLIAdapterError.nonZeroExit(process.terminationStatus, stderr: bounded(stderrText))
         }
         return stdoutText
+    }
+
+    private func makeTemporaryOutputDirectory() throws -> URL {
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("contextguard-audit-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     private func terminate(_ process: Process) {
@@ -144,28 +159,5 @@ public struct AuditCLIAdapter {
         }
         let end = value.index(value.startIndex, offsetBy: max(0, limit - 15))
         return String(value[..<end]) + "...[truncated]"
-    }
-}
-
-private final class PipeReader {
-    private let group = DispatchGroup()
-    private var output = Data()
-
-    init(_ pipe: Pipe) {
-        group.enter()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            self?.output = data
-            self?.group.leave()
-        }
-    }
-
-    func data() -> Data {
-        wait()
-        return output
-    }
-
-    func wait() {
-        group.wait()
     }
 }
