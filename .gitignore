@@ -39,5 +39,7 @@ tmp/
 # Build/package outputs
 dist/
 build/
+.build/
+.swiftpm/
 coverage/
 node_modules/
