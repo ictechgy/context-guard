@@ -5352,6 +5352,50 @@ for malformed in malformed_values:
                     self.assertNotIn("output", data["tokens"])
                     self.assertEqual(data["cost_usd_observed"], 1e18 + 0.75)
 
+    def test_transcript_audit_preserves_unknown_otel_token_types_in_legacy_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
+                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tokens"]["mystery"], 9)
+                    self.assertEqual(data["tokens"]["cache_read"], 3)
+                    self.assertEqual(data["total_tokens"], 12)
+
+    def test_transcript_audit_feasibility_filters_unknown_otel_token_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                '{"name":"claude_code.token.usage","value":9,"attributes":{"type":"mystery"}}\n'
+                '{"name":"claude_code.token.usage","value":3,"attributes":{"type":"cacheRead"}}\n',
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["totals"]["tokens"], {"cache_read": 3})
+                    self.assertEqual(data["totals"]["total_tokens"], 3)
+                    self.assertEqual(data["metric_availability"]["tokens"]["present_fields"], {"cache_read": 1})
+                    self.assertNotIn("mystery", data["metric_availability"]["tokens"]["present_fields"])
+                    self.assertEqual(data["summary"]["tokens"]["mystery"], 9)
+
     def test_transcript_audit_uses_stable_model_key_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -5651,6 +5695,192 @@ for malformed in malformed_values:
                     self.assertIn("Cache reuse", text.stdout)
                     self.assertIn("cache_hit_rate", text.stdout)
                     self.assertIn("cache_amortization", text.stdout)
+
+    def test_transcript_audit_feasibility_json_exposes_gui_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "session.jsonl"
+            secret = "sk-ant-" + ("A" * 24)
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "model": "claude-sonnet-test",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 200,
+                        },
+                    },
+                    "command": f"pytest tests -q --token={secret}",
+                    "total_cost_usd": 0.1234,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json", "--recommend", "--top", "3"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1")
+                    self.assertEqual(data["producer"], "context-guard-audit")
+                    self.assertIn("summary", data["consumer_contract"]["diagnostic_fields"])
+                    self.assertIn("metric_availability", data["consumer_contract"]["stable_top_level_fields"])
+                    self.assertEqual(data["source_kind"], "historical_transcript_scan")
+                    self.assertFalse(data["source_freshness"]["live"])
+                    self.assertEqual(data["scan_integrity"]["status"], "complete")
+                    self.assertEqual(data["metric_availability"]["cache"]["status"], "available")
+                    self.assertEqual(data["metric_availability"]["cost"]["status"], "available")
+                    self.assertEqual(data["context_availability"]["status"], "missing")
+                    self.assertEqual(data["redaction_mode"]["paths"], "basename_plus_stable_hash_by_default")
+                    self.assertAlmostEqual(data["totals"]["cache_read_share"], 800 / 1100, places=3)
+                    self.assertAlmostEqual(data["totals"]["cache_reuse_ratio"], 4.0, places=3)
+                    self.assertEqual(data["summary"]["cache_metrics"]["cache_read_tokens"], 800)
+                    self.assertIn("recommendations", data["summary"])
+                    self.assertNotIn(str(root), proc.stdout)
+                    self.assertNotIn(secret, proc.stdout)
+
+    def test_transcript_audit_feasibility_distinguishes_missing_and_zero_cache_fields(self):
+        scenarios = [
+            (
+                "missing_cache",
+                {"input_tokens": 100, "output_tokens": 20},
+                "missing",
+                {"cache_read": False, "cache_creation": False},
+            ),
+            (
+                "zero_cache",
+                {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "available",
+                {"cache_read": True, "cache_creation": True},
+            ),
+            (
+                "camelcase_aliases",
+                {"input_tokens": 100, "cacheRead": 0, "cacheCreation": 0},
+                "available",
+                {"cache_read": True, "cache_creation": True},
+            ),
+        ]
+        for label, usage, expected_status, expected_zeroes in scenarios:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "session.jsonl"
+                    sample.write_text(json.dumps({"usage": usage}) + "\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                            str(sample),
+                            "--feasibility-json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    cache = json.loads(proc.stdout)["metric_availability"]["cache"]
+                    self.assertEqual(cache["status"], expected_status)
+                    self.assertEqual(cache["zero_values_observed"], expected_zeroes)
+
+    def test_transcript_audit_feasibility_marks_metrics_partial_when_records_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 25,
+                        "cache_creation_input_tokens": 5,
+                    },
+                    "total_cost_usd": 0.01,
+                }) + "\n{malformed json\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(sample),
+                    "--feasibility-json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["scan_integrity"]["status"], "partial")
+            self.assertEqual(data["metric_availability"]["tokens"]["status"], "partial")
+            self.assertEqual(data["metric_availability"]["input"]["status"], "partial")
+            self.assertEqual(data["metric_availability"]["cache"]["status"], "partial")
+            self.assertEqual(data["metric_availability"]["cost"]["status"], "partial")
+
+    def test_transcript_audit_feasibility_runs_with_socket_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "session.jsonl"
+            sample.write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            sitecustomize = root / "sitecustomize.py"
+            sitecustomize.write_text(
+                "import socket\n"
+                "def _blocked(*args, **kwargs):\n"
+                "    raise AssertionError('network access is forbidden in transcript feasibility reports')\n"
+                "socket.socket = _blocked\n"
+                "socket.create_connection = _blocked\n",
+                encoding="utf-8",
+            )
+            env = {**os.environ}
+            existing_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = str(root) if not existing_pythonpath else str(root) + os.pathsep + existing_pythonpath
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(sample),
+                    "--feasibility-json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            self.assertEqual(json.loads(proc.stdout)["totals"]["total_tokens"], 1)
+
+    def test_transcript_audit_feasibility_preserves_non_regular_file_safety(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.jsonl"
+            target.write_text(json.dumps({"usage": {"input_tokens": 7}}) + "\n", encoding="utf-8")
+            link = root / "linked.jsonl"
+            try:
+                link.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(link),
+                    "--feasibility-json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["summary"]["skipped_files"], 1)
+            self.assertEqual(data["summary"]["records"], 0)
+            self.assertIn("must not be a symlink", data["summary"]["parse_errors"][0])
+            self.assertEqual(data["scan_integrity"]["status"], "partial")
+            self.assertEqual(data["metric_availability"]["tokens"]["status"], "partial")
+            self.assertNotIn(str(link), proc.stdout)
 
     def test_transcript_audit_recommends_improve_cache_reuse_when_amortization_low(self):
         with tempfile.TemporaryDirectory() as tmp:
