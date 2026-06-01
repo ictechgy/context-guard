@@ -641,6 +641,191 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertFalse(sentinel.exists())
 
+    def test_release_and_prepublish_helper_edges_fail_closed(self):
+        # Protects release gates: malformed manifests, unsafe labels, missing
+        # entrypoints, and bounded child process helpers fail with useful errors.
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_helper_edges")
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_helper_edges")
+
+        secret = "token=ghp_" + ("A" * 36)
+        compact = prepublish.compact_label_text("bad\x1b[31m " + secret + " " + ("x" * 220), limit=80)
+        self.assertIn("[REDACTED]", compact)
+        self.assertIn("truncated", compact)
+        self.assertNotIn("\x1b", compact)
+        self.assertNotIn("ghp_", compact)
+        self.assertEqual(prepublish.safe_path_label(Path(secret + ".json")), "redacted-path")
+
+        old_flag = os.environ.pop(prepublish.PATH_OVERRIDE_FLAG, None)
+        old_overrides = {name: os.environ.pop(name) for name in prepublish.PATH_OVERRIDE_ENVS if name in os.environ}
+        try:
+            os.environ["CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR"] = "/tmp/plugin"
+            self.assertFalse(prepublish.path_overrides_allowed())
+            with self.assertRaises(SystemExit) as override_ctx:
+                prepublish.apply_path_overrides()
+            self.assertIn(prepublish.PATH_OVERRIDE_FLAG, str(override_ctx.exception))
+        finally:
+            os.environ.pop("CLAUDE_TOKEN_PREPUBLISH_PLUGIN_DIR", None)
+            if old_flag is not None:
+                os.environ[prepublish.PATH_OVERRIDE_FLAG] = old_flag
+            for name, value in old_overrides.items():
+                os.environ[name] = value
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad_json = root / "bad.json"
+            missing_json = root / "missing.json"
+            list_json = root / "list.json"
+            bad_json.write_text("{", encoding="utf-8")
+            list_json.write_text("[]", encoding="utf-8")
+            for path, expected in (
+                (missing_json, "missing JSON manifest"),
+                (bad_json, "invalid JSON"),
+                (list_json, "JSON manifest must be an object"),
+            ):
+                with self.subTest(path=path.name):
+                    with self.assertRaises(SystemExit) as ctx:
+                        prepublish.load_json(path)
+                    self.assertIn(expected, str(ctx.exception))
+                    self.assertNotIn(str(root), str(ctx.exception))
+
+            plugin_bin = root / "bin"
+            plugin_bin.mkdir()
+            entry = plugin_bin / "context-guard-setup"
+            entry.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            entry.chmod(0o600)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.command_path(plugin_bin, entry.name)
+            self.assertIn("not owner-executable", str(ctx.exception))
+
+            entry.chmod(0o700)
+            extra = plugin_bin / "unexpected-helper"
+            extra.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            extra.chmod(0o700)
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.entrypoint_smoke_plan(plugin_bin)
+            self.assertIn("no launch plan", str(ctx.exception))
+
+            self.assertEqual(smoke.load_json('{"ok": true}', "cmd")["ok"], True)
+            for stdout, expected in (("[1]", "must be an object"), ("{", "valid JSON")):
+                with self.subTest(stdout=stdout):
+                    with self.assertRaises(SystemExit) as ctx:
+                        smoke.load_json(stdout, "cmd")
+                    self.assertIn(expected, str(ctx.exception))
+
+            input_stream = io.BytesIO(b"hello")
+            smoke.write_child_input(input_stream, "ignored")
+            self.assertTrue(input_stream.closed)
+            broken_stream = mock.Mock()
+            broken_stream.write.side_effect = BrokenPipeError()
+            smoke.write_child_input(broken_stream, "ignored")
+            broken_stream.close.assert_called_once()
+            smoke.close_pipe(None)
+
+            with mock.patch.object(smoke.os, "name", "nt"), mock.patch.object(
+                smoke.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                512,
+                create=True,
+            ):
+                self.assertEqual(smoke.process_group_kwargs(), {"creationflags": 512})
+                fake_proc = mock.Mock(pid=123)
+                self.assertIsNone(smoke.process_group_id(fake_proc))
+
+            fake_proc = mock.Mock(pid=123)
+            with mock.patch.object(smoke.os, "name", "posix"), mock.patch.object(
+                smoke.os,
+                "killpg",
+                side_effect=ProcessLookupError(),
+            ):
+                smoke.signal_process_group(fake_proc, smoke.signal.SIGTERM, 999)
+            fake_proc.terminate.assert_called_once()
+            fake_proc.kill.assert_not_called()
+
+            fake_proc = mock.Mock(pid=123)
+            with mock.patch.object(smoke.os, "name", "posix"):
+                smoke.signal_process_group(fake_proc, getattr(smoke.signal, "SIGKILL", smoke.signal.SIGTERM), None)
+            fake_proc.kill.assert_called_once()
+
+            fake_proc = mock.Mock(pid=123)
+            with mock.patch.object(smoke.os, "name", "nt"), mock.patch.object(
+                smoke.signal,
+                "CTRL_BREAK_EVENT",
+                21,
+                create=True,
+            ), mock.patch.object(smoke.os, "kill") as kill:
+                smoke.signal_process_group(fake_proc, smoke.signal.SIGTERM, None)
+            kill.assert_called_once_with(123, 21)
+            fake_proc.terminate.assert_not_called()
+
+            skill = root / "skill.md"
+            for text, expected in (
+                ("body only", "missing frontmatter"),
+                ("---\nname: x\n---\n", "missing description"),
+                ("---\ndescription: ok\n", "missing closing frontmatter"),
+            ):
+                with self.subTest(skill_text=text):
+                    with self.assertRaises(SystemExit) as ctx:
+                        prepublish.skill_frontmatter(text, skill)
+                    self.assertIn(expected, str(ctx.exception))
+
+            plugin_manifest = root / "plugin.json"
+            marketplace = root / "marketplace.json"
+            prepublish.PLUGIN_MANIFEST = plugin_manifest
+            prepublish.MARKETPLACE_MANIFEST = marketplace
+            plugin_manifest.write_text(
+                json.dumps({"name": "context-guard", "description": "d", "version": "1.0.0", "license": "Apache-2.0"}),
+                encoding="utf-8",
+            )
+            for market_data, expected in (
+                ({}, "marketplace manifest must contain"),
+                ({"plugins": [{"name": "other"}]}, "does not list context-guard"),
+                ({"plugins": [{"name": "context-guard", "source": "./wrong", "version": "1.0.0", "license": "Apache-2.0"}]}, "unexpected marketplace source"),
+                ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "2.0.0", "license": "Apache-2.0"}]}, "version mismatch"),
+                ({"plugins": [{"name": "context-guard", "source": "./plugins/context-guard", "version": "1.0.0", "license": "MIT"}]}, "license mismatch"),
+            ):
+                with self.subTest(market=expected):
+                    marketplace.write_text(json.dumps(market_data), encoding="utf-8")
+                    with self.assertRaises(SystemExit) as ctx:
+                        prepublish.check_manifest()
+                    self.assertIn(expected, str(ctx.exception))
+
+            prepublish.PLUGIN_BIN = root / "plugin-bin"
+            prepublish.SKILLS_DIR = root / "skills"
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_skill_allowed_tool_commands()
+            self.assertIn("missing plugin skills directory", str(ctx.exception))
+            prepublish.SKILLS_DIR.mkdir()
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_skill_allowed_tool_commands()
+            self.assertIn("missing plugin bin directory", str(ctx.exception))
+            prepublish.PLUGIN_BIN.mkdir()
+            (prepublish.PLUGIN_BIN / "context-guard-setup").write_text("#!/bin/sh\n", encoding="utf-8")
+            (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o600)
+            skill_dir = prepublish.SKILLS_DIR / "demo"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\ndescription: demo\nallowed-tools: Bash(context-guard-setup --help)\n---\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_skill_allowed_tool_commands()
+            self.assertIn("non-executable", str(ctx.exception))
+            (prepublish.PLUGIN_BIN / "context-guard-setup").chmod(0o700)
+            (skill_dir / "SKILL.md").write_text(
+                "---\ndescription: demo\nallowed-tools: Bash(context-guard-trim-output -- pytest)\n---\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_skill_allowed_tool_commands()
+            self.assertIn("must not grant arbitrary command wrapper", str(ctx.exception))
+            (skill_dir / "SKILL.md").write_text(
+                "---\ndescription: demo\nallowed-tools: Bash(context-guard-missing --help)\n---\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                prepublish.check_skill_allowed_tool_commands()
+            self.assertIn("references missing plugin bin command", str(ctx.exception))
+
     def test_show_paths_help_warns_private_path_exposure(self):
         commands = [
             [sys.executable, str(KIT_DIR / "read_symbol.py"), "--help"],
@@ -1430,6 +1615,204 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             self.assertNotEqual(proc.returncode, 0)
                             self.assertIn("context-guard-artifact:", proc.stderr)
                             self.assertNotIn("Traceback", proc.stderr)
+
+    def test_context_escrow_helpers_fail_closed_and_bound_queries(self):
+        # Protects artifact escrow invariants: malformed ranges, tampered metadata,
+        # duplicate/unsafe listings, and capped query output fail closed.
+        artifact = load_python_script_module(KIT_DIR / "context_escrow.py", "context_escrow_helper_edges")
+        self.assertEqual(artifact.bounded_int("not-int", 7, 1, 9), 7)
+        self.assertEqual(artifact.bounded_int(99, 7, 1, 9), 9)
+        self.assertIn("[line trimmed:", artifact.cap_line("x" * 100, 32))
+        self.assertEqual(artifact.compact_items([" one ", "one", "", " two ", "three"], limit=2), ["one", "two"])
+
+        fallback = artifact.FallbackLineSanitizer()
+        sanitized, redacted = fallback.sanitize("api_token=ghp_" + ("A" * 36) + "\n")
+        self.assertTrue(redacted)
+        self.assertIn("[REDACTED]", sanitized)
+        self.assertEqual(fallback.redactions, 1)
+
+        self.assertIsNone(artifact.parse_line_range(None))
+        self.assertEqual(artifact.parse_line_range("2:4"), (2, 4))
+        for value in ["bad", "0:1", "4:2"]:
+            with self.subTest(lines=value):
+                with self.assertRaises(ValueError):
+                    artifact.parse_line_range(value)
+
+        content = "one\nERROR two\nthree\nERROR four\n"
+        selected, meta = artifact.query_content(content, line_range=(2, 3), pattern=None, max_lines=10)
+        self.assertEqual(selected, "ERROR two\nthree\n")
+        self.assertEqual(meta["selector"], {"type": "lines", "start": 2, "end": 3})
+        selected, meta = artifact.query_content(content, line_range=None, pattern="ERROR", max_lines=1)
+        self.assertEqual(selected, "ERROR two\n")
+        self.assertEqual(meta["matched_lines"], 2)
+        capped, did_cap = artifact.cap_text("x" * 100, 40)
+        self.assertTrue(did_cap)
+        self.assertIn("artifact query capped", capped)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            artifact.ensure_private_dir(artifact_dir)
+            artifact_id = "a" * 20
+            content_path, meta_path = artifact.artifact_paths(artifact_dir, artifact_id)
+            content_path.write_text("trusted\n", encoding="utf-8")
+            os.chmod(content_path, 0o600)
+            meta_path.write_text(json.dumps({"artifact_id": "b" * 20}), encoding="utf-8")
+            os.chmod(meta_path, 0o600)
+            with self.assertRaises(ValueError):
+                artifact.load_metadata(artifact_dir, artifact_id)
+
+            metadata = {
+                "artifact_id": artifact_id,
+                "stored_output": {
+                    "bytes": len("trusted\n".encode("utf-8")),
+                    "lines": 1,
+                    "sha256": hashlib.sha256(b"different\n").hexdigest(),
+                    "content_file": content_path.name,
+                    "metadata_file": meta_path.name,
+                },
+                "digest": {},
+            }
+            meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+            stderr = io.StringIO()
+            args = argparse.Namespace(
+                dir=str(artifact_dir),
+                artifact_id=artifact_id,
+                max_lines=10,
+                max_chars=100,
+                lines="1:1",
+                pattern=None,
+                json=True,
+            )
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(artifact.get_command(args), 1)
+            self.assertIn("checksum mismatch", stderr.getvalue())
+
+            valid_sha = hashlib.sha256("trusted\n".encode("utf-8")).hexdigest()
+            metadata["stored_output"]["sha256"] = valid_sha
+            meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(artifact.list_command(argparse.Namespace(dir=str(artifact_dir), json=True)), 0)
+            self.assertEqual(json.loads(stdout.getvalue())["artifacts"][0]["artifact_id"], artifact_id)
+
+            duplicate_legacy = Path(tmp) / ".claude-token-optimizer" / "artifacts"
+            artifact.ensure_private_dir(duplicate_legacy)
+            shutil.copy2(content_path, duplicate_legacy / content_path.name)
+            shutil.copy2(meta_path, duplicate_legacy / meta_path.name)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(artifact.list_command(argparse.Namespace(dir=artifact.DEFAULT_ARTIFACT_DIR, json=True)), 0)
+            self.assertLessEqual(len(json.loads(stdout.getvalue())["artifacts"]), 1)
+
+    def test_trim_digest_and_fallback_helpers_keep_output_bounded(self):
+        # Protects wrapper reliability: fallback sanitization, digest guidance,
+        # markdown/JSON rendering, and timeout cleanup remain bounded.
+        trim = load_python_script_module(KIT_DIR / "trim_command_output.py", "trim_helper_edges")
+        self.assertEqual(trim.bounded_int("bad", 5, 1, 9), 5)
+        self.assertEqual(trim.bounded_int(999, 5, 1, 9), 9)
+        self.assertRegex(trim.anonymize_absolute_paths("at /Users/alice/project/secret.txt"), r"secret\.txt#path:[0-9a-f]{12}")
+
+        stderr = io.StringIO()
+        sanitizer = trim.FallbackLineSanitizer(diagnostic="forced fallback")
+        with contextlib.redirect_stderr(stderr):
+            sanitized, did_redact = sanitizer.sanitize("Authorization: Bearer secret-token\n")
+            sanitizer.sanitize("plain /Users/alice/private.txt\n")
+        self.assertTrue(did_redact)
+        self.assertIn("[REDACTED]", sanitized)
+        self.assertIn("sanitizer fallback active", stderr.getvalue())
+        self.assertEqual(stderr.getvalue().count("sanitizer fallback active"), 1)
+        self.assertEqual(sanitizer.redactions, 1)
+
+        compact = trim.compact_item("x" * 120, limit=40, sanitizer=sanitizer)
+        self.assertIn("[item trimmed:", compact)
+        self.assertEqual(
+            trim.digest_next_queries(
+                rc=0,
+                timed_out=False,
+                raw_output_truncated=False,
+                runner_items={},
+                top_error_lines=[],
+            ),
+            ["No raw output follow-up needed; command completed successfully."],
+        )
+        self.assertTrue(any(
+            "timeout" in item
+            for item in trim.digest_next_queries(
+                rc=124,
+                timed_out=True,
+                raw_output_truncated=True,
+                runner_items={},
+                top_error_lines=[],
+            )
+        ))
+
+        args = argparse.Namespace(max_lines=3, max_chars=80, max_line_chars=40)
+        runner = trim.RunnerFailureSummary(3)
+        runner.feed("FAILED tests/test_example.py::test_case - AssertionError: nope\n")
+        payload = trim.build_digest_payload(
+            args=args,
+            command=["pytest", "tests/test_example.py::test_case"],
+            rc=1,
+            timed_out=False,
+            total=10,
+            raw_chars=500,
+            visible_chars=300,
+            any_line_capped=True,
+            redacted_lines=1,
+            head=["FAILED tests/test_example.py::test_case - AssertionError: nope\n"],
+            tail=["tail\n"],
+            error_lines=["ERROR final\n", "ERROR final\n"],
+            runner_summary=runner,
+            line_sanitizer=sanitizer,
+        )
+        self.assertEqual(payload["status"], "failure")
+        self.assertTrue(payload["raw_output"]["truncated"])
+        self.assertTrue(payload["runner_failure_summary"])
+        markdown = trim.render_digest_markdown(payload, 180)
+        self.assertLessEqual(len(markdown), 180 + len("[context-guard-kit] digest capped by --max-chars.\n"))
+        self.assertIn("digest capped", markdown)
+        data = json.loads(trim.render_digest_json(payload, 180))
+        self.assertTrue(data["digest_capped"])
+
+    def test_rewrite_bash_classifier_edges_preserve_safe_routing(self):
+        # Protects hook behavior: safe commands stay untouched, risky commands
+        # route to the right wrapper, and fail-open remains explicit.
+        rewrite = load_python_script_module(KIT_DIR / "rewrite_bash_for_token_budget.py", "rewrite_classifier_edges")
+        old_canonical = os.environ.pop(rewrite.FAIL_OPEN_ENV, None)
+        old_legacy = os.environ.pop(rewrite.LEGACY_FAIL_OPEN_ENV, None)
+        try:
+            os.environ[rewrite.FAIL_OPEN_ENV] = "0"
+            os.environ[rewrite.LEGACY_FAIL_OPEN_ENV] = "yes"
+            self.assertIsNone(rewrite.fail_open_source_env())
+            os.environ.pop(rewrite.FAIL_OPEN_ENV)
+            self.assertEqual(rewrite.fail_open_source_env(), rewrite.LEGACY_FAIL_OPEN_ENV)
+            os.environ[rewrite.FAIL_OPEN_ENV] = "true"
+            self.assertEqual(rewrite.fail_open_source_env(), rewrite.FAIL_OPEN_ENV)
+        finally:
+            os.environ.pop(rewrite.FAIL_OPEN_ENV, None)
+            os.environ.pop(rewrite.LEGACY_FAIL_OPEN_ENV, None)
+            if old_canonical is not None:
+                os.environ[rewrite.FAIL_OPEN_ENV] = old_canonical
+            if old_legacy is not None:
+                os.environ[rewrite.LEGACY_FAIL_OPEN_ENV] = old_legacy
+
+        self.assertTrue(rewrite.unparseable_command_needs_sanitizer("rg token . | cat"))
+        self.assertTrue(rewrite.unparseable_command_needs_sanitizer("find . -exec cat {} \\;"))
+        self.assertFalse(rewrite.unparseable_command_needs_sanitizer("echo ok | cat"))
+        self.assertIsNone(rewrite.split_single_safe_command("echo ok && cat secrets"))
+        self.assertEqual(rewrite.strip_env_prefix(["A=1", "env", "-u", "B", "C=2", "pytest"]), ["pytest"])
+        self.assertEqual(rewrite.npm_script_args(["--prefix", "web", "run", "test:unit"]), ["run", "test:unit"])
+        self.assertTrue(rewrite.is_noisy_command(["npm", "--prefix", "web", "run", "test:unit"]))
+        self.assertTrue(rewrite.is_noisy_command(["python3", "-m", "unittest", "tests.test_context_guard_kit"]))
+        self.assertTrue(rewrite.is_dir_traversal_command(["rg", "--files"]))
+        self.assertFalse(rewrite.is_dir_traversal_command(["find", ".", "-exec", "cat", "{}", ";"]))
+        self.assertTrue(rewrite.is_log_streaming_command(["kubectl", "-n", "prod", "logs", "api"]))
+        self.assertTrue(rewrite.is_log_streaming_command(["docker", "--context", "prod", "compose", "-f", "compose.yml", "logs", "web"]))
+        self.assertTrue(rewrite.is_sanitizable_output_command(["git", "-C", ".", "--no-pager", "log", "-p"]))
+        self.assertFalse(rewrite.is_sanitizable_output_command(["rg", "--files"]))
+        self.assertTrue(rewrite.is_already_wrapped(["python3", "/tmp/context-guard-sanitize-output", "--", "cmd"]))
+        self.assertIn("python3", rewrite.build_wrapped_command("/tmp/trim_command_output.py", "pytest -q"))
+        self.assertIn("/tmp/context-guard-sanitize-output", rewrite.build_sanitized_command("/tmp/context-guard-sanitize-output", "git diff"))
 
     def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3027,6 +3410,110 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(setup.command_helper_basenames("bash -c 'claude-token-guard-read'"), {"claude-token-guard-read"})
         self.assertEqual(setup.command_helper_basenames("env SESSION=1 claude-token-failed-nudge"), {"claude-token-failed-nudge"})
 
+    def test_setup_wizard_helper_edges_preserve_existing_settings_and_fail_closed(self):
+        # Protects setup merge invariants: project-root resolution, symlink
+        # refusal, legacy hook canonicalization, and malformed scan summaries.
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_edges")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            nested = root / "src" / "pkg" / "file.py"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("print('ok')\n", encoding="utf-8")
+            self.assertEqual(setup.find_project_root(nested), root.resolve())
+            self.assertEqual(setup.resolve_setup_root(str(nested)), nested.parent.resolve())
+            with self.assertRaises(SystemExit):
+                setup.resolve_setup_root(str(root / "missing"))
+
+            settings_dir = root / ".claude"
+            settings_dir.mkdir()
+            real_settings = root / "real-settings.json"
+            real_settings.write_text("{}", encoding="utf-8")
+            symlink_settings = settings_dir / "settings.json"
+            try:
+                symlink_settings.symlink_to(real_settings)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            with self.assertRaises(SystemExit) as ctx:
+                setup.validate_settings_target(root, symlink_settings, allow_home_settings=False)
+            self.assertIn("symlinked settings file", str(ctx.exception))
+
+        nested_commands = {
+            "hooks": [{"command": "context-guard-rewrite-bash"}, {"nested": [{"command": "context-guard-guard-read"}]}]
+        }
+        self.assertEqual(
+            setup.command_values(nested_commands),
+            ["context-guard-rewrite-bash", "context-guard-guard-read"],
+        )
+        self.assertTrue(setup.matcher_covers("", "Bash"))
+        self.assertTrue(setup.matcher_covers("Read | Bash", "bash"))
+        self.assertTrue(setup.matcher_covers("*", "Write"))
+        self.assertFalse(setup.matcher_covers(123, "Bash"))
+
+        self.assertEqual(setup.command_helper_basenames("python3 -c 'env X=1 claude-token-guard-read'"), {"claude-token-guard-read"})
+        self.assertEqual(setup.command_helper_basenames("unterminated 'quote"), set())
+        self.assertIn(
+            "rewrite_bash_for_token_budget.py",
+            setup.equivalent_helper_basenames("python3 /tmp/rewrite_bash_for_token_budget.py"),
+        )
+
+        settings = {
+            "statusLine": {"type": "command", "command": "custom-statusline"},
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "claude-token-rewrite-bash"}]},
+                ]
+            },
+        }
+        found, changed = setup.canonicalize_equivalent_command(
+            settings["hooks"]["PreToolUse"],
+            "context-guard-rewrite-bash",
+        )
+        self.assertTrue(found)
+        self.assertTrue(changed)
+        self.assertEqual(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "context-guard-rewrite-bash")
+        self.assertTrue(setup.has_hook_command(settings["hooks"]["PreToolUse"], "Bash", "context-guard-rewrite-bash"))
+
+        actions: list[str] = []
+        setup._ensure_tool_hook(
+            settings,
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "context-guard-rewrite-bash"}]},
+            "context-guard-rewrite-bash",
+            "Bash trim/sanitize",
+            actions,
+            event="PreToolUse",
+        )
+        self.assertEqual(actions, [])
+        self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+
+        report = {
+            "finding_count": "3",
+            "findings": [
+                {"severity": "high", "id": "A", "path": "a.py", "message": "msg", "action": "act"},
+                {"severity": "medium", "id": "B"},
+                {"severity": "low", "id": "C"},
+            ],
+        }
+        summary = setup.summarize_diet_report(report)
+        self.assertEqual(summary["finding_count"], 3)
+        self.assertEqual(summary["severity_counts"], {"high": 1, "medium": 1, "low": 1})
+        for bad in ([], {"findings": "bad"}, {"finding_count": "NaN", "findings": []}, {"findings": [object()]}):
+            with self.subTest(bad=type(bad).__name__):
+                with self.assertRaises(ValueError):
+                    setup.summarize_diet_report(bad)
+
+        with mock.patch.object(setup, "helper_command", side_effect=lambda helper, _script, **_kwargs: helper):
+            settings = {"statusLine": {"type": "command", "command": "custom-statusline"}}
+            actions = setup.apply_choices(settings, setup.Choices())
+        self.assertEqual(settings["statusLine"]["command"], "custom-statusline")
+        self.assertEqual(settings["model"], setup.DEFAULT_MODEL)
+        self.assertEqual(settings["effortLevel"], setup.DEFAULT_EFFORT)
+        self.assertIn("kept existing statusLine", "\n".join(actions))
+        self.assertTrue(setup.has_hook_command(settings["hooks"]["PreToolUse"], "Bash", setup.HELPER_REWRITE_BASH))
+        self.assertTrue(setup.has_hook_command(settings["hooks"]["PreToolUse"], "Read", setup.HELPER_GUARD_READ))
+        self.assertTrue(setup.has_hook_command(settings["hooks"]["PostToolUse"], "Bash", setup.HELPER_FAILED_NUDGE))
+
     def test_trim_extracts_pytest_failure_summary_from_long_logs(self):
         code = (
             "import sys; "
@@ -4013,6 +4500,65 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     for fragment in forbidden_fragments:
                         self.assertNotIn(fragment, text)
 
+    def test_failed_attempt_nudge_helpers_reset_and_bound_state(self):
+        # Protects repeated-failure state semantics: malformed commands are
+        # normalized, successful pivots reset streaks, and state IO stays safe.
+        for index, script in enumerate(NUDGE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_failed_nudge_helper_edges_{index}")
+                self.assertEqual(
+                    module.normalize_command("pytest tests/auth.py -v -k login --maxfail=1"),
+                    "pytest tests/auth.py -k=login",
+                )
+                self.assertTrue(module.normalize_command("pytest 'unterminated -k login").startswith("pytest"))
+
+                secret_session = "session-ghp_" + ("A" * 36)
+                label = module.safe_session_label(secret_session)
+                self.assertRegex(label, r"^sess-[0-9a-f]{16}$")
+                self.assertNotIn("ghp_", label)
+                self.assertIsNone(module.safe_session_label(""))
+                self.assertIsNone(module.safe_session_label(None))
+
+                diagnostic = module.diagnostic_text(PermissionError(errno.EACCES, "permission denied token=ghp_" + ("B" * 36) + "\x1b[31m"))
+                self.assertIn("permission denied", diagnostic)
+                self.assertLessEqual(len(diagnostic), module.DIAGNOSTIC_MAX_CHARS)
+                self.assertNotIn("ghp_", diagnostic)
+                self.assertNotIn("\x1b", diagnostic)
+                self.assertIsNone(module.extract_exit_code({"exitCode": True, "returncode": False}))
+                self.assertEqual(module.extract_exit_code({"exit_code": 7}), 7)
+
+                fp = module.fingerprint("pytest tests/auth.py")
+                entries: list[dict] = []
+                entries = module.update_entries(entries, fp, success=False)
+                entries = module.update_entries(entries, fp, success=False)
+                self.assertEqual(module.count_consecutive_failures(entries, fp), 2)
+                entries = module.update_entries(entries, fp, success=True)
+                self.assertEqual(module.count_consecutive_failures(entries, fp), 0)
+                entries = module.update_entries(entries, fp, success=False)
+                self.assertEqual(module.count_consecutive_failures(entries, fp), 1)
+                for item in range(module.MAX_TRACKED + 3):
+                    entries = module.update_entries(entries, f"fp-{item}", success=False)
+                self.assertLessEqual(len(entries), module.MAX_TRACKED)
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    state_path = Path(tmp) / ".context-guard" / "failures-sess.json"
+                    module.save_entries(state_path, [{"fp": fp}])
+                    self.assertEqual(module.load_entries(state_path), [{"fp": fp}])
+                    self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+                    state_path.write_text("{", encoding="utf-8")
+                    self.assertEqual(module.load_entries(state_path), [])
+                    state_path.write_text(json.dumps({"not": "a-list"}), encoding="utf-8")
+                    self.assertEqual(module.load_entries(state_path), [])
+
+                original_stdin = module.sys.stdin
+                try:
+                    module.sys.stdin = io.StringIO("abc")
+                    self.assertEqual(module.read_bounded_stdin_text(limit=5), ("abc", False))
+                    module.sys.stdin = io.StringIO("abcdef")
+                    self.assertEqual(module.read_bounded_stdin_text(limit=5), (None, True))
+                finally:
+                    module.sys.stdin = original_stdin
+
     def test_hook_label_sensitive_evidence_flags_control_without_safe_name_false_positives(self):
         safe_names = ["test_tokenizer.py", "token_count.py", "api_key_helpers.py"]
         sensitive_names = [
@@ -4156,6 +4702,174 @@ for malformed in malformed_values:
                     # tmp staging 파일이 남아 있지 않아야 한다.
                     leftover = list((cwd / ".context-guard").glob(".nudge-*.tmp"))
                     self.assertEqual(leftover, [])
+
+    def test_large_read_guard_helper_edges_keep_state_and_labels_safe(self):
+        # Protects large-read helper internals: env precedence, bounded ranges,
+        # safe labels, progressive hints, and retry state remain fail-closed.
+        for index, script in enumerate(READ_GUARD_SCRIPTS):
+            with self.subTest(script=script):
+                guard = load_python_script_module(script, f"_read_guard_helper_edges_{index}")
+                with mock.patch.dict(os.environ, {
+                    guard.MAX_BYTES_ENV: "not-int",
+                    guard.LEGACY_MAX_BYTES_ENV: "999999",
+                }, clear=False):
+                    self.assertEqual(guard.env_value(guard.MAX_BYTES_ENV, guard.LEGACY_MAX_BYTES_ENV), "not-int")
+                    self.assertEqual(guard.bounded_env_int(guard.MAX_BYTES_ENV, guard.LEGACY_MAX_BYTES_ENV, 7, 1, 20), 7)
+                with mock.patch.dict(os.environ, {
+                    guard.LEGACY_MAX_LINE_RANGE_ENV: "999999",
+                }, clear=False):
+                    os.environ.pop(guard.MAX_LINE_RANGE_ENV, None)
+                    self.assertEqual(
+                        guard.bounded_env_int(guard.MAX_LINE_RANGE_ENV, guard.LEGACY_MAX_LINE_RANGE_ENV, 7, 1, 20),
+                        20,
+                    )
+
+                self.assertEqual(guard.tool_input({"toolInput": {"filePath": "src/app.py"}}), {"filePath": "src/app.py"})
+                self.assertEqual(guard.read_path_from_payload({"toolInput": {"filePath": "src/app.py"}}), "src/app.py")
+                self.assertTrue(guard.bounded_line_range_requested({"tool_input": {"limit": "10", "offset": "0"}}))
+                for payload in (
+                    {"tool_input": {"limit": "0"}},
+                    {"tool_input": {"limit": "bad"}},
+                    {"tool_input": {"limit": "10", "offset": "-1"}},
+                    {"tool_input": {"limit": str(guard.MAX_LINE_RANGE_LIMIT + 1)}},
+                ):
+                    with self.subTest(payload=payload):
+                        self.assertFalse(guard.bounded_line_range_requested(payload))
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    safe = root / "src" / "safe.py"
+                    safe.parent.mkdir()
+                    safe.write_text("def target():\n    return 1\n" + ("# filler\n" * 40), encoding="utf-8")
+                    self.assertEqual(guard.safe_label(safe, root), "src/safe.py")
+                    secret_path = root.parent / ("token=ghp_" + ("A" * 36) + ".py")
+                    secret_label = guard.safe_label(secret_path, root)
+                    self.assertIn("redacted-path#path:", secret_label)
+                    self.assertNotIn("ghp_", secret_label)
+
+                    ladder = guard.progressive_read_ladder(safe, "src/safe.py", 5000, 10, "context-guard-read-symbol")
+                    self.assertIn("Progressive read ladder", ladder)
+                    self.assertIn("line 1: function target", ladder)
+                    self.assertIn("Read with offset=0 limit=", ladder)
+                    self.assertNotIn(str(root), ladder)
+
+                    first_fp = guard.read_guard_fingerprint(safe, "src/safe.py", safe.stat().st_size)
+                    second_fp = guard.read_guard_fingerprint(safe, "src/safe.py", safe.stat().st_size + 1)
+                    self.assertNotEqual(first_fp, second_fp)
+                    self.assertEqual(guard.record_read_guard_attempt(root, first_fp), 1)
+                    self.assertEqual(guard.record_read_guard_attempt(root, first_fp), 2)
+                    self.assertIn("Repeated-read dedup", guard.repeated_read_hint(2))
+                    self.assertEqual(guard.repeated_read_hint(1), "")
+
+                    state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                    self.assertTrue(state_file.is_file())
+                    self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
+                    loaded = guard.load_read_guard_state(root)
+                    self.assertIn("attempts", loaded)
+                    state_file.write_text("{", encoding="utf-8")
+                    self.assertEqual(guard.load_read_guard_state(root), {})
+
+    def test_large_read_guard_main_payload_edges_fail_closed(self):
+        # Protects hook entrypoint behavior for malformed payloads and safe
+        # no-op paths without needing subprocess-specific scaffolding.
+        for index, script in enumerate(READ_GUARD_SCRIPTS):
+            with self.subTest(script=script):
+                guard = load_python_script_module(script, f"_read_guard_main_edges_{index}")
+
+                def invoke(stdin_text: str, cwd: Path, *, env: dict[str, str] | None = None) -> tuple[int, str, str]:
+                    old_stdin, old_stdout, old_stderr = guard.sys.stdin, guard.sys.stdout, guard.sys.stderr
+                    old_cwd = Path.cwd()
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    try:
+                        os.chdir(cwd)
+                        guard.sys.stdin = io.StringIO(stdin_text)
+                        guard.sys.stdout = stdout
+                        guard.sys.stderr = stderr
+                        if env is None:
+                            rc = guard.main()
+                        else:
+                            with mock.patch.dict(os.environ, env, clear=False):
+                                rc = guard.main()
+                        return rc, stdout.getvalue(), stderr.getvalue()
+                    finally:
+                        os.chdir(old_cwd)
+                        guard.sys.stdin, guard.sys.stdout, guard.sys.stderr = old_stdin, old_stdout, old_stderr
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.assertEqual(invoke("{}", root, env={guard.GUARD_ENV: "0"})[:2], (0, "{}\n"))
+
+                    rc, stdout, stderr = invoke("{", root)
+                    self.assertEqual(rc, 0)
+                    self.assertIn("invalid hook JSON", stderr)
+                    self.assertEqual(json.loads(stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+                    rc, stdout, _stderr = invoke("[]", root)
+                    self.assertEqual(rc, 0)
+                    self.assertIn("not a JSON object", json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"])
+
+                    for payload in (
+                        {"tool_name": "Write", "tool_input": {"file_path": "x.py"}},
+                        {"tool_name": "Read", "tool_input": {}},
+                        {"tool_name": "Read", "tool_input": {"file_path": "missing.py"}},
+                    ):
+                        with self.subTest(payload=payload):
+                            self.assertEqual(invoke(json.dumps(payload), root)[1], "{}\n")
+
+                    small = root / "small.py"
+                    small.write_text("print('ok')\n", encoding="utf-8")
+                    self.assertEqual(
+                        invoke(json.dumps({"tool_name": "Read", "tool_input": {"file_path": "small.py"}}), root)[1],
+                        "{}\n",
+                    )
+
+                    original_size = guard.regular_file_size_no_symlink
+                    try:
+                        guard.regular_file_size_no_symlink = lambda _path: (_ for _ in ()).throw(
+                            OSError(errno.ELOOP, "too many symlinks")
+                        )
+                        rc, stdout, stderr = invoke(
+                            json.dumps({"tool_name": "Read", "tool_input": {"file_path": "blocked.py"}}),
+                            root,
+                        )
+                        self.assertEqual(rc, 0)
+                        self.assertEqual(stderr, "")
+                        self.assertIn("traverses a symlink", json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"])
+
+                        guard.regular_file_size_no_symlink = lambda _path: (_ for _ in ()).throw(
+                            PermissionError(errno.EACCES, "permission denied")
+                        )
+                        rc, stdout, stderr = invoke(
+                            json.dumps({"tool_name": "Read", "tool_input": {"file_path": "blocked.py"}}),
+                            root,
+                        )
+                        self.assertEqual(rc, 0)
+                        self.assertIn("could not safely inspect", stderr)
+                        self.assertIn("could not safely inspect", json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"])
+                    finally:
+                        guard.regular_file_size_no_symlink = original_size
+
+                    big = root / "big.py"
+                    big.write_text("def target():\n    return 1\n" + ("# filler\n" * 1000), encoding="utf-8")
+                    bounded_payload = {"tool_name": "Read", "tool_input": {"file_path": "big.py", "limit": 10, "offset": 0}}
+                    original_max_bytes = guard.max_bytes
+                    original_record = guard.record_read_guard_attempt
+                    try:
+                        guard.max_bytes = lambda: 1
+                        self.assertEqual(invoke(json.dumps(bounded_payload), root)[1], "{}\n")
+                        guard.record_read_guard_attempt = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("state busy"))
+                        rc, stdout, stderr = invoke(
+                            json.dumps({"tool_name": "Read", "tool_input": {"file_path": "big.py"}}),
+                            root,
+                        )
+                    finally:
+                        guard.max_bytes = original_max_bytes
+                        guard.record_read_guard_attempt = original_record
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(stderr, "")
+                    reason = json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                    self.assertIn("Large Read blocked", reason)
+                    self.assertNotIn("Repeated-read dedup", reason)
 
     def test_large_read_guard_blocks_large_whole_file_reads(self):
         for script in READ_GUARD_SCRIPTS:
@@ -4728,6 +5442,72 @@ for malformed in malformed_values:
             data = json.loads(proc.stdout)
             self.assertIn("VERSION", data["content"])
             self.assertNotIn("OTHER", data["content"])
+
+    def test_read_symbol_helper_edges_bound_languages_and_missing_symbols(self):
+        # Protects symbol slicing heuristics: language routing, syntax fallback,
+        # brace/comment handling, capped output, and missing matches stay bounded.
+        read_symbol = load_python_script_module(KIT_DIR / "read_symbol.py", "read_symbol_helper_edges")
+        self.assertEqual(read_symbol.bounded_int("bad", 4, 0, 9), 4)
+        self.assertEqual(read_symbol.bounded_int(999, 4, 0, 9), 9)
+        self.assertRegex(read_symbol.path_label(Path("secret-ghp_" + ("A" * 36) + ".py"), False), r"redacted-path#path:[0-9a-f]{12}")
+        self.assertIn("safe_tokenizer.py#path:", read_symbol.path_label(Path("safe_tokenizer.py"), False))
+
+        expected_languages = {
+            "sample.py": "python",
+            "sample.tsx": "javascript",
+            "sample.go": "go",
+            "sample.rs": "rust",
+            "sample.txt": "generic",
+        }
+        for filename, language in expected_languages.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(read_symbol.language_for(Path(filename)), language)
+
+        py_lines = [
+            "def before():\n",
+            "    return 0\n",
+            "\n",
+            "def target():\n",
+            "    # comment inside\n",
+            "    return 1\n",
+            "def after():\n",
+            "    return 2\n",
+        ]
+        self.assertEqual(read_symbol.find_start(py_lines, "target", "python"), 3)
+        self.assertEqual(read_symbol.python_block_end(py_lines, 3), 6)
+        self.assertIsNone(read_symbol.python_ast_block_end("def target(:\n", "target", 0))
+        self.assertEqual(read_symbol.python_ast_block_end("def target():\n    return 1\n", "target", 0), 2)
+
+        brace_lines = [
+            "export function target() {\n",
+            "  const s = '}';\n",
+            "  /* ignored { brace */\n",
+            "  return 1;\n",
+            "}\n",
+            "export function after() { return 2; }\n",
+        ]
+        self.assertEqual(read_symbol.brace_block_end(brace_lines, 0), 5)
+        stripped, in_comment = read_symbol.strip_line_for_brace_count("/* { ignored */ const x = '{'; // }")
+        self.assertFalse(in_comment)
+        self.assertEqual(stripped.count("{"), 0)
+        self.assertEqual(stripped.count("}"), 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generic = root / "notes.txt"
+            generic.write_text("alpha\nTARGET\n" + ("body\n" * 80), encoding="utf-8")
+            self.assertIsNone(read_symbol.find_symbol_slice(generic, "missing", 0, 500, False))
+            result = read_symbol.find_symbol_slice(generic, "TARGET", 1, 120, False)
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.language, "generic")
+            self.assertTrue(result.capped)
+            self.assertIn("symbol slice capped", result.content)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                read_symbol.print_text(result)
+            self.assertIn("symbol=TARGET", stdout.getvalue())
+            self.assertIn("rerun with a narrower symbol", stdout.getvalue())
 
     def test_read_symbol_reports_truncated_search_when_symbol_after_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
