@@ -2,6 +2,11 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.3.1] - 2026-06-01
+
+- Fixed setup migration for upgraded projects that still had legacy `claude-token-*` hook commands, rewriting them to current `context-guard-*` helpers so Claude no longer reports `command not found` hook errors.
+- Ensured setup scans all matcher-covering hook entries before deciding a hook is already configured, so later stale legacy entries cannot survive behind an earlier canonical entry.
+
 ## [0.3.0] - 2026-06-01
 
 - Added `context-guard-audit --feasibility-json` as a stable local data contract for Mac/GUI visibility prototypes.
