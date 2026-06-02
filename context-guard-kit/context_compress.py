@@ -375,7 +375,7 @@ def build_metadata(
         "type_source": type_source,
         "strategy": strategy_detail.get("strategy"),
         "strategy_detail": strategy_detail,
-        "lossy": bool(strategy_detail.get("lossy", True)),
+        "lossy": lossy,
         "input": {
             "bytes_read": input_bytes,
             "truncated": input_truncated,
