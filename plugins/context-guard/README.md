@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard is a Claude Code plugin and local helper toolkit for keeping Claude Code context focused. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, statusline visibility, transcript audits, and repeatable token/cost measurement.
+ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents, shipped as a Claude Code plugin first. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, statusline visibility, transcript audits, and repeatable token/cost measurement, and extends to other agents through local helper commands and advisory rule snippets.
 
 Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context hygiene scan, does not mutate global Claude settings, and does not configure external AI offload.
 
@@ -75,6 +75,12 @@ context-guard-statusline-merged
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
 - **Repeated-failure nudge** warns after repeated Bash failures so Claude switches strategy instead of retrying the same context-heavy path.
 - **Benchmark helper** records matched baseline/variant runs with real token and cost fields plus separate byte-reduction proxy evidence.
+
+## Brief mode (advisory)
+
+Brief mode ships agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
+
+Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brief/`](brief/). Each is a single marker-delimited block you install into an agent's rule/instruction file (such as `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions) and remove by deleting the block. See [`brief/README.md`](brief/README.md).
 
 ## Conservative claims
 
