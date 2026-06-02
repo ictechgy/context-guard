@@ -1309,6 +1309,15 @@ def main() -> int:
     args = parser.parse_args()
     if args.dry_run:
         args.plan = True
+    if getattr(args, "list_adapters", False):
+        payload = adapter_registry_payload()
+        if args.json:
+            print(json.dumps({"adapters": payload}, indent=2, sort_keys=True))
+        else:
+            print("ContextGuard cross-agent adapters:")
+            for item in payload:
+                print(f"- {item['key']} [{item['capability']}] {item['display_name']}: {item['summary']}")
+        return 0
     # Safety default for non-interactive Claude Code Bash calls: do not write
     # unless --yes is explicit.
     if not sys.stdin.isatty() and not args.yes:
