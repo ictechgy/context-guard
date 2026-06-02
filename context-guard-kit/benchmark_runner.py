@@ -164,6 +164,10 @@ EXTERNAL_SOURCE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], 
 )
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
+# Byte -> token proxy 환산 계수. 측정된 모델 토큰이 아니라 byte delta 기반 보수적
+# 추정치이며, report에서 evidence="inferred"로 분명히 라벨링한다. 영어 텍스트 기준
+# ~4 bytes/token의 통용 근사값을 사용한다.
+TOKEN_PROXY_BYTES_PER_TOKEN = 4
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
@@ -1321,6 +1325,42 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["artifacts_used_per_successful_task"] = None
             bucket["corrections_per_successful_task"] = None
             bucket["byte_reduction_ratio"] = None
+
+        # 각 variant는 하나의 compression strategy를 대표한다. byte 절감/토큰 proxy/
+        # 텔레메트리 증거 등급을 보수적으로(additive) 노출한다. 토큰 proxy는 측정된
+        # 모델 토큰이 아니라 byte delta 기반 추정치이므로 evidence="inferred"로 둔다.
+        bucket["compression_strategy"] = variant
+        bucket["is_baseline_strategy"] = variant == baseline_variant
+        bytes_before = bucket["bytes_before_successful"]
+        bytes_after = bucket["bytes_after_successful"]
+        byte_metrics_present = bool(bytes_before or bytes_after)
+        if successes and byte_metrics_present:
+            bytes_saved = max(0, bytes_before - bytes_after)
+            token_proxy_saved = bytes_saved // TOKEN_PROXY_BYTES_PER_TOKEN
+            bucket["bytes_saved_successful"] = bytes_saved
+            bucket["bytes_saved_per_successful_task"] = bytes_saved / successes
+            bucket["byte_savings_pct"] = ((bytes_before - bytes_after) / bytes_before * 100.0) if bytes_before else None
+            bucket["token_proxy_saved_successful"] = token_proxy_saved
+            bucket["token_proxy_saved_per_successful_task"] = token_proxy_saved / successes
+        else:
+            bucket["bytes_saved_successful"] = None
+            bucket["bytes_saved_per_successful_task"] = None
+            bucket["byte_savings_pct"] = None
+            bucket["token_proxy_saved_successful"] = None
+            bucket["token_proxy_saved_per_successful_task"] = None
+        bucket["observed_telemetry"] = {
+            "tokens": "observed",
+            "primary_cost": (
+                "observed" if runs and bucket["primary_cost_measured_runs"] == runs
+                else ("partial" if bucket["primary_cost_measured_runs"] else "unavailable")
+            ),
+            "external_tokens": (
+                "observed" if successes and bucket["external_tokens_measured_successful"] == successes
+                else ("partial" if bucket["external_tokens_measured_successful"] else "unavailable")
+            ),
+            "byte_savings": "observed" if byte_metrics_present else "unavailable",
+            "token_proxy": "inferred" if (successes and byte_metrics_present) else "unavailable",
+        }
 
     def average_task_metric(variant: str, task_id: str, key: str) -> float | None:
         values = [
