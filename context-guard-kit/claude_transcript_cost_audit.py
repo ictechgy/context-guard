@@ -643,18 +643,23 @@ def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
     has_cache_any = has_cache_read or has_cache_creation
     cache_partial = has_cache_any and not (has_cache_read and has_cache_creation)
     skipped = bool(summary.skipped_files or summary.skipped_records or summary.parse_errors)
+    has_input = summary.token_field_presence.get("input", 0) > 0
+    has_output = summary.token_field_presence.get("output", 0) > 0
     return {
         "tokens": {
             "status": availability_status(present=has_any_token, skipped=skipped and not has_any_token, partial=skipped and has_any_token),
             "present_fields": token_presence,
+            "evidence": evidence_class(observed=has_any_token),
         },
         "input": {
-            "status": availability_status(present=summary.token_field_presence.get("input", 0) > 0, partial=skipped and summary.token_field_presence.get("input", 0) > 0),
+            "status": availability_status(present=has_input, partial=skipped and has_input),
             "present_count": summary.token_field_presence.get("input", 0),
+            "evidence": evidence_class(observed=has_input),
         },
         "output": {
-            "status": availability_status(present=summary.token_field_presence.get("output", 0) > 0, partial=skipped and summary.token_field_presence.get("output", 0) > 0),
+            "status": availability_status(present=has_output, partial=skipped and has_output),
             "present_count": summary.token_field_presence.get("output", 0),
+            "evidence": evidence_class(observed=has_output),
         },
         "cache": {
             "status": availability_status(present=has_cache_any, partial=cache_partial or (skipped and has_cache_any)),
@@ -666,19 +671,35 @@ def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
                 "cache_read": has_cache_read and summary.tokens.get("cache_read", 0) == 0,
                 "cache_creation": has_cache_creation and summary.tokens.get("cache_creation", 0) == 0,
             },
+            # 원시 cache 토큰 수는 관측값(observed)이지만, share/reuse 비율은 관측값에서
+            # 파생한 추정값(inferred)이므로 별도로 분류해 노출한다.
+            "evidence": evidence_class(observed=has_cache_any),
+            "derived": {
+                "cache_read_share": {
+                    "evidence": evidence_class(observed=False, inferable=has_cache_any),
+                    "value": summary.cache_hit_rate if has_cache_any else None,
+                },
+                "cache_reuse_ratio": {
+                    "evidence": evidence_class(observed=False, inferable=summary.cache_amortization_defined),
+                    "value": summary.cache_amortization if summary.cache_amortization_defined else None,
+                },
+            },
         },
         "cost": {
             "status": availability_status(present=summary.cost_field_count > 0, partial=skipped and summary.cost_field_count > 0),
             "present_count": summary.cost_field_count,
             "observed_cost_usd": summary.cost_usd,
+            "evidence": evidence_class(observed=summary.cost_field_count > 0),
         },
         "context": {
             "status": "missing",
+            "evidence": EVIDENCE_UNAVAILABLE,
             "reason": (
                 "Transcript scans do not include live Claude Code context_window data. "
                 "Pass a live statusline snapshot in a future surface to populate context availability."
             ),
         },
+        "headroom": build_headroom_availability(summary),
     }
 
 
