@@ -1161,6 +1161,15 @@ def render_text(result: SetupResult) -> str:
         lines.extend(f"- {action}" for action in result.actions)
     else:
         lines.append("- no settings changes needed")
+    # Only surface the cross-agent section when a non-Claude adapter is engaged,
+    # keeping the default Claude-only text output unchanged.
+    extra_adapters = [entry for entry in (result.adapter_plan or []) if entry.get("key") != "claude"]
+    if extra_adapters:
+        lines.append("cross-agent adapters:")
+        for entry in result.adapter_plan or []:
+            lines.append(f"- {entry['key']} [{entry['capability']}] status={entry['status']}")
+            for action in entry.get("planned_actions", []):
+                lines.append(f"  - {action}")
     if not result.applied:
         lines.append("Run with --yes to apply the selected plan non-interactively.")
     return "\n".join(lines) + "\n"
