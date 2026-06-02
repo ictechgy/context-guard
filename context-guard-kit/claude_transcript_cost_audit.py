@@ -573,6 +573,49 @@ def availability_status(*, present: bool, skipped: bool = False, partial: bool =
     return "missing"
 
 
+# 측정 증거 3-상태 등급. status(available/partial/missing)와 직교하는 보조 축으로,
+# 값이 "어떻게" 알려졌는지를 GUI/소비자에게 노출한다.
+EVIDENCE_OBSERVED = "observed"
+EVIDENCE_INFERRED = "inferred"
+EVIDENCE_UNAVAILABLE = "unavailable"
+
+
+def evidence_class(*, observed: bool, inferable: bool = False) -> str:
+    """관측/추론/불가 3-상태 증거 등급을 반환한다.
+
+    - observed: transcript 필드에서 직접 읽은 값.
+    - inferred: 관측값에서 문서화된 공식으로 파생한 값(추정치).
+    - unavailable: scan 데이터만으로는 판별할 수 없는 값.
+
+    observed가 우선한다. 직접 관측이 없고 inferable한 경우에만 inferred로, 둘 다
+    아니면 unavailable로 분류해 보수적 측정 원칙을 지킨다.
+    """
+    if observed:
+        return EVIDENCE_OBSERVED
+    if inferable:
+        return EVIDENCE_INFERRED
+    return EVIDENCE_UNAVAILABLE
+
+
+def build_headroom_availability(summary: UsageSummary) -> dict[str, Any]:
+    """Context-window headroom 가용성/증거 등급을 보수적으로 분류한다.
+
+    transcript JSON에는 live `context_window`/잔여 토큰 정보가 없으므로 과거 scan
+    만으로는 headroom을 관측하거나 추론할 수 없다. 따라서 status는 기존 context와
+    동일하게 "missing", evidence는 "unavailable"로 둔다. live statusline snapshot을
+    입력으로 받는 미래 surface에서는 observed로 승급될 수 있음을 contract로 남긴다.
+    """
+    return {
+        "status": "missing",
+        "evidence": EVIDENCE_UNAVAILABLE,
+        "reason": (
+            "Transcript scans do not carry live context-window or remaining-token data, "
+            "so context headroom cannot be observed or conservatively inferred from history alone."
+        ),
+        "observable_via": "live_statusline_snapshot",
+    }
+
+
 def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
     skipped = summary.skipped_files + summary.skipped_records
     complete = skipped == 0 and not summary.parse_errors
