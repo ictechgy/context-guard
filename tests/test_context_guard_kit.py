@@ -1360,6 +1360,81 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(data["digest_capped"])
                 self.assertLessEqual(len(output), 240)
 
+    def _run_compress(self, script: Path, stdin: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            input=stdin,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+    def test_compress_classifies_and_compacts_json_losslessly(self):
+        raw = '{\n  "a": 1,\n  "b": [1, 2, 3],\n  "c": "hello"\n}\n'
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, raw, "--json")
+                payload = json.loads(proc.stdout)
+                meta = payload["metadata"]
+                self.assertEqual(meta["content_type"], "json")
+                self.assertEqual(meta["type_source"], "detected")
+                self.assertEqual(meta["strategy"], "json-compact")
+                self.assertFalse(meta["lossy"])
+                # 압축 본문은 의미적으로 동일한 JSON 이어야 한다(무손실).
+                self.assertEqual(json.loads(payload["content"]), {"a": 1, "b": [1, 2, 3], "c": "hello"})
+                self.assertLess(meta["bytes"]["compressed"], meta["bytes"]["original"])
+                self.assertEqual(meta["token_proxy"]["measurement"], "estimated")
+                self.assertEqual(meta["bytes"]["measurement"], "observed")
+
+    def test_compress_redacts_secrets_before_receipt(self):
+        secret = "ghp_" + ("A" * 36)
+        openai_key = "sk-" + ("C" * 32)
+        raw = f"api_key={secret}\nOPENAI={openai_key}\njust a normal line\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, raw, "--json")
+                payload = json.loads(proc.stdout)
+                meta = payload["metadata"]
+                self.assertTrue(meta["redaction"]["redacted_before_receipt"])
+                self.assertGreaterEqual(meta["redaction"]["redacted_lines"], 2)
+                # 비밀은 본문/메타데이터/전체 출력 어디에도 남아서는 안 된다.
+                self.assertNotIn(secret, proc.stdout)
+                self.assertNotIn(openai_key, proc.stdout)
+                self.assertNotIn(secret, payload["content"])
+                self.assertNotIn(secret, json.dumps(meta))
+                self.assertIn("[REDACTED]", payload["content"])
+
+    def test_compress_never_expands_output(self):
+        # 작은 diff 는 접기 마커가 원본보다 길어질 수 있으므로 보수성 가드가 원본을 유지해야 한다.
+        tiny_diff = "diff --git a/x b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, tiny_diff, "--metadata-only")
+                meta = json.loads(proc.stdout)
+                self.assertEqual(meta["content_type"], "diff")
+                self.assertLessEqual(meta["bytes"]["compression_ratio"], 1.0)
+                self.assertFalse(meta["strategy_detail"]["reduced"])
+
+    def test_compress_log_and_search_reduce_duplicates(self):
+        log_raw = "2026-01-01 00:00:00 INFO repeated\n" * 40
+        search_raw = "src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                log_meta = json.loads(self._run_compress(script, log_raw, "--metadata-only").stdout)
+                self.assertEqual(log_meta["content_type"], "log")
+                self.assertLess(log_meta["bytes"]["compressed"], log_meta["bytes"]["original"])
+                self.assertGreaterEqual(log_meta["strategy_detail"]["lines_collapsed"], 1)
+                search_meta = json.loads(self._run_compress(script, search_raw, "--metadata-only").stdout)
+                self.assertEqual(search_meta["content_type"], "search")
+                self.assertEqual(search_meta["strategy_detail"]["duplicate_lines_dropped"], 1)
+
+    def test_compress_type_override_forces_strategy(self):
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                meta = json.loads(self._run_compress(script, '{"a":1}\n', "--type", "prose", "--metadata-only").stdout)
+                self.assertEqual(meta["content_type"], "prose")
+                self.assertEqual(meta["type_source"], "override")
+
     def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
         generic_openai_key = "sk-" + ("C" * 32)
         raw = "ok 1\nAPI_TOKEN=ghp_" + ("A" * 36) + f"\nOPENAI_KEY={generic_openai_key}\nERROR bad widget\nok 4\n"
