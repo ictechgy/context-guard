@@ -9826,5 +9826,129 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                     self.assertFalse(tok_marker.exists())
 
 
+class CrossAgentAdapterTests(unittest.TestCase):
+    """Fixture tests for the cross-agent adapter registry and dry-run planner."""
+
+    def _run(self, script: Path, root: Path, extra: list[str]) -> dict:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "--json", *extra],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return json.loads(proc.stdout)
+
+    def test_list_adapters_reports_all_four_capability_classes(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--list-adapters", "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                data = json.loads(proc.stdout)
+                adapters = {a["key"]: a["capability"] for a in data["adapters"]}
+                self.assertEqual(adapters["claude"], "native-plugin")
+                self.assertEqual(adapters["codex"], "repo-rule")
+                self.assertEqual(adapters["gemini"], "repo-rule")
+                self.assertEqual(adapters["cursor"], "native-skill")
+                self.assertEqual(adapters["generic"], "report-only")
+                self.assertEqual(
+                    {a["capability"] for a in data["adapters"]},
+                    {"native-plugin", "native-skill", "repo-rule", "report-only"},
+                )
+
+    def test_default_plan_preserves_claude_only_compatibility(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--plan"])
+                    self.assertFalse(data["applied"])
+                    self.assertTrue(data["changed"])
+                    plan = data["adapter_plan"]
+                    self.assertEqual([e["key"] for e in plan], ["claude"])
+                    self.assertEqual(plan[0]["capability"], "native-plugin")
+                    self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_only_codex_with_init_writes_idempotent_repo_rule_without_touching_claude(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertTrue(data["applied"])
+                    self.assertFalse(data["changed"])  # claude untouched
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "codex")
+                    self.assertEqual(entry["status"], "applied")
+                    agents_md = root / "AGENTS.md"
+                    self.assertTrue(agents_md.is_file())
+                    self.assertFalse((root / ".claude").exists())
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertIn("do not guarantee", text.lower())
+
+                    again = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertEqual(again["adapter_plan"][0]["status"], "exists")
+                    self.assertEqual(again["actions"], [])
+                    self.assertEqual(
+                        agents_md.read_text(encoding="utf-8").count("<!-- contextguard:begin -->"), 1
+                    )
+
+    def test_with_init_dry_run_does_not_write_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--plan"])
+                    self.assertEqual(data["adapter_plan"][0]["status"], "planned")
+                    self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_default_plan_detects_repo_rule_agent_present_in_repo(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "AGENTS.md").write_text("# repo rules\n", encoding="utf-8")
+                    data = self._run(script, root, ["--plan"])
+                    by_key = {e["key"]: e for e in data["adapter_plan"]}
+                    self.assertIn("codex", by_key)
+                    self.assertEqual(by_key["codex"]["capability"], "repo-rule")
+                    self.assertTrue(by_key["codex"]["detected"])
+                    # Without --with-init nothing is written.
+                    self.assertNotIn(
+                        "<!-- contextguard:begin -->", (root / "AGENTS.md").read_text(encoding="utf-8")
+                    )
+
+    def test_native_skill_and_report_only_adapters_never_write(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script, root, ["--only", "cursor,generic", "--with-init", "--yes", "--no-diet-scan"]
+                    )
+                    statuses = {e["key"]: e["status"] for e in data["adapter_plan"]}
+                    self.assertEqual(statuses["cursor"], "report-only")
+                    self.assertEqual(statuses["generic"], "report-only")
+                    self.assertEqual(data["actions"], [])
+                    self.assertFalse((root / ".claude").exists())
+                    self.assertEqual(list(root.iterdir()), [])  # nothing written
+
+    def test_unknown_adapter_key_is_rejected(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", tmp, "--only", "nope", "--plan", "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Unknown adapter key", proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
