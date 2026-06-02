@@ -1171,17 +1171,29 @@ def run(args: argparse.Namespace) -> SetupResult:
     root = resolve_setup_root(args.root)
     settings_path = root / SETTINGS_REL
     validate_settings_target(root, settings_path, allow_home_settings=args.allow_home_settings)
+
+    # Cross-agent targets. Default keeps Claude compatibility (Claude is always
+    # targeted plus any detected agent); --only narrows to an explicit set.
+    targets = resolve_target_adapters(root, getattr(args, "only", None))
+    claude_targeted = any(adapter.key == "claude" for adapter in targets)
+
     original_text = _read_optional_text_no_follow(settings_path)
     original = _parse_json_object_text(original_text, settings_path)
     settings = json.loads(json.dumps(original))
 
     choices = choices_from_args(args)
-    interactive = sys.stdin.isatty() and not args.yes and not args.plan and not args.dry_run
+    interactive = (
+        sys.stdin.isatty()
+        and not args.yes
+        and not args.plan
+        and not args.dry_run
+        and claude_targeted
+    )
     if interactive:
         choices = interactive_choices(choices)
 
-    actions = apply_choices(settings, choices)
-    changed = settings != original
+    actions = apply_choices(settings, choices) if claude_targeted else []
+    changed = (settings != original) if claude_targeted else False
 
     applied = bool(args.yes and not args.dry_run and not args.plan)
     if interactive and changed:
@@ -1190,7 +1202,7 @@ def run(args: argparse.Namespace) -> SetupResult:
         applied = prompt_bool("Apply these project-local changes now?", True)
 
     backup_path = None
-    if applied and changed:
+    if claude_targeted and applied and changed:
         lock_fd = acquire_settings_lock(settings_path)
         try:
             current_text = _read_optional_text_no_follow(settings_path)
@@ -1209,11 +1221,29 @@ def run(args: argparse.Namespace) -> SetupResult:
         finally:
             release_settings_lock(lock_fd)
 
+    # Build the per-adapter plan; repo-rule writes happen here only when both
+    # --with-init and an applying run (--yes) are in effect.
+    adapter_plan = build_adapter_plan(
+        root,
+        targets,
+        claude_actions=actions,
+        claude_changed=changed,
+        claude_applied=(claude_targeted and applied),
+        with_init=bool(getattr(args, "with_init", False)),
+        applied=applied,
+    )
+    # Surface any repo-rule writes in the top-level actions for visibility. Claude
+    # actions are already in ``actions``; only adapter-side writes are appended.
+    for entry in adapter_plan:
+        actions.extend(entry.get("applied_actions", []))
+
     diet_scan = None
     if applied and not getattr(args, "no_diet_scan", False):
         diet_scan = run_post_setup_diet_scan(root)
 
-    return SetupResult(root, settings_path, changed, applied, choices, actions, backup_path, diet_scan)
+    return SetupResult(
+        root, settings_path, changed, applied, choices, actions, backup_path, diet_scan, adapter_plan
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1235,6 +1265,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
     parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="ADAPTER",
+        help="restrict cross-agent setup/plan to adapter key(s); comma-separated or repeatable "
+        "(e.g. --only codex,gemini). Default: claude plus any detected agents.",
+    )
+    parser.add_argument(
+        "--with-init",
+        dest="with_init",
+        action="store_true",
+        help="also write advisory ContextGuard rule files for repo-rule agents (AGENTS.md, GEMINI.md) "
+        "when applying; safe and idempotent.",
+    )
+    parser.add_argument(
+        "--list-adapters",
+        dest="list_adapters",
+        action="store_true",
+        help="print the cross-agent adapter registry and exit",
+    )
     nudge_group = parser.add_mutually_exclusive_group()
     nudge_group.add_argument(
         "--failed-attempt-nudge",
