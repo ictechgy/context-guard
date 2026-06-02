@@ -119,6 +119,9 @@ class SetupResult:
     actions: list[str]
     backup_path: Path | None = None
     diet_scan: dict[str, Any] | None = None
+    # Per-agent cross-agent plan; None preserves the legacy Claude-only payload
+    # shape for callers that never engage the adapter registry.
+    adapter_plan: list[dict[str, Any]] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +133,7 @@ class SetupResult:
             "choices": self.choices.__dict__,
             "actions": self.actions,
             "diet_scan": self.diet_scan,
+            "adapter_plan": self.adapter_plan,
         }
 
 
