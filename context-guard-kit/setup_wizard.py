@@ -137,6 +137,283 @@ class SetupResult:
         }
 
 
+# --- Cross-agent adapter registry & dry-run setup planner --------------------
+#
+# ContextGuard's helpers speak plain JSON over stdin/stdout, so the same
+# guardrails can be wired into more than just Claude Code. This registry maps
+# known coding agents to a *capability class* that describes HOW ContextGuard
+# can integrate with each one, and the planner renders a per-agent setup plan.
+#
+# The planner stays conservative and Claude-compatible:
+# - Only the Claude native-plugin path writes hook settings (the legacy default).
+# - Repo-rule agents get an idempotent advisory rule block, opt-in via --with-init.
+# - native-skill / report-only agents are never written to; they are reported.
+# It never sends work to external providers and never promises token/cost savings.
+
+ADAPTER_RULE_BLOCK_BEGIN = "<!-- contextguard:begin -->"
+ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
+
+
+class CapabilityClass:
+    """How ContextGuard can integrate with a given agent."""
+
+    NATIVE_PLUGIN = "native-plugin"  # writes native hook settings (Claude Code)
+    NATIVE_SKILL = "native-skill"    # invokable skills/commands; no auto-written hooks
+    REPO_RULE = "repo-rule"          # reads a repo rule file (AGENTS.md, GEMINI.md, ...)
+    REPORT_ONLY = "report-only"      # no integration surface; advisory reporting only
+
+
+@dataclass(frozen=True)
+class AgentAdapter:
+    """One known coding agent and how ContextGuard wires into it."""
+
+    key: str
+    display_name: str
+    capability: str
+    summary: str
+    settings_rel: str | None = None
+    rule_file: str | None = None
+    detect: tuple[str, ...] = ()
+
+
+AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
+    AgentAdapter(
+        key="claude",
+        display_name="Claude Code",
+        capability=CapabilityClass.NATIVE_PLUGIN,
+        summary="Installs project-local hooks, denies, and statusline in .claude/settings.json.",
+        settings_rel=str(SETTINGS_REL),
+        rule_file="CLAUDE.md",
+        detect=(".claude",),
+    ),
+    AgentAdapter(
+        key="codex",
+        display_name="OpenAI Codex CLI",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads AGENTS.md; add an advisory ContextGuard rule block with --with-init.",
+        rule_file="AGENTS.md",
+        detect=("AGENTS.md", ".codex"),
+    ),
+    AgentAdapter(
+        key="gemini",
+        display_name="Gemini CLI",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads GEMINI.md; add an advisory ContextGuard rule block with --with-init.",
+        rule_file="GEMINI.md",
+        detect=("GEMINI.md", ".gemini"),
+    ),
+    AgentAdapter(
+        key="cursor",
+        display_name="Cursor",
+        capability=CapabilityClass.NATIVE_SKILL,
+        summary="Expose ContextGuard helpers as Cursor commands manually; no hooks are auto-written.",
+        detect=(".cursor", ".cursorrules"),
+    ),
+    AgentAdapter(
+        key="generic",
+        display_name="Other / unknown agent",
+        capability=CapabilityClass.REPORT_ONLY,
+        summary="No automated setup surface; run ContextGuard helpers from the shell as needed.",
+    ),
+)
+
+
+def adapter_registry() -> dict[str, AgentAdapter]:
+    """Return the adapter registry keyed by adapter key."""
+    return {adapter.key: adapter for adapter in AGENT_ADAPTERS}
+
+
+def adapter_registry_payload() -> list[dict[str, Any]]:
+    """JSON-friendly view of the adapter registry for --list-adapters."""
+    return [
+        {
+            "key": adapter.key,
+            "display_name": adapter.display_name,
+            "capability": adapter.capability,
+            "summary": adapter.summary,
+            "settings_rel": adapter.settings_rel,
+            "rule_file": adapter.rule_file,
+            "detect": list(adapter.detect),
+        }
+        for adapter in AGENT_ADAPTERS
+    ]
+
+
+def detect_agents(root: Path) -> list[str]:
+    """Return adapter keys whose detection markers exist under root."""
+    found: list[str] = []
+    for adapter in AGENT_ADAPTERS:
+        for rel in adapter.detect:
+            if (root / rel).exists():
+                found.append(adapter.key)
+                break
+    return found
+
+
+def resolve_target_adapters(root: Path, only: list[str] | None) -> list[AgentAdapter]:
+    """Pick the adapters to plan/apply.
+
+    Default keeps Claude compatibility: Claude is always targeted, plus any other
+    agent detected in the repo. ``--only`` restricts to an explicit, validated set
+    so a user can, for example, set up only Codex without touching Claude.
+    """
+    registry = adapter_registry()
+    if only:
+        keys: list[str] = []
+        for raw in only:
+            for part in str(raw).split(","):
+                key = part.strip().lower()
+                if not key:
+                    continue
+                if key not in registry:
+                    known = ", ".join(sorted(registry))
+                    raise SystemExit(f"Unknown adapter key: {key!r}. Known adapters: {known}.")
+                if key not in keys:
+                    keys.append(key)
+        return [registry[key] for key in keys]
+    detected = set(detect_agents(root))
+    keys = ["claude"] + [
+        adapter.key
+        for adapter in AGENT_ADAPTERS
+        if adapter.key not in ("claude", "generic") and adapter.key in detected
+    ]
+    return [registry[key] for key in keys]
+
+
+def render_repo_rule_block() -> str:
+    """Advisory rule block written into repo-rule files. No savings guarantees."""
+    return "\n".join([
+        ADAPTER_RULE_BLOCK_BEGIN,
+        "## ContextGuard (advisory)",
+        "",
+        "This repository uses ContextGuard helpers to keep agent context focused.",
+        "These guardrails are advisory and do not guarantee any token or cost savings.",
+        "",
+        "- Prefer reading symbols over whole large files.",
+        "- Store large logs as local artifacts and query only the parts you need.",
+        "- Trim or summarize noisy command output instead of pasting it whole.",
+        "- Treat reported byte reductions as proxy evidence, not proof of savings.",
+        "",
+        "See the ContextGuard README for the helper commands.",
+        ADAPTER_RULE_BLOCK_END,
+    ])
+
+
+def _read_rule_file_text(path: Path) -> str | None:
+    """Best-effort no-follow read; treat missing/unreadable/symlinked files as absent.
+
+    Unlike settings reads, a symlinked or unreadable repo rule file must not abort
+    the whole setup — planning simply treats it as not-yet-initialized and the
+    write path refuses to follow the symlink.
+    """
+    try:
+        return _read_text_no_follow(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def repo_rule_block_present(path: Path) -> bool:
+    """True when the advisory ContextGuard block already exists in the rule file."""
+    text = _read_rule_file_text(path)
+    return text is not None and ADAPTER_RULE_BLOCK_BEGIN in text
+
+
+def write_repo_rule_init(path: Path) -> dict[str, Any]:
+    """Idempotently append the advisory ContextGuard block to a repo rule file.
+
+    Returns a status dict: ``applied`` (block written), ``exists`` (already
+    present), or ``skipped`` (refused, e.g. symlinked target) with a reason.
+    """
+    if path.exists() and path.is_symlink():
+        return {"status": "skipped", "reason": f"refused to write through symlinked rule file: {path.name}"}
+    existing = _read_rule_file_text(path)
+    if existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing:
+        return {"status": "exists"}
+    block = render_repo_rule_block()
+    if existing:
+        new_text = existing.rstrip("\n") + "\n\n" + block + "\n"
+        mode = existing_mode_or_default(path, 0o644)
+    else:
+        new_text = block + "\n"
+        mode = 0o644
+    atomic_write(path, new_text, mode)
+    return {"status": "applied"}
+
+
+def build_adapter_plan(
+    root: Path,
+    targets: list[AgentAdapter],
+    *,
+    claude_actions: list[str],
+    claude_changed: bool,
+    claude_applied: bool,
+    with_init: bool,
+    applied: bool,
+) -> list[dict[str, Any]]:
+    """Render a per-adapter plan, performing safe repo-rule writes when applied.
+
+    Only repo-rule adapters write, and only when both ``with_init`` and ``applied``
+    are set. Native-plugin entries mirror the Claude settings result; native-skill
+    and report-only entries are advisory and never write.
+    """
+    detected = set(detect_agents(root))
+    plan: list[dict[str, Any]] = []
+    for adapter in targets:
+        entry: dict[str, Any] = {
+            "key": adapter.key,
+            "display_name": adapter.display_name,
+            "capability": adapter.capability,
+            "detected": adapter.key in detected,
+            "summary": adapter.summary,
+            "writable": False,
+            "status": "report-only",
+            "planned_actions": [],
+            "applied_actions": [],
+        }
+        if adapter.capability == CapabilityClass.NATIVE_PLUGIN:
+            entry["writable"] = True
+            if adapter.settings_rel:
+                entry["settings_path"] = str(root / adapter.settings_rel)
+            entry["planned_actions"] = list(claude_actions)
+            if claude_applied and claude_changed:
+                entry["status"] = "applied"
+            elif claude_changed:
+                entry["status"] = "planned"
+            else:
+                entry["status"] = "unchanged"
+        elif adapter.capability == CapabilityClass.REPO_RULE:
+            entry["writable"] = True
+            entry["rule_file"] = adapter.rule_file
+            rule_path = root / adapter.rule_file if adapter.rule_file else None
+            if rule_path is not None and repo_rule_block_present(rule_path):
+                entry["status"] = "exists"
+                entry["planned_actions"] = [f"advisory ContextGuard rules already present in {adapter.rule_file}"]
+            elif not with_init:
+                entry["status"] = "planned"
+                entry["planned_actions"] = [f"run with --with-init to add advisory ContextGuard rules to {adapter.rule_file}"]
+            elif not applied:
+                entry["status"] = "planned"
+                entry["planned_actions"] = [f"would add advisory ContextGuard rules to {adapter.rule_file}"]
+            elif rule_path is not None:
+                result = write_repo_rule_init(rule_path)
+                entry["status"] = result["status"]
+                if result["status"] == "applied":
+                    entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {adapter.rule_file}"]
+                    entry["planned_actions"] = list(entry["applied_actions"])
+                elif result["status"] == "exists":
+                    entry["planned_actions"] = [f"advisory ContextGuard rules already present in {adapter.rule_file}"]
+                else:
+                    entry["planned_actions"] = [result.get("reason", "skipped")]
+        elif adapter.capability == CapabilityClass.NATIVE_SKILL:
+            entry["planned_actions"] = [adapter.summary]
+        else:  # REPORT_ONLY
+            entry["planned_actions"] = [adapter.summary]
+        plan.append(entry)
+    return plan
+
+
 class AtomicWriteDurabilityError(OSError):
     """Raised after rename when the new file exists but directory durability is uncertain."""
 
