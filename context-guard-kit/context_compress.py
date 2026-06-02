@@ -361,6 +361,13 @@ def build_metadata(
     original_bytes = byte_length(original_text)
     compressed_bytes = byte_length(compressed_text)
     ratio = round(compressed_bytes / original_bytes, 4) if original_bytes else 1.0
+    lossy = bool(strategy_detail.get("lossy", True))
+    retrieval_hint = (
+        "Lossy: store the full sanitized text for exact recovery via "
+        "`context-guard-artifact store` and query slices later."
+        if lossy
+        else "Data-preserving: compact form is semantically equivalent to the sanitized input."
+    )
     return {
         "tool": "context-guard-kit.context_compress",
         "metadata_version": 1,
@@ -423,6 +430,13 @@ def compress_text(
     else:
         content_type, type_source = classify_content(sanitized), "detected"
     compressed, strategy_detail = STRATEGIES[content_type](sanitized)
+    # 보수성 보장: 어떤 전략도 입력보다 큰 결과를 내보내지 않는다. 작은 입력에서
+    # 접기 마커가 원본보다 길어지는 경우 살균된 원본을 그대로 유지한다.
+    if byte_length(compressed) >= byte_length(sanitized):
+        compressed = sanitized
+        strategy_detail["reduced"] = False
+    else:
+        strategy_detail["reduced"] = True
     metadata = build_metadata(
         content_type=content_type,
         type_source=type_source,
