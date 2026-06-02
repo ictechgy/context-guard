@@ -403,10 +403,7 @@ def build_metadata(
             "original": token_proxy(original_text),
             "compressed": token_proxy(compressed_text),
         },
-        "retrieval_hint": (
-            "Lossy: store the full sanitized text for exact recovery via "
-            "`context-guard-artifact store` and query slices later."
-        ),
+        "retrieval_hint": retrieval_hint,
     }
 
 
