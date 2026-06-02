@@ -9749,5 +9749,182 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                     self.assertFalse(tok_marker.exists())
 
 
+class ContextEscrowCcrMetadataTests(unittest.TestCase):
+    """CCR/artifact UX: content-type classification, retrieval strategy hints,
+    redaction-count metadata, and exact line/pattern retrieval round-trips."""
+
+    def _load(self) -> object:
+        return load_python_script_module(KIT_DIR / "context_escrow.py", "context_escrow_ccr_meta")
+
+    def test_classify_content_type_is_deterministic_per_kind(self):
+        artifact = self._load()
+        cases = {
+            "json": '{"a": 1, "b": [1, 2, 3]}',
+            "json_array": "[1, 2, 3, 4]",
+            "diff": "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+            "log": (
+                "2026-06-02T10:00:01 INFO start\n"
+                "2026-06-02T10:00:02 ERROR boom\n"
+                "2026-06-02T10:00:03 INFO done\n"
+            ),
+            "search": "src/app.py:10:def foo():\nsrc/app.py:20:    return 1\nsrc/util.py:5:x = 1\n",
+            "code": "def foo():\n    return 1\n\nclass Bar:\n    def baz(self):\n        return 2\n",
+            "prose": "The quick brown fox jumps over the lazy dog. It was a fine day indeed.\n",
+            "empty": "",
+        }
+        expected = {
+            "json": "json",
+            "json_array": "json",
+            "diff": "diff",
+            "log": "log",
+            "search": "search",
+            "code": "code",
+            "prose": "prose",
+            "empty": "text",
+        }
+        for name, text in cases.items():
+            with self.subTest(kind=name):
+                label = artifact.classify_content_type(text)
+                self.assertEqual(label, expected[name])
+                self.assertIn(label, artifact.CONTENT_TYPE_VALUES)
+                self.assertEqual(label, artifact.classify_content_type(text))
+                self.assertIn(
+                    artifact.recommended_strategy(label),
+                    {"lines", "pattern", "head"},
+                )
+
+    def test_first_error_anchor_returns_present_substring_or_none(self):
+        artifact = self._load()
+        self.assertIsNone(artifact.first_error_anchor("just calm words here\nnothing wrong\n"))
+        content = "ok line\nFAILED to build target\nok line\n"
+        anchor = artifact.first_error_anchor(content)
+        self.assertIsNotNone(anchor)
+        self.assertIn(anchor, content)
+
+    def test_retrieval_hints_round_trip_exactly(self):
+        artifact = self._load()
+        content = "alpha line\nERROR middle line\nbeta line\ngamma line\n"
+        total_lines = content.count("\n")
+        hints = artifact.build_retrieval_hints(
+            "a" * 20,
+            content,
+            content_type="prose",
+            strategy="lines",
+            total_lines=total_lines,
+        )
+        by_type = {hint["type"]: hint for hint in hints}
+        self.assertIn("lines", by_type)
+        self.assertIn("head", by_type)
+        self.assertIn("pattern", by_type)
+
+        lines_selector = by_type["lines"]["selector"]
+        self.assertEqual(lines_selector, {"start": 1, "end": total_lines})
+        recovered, _meta = artifact.query_content(
+            content,
+            line_range=(lines_selector["start"], lines_selector["end"]),
+            pattern=None,
+            max_lines=5_000,
+        )
+        self.assertEqual(recovered, content)
+
+        token = by_type["pattern"]["selector"]["pattern"]
+        matched, meta = artifact.query_content(
+            content,
+            line_range=None,
+            pattern=token,
+            max_lines=5_000,
+        )
+        self.assertTrue(matched)
+        self.assertTrue(all(token in line for line in matched.splitlines()))
+        self.assertEqual(meta["matched_lines"], len([row for row in content.splitlines() if token in row]))
+
+    def test_store_records_content_type_strategy_and_redaction_counts(self):
+        secret = "ghp_" + ("A" * 36)
+        raw = "{\n  \"status\": \"ok\"\n}\nAPI_TOKEN=" + secret + "\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    self.assertIn(receipt["content_type"], {"json", "prose", "text", "code"})
+                    retrieve = receipt["retrieval"]
+                    self.assertIn(retrieve["strategy"], {"lines", "pattern", "head"})
+                    self.assertTrue(retrieve["deterministic"])
+                    self.assertTrue(retrieve["hints"])
+                    counts = receipt["digest"]["redaction_counts"]
+                    self.assertGreaterEqual(counts["lines"], 1)
+                    self.assertGreaterEqual(counts["markers"], 1)
+                    self.assertEqual(counts["lines"], receipt["digest"]["redacted_lines"])
+                    self.assertNotIn(secret, store.stdout)
+                    metadata_text = (artifact_dir / f"{receipt['artifact_id']}.json").read_text(encoding="utf-8")
+                    self.assertNotIn(secret, metadata_text)
+
+    def test_get_round_trip_uses_stored_hints_for_exact_retrieval(self):
+        raw = "first row\nERROR exact target\nthird row\nfourth row\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    hints = {hint["type"]: hint for hint in receipt["retrieval"]["hints"]}
+
+                    lines_sel = hints["lines"]["selector"]
+                    full = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            f"{lines_sel['start']}:{lines_sel['end']}",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    full_payload = json.loads(full.stdout)
+                    self.assertEqual(full_payload["content"], raw)
+                    self.assertEqual(full_payload["content_type"], receipt["content_type"])
+                    self.assertEqual(full_payload["retrieval"]["strategy"], receipt["retrieval"]["strategy"])
+
+                    token = hints["pattern"]["selector"]["pattern"]
+                    pat = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--pattern",
+                            token,
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    pat_payload = json.loads(pat.stdout)
+                    self.assertTrue(pat_payload["content"])
+                    self.assertTrue(all(token in line for line in pat_payload["content"].splitlines()))
+
 if __name__ == "__main__":
     unittest.main()
