@@ -9826,6 +9826,197 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                     self.assertFalse(tok_marker.exists())
 
 
+class CrossAgentAdapterTests(unittest.TestCase):
+    """Fixture tests for the cross-agent adapter registry and dry-run planner."""
+
+    def _run(self, script: Path, root: Path, extra: list[str]) -> dict:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "--json", *extra],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return json.loads(proc.stdout)
+
+    def test_list_adapters_reports_expanded_registry_and_capability_classes(self):
+        expected = {
+            "claude": "native-plugin",
+            "codex": "repo-rule",
+            "gemini": "repo-rule",
+            "cursor": "repo-rule",
+            "windsurf": "repo-rule",
+            "cline": "repo-rule",
+            "copilot": "repo-rule",
+            "opencode": "native-skill",
+            "forgecode": "report-only",
+            "generic": "report-only",
+        }
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--list-adapters", "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                data = json.loads(proc.stdout)
+                adapters = {adapter["key"]: adapter for adapter in data["adapters"]}
+                for key, capability in expected.items():
+                    self.assertIn(key, adapters)
+                    self.assertEqual(adapters[key]["capability"], capability)
+                self.assertEqual(
+                    {adapter["capability"] for adapter in adapters.values()},
+                    {"native-plugin", "native-skill", "repo-rule", "report-only"},
+                )
+
+    def test_default_plan_preserves_claude_only_compatibility(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--plan"])
+                    self.assertFalse(data["applied"])
+                    self.assertTrue(data["changed"])
+                    plan = data["adapter_plan"]
+                    self.assertEqual([entry["key"] for entry in plan], ["claude"])
+                    self.assertEqual(plan[0]["capability"], "native-plugin")
+                    self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_only_codex_with_init_writes_idempotent_repo_rule_without_touching_claude(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertTrue(data["applied"])
+                    self.assertFalse(data["changed"])  # Claude settings untouched.
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "codex")
+                    self.assertEqual(entry["status"], "applied")
+                    agents_md = root / "AGENTS.md"
+                    self.assertTrue(agents_md.is_file())
+                    self.assertFalse((root / ".claude").exists())
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertIn("do not guarantee", text.lower())
+
+                    again = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertEqual(again["adapter_plan"][0]["status"], "exists")
+                    self.assertEqual(again["actions"], [])
+                    self.assertEqual(
+                        agents_md.read_text(encoding="utf-8").count("<!-- contextguard:begin -->"),
+                        1,
+                    )
+
+    def test_with_init_dry_run_does_not_write_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--plan"])
+                    self.assertEqual(data["adapter_plan"][0]["status"], "planned")
+                    self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_default_plan_detects_repo_rule_agents_present_in_repo(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "AGENTS.md").write_text("# repo rules\n", encoding="utf-8")
+                    (root / ".windsurf").mkdir()
+                    data = self._run(script, root, ["--plan"])
+                    by_key = {entry["key"]: entry for entry in data["adapter_plan"]}
+                    self.assertIn("codex", by_key)
+                    self.assertIn("windsurf", by_key)
+                    self.assertEqual(by_key["codex"]["capability"], "repo-rule")
+                    self.assertEqual(by_key["windsurf"]["capability"], "repo-rule")
+                    self.assertTrue(by_key["codex"]["detected"])
+                    self.assertTrue(by_key["windsurf"]["detected"])
+                    # Without --with-init nothing is written.
+                    self.assertNotIn(
+                        "<!-- contextguard:begin -->",
+                        (root / "AGENTS.md").read_text(encoding="utf-8"),
+                    )
+                    self.assertFalse((root / ".windsurf" / "rules" / "contextguard.md").exists())
+
+    def test_with_init_writes_nested_repo_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "windsurf", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "windsurf")
+                    self.assertEqual(entry["status"], "applied")
+                    rule_path = root / ".windsurf" / "rules" / "contextguard.md"
+                    self.assertTrue(rule_path.is_file())
+                    self.assertIn("ContextGuard", rule_path.read_text(encoding="utf-8"))
+                    self.assertFalse((root / ".claude").exists())
+
+    def test_cline_existing_file_rule_appends_without_crashing(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    rule_path = root / ".clinerules"
+                    rule_path.write_text("Existing Cline rule.\n", encoding="utf-8")
+                    data = self._run(script, root, ["--only", "cline", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "cline")
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["rule_file"], ".clinerules")
+                    text = rule_path.read_text(encoding="utf-8")
+                    self.assertIn("Existing Cline rule.", text)
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertFalse((root / ".clinerules" / "contextguard.md").exists())
+                    self.assertFalse((root / ".claude").exists())
+
+    def test_cline_existing_directory_rule_writes_nested_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".clinerules").mkdir()
+                    data = self._run(script, root, ["--only", "cline", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "cline")
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["rule_file"], ".clinerules/contextguard.md")
+                    rule_path = root / ".clinerules" / "contextguard.md"
+                    self.assertTrue(rule_path.is_file())
+                    self.assertIn("ContextGuard", rule_path.read_text(encoding="utf-8"))
+
+    def test_native_skill_and_report_only_adapters_never_write(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script,
+                        root,
+                        ["--only", "opencode,forgecode,generic", "--with-init", "--yes", "--no-diet-scan"],
+                    )
+                    statuses = {entry["key"]: entry["status"] for entry in data["adapter_plan"]}
+                    self.assertEqual(statuses["opencode"], "report-only")
+                    self.assertEqual(statuses["forgecode"], "report-only")
+                    self.assertEqual(statuses["generic"], "report-only")
+                    self.assertEqual(data["actions"], [])
+                    self.assertFalse((root / ".claude").exists())
+                    self.assertEqual(list(root.iterdir()), [])  # nothing written
+
+    def test_unknown_adapter_key_is_rejected(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", tmp, "--only", "nope", "--plan", "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Unknown adapter key", proc.stderr)
+
+
 class ContextEscrowCcrMetadataTests(unittest.TestCase):
     """CCR/artifact UX: content-type classification, retrieval strategy hints,
     redaction-count metadata, and exact line/pattern retrieval round-trips."""

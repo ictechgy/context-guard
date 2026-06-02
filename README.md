@@ -91,6 +91,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Large-read guard and symbol reader | Nudges Claude toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before Claude sees them. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
+| Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so Claude changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage hotspots, and records conservative before/after evidence. |
 
@@ -147,6 +148,15 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ```
 
 Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+
+### Compress selected local text conservatively
+
+```bash
+git diff | ./plugins/context-guard/bin/context-guard-compress --json
+pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
+```
+
+`context-guard-compress` classifies sanitized stdin as JSON, diff, log, search output, code, or prose, then applies deterministic reductions such as JSON compaction, diff context folding, duplicate log/search line collapse, and whitespace normalization. It never claims observed model-token savings; byte counts are observed, token counts are labeled as estimates, and lossy receipts point you back to `context-guard-artifact store` for exact retrieval.
 
 ### Trim or summarize command output
 

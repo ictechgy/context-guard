@@ -205,9 +205,48 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
     AgentAdapter(
         key="cursor",
         display_name="Cursor",
-        capability=CapabilityClass.NATIVE_SKILL,
-        summary="Expose ContextGuard helpers as Cursor commands manually; no hooks are auto-written.",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
+        rule_file=".cursorrules",
         detect=(".cursor", ".cursorrules"),
+    ),
+    AgentAdapter(
+        key="windsurf",
+        display_name="Windsurf",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
+        rule_file=".windsurf/rules/contextguard.md",
+        detect=(".windsurf", ".windsurfrules"),
+    ),
+    AgentAdapter(
+        key="cline",
+        display_name="Cline",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads project rules; add an advisory ContextGuard block with --with-init.",
+        rule_file=".clinerules",
+        detect=(".clinerules", ".cline"),
+    ),
+    AgentAdapter(
+        key="copilot",
+        display_name="GitHub Copilot Coding Agent",
+        capability=CapabilityClass.REPO_RULE,
+        summary="Reads repository instructions; add an advisory ContextGuard block with --with-init.",
+        rule_file=".github/copilot-instructions.md",
+        detect=(".github/copilot-instructions.md",),
+    ),
+    AgentAdapter(
+        key="opencode",
+        display_name="OpenCode",
+        capability=CapabilityClass.NATIVE_SKILL,
+        summary="Expose ContextGuard helpers as OpenCode commands/rules manually; no hooks are auto-written.",
+        detect=("opencode.json", ".opencode"),
+    ),
+    AgentAdapter(
+        key="forgecode",
+        display_name="ForgeCode",
+        capability=CapabilityClass.REPORT_ONLY,
+        summary="No automated setup surface yet; run ContextGuard helpers from the shell and keep evidence local.",
+        detect=(".forgecode", "forgecode.json"),
     ),
     AgentAdapter(
         key="generic",
@@ -293,6 +332,7 @@ def render_repo_rule_block() -> str:
         "- Store large logs as local artifacts and query only the parts you need.",
         "- Trim or summarize noisy command output instead of pasting it whole.",
         "- Treat reported byte reductions as proxy evidence, not proof of savings.",
+        "- Keep provider caches and semantic caches opt-in; verify cache hits before claiming savings.",
         "",
         "See the ContextGuard README for the helper commands.",
         ADAPTER_RULE_BLOCK_END,
@@ -328,6 +368,8 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
     """
     if path.exists() and path.is_symlink():
         return {"status": "skipped", "reason": f"refused to write through symlinked rule file: {path.name}"}
+    if path.exists() and path.is_dir():
+        return {"status": "skipped", "reason": f"refused to replace directory rule target: {path.name}"}
     existing = _read_rule_file_text(path)
     if existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing:
         return {"status": "exists"}
@@ -338,8 +380,30 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
     else:
         new_text = block + "\n"
         mode = 0o644
-    atomic_write(path, new_text, mode)
+    try:
+        atomic_write(path, new_text, mode)
+    except OSError as exc:
+        return {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
     return {"status": "applied"}
+
+
+def adapter_rule_path(root: Path, adapter: AgentAdapter) -> Path | None:
+    """Resolve a repo-rule adapter's write target.
+
+    Most adapters have a stable file target. Cline is deliberately flexible:
+    existing projects commonly use `.clinerules` as a file, while some may use a
+    directory-style rules surface. Pick a file when `.clinerules` is absent or a
+    file; use a nested advisory file only when `.clinerules` already exists as a
+    real directory. This avoids crashing or replacing a user-owned file-form rule.
+    """
+    if adapter.rule_file is None:
+        return None
+    if adapter.key == "cline":
+        base = root / ".clinerules"
+        if base.exists() and base.is_dir() and not base.is_symlink():
+            return base / "contextguard.md"
+        return base
+    return root / adapter.rule_file
 
 
 def build_adapter_plan(
@@ -385,25 +449,25 @@ def build_adapter_plan(
                 entry["status"] = "unchanged"
         elif adapter.capability == CapabilityClass.REPO_RULE:
             entry["writable"] = True
-            entry["rule_file"] = adapter.rule_file
-            rule_path = root / adapter.rule_file if adapter.rule_file else None
+            rule_path = adapter_rule_path(root, adapter)
+            entry["rule_file"] = str(rule_path.relative_to(root)) if rule_path else adapter.rule_file
             if rule_path is not None and repo_rule_block_present(rule_path):
                 entry["status"] = "exists"
-                entry["planned_actions"] = [f"advisory ContextGuard rules already present in {adapter.rule_file}"]
+                entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
             elif not with_init:
                 entry["status"] = "planned"
-                entry["planned_actions"] = [f"run with --with-init to add advisory ContextGuard rules to {adapter.rule_file}"]
+                entry["planned_actions"] = [f"run with --with-init to add advisory ContextGuard rules to {entry['rule_file']}"]
             elif not applied:
                 entry["status"] = "planned"
-                entry["planned_actions"] = [f"would add advisory ContextGuard rules to {adapter.rule_file}"]
+                entry["planned_actions"] = [f"would add advisory ContextGuard rules to {entry['rule_file']}"]
             elif rule_path is not None:
                 result = write_repo_rule_init(rule_path)
                 entry["status"] = result["status"]
                 if result["status"] == "applied":
-                    entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {adapter.rule_file}"]
+                    entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {entry['rule_file']}"]
                     entry["planned_actions"] = list(entry["applied_actions"])
                 elif result["status"] == "exists":
-                    entry["planned_actions"] = [f"advisory ContextGuard rules already present in {adapter.rule_file}"]
+                    entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
                 else:
                     entry["planned_actions"] = [result.get("reason", "skipped")]
         elif adapter.capability == CapabilityClass.NATIVE_SKILL:
@@ -1286,7 +1350,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--with-init",
         dest="with_init",
         action="store_true",
-        help="also write advisory ContextGuard rule files for repo-rule agents (AGENTS.md, GEMINI.md) "
+        help="also write advisory ContextGuard rule files for repo-rule agents (AGENTS.md, GEMINI.md, .cursorrules, etc.) "
         "when applying; safe and idempotent.",
     )
     parser.add_argument(

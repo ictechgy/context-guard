@@ -56,6 +56,7 @@ context-guard-setup
 context-guard-diet scan . --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
+context-guard-compress --json < large-output.txt
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -70,6 +71,7 @@ context-guard-statusline-merged
 - **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large or secret-like `CLAUDE.md` / `AGENTS.md` context files.
 - **Large-read guard and symbol reader** guide Claude from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Artifact store** saves large sanitized command output under `.context-guard/artifacts` by default and returns compact receipts or exact requested slices. `get` and `list` can also read legacy `.claude-token-optimizer/artifacts` receipts.
+- **Conservative compressor** classifies sanitized stdin as JSON, diff, log, search output, code, or prose and shrinks it with observed byte evidence plus estimated token proxies.
 - **Output trimmer** preserves the wrapped command exit code, trims long logs, and can emit `--digest markdown` or `--digest json` summaries with runner failure facts and suggested next queries.
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.

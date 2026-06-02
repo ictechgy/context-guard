@@ -573,6 +573,49 @@ def availability_status(*, present: bool, skipped: bool = False, partial: bool =
     return "missing"
 
 
+# 측정 증거 3-상태 등급. status(available/partial/missing)와 직교하는 보조 축으로,
+# 값이 "어떻게" 알려졌는지를 GUI/소비자에게 노출한다.
+EVIDENCE_OBSERVED = "observed"
+EVIDENCE_INFERRED = "inferred"
+EVIDENCE_UNAVAILABLE = "unavailable"
+
+
+def evidence_class(*, observed: bool, inferable: bool = False) -> str:
+    """관측/추론/불가 3-상태 증거 등급을 반환한다.
+
+    - observed: transcript 필드에서 직접 읽은 값.
+    - inferred: 관측값에서 문서화된 공식으로 파생한 값(추정치).
+    - unavailable: scan 데이터만으로는 판별할 수 없는 값.
+
+    observed가 우선한다. 직접 관측이 없고 inferable한 경우에만 inferred로, 둘 다
+    아니면 unavailable로 분류해 보수적 측정 원칙을 지킨다.
+    """
+    if observed:
+        return EVIDENCE_OBSERVED
+    if inferable:
+        return EVIDENCE_INFERRED
+    return EVIDENCE_UNAVAILABLE
+
+
+def build_headroom_availability(summary: UsageSummary) -> dict[str, Any]:
+    """Context-window headroom 가용성/증거 등급을 보수적으로 분류한다.
+
+    transcript JSON에는 live `context_window`/잔여 토큰 정보가 없으므로 과거 scan
+    만으로는 headroom을 관측하거나 추론할 수 없다. 따라서 status는 기존 context와
+    동일하게 "missing", evidence는 "unavailable"로 둔다. live statusline snapshot을
+    입력으로 받는 미래 surface에서는 observed로 승급될 수 있음을 contract로 남긴다.
+    """
+    return {
+        "status": "missing",
+        "evidence": EVIDENCE_UNAVAILABLE,
+        "reason": (
+            "Transcript scans do not carry live context-window or remaining-token data, "
+            "so context headroom cannot be observed or conservatively inferred from history alone."
+        ),
+        "observable_via": "live_statusline_snapshot",
+    }
+
+
 def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
     skipped = summary.skipped_files + summary.skipped_records
     complete = skipped == 0 and not summary.parse_errors
@@ -600,18 +643,23 @@ def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
     has_cache_any = has_cache_read or has_cache_creation
     cache_partial = has_cache_any and not (has_cache_read and has_cache_creation)
     skipped = bool(summary.skipped_files or summary.skipped_records or summary.parse_errors)
+    has_input = summary.token_field_presence.get("input", 0) > 0
+    has_output = summary.token_field_presence.get("output", 0) > 0
     return {
         "tokens": {
             "status": availability_status(present=has_any_token, skipped=skipped and not has_any_token, partial=skipped and has_any_token),
             "present_fields": token_presence,
+            "evidence": evidence_class(observed=has_any_token),
         },
         "input": {
-            "status": availability_status(present=summary.token_field_presence.get("input", 0) > 0, partial=skipped and summary.token_field_presence.get("input", 0) > 0),
+            "status": availability_status(present=has_input, partial=skipped and has_input),
             "present_count": summary.token_field_presence.get("input", 0),
+            "evidence": evidence_class(observed=has_input),
         },
         "output": {
-            "status": availability_status(present=summary.token_field_presence.get("output", 0) > 0, partial=skipped and summary.token_field_presence.get("output", 0) > 0),
+            "status": availability_status(present=has_output, partial=skipped and has_output),
             "present_count": summary.token_field_presence.get("output", 0),
+            "evidence": evidence_class(observed=has_output),
         },
         "cache": {
             "status": availability_status(present=has_cache_any, partial=cache_partial or (skipped and has_cache_any)),
@@ -623,19 +671,35 @@ def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
                 "cache_read": has_cache_read and summary.tokens.get("cache_read", 0) == 0,
                 "cache_creation": has_cache_creation and summary.tokens.get("cache_creation", 0) == 0,
             },
+            # 원시 cache 토큰 수는 관측값(observed)이지만, share/reuse 비율은 관측값에서
+            # 파생한 추정값(inferred)이므로 별도로 분류해 노출한다.
+            "evidence": evidence_class(observed=has_cache_any),
+            "derived": {
+                "cache_read_share": {
+                    "evidence": evidence_class(observed=False, inferable=has_cache_any),
+                    "value": summary.cache_hit_rate if has_cache_any else None,
+                },
+                "cache_reuse_ratio": {
+                    "evidence": evidence_class(observed=False, inferable=summary.cache_amortization_defined),
+                    "value": summary.cache_amortization if summary.cache_amortization_defined else None,
+                },
+            },
         },
         "cost": {
             "status": availability_status(present=summary.cost_field_count > 0, partial=skipped and summary.cost_field_count > 0),
             "present_count": summary.cost_field_count,
             "observed_cost_usd": summary.cost_usd,
+            "evidence": evidence_class(observed=summary.cost_field_count > 0),
         },
         "context": {
             "status": "missing",
+            "evidence": EVIDENCE_UNAVAILABLE,
             "reason": (
                 "Transcript scans do not include live Claude Code context_window data. "
                 "Pass a live statusline snapshot in a future surface to populate context availability."
             ),
         },
+        "headroom": build_headroom_availability(summary),
     }
 
 
@@ -645,6 +709,9 @@ def build_metric_caveats(summary: UsageSummary) -> list[str]:
         "Claude Code transcript schemas may change; skipped files/records and parse errors reduce confidence.",
         "cache-read share is cache_read / (input + cache_read + cache_creation), not a provider billing hit-rate.",
         "reuse ratio is cache_read / cache_creation when cache_creation is non-zero; it is undefined for cache-cold sessions.",
+        "each metric carries an evidence class: observed (read from transcript fields), inferred "
+        "(derived via a documented formula), or unavailable (not determinable from a historical scan).",
+        "context headroom is unavailable from transcript scans; it requires a live statusline snapshot to be observed.",
     ]
     if summary.cost_field_count == 0:
         caveats.append("No cost fields were observed; use Claude Console or official billing exports for invoice-grade cost.")
@@ -685,6 +752,7 @@ def feasibility_json(
                 "metric_caveats",
                 "redaction_mode",
                 "context_availability",
+                "headroom_availability",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
@@ -710,6 +778,7 @@ def feasibility_json(
             "raw_path_and_command_flags": ["--show-paths", "--show-commands"],
         },
         "context_availability": availability["context"],
+        "headroom_availability": availability["headroom"],
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,
