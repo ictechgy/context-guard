@@ -33,7 +33,9 @@ CONTENT_TYPES = ("json", "diff", "log", "search", "code", "prose")
 DIFF_FILE_HEADER_RE = re.compile(r"^(diff --git |index [0-9a-f]|--- |\+\+\+ |rename |similarity |new file|deleted file)")
 DIFF_HUNK_RE = re.compile(r"^@@ .* @@")
 # search(grep/ripgrep) 라인: `path:line:content` 또는 `path:content`.
-SEARCH_LINE_RE = re.compile(r"^[^\s:][^:\n]*:(?:\d+:)?.")
+# 콜론 앞 경로 토큰에 공백을 불허해, 타임스탬프 로그("2026-01-01 00:00:00 ...")가
+# search 로 오분류되는 것을 막는다(로그 타임스탬프는 콜론 앞에 공백을 포함).
+SEARCH_LINE_RE = re.compile(r"^[^\s:][^:\n\s]*:(?:\d+:)?.")
 # log 시그널: 선두 타임스탬프나 로그 레벨 토큰.
 LOG_LEVEL_RE = re.compile(r"\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b")
 LOG_TIMESTAMP_RE = re.compile(r"^\s*(?:\[)?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}|^\s*\d{2}:\d{2}:\d{2}\b")
