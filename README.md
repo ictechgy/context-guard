@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard is a Claude Code plugin and local helper toolkit that keeps Claude Code context focused. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, usage visibility, and repeatable token/cost measurement.
+ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships a Claude Code plugin first, and the same project-local guardrails — for noisy command output, large file reads, repeated failures, likely-secret values, usage visibility, and repeatable token/cost measurement — extend to other agents through local helper commands and advisory rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
@@ -44,6 +44,22 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter Claude context. | Local Claude Code guardrails plus measurement. |
+
+## ContextGuard for AI coding and tool agents
+
+ContextGuard began as a Claude Code plugin and still ships that integration first. The same local-first guardrails apply to other AI coding and tool agents: helpers run as plain local commands, and advisory rule snippets install into an agent's own instruction file. Cross-agent setup is dry-run first, writes only local files, backs up before changing anything, and applies only with explicit approval.
+
+| Approach | What it emphasizes | ContextGuard relationship |
+| --- | --- | --- |
+| Headroom-style compression | Shortening text already selected for the model. | ContextGuard prefers local, reversible artifact storage with exact retrieval over lossy one-way compression. |
+| Caveman-style brief / cross-agent install | Terse-output rules installed across many agents. | ContextGuard offers advisory brief-mode snippets and dry-run cross-agent setup, without claiming guaranteed savings. |
+| ContextGuard | Avoiding unnecessary files, logs, and output before they enter context, with conservative measurement. | Local guardrails, reversible artifacts and retrieval, and benchmark evidence you measure yourself. |
+
+## Brief mode (advisory)
+
+Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving the evidence a reviewer needs: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
+
+Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block you install into an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions) and remove by deleting the block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
 
 ## What to measure
 
