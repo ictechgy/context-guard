@@ -322,10 +322,12 @@ def classify_content_type(text: str) -> str:
     diff_hits = sum(1 for line in lines if line.startswith(("diff --git ", "@@ ", "+++ ", "--- ", "index ")))
     if diff_hits and (lines[0].startswith(("diff --git ", "--- ", "@@ ")) or diff_hits >= 2):
         return "diff"
-    if sum(1 for line in lines if _SEARCH_HIT_RE.match(line)) >= majority:
-        return "search"
+    # Log is checked before search because timestamps (HH:MM:SS) and bracketed
+    # levels can superficially resemble the `path:line:` search shape.
     if sum(1 for line in lines if _LOG_LINE_RE.match(line)) >= majority:
         return "log"
+    if sum(1 for line in lines if _SEARCH_HIT_RE.match(line)) >= majority:
+        return "search"
     code_hits = sum(1 for line in lines if _CODE_LINE_RE.match(line))
     brace_lines = sum(1 for line in lines if line.rstrip().endswith(("{", "}", ";", "):")))
     if code_hits >= 2 or (code_hits >= 1 and brace_lines >= max(2, line_count // 3)):
