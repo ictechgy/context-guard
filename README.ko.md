@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard는 Claude Code의 컨텍스트를 필요한 내용에 집중시키는 Claude Code 플러그인이자 로컬 헬퍼 도구 모음입니다. 잡음 많은 명령 출력, 대용량 파일 읽기, 반복 실패 로그, 민감 정보로 보이는 값, 사용량 확인, 반복 가능한 토큰·비용 측정을 프로젝트 단위 가드레일로 다룹니다.
+ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 위생 도구 모음입니다. Claude Code 플러그인을 가장 먼저 지원하며, 같은 프로젝트 단위 가드레일(잡음 많은 명령 출력, 대용량 파일 읽기, 반복 실패 로그, 민감 정보로 보이는 값, 사용량 확인, 반복 가능한 토큰·비용 측정)을 로컬 헬퍼 명령과 권고형 규칙 스니펫을 통해 다른 에이전트로도 확장합니다.
 
 - 영문 문서: [`README.md`](README.md)
 - HTML 랜딩 페이지: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([소스](docs/index.html))
