@@ -30,6 +30,7 @@ SAFE_SHELL = shutil.which("sh") or "/bin/sh"
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"),
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
+    (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
