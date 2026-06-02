@@ -778,6 +778,7 @@ def feasibility_json(
             "raw_path_and_command_flags": ["--show-paths", "--show-commands"],
         },
         "context_availability": availability["context"],
+        "headroom_availability": availability["headroom"],
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,
