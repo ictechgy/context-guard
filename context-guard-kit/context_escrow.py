@@ -598,10 +598,12 @@ def get_command(args: argparse.Namespace) -> int:
     if args.json:
         payload = {
             "artifact_id": artifact_id,
+            "content_type": metadata.get("content_type"),
             "query": query,
             "capped": capped,
             "content": selected,
             "stored_output": metadata.get("stored_output"),
+            "retrieval": metadata.get("retrieval"),
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:
