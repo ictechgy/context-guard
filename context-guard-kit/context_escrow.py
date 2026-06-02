@@ -422,9 +422,11 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
         "stored": True,
         "created_at": metadata.get("created_at"),
         "command_preview": metadata.get("command_preview"),
+        "content_type": metadata.get("content_type"),
         "input": metadata.get("input"),
         "stored_output": metadata.get("stored_output"),
         "digest": metadata.get("digest"),
+        "retrieval": metadata.get("retrieval"),
         "available_queries": [
             f"context-guard-artifact get {artifact_id} --lines 1:80",
             f"context-guard-artifact get {artifact_id} --pattern ERROR --max-lines 40",
@@ -451,10 +453,14 @@ def store_command(args: argparse.Namespace) -> int:
     )
     artifact_id = hashlib.sha256(id_basis.encode("utf-8")).hexdigest()[:20]
     content_path, meta_path = artifact_paths(directory, artifact_id)
+    total_lines = sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0)
+    content_type = classify_content_type(sanitized_text)
+    strategy = recommended_strategy(content_type)
     metadata: dict[str, object] = {
         "artifact_id": artifact_id,
         "created_at": int(time.time()),
         "command_preview": command_preview,
+        "content_type": content_type,
         "input": {
             "bytes_read": input_bytes,
             "truncated": input_truncated,
@@ -462,12 +468,23 @@ def store_command(args: argparse.Namespace) -> int:
         },
         "stored_output": {
             "bytes": content_bytes,
-            "lines": sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0),
+            "lines": total_lines,
             "sha256": content_sha,
             "content_file": content_path.name,
             "metadata_file": meta_path.name,
         },
         "digest": build_digest(sanitized_text, redacted_lines=redacted_lines),
+        "retrieval": {
+            "strategy": strategy,
+            "deterministic": True,
+            "hints": build_retrieval_hints(
+                artifact_id,
+                sanitized_text,
+                content_type=content_type,
+                strategy=strategy,
+                total_lines=total_lines,
+            ),
+        },
     }
     write_private_text(content_path, sanitized_text)
     write_private_text(meta_path, json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
