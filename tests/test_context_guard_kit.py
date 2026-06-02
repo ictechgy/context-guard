@@ -54,6 +54,7 @@ READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "context-gua
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-read-symbol"]
 NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"]
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
+COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
