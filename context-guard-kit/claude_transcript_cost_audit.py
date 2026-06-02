@@ -709,6 +709,9 @@ def build_metric_caveats(summary: UsageSummary) -> list[str]:
         "Claude Code transcript schemas may change; skipped files/records and parse errors reduce confidence.",
         "cache-read share is cache_read / (input + cache_read + cache_creation), not a provider billing hit-rate.",
         "reuse ratio is cache_read / cache_creation when cache_creation is non-zero; it is undefined for cache-cold sessions.",
+        "each metric carries an evidence class: observed (read from transcript fields), inferred "
+        "(derived via a documented formula), or unavailable (not determinable from a historical scan).",
+        "context headroom is unavailable from transcript scans; it requires a live statusline snapshot to be observed.",
     ]
     if summary.cost_field_count == 0:
         caveats.append("No cost fields were observed; use Claude Console or official billing exports for invoice-grade cost.")
@@ -749,6 +752,7 @@ def feasibility_json(
                 "metric_caveats",
                 "redaction_mode",
                 "context_availability",
+                "headroom_availability",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
