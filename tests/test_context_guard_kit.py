@@ -1491,8 +1491,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(data["pack_bytes"], len(data["pack"].encode("utf-8")))
                     self.assertLessEqual(data["pack_bytes"], data["budget_bytes"])
                     self.assertEqual(data["included_sources"][0]["path"], "a.txt")
-                    self.assertTrue(any(item["status"] == "partial" for item in data["included_sources"]))
-                    self.assertTrue(any(item["reason"] == "budget_exhausted" for item in data["omitted_sources"]))
+                    partial = next(item for item in data["included_sources"] if item["status"] == "partial")
+                    self.assertIn(
+                        f"--lines {partial['included_lines']['start']}:{partial['included_lines']['end']}",
+                        partial["retrieval_cli"],
+                    )
+                    budget_omitted = [item for item in data["omitted_sources"] if item["reason"] == "budget_exhausted"]
+                    self.assertTrue(budget_omitted)
+                    self.assertTrue(all("retrieval_cli" in item for item in budget_omitted))
                     self.assertEqual(data["token_proxy"]["measurement"], "estimated")
 
     def test_context_pack_manifest_source_grammar_and_duplicates_are_deterministic(self):
@@ -1594,6 +1600,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         ).stdout
                     )
                     self.assertFalse(no_artifact["artifact"]["stored"])
+
+    def test_context_pack_omits_retrieval_when_root_arg_contains_secret(self):
+        secret_component = "ghp_" + ("R" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / secret_component
+                    root.mkdir()
+                    (root / "ok.txt").write_text("ok\n", encoding="utf-8")
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        str(root),
+                        "--source",
+                        "ok.txt",
+                        "--budget-bytes",
+                        "2000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertNotIn(secret_component, proc.stdout)
+                    self.assertEqual(data["included_sources"][0]["retrieval_omitted_reason"], "unsafe_root_path")
+                    self.assertNotIn("retrieval_cli", data["included_sources"][0])
+                    self.assertIn("Retrieval omitted: unsafe_root_path", data["pack"])
+                    receipt = root / data["artifact"]["path"]
+                    self.assertTrue(receipt.is_file())
+                    self.assertNotIn(secret_component, receipt.read_text(encoding="utf-8"))
 
     @unittest.skipIf(not hasattr(os, "symlink"), "symlink creation unsupported on this platform")
     def test_context_pack_refuses_symlinked_receipt_directory(self):

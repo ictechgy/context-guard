@@ -353,42 +353,87 @@ def lexical_rel(raw_path: str) -> tuple[Path | None, str]:
     return cleaned, ""
 
 
-def reject_symlink_components(root: Path, rel: Path) -> tuple[Path | None, str]:
-    current = root
-    for part in rel.parts:
-        current = current / part
-        try:
-            st = os.lstat(current)
-        except FileNotFoundError:
-            return None, "missing"
-        except OSError:
-            return None, "unsafe_path"
-        if stat.S_ISLNK(st.st_mode):
-            return None, "unsafe_path"
-        if current != root / rel and not stat.S_ISDIR(st.st_mode):
-            return None, "missing"
-    try:
-        st = os.lstat(current)
-    except OSError:
-        return None, "missing"
-    if not stat.S_ISREG(st.st_mode):
-        return None, "empty_source"
-    return current, ""
-
-
-def open_regular_no_follow(path: Path):
+def open_dir_no_follow(path: Path | str, *, dir_fd: int | None = None) -> int:
     flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags)
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if dir_fd is None:
+        fd = os.open(path, flags)
+    else:
+        fd = os.open(path, flags, dir_fd=dir_fd)
     try:
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise PackError("source is not a regular file")
-        return os.fdopen(fd, "r", encoding="utf-8", errors="replace", newline="")
+        if not stat.S_ISDIR(st.st_mode):
+            raise PackError("not a directory")
+        return fd
     except Exception:
         os.close(fd)
         raise
+
+
+def open_regular_under_root(root: Path, rel: Path) -> tuple[Any | None, str]:
+    current_fd: int | None = None
+    try:
+        current_fd = open_dir_no_follow(root)
+        for index, part in enumerate(rel.parts):
+            if part in {"", ".", ".."}:
+                return None, "outside_root"
+            is_final = index == len(rel.parts) - 1
+            if not is_final:
+                try:
+                    next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+                except FileNotFoundError:
+                    return None, "missing"
+                except NotADirectoryError:
+                    return None, "missing"
+                except OSError:
+                    return None, "unsafe_path"
+                os.close(current_fd)
+                current_fd = next_fd
+                continue
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            file_fd = -1
+            try:
+                file_fd = os.open(part, flags, dir_fd=current_fd)
+                st = os.fstat(file_fd)
+                if not stat.S_ISREG(st.st_mode):
+                    os.close(file_fd)
+                    file_fd = -1
+                    return None, "empty_source"
+                handle = os.fdopen(file_fd, "r", encoding="utf-8", errors="replace", newline="")
+                file_fd = -1
+                return handle, ""
+            except FileNotFoundError:
+                return None, "missing"
+            except IsADirectoryError:
+                return None, "empty_source"
+            except NotADirectoryError:
+                return None, "missing"
+            except OSError:
+                return None, "unsafe_path"
+            finally:
+                if file_fd >= 0:
+                    try:
+                        os.close(file_fd)
+                    except OSError:
+                        pass
+    except OSError:
+        return None, "unsafe_path"
+    finally:
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+    return None, "unsafe_path"
 
 
 def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
@@ -397,17 +442,12 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
     rel, reason = lexical_rel(spec.path)
     if rel is None:
         return None, omission(spec, reason)
-    abs_path, reason = reject_symlink_components(root, rel)
     display, redacted_path = display_rel_path(rel.as_posix())
-    if abs_path is None:
+    handle, reason = open_regular_under_root(root, rel)
+    if handle is None:
         return None, omission(spec, reason, path=display, redacted_path=redacted_path)
     try:
-        # The no-symlink lexical check above lets resolve act as a final containment assertion.
-        abs_path.resolve().relative_to(root.resolve())
-    except (OSError, RuntimeError, ValueError):
-        return None, omission(spec, "outside_root", path=display, redacted_path=redacted_path)
-    try:
-        with open_regular_no_follow(abs_path) as handle:
+        with handle:
             raw_text = handle.read()
     except OSError:
         return None, omission(spec, "unsafe_path", path=display, redacted_path=redacted_path)
@@ -425,7 +465,7 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
     return ResolvedSource(
         spec=spec,
-        abs_path=abs_path,
+        abs_path=root / rel,
         display_path=display,
         redacted_path=redacted_path,
         requested_lines=requested,
@@ -442,10 +482,32 @@ def retrieval_cli(root_arg: str, display_path: str, lines: LineRange) -> str:
     )
 
 
+def safe_root_arg_for_retrieval(root_arg: str) -> str | None:
+    text = str(root_arg)
+    if SECRET_CONTENT_RE.search(text):
+        return None
+    for part in text.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        _safe, redacted = sanitize_path_component(part)
+        if redacted:
+            return None
+    return text
+
+
+def retrieval_for(root_arg: str, display_path: str, lines: LineRange, *, redacted_path: bool) -> tuple[str | None, str | None]:
+    if redacted_path:
+        return None, "redacted_path"
+    safe_root = safe_root_arg_for_retrieval(root_arg)
+    if safe_root is None:
+        return None, "unsafe_root_path"
+    return retrieval_cli(safe_root, display_path, lines), None
+
+
 def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, status: str, included: LineRange) -> str:
     title = source.spec.label or source.display_path
     requested = source.requested_lines or LineRange(1, source.total_lines)
-    retrieval = None if source.redacted_path else retrieval_cli(root_arg, source.display_path, requested)
+    retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
     header = [
         f"## {title}",
         f"Source: `{source.display_path}`",
@@ -456,8 +518,8 @@ def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, sta
     ]
     if retrieval:
         header.append(f"Retrieval: `{retrieval}`")
-    elif source.redacted_path:
-        header.append("Retrieval omitted: redacted_path")
+    elif retrieval_omitted_reason:
+        header.append(f"Retrieval omitted: {retrieval_omitted_reason}")
     return "\n".join(header) + "\n\n```text\n" + "".join(lines) + ("" if not lines or lines[-1].endswith("\n") else "\n") + "```\n\n"
 
 
@@ -474,12 +536,27 @@ def source_metadata(source: ResolvedSource, *, status: str, lines: list[str], in
     }
     if source.spec.label:
         item["label"] = source.spec.label
-    if source.redacted_path:
-        item["retrieval_omitted_reason"] = "redacted_path"
-    else:
-        item["retrieval_cli"] = retrieval_cli(root_arg, source.display_path, requested)
+    retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
+    if retrieval:
+        item["retrieval_cli"] = retrieval
+    elif retrieval_omitted_reason:
+        item["retrieval_omitted_reason"] = retrieval_omitted_reason
     if status == "partial":
         item["reason"] = "budget_exhausted"
+    return item
+
+
+def budget_omission(source: ResolvedSource, *, root_arg: str) -> dict[str, Any]:
+    requested = source.requested_lines or LineRange(1, source.total_lines)
+    item = omission(source.spec, "budget_exhausted", path=source.display_path, redacted_path=source.redacted_path)
+    item["requested_lines"] = requested.as_dict()
+    item["total_lines"] = source.total_lines
+    retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, requested, redacted_path=source.redacted_path)
+    if retrieval:
+        item["retrieval_cli"] = retrieval
+        item.pop("retrieval_omitted_reason", None)
+    elif retrieval_omitted_reason:
+        item["retrieval_omitted_reason"] = retrieval_omitted_reason
     return item
 
 
@@ -502,7 +579,7 @@ def fit_partial_lines(source: ResolvedSource, remaining: int, *, root_arg: str) 
 
 
 def metadata_size(data: dict[str, Any]) -> int:
-    return len(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8", errors="replace"))
+    return len(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8", errors="replace")) + 1
 
 
 def artifact_failure(error: str, *, bytes_count: int = 0, capped: bool = False) -> dict[str, Any]:
@@ -516,54 +593,44 @@ def artifact_failure(error: str, *, bytes_count: int = 0, capped: bool = False) 
     }
 
 
-def ensure_private_pack_dir(root: Path) -> tuple[Path | None, str | None]:
-    """Create/verify the receipt directory without following symlink components."""
-    current = root
-    for part in (".context-guard", "packs"):
-        current = current / part
-        while True:
-            try:
-                st = os.lstat(current)
-                break
-            except FileNotFoundError:
+def ensure_private_pack_dir(root: Path) -> tuple[Path | None, int | None, str | None]:
+    """Create/verify the receipt directory by walking from a no-follow root fd."""
+    current_fd: int | None = None
+    try:
+        current_fd = open_dir_no_follow(root)
+        for part in (".context-guard", "packs"):
+            while True:
                 try:
-                    os.mkdir(current, 0o700)
-                except FileExistsError:
-                    continue
-                except OSError:
-                    return None, "artifact_dir_unavailable"
+                    next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+                    break
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=current_fd)
+                    except FileExistsError:
+                        continue
+                    except (OSError, NotImplementedError):
+                        return None, None, "artifact_dir_unavailable"
+                except NotADirectoryError:
+                    return None, None, "unsafe_artifact_dir"
+                except (OSError, NotImplementedError):
+                    return None, None, "unsafe_artifact_dir"
+            try:
+                os.fchmod(next_fd, 0o700)
+            except (AttributeError, OSError):
+                pass
+            os.close(current_fd)
+            current_fd = next_fd
+        dir_fd = current_fd
+        current_fd = None
+        return root / PACK_DIR, dir_fd, None
+    except OSError:
+        return None, None, "unsafe_artifact_dir"
+    finally:
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
             except OSError:
-                return None, "artifact_dir_unavailable"
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-            return None, "unsafe_artifact_dir"
-        try:
-            os.chmod(current, 0o700)
-        except OSError:
-            pass
-    try:
-        current.resolve().relative_to(root.resolve())
-    except (OSError, RuntimeError, ValueError):
-        return None, "unsafe_artifact_dir"
-    return current, None
-
-
-def open_private_dir_fd(path: Path) -> int:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    fd = os.open(path, flags)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISDIR(st.st_mode):
-            raise PackError("unsafe_artifact_dir")
-        return fd
-    except Exception:
-        os.close(fd)
-        raise
+                pass
 
 
 def write_private_json(path: Path, data: dict[str, Any]) -> None:
@@ -612,6 +679,19 @@ def write_private_json_at(dir_fd: int, filename: str, data: dict[str, Any]) -> N
         pass
 
 
+def finalize_receipt_size(receipt: dict[str, Any]) -> int:
+    artifact = receipt.setdefault("artifact", {})
+    size = metadata_size(receipt)
+    for _ in range(4):
+        artifact["bytes"] = size
+        next_size = metadata_size(receipt)
+        if next_size == size:
+            return size
+        size = next_size
+    artifact["bytes"] = size
+    return metadata_size(receipt)
+
+
 def shrink_receipt_for_write(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     receipt = copy.deepcopy(data)
     capped = False
@@ -643,34 +723,32 @@ def shrink_receipt_for_write(data: dict[str, Any]) -> tuple[dict[str, Any], bool
 
 
 def store_receipt(root: Path, result: dict[str, Any]) -> dict[str, Any]:
-    out_dir, dir_error = ensure_private_pack_dir(root)
-    if out_dir is None:
+    out_dir, dir_fd, dir_error = ensure_private_pack_dir(root)
+    if out_dir is None or dir_fd is None:
         return artifact_failure(dir_error or "unsafe_artifact_dir")
-    receipt, capped = shrink_receipt_for_write(result)
-    size = metadata_size(receipt)
-    if size > MAX_RECEIPT_BYTES:
-        return artifact_failure("receipt_metadata_too_large", bytes_count=size, capped=True)
-    pack_id = str(result["pack_id"])
-    filename = f"{pack_id}.json"
-    receipt.setdefault("artifact", {})["stored"] = True
-    receipt.setdefault("artifact", {})["path"] = f"{PACK_DIR}/{pack_id}.json"
-    receipt.setdefault("artifact", {})["capped"] = capped
-    size = metadata_size(receipt)
-    receipt.setdefault("artifact", {})["bytes"] = size
-    if size > MAX_RECEIPT_BYTES:
-        return artifact_failure("receipt_metadata_too_large", bytes_count=size, capped=True)
-    dir_fd: int | None = None
+    size = 0
+    capped = False
     try:
-        dir_fd = open_private_dir_fd(out_dir)
+        receipt, capped = shrink_receipt_for_write(result)
+        size = metadata_size(receipt)
+        if size > MAX_RECEIPT_BYTES:
+            return artifact_failure("receipt_metadata_too_large", bytes_count=size, capped=True)
+        pack_id = str(result["pack_id"])
+        filename = f"{pack_id}.json"
+        receipt.setdefault("artifact", {})["stored"] = True
+        receipt.setdefault("artifact", {})["path"] = f"{PACK_DIR}/{pack_id}.json"
+        receipt.setdefault("artifact", {})["capped"] = capped
+        size = finalize_receipt_size(receipt)
+        if size > MAX_RECEIPT_BYTES:
+            return artifact_failure("receipt_metadata_too_large", bytes_count=size, capped=True)
         write_private_json_at(dir_fd, filename, receipt)
-    except (OSError, PackError):
+    except (OSError, PackError, NotImplementedError):
         return artifact_failure("artifact_write_failed", bytes_count=size, capped=capped)
     finally:
-        if dir_fd is not None:
-            try:
-                os.close(dir_fd)
-            except OSError:
-                pass
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
     return {
         "stored": True,
         "path": f"{PACK_DIR}/{pack_id}.json",
@@ -736,7 +814,7 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
             parts.append(partial_block)
             included.append(source_metadata(source, status="partial", lines=partial_lines, included=partial_range, root_arg=root_arg))
         else:
-            omitted.append(omission(source.spec, "budget_exhausted", path=source.display_path, redacted_path=source.redacted_path))
+            omitted.append(budget_omission(source, root_arg=root_arg))
     pack = "".join(parts)
     pack_bytes = byte_len(pack)
     redacted_lines = sum(source.redacted_lines for source in resolved)
