@@ -352,6 +352,56 @@ def digest_line_items(lines: Iterable[str], *, limit: int, max_line_chars: int) 
     return out
 
 
+class DuplicateLineTracker:
+    """Track repeated sanitized lines without retaining unbounded unique output."""
+
+    def __init__(self, *, max_groups: int = 12, max_unique: int = 2048) -> None:
+        self.max_groups = max(0, max_groups)
+        self.max_unique = max(1, max_unique)
+        self.counts: dict[str, int] = {}
+        self.first_line: dict[str, int] = {}
+        self.overflow_unique_lines = 0
+
+    def feed(self, line_number: int, line: str) -> None:
+        text = strip_ansi(line).strip()
+        if not text:
+            return
+        if text not in self.counts:
+            if len(self.counts) >= self.max_unique:
+                self.overflow_unique_lines += 1
+                return
+            self.counts[text] = 0
+            self.first_line[text] = line_number
+        self.counts[text] += 1
+
+    def as_list(self) -> list[dict[str, object]]:
+        groups: list[dict[str, object]] = []
+        repeated = [
+            (text, count)
+            for text, count in self.counts.items()
+            if count > 1
+        ]
+        for text, count in sorted(repeated, key=lambda item: (-item[1], self.first_line[item[0]], item[0]))[
+            : self.max_groups
+        ]:
+            groups.append(
+                {
+                    "count": count,
+                    "first_line": self.first_line[text],
+                    "text": text,
+                }
+            )
+        if groups and self.overflow_unique_lines:
+            groups.append(
+                {
+                    "count": self.overflow_unique_lines,
+                    "first_line": None,
+                    "text": "[context-guard-kit] additional unique lines omitted from duplicate tracking",
+                }
+            )
+        return groups
+
+
 def command_preview(command: list[str], sanitizer: object, max_line_chars: int) -> str:
     try:
         raw = shlex.join(command)
@@ -394,6 +444,46 @@ def digest_next_queries(
     return queries
 
 
+def build_failure_signature(
+    *,
+    status: str,
+    rc: int,
+    timed_out: bool,
+    runner_items: dict[str, list[str]],
+    top_error_lines: list[str],
+) -> dict[str, object]:
+    basis: list[str] = []
+    source = "status"
+    if runner_items:
+        source = "runner_failure_summary"
+        for runner in sorted(runner_items):
+            for item in runner_items[runner]:
+                basis.append(f"{runner}: {item}")
+                if len(basis) >= 8:
+                    break
+            if len(basis) >= 8:
+                break
+    elif top_error_lines:
+        source = "top_error_lines"
+        basis = top_error_lines[:8]
+    if not basis:
+        basis = [f"status={status}", f"exit_code={rc}", f"timed_out={str(timed_out).lower()}"]
+    digest = hashlib.sha256(
+        json.dumps(
+            {"status": status, "exit_code": rc, "timed_out": timed_out, "basis": basis},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
+    return {
+        "hash": digest,
+        "source": source,
+        "basis": basis,
+        "exit_code": rc,
+        "timed_out": timed_out,
+    }
+
+
 def build_digest_payload(
     *,
     args: argparse.Namespace,
@@ -410,6 +500,7 @@ def build_digest_payload(
     error_lines: list[str],
     runner_summary: RunnerFailureSummary,
     line_sanitizer: object,
+    duplicate_line_groups: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     raw_output_truncated = total > args.max_lines or visible_chars > args.max_chars or any_line_capped
     status = "timeout" if timed_out else ("success" if rc == 0 else "failure")
@@ -446,6 +537,16 @@ def build_digest_payload(
             max_line_chars=args.max_line_chars,
         ),
     }
+    if duplicate_line_groups:
+        payload["duplicate_line_groups"] = duplicate_line_groups
+    if status != "success":
+        payload["failure_signature"] = build_failure_signature(
+            status=status,
+            rc=rc,
+            timed_out=timed_out,
+            runner_items=runner_items,
+            top_error_lines=top_error_lines,
+        )
     payload["next_queries"] = digest_next_queries(
         rc=rc,
         timed_out=timed_out,
@@ -482,6 +583,12 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
         )
     if payload.get("command_preview"):
         lines.append(f"- command: `{payload.get('command_preview')}`\n")
+    failure_signature = payload.get("failure_signature")
+    if isinstance(failure_signature, dict):
+        lines.append(
+            "- failure_signature: "
+            f"{failure_signature.get('hash')} ({failure_signature.get('source')})\n"
+        )
 
     runner_summary = payload.get("runner_failure_summary")
     if isinstance(runner_summary, dict) and runner_summary:
@@ -491,6 +598,19 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
             if isinstance(items, list):
                 for item in items:
                     lines.append(f"  - {item}\n")
+
+    duplicate_line_groups = payload.get("duplicate_line_groups")
+    if isinstance(duplicate_line_groups, list) and duplicate_line_groups:
+        lines.append("\n## duplicate_line_groups\n")
+        for group in duplicate_line_groups:
+            if not isinstance(group, dict):
+                continue
+            lines.append(
+                "- "
+                f"count={group.get('count')} "
+                f"first_line={group.get('first_line')} "
+                f"text={group.get('text')}\n"
+            )
 
     for title, key in [
         ("top_error_lines", "top_error_lines"),
@@ -548,10 +668,15 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
 
     capped = json.loads(json.dumps(payload))
     capped["digest_capped"] = True
-    for key in ("representative_tail", "representative_head", "top_error_lines", "next_queries"):
+    for key in ("duplicate_line_groups", "representative_tail", "representative_head", "top_error_lines", "next_queries"):
         values = capped.get(key)
         if isinstance(values, list):
             shrink_list_to_fit(capped, values)
+    failure_signature = capped.get("failure_signature")
+    if isinstance(failure_signature, dict):
+        basis = failure_signature.get("basis")
+        if isinstance(basis, list):
+            shrink_list_to_fit(capped, basis)
     runner_summary = capped.get("runner_failure_summary")
     if isinstance(runner_summary, dict):
         for runner in sorted(runner_summary):
@@ -562,6 +687,16 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
     if len(output) <= max_chars:
         return output
 
+    compact_signature: object | None = None
+    failure_signature = payload.get("failure_signature")
+    if isinstance(failure_signature, dict):
+        compact_signature = {
+            "hash": failure_signature.get("hash"),
+            "source": failure_signature.get("source"),
+            "exit_code": failure_signature.get("exit_code"),
+            "timed_out": failure_signature.get("timed_out"),
+        }
+
     return first_fitting(
         [
             {
@@ -571,6 +706,7 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
                 "status": payload.get("status"),
                 "exit_code": payload.get("exit_code"),
                 "timed_out": payload.get("timed_out"),
+                "failure_signature": compact_signature,
                 "raw_output": payload.get("raw_output"),
                 "budget": payload.get("budget"),
                 "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
@@ -580,6 +716,7 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
                 "status": payload.get("status"),
                 "exit_code": payload.get("exit_code"),
                 "timed_out": payload.get("timed_out"),
+                "failure_signature": compact_signature,
                 "raw_output": payload.get("raw_output"),
                 "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
             },
@@ -588,6 +725,7 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
                 "status": payload.get("status"),
                 "exit_code": payload.get("exit_code"),
                 "timed_out": payload.get("timed_out"),
+                "failure_signature": compact_signature,
             },
             {"digest_capped": True},
         ]
@@ -831,6 +969,7 @@ def main() -> int:
     any_line_capped = False
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
     line_sanitizer = load_line_sanitizer(args.show_paths)
+    duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
 
     if proc.stdout is None:
@@ -851,6 +990,7 @@ def main() -> int:
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
+        duplicate_tracker.feed(total, visible_line)
         if total <= args.head_lines:
             head.append(visible_line)
         tail.append(visible_line)
@@ -872,6 +1012,7 @@ def main() -> int:
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
+        duplicate_tracker.feed(total, visible_line)
         if total <= args.head_lines:
             head.append(visible_line)
         tail.append(visible_line)
@@ -897,6 +1038,7 @@ def main() -> int:
             error_lines=error_lines,
             runner_summary=runner_summary,
             line_sanitizer=line_sanitizer,
+            duplicate_line_groups=duplicate_tracker.as_list(),
         )
         if args.digest == "json":
             sys.stdout.write(render_digest_json(payload, args.max_chars))

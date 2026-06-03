@@ -166,7 +166,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
 ```
 
-아티팩트 모드는 캡처·조회 용도입니다. 기본 저장 위치는 `.context-guard/artifacts`이며, 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 영수증도 계속 읽을 수 있습니다. 릴리스 확인처럼 종료 코드가 중요한 파이프라인에서는 원래 명령의 종료 코드를 직접 보존하세요. 종료 코드 보존이 핵심이면 `context-guard-trim-output -- ...`을 사용하는 편이 안전합니다.
+아티팩트 모드는 캡처·조회 용도입니다. 기본 저장 위치는 `.context-guard/artifacts`이며, 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 영수증도 계속 읽을 수 있습니다. JSON 영수증에는 줄 번호가 포함된 top-error 영수증, 중복 라인 그룹, 정확한 `suggested_queries`가 들어가므로 에이전트가 전체 로그를 다시 넣지 않고 필요한 최소 slice만 조회할 수 있습니다. 릴리스 확인처럼 종료 코드가 중요한 파이프라인에서는 원래 명령의 종료 코드를 직접 보존하세요. 종료 코드 보존이 핵심이면 `context-guard-trim-output -- ...`을 사용하는 편이 안전합니다.
 
 ### 선택한 로컬 텍스트를 보수적으로 압축하기
 
@@ -183,7 +183,7 @@ pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 대표 라인, 정제 횟수, 다음 조회 제안을 남깁니다. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
+head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 정제된 실패 signature, 중복 라인 그룹, 대표 라인, 정제 횟수, 다음 조회 제안을 남깁니다. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
 
 ### 검색·diff 출력 정제
 

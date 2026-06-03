@@ -23,6 +23,9 @@ MAX_METADATA_BYTES = 64_000
 DEFAULT_MAX_LINES = 80
 DEFAULT_MAX_CHARS = 20_000
 MAX_LINE_CHARS = 2_000
+MAX_TOP_ERROR_RECEIPTS = 12
+MAX_DUPLICATE_GROUPS = 12
+MAX_SUGGESTED_QUERIES = 12
 ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -401,7 +404,64 @@ def build_retrieval_hints(
     return hints
 
 
-def build_digest(sanitized_text: str, *, redacted_lines: int) -> dict[str, object]:
+def line_receipt(artifact_id: str, line_number: int, text: str) -> dict[str, object]:
+    return {
+        "line": line_number,
+        "text": cap_line(text.strip()),
+        "selector": {"type": "lines", "start": line_number, "end": line_number},
+        "cli": f"context-guard-artifact get {artifact_id} --lines {line_number}:{line_number}",
+    }
+
+
+def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[str, object]]:
+    receipts: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for line_number, line in enumerate(lines, start=1):
+        if not ERROR_RE.search(line):
+            continue
+        text = cap_line(line.strip())
+        if not text or text in seen:
+            continue
+        receipt = line_receipt(artifact_id, line_number, text)
+        receipts.append(receipt)
+        seen.add(text)
+        if len(receipts) >= MAX_TOP_ERROR_RECEIPTS:
+            break
+    return receipts
+
+
+def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: int = MAX_DUPLICATE_GROUPS) -> list[dict[str, object]]:
+    counts: dict[str, int] = {}
+    first_line: dict[str, int] = {}
+    display_text: dict[str, str] = {}
+    for line_number, line in enumerate(lines, start=1):
+        text = cap_line(line.strip())
+        if not text:
+            continue
+        if text not in counts:
+            first_line[text] = line_number
+            display_text[text] = text
+            counts[text] = 0
+        counts[text] += 1
+    groups: list[dict[str, object]] = []
+    for text, count in sorted(
+        ((text, count) for text, count in counts.items() if count > 1),
+        key=lambda item: (-item[1], first_line[item[0]], item[0]),
+    )[:limit]:
+        line_number = first_line[text]
+        groups.append(
+            {
+                "count": count,
+                "first_line": line_number,
+                "text": display_text[text],
+                "selector": {"type": "lines", "start": line_number, "end": line_number},
+                "cli": f"context-guard-artifact get {artifact_id} --lines {line_number}:{line_number}",
+            }
+        )
+    return groups
+
+
+def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) -> dict[str, object]:
     lines = sanitized_text.splitlines()
     top_errors = compact_items((line for line in lines if ERROR_RE.search(line)), limit=12)
     return {
@@ -412,9 +472,38 @@ def build_digest(sanitized_text: str, *, redacted_lines: int) -> dict[str, objec
             "markers": sanitized_text.count("[REDACTED]"),
         },
         "top_error_lines": top_errors,
+        "top_error_receipts": build_top_error_receipts(artifact_id, lines),
+        "duplicate_line_groups": build_duplicate_line_groups(artifact_id, lines),
         "representative_head": compact_items(lines, limit=8),
         "representative_tail": compact_items(lines[-8:], limit=8),
     }
+
+
+def suggested_queries_for(metadata: dict[str, object]) -> list[str]:
+    queries: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, str) and value and value not in queries:
+            queries.append(value)
+
+    digest = metadata.get("digest")
+    if isinstance(digest, dict):
+        for key in ("top_error_receipts", "duplicate_line_groups"):
+            items = digest.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        add(item.get("cli"))
+
+    retrieval = metadata.get("retrieval")
+    if isinstance(retrieval, dict):
+        hints = retrieval.get("hints")
+        if isinstance(hints, list):
+            for hint in hints:
+                if isinstance(hint, dict):
+                    add(hint.get("cli"))
+
+    return queries[:MAX_SUGGESTED_QUERIES]
 
 
 def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
@@ -434,6 +523,7 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
             f"context-guard-artifact get {artifact_id} --pattern ERROR --max-lines 40",
             f"context-guard-artifact get {artifact_id} --json --lines 1:20",
         ],
+        "suggested_queries": suggested_queries_for(metadata),
     }
 
 
@@ -475,7 +565,7 @@ def store_command(args: argparse.Namespace) -> int:
             "content_file": content_path.name,
             "metadata_file": meta_path.name,
         },
-        "digest": build_digest(sanitized_text, redacted_lines=redacted_lines),
+        "digest": build_digest(sanitized_text, artifact_id=artifact_id, redacted_lines=redacted_lines),
         "retrieval": {
             "strategy": strategy,
             "deterministic": True,
