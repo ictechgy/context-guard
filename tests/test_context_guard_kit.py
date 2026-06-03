@@ -1299,6 +1299,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "import sys; "
             "[print(f'noise {i}') for i in range(90)]; "
             "print('FAILED tests/test_auth.py::test_expired_token - AssertionError: expired'); "
+            "print('FAILED tests/test_auth.py::test_expired_token - AssertionError: expired'); "
             "print('tests/test_auth.py:42: AssertionError: expired'); "
             "sys.exit(7)"
         )
@@ -1317,6 +1318,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("runner=pytest", proc.stdout)
                 self.assertIn("tests/test_auth.py::test_expired_token", proc.stdout)
                 self.assertIn("tests/test_auth.py:42", proc.stdout)
+                self.assertIn("failure_signature", proc.stdout)
+                self.assertIn("duplicate_line_groups", proc.stdout)
+                self.assertIn("count=2", proc.stdout)
                 self.assertIn("Run the failing test/node", proc.stdout)
 
     def test_trim_digest_json_is_parseable_budgeted_and_redacted(self):
@@ -1354,10 +1358,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "top_error_lines": [],
                     "next_queries": ["Inspect a narrower command"] * 10,
                     "runner_failure_summary": {},
+                    "duplicate_line_groups": [
+                        {"count": 20, "first_line": 1, "text": "repeat " + ("z" * 200)}
+                    ],
+                    "failure_signature": {
+                        "hash": "abc123def4567890",
+                        "source": "top_error_lines",
+                        "basis": ["failure " + ("q" * 200)] * 10,
+                        "exit_code": 1,
+                        "timed_out": False,
+                    },
                 }
                 output = module.render_digest_json(payload, 240)
                 data = json.loads(output)
                 self.assertTrue(data["digest_capped"])
+                self.assertEqual(data["failure_signature"]["hash"], "abc123def4567890")
                 self.assertLessEqual(len(output), 240)
 
     def _run_compress(self, script: Path, stdin: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -1437,7 +1452,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
         generic_openai_key = "sk-" + ("C" * 32)
-        raw = "ok 1\nAPI_TOKEN=ghp_" + ("A" * 36) + f"\nOPENAI_KEY={generic_openai_key}\nERROR bad widget\nok 4\n"
+        raw = (
+            "ok 1\nAPI_TOKEN=ghp_" + ("A" * 36) + f"\nOPENAI_KEY={generic_openai_key}\n"
+            "ERROR bad widget\nERROR bad widget\nok 4\n"
+        )
         for script in ARTIFACT_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -1462,6 +1480,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertRegex(artifact_id, r"^[a-f0-9]{20}$")
                     self.assertEqual(receipt["stored"], True)
                     self.assertIn("ERROR bad widget", receipt["digest"]["top_error_lines"])
+                    top_receipt = receipt["digest"]["top_error_receipts"][0]
+                    self.assertEqual(top_receipt["line"], 4)
+                    self.assertEqual(top_receipt["selector"], {"type": "lines", "start": 4, "end": 4})
+                    self.assertIn("--lines 4:4", top_receipt["cli"])
+                    duplicate_group = receipt["digest"]["duplicate_line_groups"][0]
+                    self.assertEqual(duplicate_group["count"], 2)
+                    self.assertEqual(duplicate_group["first_line"], 4)
+                    self.assertIn("--lines 4:4", duplicate_group["cli"])
+                    self.assertIn(top_receipt["cli"], receipt["suggested_queries"])
+                    self.assertEqual(receipt["suggested_queries"][0], top_receipt["cli"])
                     self.assertGreaterEqual(receipt["digest"]["redacted_lines"], 1)
                     self.assertIn("context-guard-artifact get", "\n".join(receipt["available_queries"]))
                     self.assertNotIn("ghp_A", proc.stdout)
@@ -1503,6 +1531,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("ghp_A", query.stdout)
                     self.assertNotIn(generic_openai_key, query.stdout)
 
+                    exact_error = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(Path(tmp) / "artifacts"),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "4:4",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    exact_data = json.loads(exact_error.stdout)
+                    self.assertEqual(exact_data["content"], "ERROR bad widget\n")
+
                     content_path.write_text(content_text + "tampered\n", encoding="utf-8")
                     tampered = subprocess.run(
                         [
@@ -1520,6 +1567,93 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     self.assertNotEqual(tampered.returncode, 0)
                     self.assertIn("checksum mismatch", tampered.stderr)
+
+    def test_artifact_escrow_receipt_metadata_stays_under_read_cap(self):
+        raw = "".join(f"ERROR unique {i} {'😀' * 1900}\n" for i in range(12))
+        raw += "".join((f"duplicate group {i} {'😀' * 1900}\n") * 2 for i in range(12))
+        for index, script in enumerate(ARTIFACT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_artifact_metadata_budget_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    metadata_path = artifact_dir / f"{artifact_id}.json"
+                    self.assertLessEqual(metadata_path.stat().st_size, module.MAX_METADATA_BYTES)
+                    self.assertTrue(receipt["digest"]["top_error_receipts"])
+                    self.assertTrue(receipt["digest"]["duplicate_line_groups"])
+                    for item in receipt["digest"]["top_error_lines"]:
+                        self.assertLessEqual(len(item), module.MAX_DIGEST_TEXT_CHARS)
+                        self.assertLessEqual(len(item.encode("utf-8")), module.MAX_DIGEST_TEXT_BYTES)
+                    for collection in ("top_error_receipts", "duplicate_line_groups"):
+                        for item in receipt["digest"][collection]:
+                            self.assertLessEqual(len(item["text"]), module.MAX_DIGEST_TEXT_CHARS)
+                            self.assertLessEqual(len(item["text"].encode("utf-8")), module.MAX_DIGEST_TEXT_BYTES)
+
+                    get = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "get", artifact_id, "--lines", "1:1"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("ERROR unique 0", get.stdout)
+
+                    listed = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "list", "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn(artifact_id, listed.stdout)
+
+    def test_artifact_escrow_line_range_queries_are_exact_over_default_line_cap(self):
+        raw = "".join(f"line {i}\n" for i in range(1, 91))
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    lines_hint = next(hint for hint in receipt["retrieval"]["hints"] if hint["type"] == "lines")
+                    self.assertEqual(lines_hint["selector"], {"start": 1, "end": 90})
+                    self.assertIn("--lines 1:90", lines_hint["cli"])
+                    self.assertIn("--max-lines 90", lines_hint["cli"])
+                    self.assertEqual(receipt["suggested_queries"][0], lines_hint["cli"])
+
+                    query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "1:90",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(query.stdout)
+                    self.assertEqual(data["query"]["returned_lines"], 90)
+                    self.assertEqual(data["query"]["matched_lines"], 90)
+                    self.assertEqual(data["content"], raw)
 
     def test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load(self):
         for index, script in enumerate(ARTIFACT_SCRIPTS):
@@ -1710,6 +1844,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(artifact.bounded_int("not-int", 7, 1, 9), 7)
         self.assertEqual(artifact.bounded_int(99, 7, 1, 9), 9)
         self.assertIn("[line trimmed:", artifact.cap_line("x" * 100, 32))
+        self.assertLessEqual(len(artifact.cap_utf8_bytes("😀" * 100, 64).encode("utf-8")), 64)
         self.assertEqual(artifact.compact_items([" one ", "one", "", " two ", "three"], limit=2), ["one", "two"])
 
         fallback = artifact.FallbackLineSanitizer()
