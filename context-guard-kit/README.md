@@ -8,7 +8,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `trim_command_output.py` — 긴 명령 output을 head/tail/error와 pytest/Jest/Vitest/Go/Rust 실패 요약 중심으로 축약하고 원래 exit code 보존
 - `rewrite_bash_for_token_budget.py` — Claude Code `PreToolUse` hook에서 test/build/lint 명령을 wrapper로 감쌈
 - `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost field를 집계하고 `--recommend`로 절감 액션 제안
-- `context_guard_diet.py` — project `.claude/settings.json` deny/hook/statusline과 `CLAUDE.md`/`AGENTS.md` context bloat를 스캔
+- `context_guard_diet.py` — project `.claude/settings.json` deny/hook/statusline, 여러 AI 에이전트 rule file의 context bloat, local context-exclusion 추천을 스캔
 - `guard_large_read.py` — Claude Code `PreToolUse` Read hook에서 큰 파일 전체 읽기를 막고 symbol/line-range 읽기로 유도
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
