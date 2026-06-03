@@ -31,6 +31,7 @@ CONTEXT_MD_DIRS = {
     ".claude/agents",
     ".claude/commands",
     ".claude/skills",
+    ".clinerules",
     ".cursor/rules",
     ".windsurf/rules",
 }
@@ -249,7 +250,7 @@ def context_surface_for_rel(raw_rel: str, name: str) -> dict[str, str] | None:
         key = "cursor"
     elif raw_rel in {".windsurfrules", ".windsurf/rules/contextguard.md"} or raw_rel.startswith(".windsurf/rules/"):
         key = "windsurf"
-    elif raw_rel == ".clinerules":
+    elif raw_rel == ".clinerules" or raw_rel.startswith(".clinerules/"):
         key = "cline"
     elif raw_rel == ".github/copilot-instructions.md":
         key = "copilot"
