@@ -22,7 +22,9 @@ MAX_MAX_BYTES = 100_000_000
 MAX_METADATA_BYTES = 64_000
 DEFAULT_MAX_LINES = 80
 DEFAULT_MAX_CHARS = 20_000
+MAX_QUERY_LINES = 5_000
 MAX_LINE_CHARS = 2_000
+MAX_DIGEST_TEXT_CHARS = 360
 MAX_TOP_ERROR_RECEIPTS = 12
 MAX_DUPLICATE_GROUPS = 12
 MAX_SUGGESTED_QUERIES = 12
@@ -85,11 +87,11 @@ def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
     return expected.joinpath(*path.parts[2:])
 
 
-def compact_items(lines: Iterable[str], *, limit: int) -> list[str]:
+def compact_items(lines: Iterable[str], *, limit: int, max_chars: int = MAX_LINE_CHARS) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for line in lines:
-        item = cap_line(line.strip())
+        item = cap_line(line.strip(), limit=max_chars)
         if not item or item in seen:
             continue
         out.append(item)
@@ -367,24 +369,29 @@ def build_retrieval_hints(
     strategy: str,
     total_lines: int,
 ) -> list[dict[str, object]]:
-    """Build deterministic, machine-readable retrieval hints for exact round-trip.
+    """Build deterministic, machine-readable retrieval hints for bounded round-trip.
 
     Each hint pairs a `selector` (consumable by `query_content` / the `get` CLI)
-    with the exact CLI invocation. The line-range hint spans the full stored
-    content (`1:total_lines`) so it round-trips to the complete payload; the
-    pattern hint, when present, targets a literal token guaranteed to exist, so
-    retrieval is exact and reproducible. Order is fixed (lines, pattern, head)
-    for determinism; callers pick the hint whose `type` matches `strategy`.
+    with the exact CLI invocation for that selector. The line-range hint spans
+    the full stored content when it fits the query cap, otherwise it advertises
+    the first bounded chunk only. The pattern hint, when present, targets a
+    literal token guaranteed to exist, so retrieval is reproducible. Order is
+    fixed (lines, pattern, head) for determinism; callers pick the hint whose
+    `type` matches `strategy`.
     """
     hints: list[dict[str, object]] = []
     if total_lines >= 1:
-        hints.append(
-            {
-                "type": "lines",
-                "selector": {"start": 1, "end": total_lines},
-                "cli": f"context-guard-artifact get {artifact_id} --lines 1:{total_lines}",
-            }
-        )
+        end_line = min(total_lines, MAX_QUERY_LINES)
+        lines_hint: dict[str, object] = {
+            "type": "lines",
+            "selector": {"start": 1, "end": end_line},
+            "cli": line_query_cli(artifact_id, 1, end_line),
+            "exact": total_lines <= MAX_QUERY_LINES,
+        }
+        if total_lines > MAX_QUERY_LINES:
+            lines_hint["note"] = f"first {MAX_QUERY_LINES} lines only; request later ranges for the full artifact"
+            lines_hint["total_lines"] = total_lines
+        hints.append(lines_hint)
     anchor = first_error_anchor(sanitized_text)
     if anchor is not None:
         hints.append(
@@ -404,12 +411,20 @@ def build_retrieval_hints(
     return hints
 
 
+def line_query_cli(artifact_id: str, start: int, end: int) -> str:
+    cli = f"context-guard-artifact get {artifact_id} --lines {start}:{end}"
+    requested_lines = end - start + 1
+    if requested_lines > DEFAULT_MAX_LINES:
+        cli += f" --max-lines {min(requested_lines, MAX_QUERY_LINES)}"
+    return cli
+
+
 def line_receipt(artifact_id: str, line_number: int, text: str) -> dict[str, object]:
     return {
         "line": line_number,
-        "text": cap_line(text.strip()),
+        "text": cap_line(text.strip(), limit=MAX_DIGEST_TEXT_CHARS),
         "selector": {"type": "lines", "start": line_number, "end": line_number},
-        "cli": f"context-guard-artifact get {artifact_id} --lines {line_number}:{line_number}",
+        "cli": line_query_cli(artifact_id, line_number, line_number),
     }
 
 
@@ -419,7 +434,7 @@ def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[st
     for line_number, line in enumerate(lines, start=1):
         if not ERROR_RE.search(line):
             continue
-        text = cap_line(line.strip())
+        text = cap_line(line.strip(), limit=MAX_DIGEST_TEXT_CHARS)
         if not text or text in seen:
             continue
         receipt = line_receipt(artifact_id, line_number, text)
@@ -433,14 +448,12 @@ def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[st
 def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: int = MAX_DUPLICATE_GROUPS) -> list[dict[str, object]]:
     counts: dict[str, int] = {}
     first_line: dict[str, int] = {}
-    display_text: dict[str, str] = {}
     for line_number, line in enumerate(lines, start=1):
-        text = cap_line(line.strip())
+        text = cap_line(line.strip(), limit=MAX_DIGEST_TEXT_CHARS)
         if not text:
             continue
         if text not in counts:
             first_line[text] = line_number
-            display_text[text] = text
             counts[text] = 0
         counts[text] += 1
     groups: list[dict[str, object]] = []
@@ -453,9 +466,9 @@ def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: in
             {
                 "count": count,
                 "first_line": line_number,
-                "text": display_text[text],
+                "text": text,
                 "selector": {"type": "lines", "start": line_number, "end": line_number},
-                "cli": f"context-guard-artifact get {artifact_id} --lines {line_number}:{line_number}",
+                "cli": line_query_cli(artifact_id, line_number, line_number),
             }
         )
     return groups
@@ -463,7 +476,7 @@ def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: in
 
 def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) -> dict[str, object]:
     lines = sanitized_text.splitlines()
-    top_errors = compact_items((line for line in lines if ERROR_RE.search(line)), limit=12)
+    top_errors = compact_items((line for line in lines if ERROR_RE.search(line)), limit=12, max_chars=MAX_DIGEST_TEXT_CHARS)
     return {
         "status": "has_errors" if top_errors else "stored",
         "redacted_lines": redacted_lines,
@@ -474,8 +487,8 @@ def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) 
         "top_error_lines": top_errors,
         "top_error_receipts": build_top_error_receipts(artifact_id, lines),
         "duplicate_line_groups": build_duplicate_line_groups(artifact_id, lines),
-        "representative_head": compact_items(lines, limit=8),
-        "representative_tail": compact_items(lines[-8:], limit=8),
+        "representative_head": compact_items(lines, limit=8, max_chars=MAX_DIGEST_TEXT_CHARS),
+        "representative_tail": compact_items(lines[-8:], limit=8, max_chars=MAX_DIGEST_TEXT_CHARS),
     }
 
 
@@ -652,7 +665,6 @@ def query_content(content: str, *, line_range: tuple[int, int] | None, pattern: 
 
 def get_command(args: argparse.Namespace) -> int:
     artifact_id = args.artifact_id
-    max_lines = bounded_int(args.max_lines, DEFAULT_MAX_LINES, 1, 5_000)
     max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, 1, 1_000_000)
     try:
         last_missing: FileNotFoundError | None = None
@@ -682,6 +694,10 @@ def get_command(args: argparse.Namespace) -> int:
         if actual_sha != expected_sha:
             raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
         line_range = parse_line_range(args.lines)
+        if line_range is not None and args.max_lines is None:
+            max_lines = min(line_range[1] - line_range[0] + 1, MAX_QUERY_LINES)
+        else:
+            max_lines = bounded_int(args.max_lines, DEFAULT_MAX_LINES, 1, MAX_QUERY_LINES)
         selected, query = query_content(content, line_range=line_range, pattern=args.pattern, max_lines=max_lines)
         selected, capped = cap_text(selected, max_chars)
     except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
@@ -756,7 +772,7 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("artifact_id")
     get.add_argument("--lines", help="1-based inclusive line range, e.g. 10:40")
     get.add_argument("--pattern", help="literal substring filter")
-    get.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
+    get.add_argument("--max-lines", type=int, default=None)
     get.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     get.add_argument("--json", action="store_true", help="emit query JSON with content")
     get.set_defaults(func=get_command)

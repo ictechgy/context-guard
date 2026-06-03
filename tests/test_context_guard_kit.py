@@ -1568,6 +1568,91 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotEqual(tampered.returncode, 0)
                     self.assertIn("checksum mismatch", tampered.stderr)
 
+    def test_artifact_escrow_receipt_metadata_stays_under_read_cap(self):
+        raw = "".join(f"ERROR unique {i} {'x' * 1900}\n" for i in range(12))
+        raw += "".join((f"duplicate group {i} {'y' * 1900}\n") * 2 for i in range(12))
+        for index, script in enumerate(ARTIFACT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_artifact_metadata_budget_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    metadata_path = artifact_dir / f"{artifact_id}.json"
+                    self.assertLessEqual(metadata_path.stat().st_size, module.MAX_METADATA_BYTES)
+                    self.assertTrue(receipt["digest"]["top_error_receipts"])
+                    self.assertTrue(receipt["digest"]["duplicate_line_groups"])
+                    for item in receipt["digest"]["top_error_lines"]:
+                        self.assertLessEqual(len(item), module.MAX_DIGEST_TEXT_CHARS)
+                    for collection in ("top_error_receipts", "duplicate_line_groups"):
+                        for item in receipt["digest"][collection]:
+                            self.assertLessEqual(len(item["text"]), module.MAX_DIGEST_TEXT_CHARS)
+
+                    get = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "get", artifact_id, "--lines", "1:1"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("ERROR unique 0", get.stdout)
+
+                    listed = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "list", "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn(artifact_id, listed.stdout)
+
+    def test_artifact_escrow_line_range_queries_are_exact_over_default_line_cap(self):
+        raw = "".join(f"line {i}\n" for i in range(1, 91))
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    lines_hint = next(hint for hint in receipt["retrieval"]["hints"] if hint["type"] == "lines")
+                    self.assertEqual(lines_hint["selector"], {"start": 1, "end": 90})
+                    self.assertIn("--lines 1:90", lines_hint["cli"])
+                    self.assertIn("--max-lines 90", lines_hint["cli"])
+                    self.assertEqual(receipt["suggested_queries"][0], lines_hint["cli"])
+
+                    query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "1:90",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(query.stdout)
+                    self.assertEqual(data["query"]["returned_lines"], 90)
+                    self.assertEqual(data["query"]["matched_lines"], 90)
+                    self.assertEqual(data["content"], raw)
+
     def test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load(self):
         for index, script in enumerate(ARTIFACT_SCRIPTS):
             with self.subTest(script=script):
