@@ -271,12 +271,146 @@ def artifact_read_directories(raw_dir: str) -> list[Path]:
     return directories
 
 
+CONTENT_TYPE_VALUES = ("json", "diff", "log", "search", "code", "prose", "text")
+# Recommended retrieval strategy per content type. Pattern-oriented payloads
+# (logs, search hits, diffs) are best sliced by `--pattern`; structured or
+# narrative payloads (json, code, prose) read best by `--lines`. Unknown/empty
+# content falls back to a bounded `head` read.
+STRATEGY_BY_CONTENT_TYPE = {
+    "json": "lines",
+    "code": "lines",
+    "prose": "lines",
+    "diff": "pattern",
+    "log": "pattern",
+    "search": "pattern",
+    "text": "head",
+}
+_SEARCH_HIT_RE = re.compile(r"^[^\s:]+:\d+:")
+_LOG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}|"
+    r"\[(?:DEBUG|INFO|WARN|WARNING|ERROR|FATAL|TRACE)\]|"
+    r"(?:DEBUG|INFO|WARN|WARNING|ERROR|FATAL|TRACE)\b)",
+    re.IGNORECASE,
+)
+_CODE_LINE_RE = re.compile(
+    r"^\s*(def |class |import |from \S+ import |function |const |let |var |"
+    r"public |private |protected |#include|package |func |fn |impl |"
+    r"return\b|if\s*\(|for\s*\(|while\s*\()"
+)
+
+
+def classify_content_type(text: str) -> str:
+    """Classify stored content into one of CONTENT_TYPE_VALUES (advisory only).
+
+    The classification is dependency-free and deterministic: identical input
+    always yields the same label. It never influences redaction or storage; it
+    only drives retrieval-strategy hints, so a wrong guess degrades to a less
+    ergonomic (but still correct) retrieval suggestion. Empty input is "text".
+    """
+    stripped = text.strip()
+    if not stripped:
+        return "text"
+    if stripped[0] in "{[":
+        try:
+            json.loads(stripped)
+            return "json"
+        except (ValueError, RecursionError):
+            pass
+    lines = stripped.splitlines()
+    line_count = len(lines)
+    majority = max(1, line_count // 2)
+    diff_hits = sum(1 for line in lines if line.startswith(("diff --git ", "@@ ", "+++ ", "--- ", "index ")))
+    if diff_hits and (lines[0].startswith(("diff --git ", "--- ", "@@ ")) or diff_hits >= 2):
+        return "diff"
+    # Log is checked before search because timestamps (HH:MM:SS) and bracketed
+    # levels can superficially resemble the `path:line:` search shape.
+    if sum(1 for line in lines if _LOG_LINE_RE.match(line)) >= majority:
+        return "log"
+    if sum(1 for line in lines if _SEARCH_HIT_RE.match(line)) >= majority:
+        return "search"
+    code_hits = sum(1 for line in lines if _CODE_LINE_RE.match(line))
+    brace_lines = sum(1 for line in lines if line.rstrip().endswith(("{", "}", ";", "):")))
+    if code_hits >= 2 or (code_hits >= 1 and brace_lines >= max(2, line_count // 3)):
+        return "code"
+    return "prose"
+
+
+def recommended_strategy(content_type: str) -> str:
+    """Map a content type to its default retrieval strategy hint (advisory)."""
+    return STRATEGY_BY_CONTENT_TYPE.get(content_type, "head")
+
+
+def first_error_anchor(text: str) -> str | None:
+    """Return the first literal error token in text for a pattern hint, or None.
+
+    The returned token is taken verbatim from ERROR_RE's match, so it is
+    guaranteed to be an exact substring of the stored content. This makes the
+    derived `--pattern` retrieval hint deterministic and exactly round-trippable.
+    """
+    for line in text.splitlines():
+        match = ERROR_RE.search(line)
+        if match:
+            token = match.group(0).strip()
+            if token:
+                return token
+    return None
+
+
+def build_retrieval_hints(
+    artifact_id: str,
+    sanitized_text: str,
+    *,
+    content_type: str,
+    strategy: str,
+    total_lines: int,
+) -> list[dict[str, object]]:
+    """Build deterministic, machine-readable retrieval hints for exact round-trip.
+
+    Each hint pairs a `selector` (consumable by `query_content` / the `get` CLI)
+    with the exact CLI invocation. The line-range hint spans the full stored
+    content (`1:total_lines`) so it round-trips to the complete payload; the
+    pattern hint, when present, targets a literal token guaranteed to exist, so
+    retrieval is exact and reproducible. Order is fixed (lines, pattern, head)
+    for determinism; callers pick the hint whose `type` matches `strategy`.
+    """
+    hints: list[dict[str, object]] = []
+    if total_lines >= 1:
+        hints.append(
+            {
+                "type": "lines",
+                "selector": {"start": 1, "end": total_lines},
+                "cli": f"context-guard-artifact get {artifact_id} --lines 1:{total_lines}",
+            }
+        )
+    anchor = first_error_anchor(sanitized_text)
+    if anchor is not None:
+        hints.append(
+            {
+                "type": "pattern",
+                "selector": {"pattern": anchor},
+                "cli": f"context-guard-artifact get {artifact_id} --pattern '{anchor}'",
+            }
+        )
+    hints.append(
+        {
+            "type": "head",
+            "selector": {"max_lines": DEFAULT_MAX_LINES},
+            "cli": f"context-guard-artifact get {artifact_id} --max-lines {DEFAULT_MAX_LINES}",
+        }
+    )
+    return hints
+
+
 def build_digest(sanitized_text: str, *, redacted_lines: int) -> dict[str, object]:
     lines = sanitized_text.splitlines()
     top_errors = compact_items((line for line in lines if ERROR_RE.search(line)), limit=12)
     return {
         "status": "has_errors" if top_errors else "stored",
         "redacted_lines": redacted_lines,
+        "redaction_counts": {
+            "lines": redacted_lines,
+            "markers": sanitized_text.count("[REDACTED]"),
+        },
         "top_error_lines": top_errors,
         "representative_head": compact_items(lines, limit=8),
         "representative_tail": compact_items(lines[-8:], limit=8),
@@ -290,9 +424,11 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
         "stored": True,
         "created_at": metadata.get("created_at"),
         "command_preview": metadata.get("command_preview"),
+        "content_type": metadata.get("content_type"),
         "input": metadata.get("input"),
         "stored_output": metadata.get("stored_output"),
         "digest": metadata.get("digest"),
+        "retrieval": metadata.get("retrieval"),
         "available_queries": [
             f"context-guard-artifact get {artifact_id} --lines 1:80",
             f"context-guard-artifact get {artifact_id} --pattern ERROR --max-lines 40",
@@ -319,10 +455,14 @@ def store_command(args: argparse.Namespace) -> int:
     )
     artifact_id = hashlib.sha256(id_basis.encode("utf-8")).hexdigest()[:20]
     content_path, meta_path = artifact_paths(directory, artifact_id)
+    total_lines = sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0)
+    content_type = classify_content_type(sanitized_text)
+    strategy = recommended_strategy(content_type)
     metadata: dict[str, object] = {
         "artifact_id": artifact_id,
         "created_at": int(time.time()),
         "command_preview": command_preview,
+        "content_type": content_type,
         "input": {
             "bytes_read": input_bytes,
             "truncated": input_truncated,
@@ -330,12 +470,23 @@ def store_command(args: argparse.Namespace) -> int:
         },
         "stored_output": {
             "bytes": content_bytes,
-            "lines": sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0),
+            "lines": total_lines,
             "sha256": content_sha,
             "content_file": content_path.name,
             "metadata_file": meta_path.name,
         },
         "digest": build_digest(sanitized_text, redacted_lines=redacted_lines),
+        "retrieval": {
+            "strategy": strategy,
+            "deterministic": True,
+            "hints": build_retrieval_hints(
+                artifact_id,
+                sanitized_text,
+                content_type=content_type,
+                strategy=strategy,
+                total_lines=total_lines,
+            ),
+        },
     }
     write_private_text(content_path, sanitized_text)
     write_private_text(meta_path, json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
@@ -449,10 +600,12 @@ def get_command(args: argparse.Namespace) -> int:
     if args.json:
         payload = {
             "artifact_id": artifact_id,
+            "content_type": metadata.get("content_type"),
             "query": query,
             "capped": capped,
             "content": selected,
             "stored_output": metadata.get("stored_output"),
+            "retrieval": metadata.get("retrieval"),
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:

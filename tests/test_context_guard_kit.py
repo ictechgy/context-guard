@@ -30,6 +30,7 @@ SAFE_SHELL = shutil.which("sh") or "/bin/sh"
 IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"),
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
+    (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
@@ -53,6 +54,7 @@ READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "context-gua
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-read-symbol"]
 NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"]
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
+COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -1357,6 +1359,81 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 data = json.loads(output)
                 self.assertTrue(data["digest_capped"])
                 self.assertLessEqual(len(output), 240)
+
+    def _run_compress(self, script: Path, stdin: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            input=stdin,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+    def test_compress_classifies_and_compacts_json_losslessly(self):
+        raw = '{\n  "a": 1,\n  "b": [1, 2, 3],\n  "c": "hello"\n}\n'
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, raw, "--json")
+                payload = json.loads(proc.stdout)
+                meta = payload["metadata"]
+                self.assertEqual(meta["content_type"], "json")
+                self.assertEqual(meta["type_source"], "detected")
+                self.assertEqual(meta["strategy"], "json-compact")
+                self.assertFalse(meta["lossy"])
+                # 압축 본문은 의미적으로 동일한 JSON 이어야 한다(무손실).
+                self.assertEqual(json.loads(payload["content"]), {"a": 1, "b": [1, 2, 3], "c": "hello"})
+                self.assertLess(meta["bytes"]["compressed"], meta["bytes"]["original"])
+                self.assertEqual(meta["token_proxy"]["measurement"], "estimated")
+                self.assertEqual(meta["bytes"]["measurement"], "observed")
+
+    def test_compress_redacts_secrets_before_receipt(self):
+        secret = "ghp_" + ("A" * 36)
+        openai_key = "sk-" + ("C" * 32)
+        raw = f"api_key={secret}\nOPENAI={openai_key}\njust a normal line\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, raw, "--json")
+                payload = json.loads(proc.stdout)
+                meta = payload["metadata"]
+                self.assertTrue(meta["redaction"]["redacted_before_receipt"])
+                self.assertGreaterEqual(meta["redaction"]["redacted_lines"], 2)
+                # 비밀은 본문/메타데이터/전체 출력 어디에도 남아서는 안 된다.
+                self.assertNotIn(secret, proc.stdout)
+                self.assertNotIn(openai_key, proc.stdout)
+                self.assertNotIn(secret, payload["content"])
+                self.assertNotIn(secret, json.dumps(meta))
+                self.assertIn("[REDACTED]", payload["content"])
+
+    def test_compress_never_expands_output(self):
+        # 작은 diff 는 접기 마커가 원본보다 길어질 수 있으므로 보수성 가드가 원본을 유지해야 한다.
+        tiny_diff = "diff --git a/x b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_compress(script, tiny_diff, "--metadata-only")
+                meta = json.loads(proc.stdout)
+                self.assertEqual(meta["content_type"], "diff")
+                self.assertLessEqual(meta["bytes"]["compression_ratio"], 1.0)
+                self.assertFalse(meta["strategy_detail"]["reduced"])
+
+    def test_compress_log_and_search_reduce_duplicates(self):
+        log_raw = "2026-01-01 00:00:00 INFO repeated\n" * 40
+        search_raw = "src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                log_meta = json.loads(self._run_compress(script, log_raw, "--metadata-only").stdout)
+                self.assertEqual(log_meta["content_type"], "log")
+                self.assertLess(log_meta["bytes"]["compressed"], log_meta["bytes"]["original"])
+                self.assertGreaterEqual(log_meta["strategy_detail"]["lines_collapsed"], 1)
+                search_meta = json.loads(self._run_compress(script, search_raw, "--metadata-only").stdout)
+                self.assertEqual(search_meta["content_type"], "search")
+                self.assertEqual(search_meta["strategy_detail"]["duplicate_lines_dropped"], 1)
+
+    def test_compress_type_override_forces_strategy(self):
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                meta = json.loads(self._run_compress(script, '{"a":1}\n', "--type", "prose", "--metadata-only").stdout)
+                self.assertEqual(meta["content_type"], "prose")
+                self.assertEqual(meta["type_source"], "override")
 
     def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
         generic_openai_key = "sk-" + ("C" * 32)
@@ -9748,6 +9825,374 @@ class StatuslineMergedWrapperTests(unittest.TestCase):
                     self.assertIn("[input-too-large]", proc.stdout)
                     self.assertFalse(tok_marker.exists())
 
+
+class CrossAgentAdapterTests(unittest.TestCase):
+    """Fixture tests for the cross-agent adapter registry and dry-run planner."""
+
+    def _run(self, script: Path, root: Path, extra: list[str]) -> dict:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "--json", *extra],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return json.loads(proc.stdout)
+
+    def test_list_adapters_reports_expanded_registry_and_capability_classes(self):
+        expected = {
+            "claude": "native-plugin",
+            "codex": "repo-rule",
+            "gemini": "repo-rule",
+            "cursor": "repo-rule",
+            "windsurf": "repo-rule",
+            "cline": "repo-rule",
+            "copilot": "repo-rule",
+            "opencode": "native-skill",
+            "forgecode": "report-only",
+            "generic": "report-only",
+        }
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--list-adapters", "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                data = json.loads(proc.stdout)
+                adapters = {adapter["key"]: adapter for adapter in data["adapters"]}
+                for key, capability in expected.items():
+                    self.assertIn(key, adapters)
+                    self.assertEqual(adapters[key]["capability"], capability)
+                self.assertEqual(
+                    {adapter["capability"] for adapter in adapters.values()},
+                    {"native-plugin", "native-skill", "repo-rule", "report-only"},
+                )
+
+    def test_default_plan_preserves_claude_only_compatibility(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--plan"])
+                    self.assertFalse(data["applied"])
+                    self.assertTrue(data["changed"])
+                    plan = data["adapter_plan"]
+                    self.assertEqual([entry["key"] for entry in plan], ["claude"])
+                    self.assertEqual(plan[0]["capability"], "native-plugin")
+                    self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_only_codex_with_init_writes_idempotent_repo_rule_without_touching_claude(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertTrue(data["applied"])
+                    self.assertFalse(data["changed"])  # Claude settings untouched.
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "codex")
+                    self.assertEqual(entry["status"], "applied")
+                    agents_md = root / "AGENTS.md"
+                    self.assertTrue(agents_md.is_file())
+                    self.assertFalse((root / ".claude").exists())
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertIn("do not guarantee", text.lower())
+
+                    again = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertEqual(again["adapter_plan"][0]["status"], "exists")
+                    self.assertEqual(again["actions"], [])
+                    self.assertEqual(
+                        agents_md.read_text(encoding="utf-8").count("<!-- contextguard:begin -->"),
+                        1,
+                    )
+
+    def test_with_init_dry_run_does_not_write_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "codex", "--with-init", "--plan"])
+                    self.assertEqual(data["adapter_plan"][0]["status"], "planned")
+                    self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_default_plan_detects_repo_rule_agents_present_in_repo(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "AGENTS.md").write_text("# repo rules\n", encoding="utf-8")
+                    (root / ".windsurf").mkdir()
+                    data = self._run(script, root, ["--plan"])
+                    by_key = {entry["key"]: entry for entry in data["adapter_plan"]}
+                    self.assertIn("codex", by_key)
+                    self.assertIn("windsurf", by_key)
+                    self.assertEqual(by_key["codex"]["capability"], "repo-rule")
+                    self.assertEqual(by_key["windsurf"]["capability"], "repo-rule")
+                    self.assertTrue(by_key["codex"]["detected"])
+                    self.assertTrue(by_key["windsurf"]["detected"])
+                    # Without --with-init nothing is written.
+                    self.assertNotIn(
+                        "<!-- contextguard:begin -->",
+                        (root / "AGENTS.md").read_text(encoding="utf-8"),
+                    )
+                    self.assertFalse((root / ".windsurf" / "rules" / "contextguard.md").exists())
+
+    def test_with_init_writes_nested_repo_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(script, root, ["--only", "windsurf", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "windsurf")
+                    self.assertEqual(entry["status"], "applied")
+                    rule_path = root / ".windsurf" / "rules" / "contextguard.md"
+                    self.assertTrue(rule_path.is_file())
+                    self.assertIn("ContextGuard", rule_path.read_text(encoding="utf-8"))
+                    self.assertFalse((root / ".claude").exists())
+
+    def test_cline_existing_file_rule_appends_without_crashing(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    rule_path = root / ".clinerules"
+                    rule_path.write_text("Existing Cline rule.\n", encoding="utf-8")
+                    data = self._run(script, root, ["--only", "cline", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "cline")
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["rule_file"], ".clinerules")
+                    text = rule_path.read_text(encoding="utf-8")
+                    self.assertIn("Existing Cline rule.", text)
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertFalse((root / ".clinerules" / "contextguard.md").exists())
+                    self.assertFalse((root / ".claude").exists())
+
+    def test_cline_existing_directory_rule_writes_nested_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".clinerules").mkdir()
+                    data = self._run(script, root, ["--only", "cline", "--with-init", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "cline")
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["rule_file"], ".clinerules/contextguard.md")
+                    rule_path = root / ".clinerules" / "contextguard.md"
+                    self.assertTrue(rule_path.is_file())
+                    self.assertIn("ContextGuard", rule_path.read_text(encoding="utf-8"))
+
+    def test_native_skill_and_report_only_adapters_never_write(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script,
+                        root,
+                        ["--only", "opencode,forgecode,generic", "--with-init", "--yes", "--no-diet-scan"],
+                    )
+                    statuses = {entry["key"]: entry["status"] for entry in data["adapter_plan"]}
+                    self.assertEqual(statuses["opencode"], "report-only")
+                    self.assertEqual(statuses["forgecode"], "report-only")
+                    self.assertEqual(statuses["generic"], "report-only")
+                    self.assertEqual(data["actions"], [])
+                    self.assertFalse((root / ".claude").exists())
+                    self.assertEqual(list(root.iterdir()), [])  # nothing written
+
+    def test_unknown_adapter_key_is_rejected(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", tmp, "--only", "nope", "--plan", "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Unknown adapter key", proc.stderr)
+
+
+class ContextEscrowCcrMetadataTests(unittest.TestCase):
+    """CCR/artifact UX: content-type classification, retrieval strategy hints,
+    redaction-count metadata, and exact line/pattern retrieval round-trips."""
+
+    def _load(self) -> object:
+        return load_python_script_module(KIT_DIR / "context_escrow.py", "context_escrow_ccr_meta")
+
+    def test_classify_content_type_is_deterministic_per_kind(self):
+        artifact = self._load()
+        cases = {
+            "json": '{"a": 1, "b": [1, 2, 3]}',
+            "json_array": "[1, 2, 3, 4]",
+            "diff": "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+            "log": (
+                "2026-06-02T10:00:01 INFO start\n"
+                "2026-06-02T10:00:02 ERROR boom\n"
+                "2026-06-02T10:00:03 INFO done\n"
+            ),
+            "search": "src/app.py:10:def foo():\nsrc/app.py:20:    return 1\nsrc/util.py:5:x = 1\n",
+            "code": "def foo():\n    return 1\n\nclass Bar:\n    def baz(self):\n        return 2\n",
+            "prose": "The quick brown fox jumps over the lazy dog. It was a fine day indeed.\n",
+            "empty": "",
+        }
+        expected = {
+            "json": "json",
+            "json_array": "json",
+            "diff": "diff",
+            "log": "log",
+            "search": "search",
+            "code": "code",
+            "prose": "prose",
+            "empty": "text",
+        }
+        for name, text in cases.items():
+            with self.subTest(kind=name):
+                label = artifact.classify_content_type(text)
+                self.assertEqual(label, expected[name])
+                self.assertIn(label, artifact.CONTENT_TYPE_VALUES)
+                self.assertEqual(label, artifact.classify_content_type(text))
+                self.assertIn(
+                    artifact.recommended_strategy(label),
+                    {"lines", "pattern", "head"},
+                )
+
+    def test_first_error_anchor_returns_present_substring_or_none(self):
+        artifact = self._load()
+        self.assertIsNone(artifact.first_error_anchor("just calm words here\nnothing wrong\n"))
+        content = "ok line\nFAILED to build target\nok line\n"
+        anchor = artifact.first_error_anchor(content)
+        self.assertIsNotNone(anchor)
+        self.assertIn(anchor, content)
+
+    def test_retrieval_hints_round_trip_exactly(self):
+        artifact = self._load()
+        content = "alpha line\nERROR middle line\nbeta line\ngamma line\n"
+        total_lines = content.count("\n")
+        hints = artifact.build_retrieval_hints(
+            "a" * 20,
+            content,
+            content_type="prose",
+            strategy="lines",
+            total_lines=total_lines,
+        )
+        by_type = {hint["type"]: hint for hint in hints}
+        self.assertIn("lines", by_type)
+        self.assertIn("head", by_type)
+        self.assertIn("pattern", by_type)
+
+        lines_selector = by_type["lines"]["selector"]
+        self.assertEqual(lines_selector, {"start": 1, "end": total_lines})
+        recovered, _meta = artifact.query_content(
+            content,
+            line_range=(lines_selector["start"], lines_selector["end"]),
+            pattern=None,
+            max_lines=5_000,
+        )
+        self.assertEqual(recovered, content)
+
+        token = by_type["pattern"]["selector"]["pattern"]
+        matched, meta = artifact.query_content(
+            content,
+            line_range=None,
+            pattern=token,
+            max_lines=5_000,
+        )
+        self.assertTrue(matched)
+        self.assertTrue(all(token in line for line in matched.splitlines()))
+        self.assertEqual(meta["matched_lines"], len([row for row in content.splitlines() if token in row]))
+
+    def test_store_records_content_type_strategy_and_redaction_counts(self):
+        secret = "ghp_" + ("A" * 36)
+        raw = "{\n  \"status\": \"ok\"\n}\nAPI_TOKEN=" + secret + "\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    self.assertIn(receipt["content_type"], {"json", "prose", "text", "code"})
+                    retrieve = receipt["retrieval"]
+                    self.assertIn(retrieve["strategy"], {"lines", "pattern", "head"})
+                    self.assertTrue(retrieve["deterministic"])
+                    self.assertTrue(retrieve["hints"])
+                    counts = receipt["digest"]["redaction_counts"]
+                    self.assertGreaterEqual(counts["lines"], 1)
+                    self.assertGreaterEqual(counts["markers"], 1)
+                    self.assertEqual(counts["lines"], receipt["digest"]["redacted_lines"])
+                    self.assertNotIn(secret, store.stdout)
+                    metadata_text = (artifact_dir / f"{receipt['artifact_id']}.json").read_text(encoding="utf-8")
+                    self.assertNotIn(secret, metadata_text)
+
+    def test_get_round_trip_uses_stored_hints_for_exact_retrieval(self):
+        raw = "first row\nERROR exact target\nthird row\nfourth row\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    hints = {hint["type"]: hint for hint in receipt["retrieval"]["hints"]}
+
+                    lines_sel = hints["lines"]["selector"]
+                    full = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            f"{lines_sel['start']}:{lines_sel['end']}",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    full_payload = json.loads(full.stdout)
+                    self.assertEqual(full_payload["content"], raw)
+                    self.assertEqual(full_payload["content_type"], receipt["content_type"])
+                    self.assertEqual(full_payload["retrieval"]["strategy"], receipt["retrieval"]["strategy"])
+
+                    token = hints["pattern"]["selector"]["pattern"]
+                    pat = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--pattern",
+                            token,
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    pat_payload = json.loads(pat.stdout)
+                    self.assertTrue(pat_payload["content"])
+                    self.assertTrue(all(token in line for line in pat_payload["content"].splitlines()))
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard는 Claude Code의 컨텍스트를 필요한 내용에 집중시키는 Claude Code 플러그인이자 로컬 헬퍼 도구 모음입니다. 잡음 많은 명령 출력, 대용량 파일 읽기, 반복 실패 로그, 민감 정보로 보이는 값, 상태표시줄, 트랜스크립트 감사, 반복 가능한 토큰·비용 측정을 프로젝트 단위 가드레일로 다룹니다.
+ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 위생 도구 모음이며, Claude Code 플러그인을 가장 먼저 지원합니다. 잡음 많은 명령 출력, 대용량 파일 읽기, 반복 실패 로그, 민감 정보로 보이는 값, 상태표시줄, 트랜스크립트 감사, 반복 가능한 토큰·비용 측정을 프로젝트 단위 가드레일로 다루고, 로컬 헬퍼 명령과 권고형 규칙 스니펫을 통해 다른 에이전트로도 확장합니다.
 
 가장 먼저 `/context-guard:setup`을 실행하세요. 설정은 명시적이며, 프로젝트 단위로 적용되고, 되돌릴 수 있습니다. 권장 프로젝트 설정을 병합하고, 읽기 전용 컨텍스트 위생 검사 요약을 출력하며, 전역 Claude 설정은 변경하지 않습니다. 외부 AI에 작업을 넘기거나 대신 실행하도록 설정하지도 않습니다.
 
@@ -56,6 +56,7 @@ context-guard-setup
 context-guard-diet scan . --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
+context-guard-compress --json < large-output.txt
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -70,11 +71,18 @@ context-guard-statusline-merged
 - **컨텍스트 위생 스캐너**는 누락된 `permissions.deny` 가드레일, Bash 출력 축약 훅, 상태표시줄 설정, 넓은 읽기 허용, 비용이 큰 기본 모델/추론 강도, 많은 MCP 서버, 크거나 민감해 보이는 `CLAUDE.md` / `AGENTS.md` 컨텍스트 파일을 확인합니다.
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 Claude를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
 - **로컬 아티팩트 보관소**는 큰 명령 출력을 기본적으로 `.context-guard/artifacts`에 정제해 저장하고, 요약 영수증이나 요청한 정확한 줄 범위만 반환합니다. `get`과 `list`는 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 영수증도 읽을 수 있습니다.
+- **보수적 압축기**는 정제된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보와 다음 조회 제안이 담긴 요약을 만들 수 있습니다.
 - **정제기**는 검색, diff, 로그 출력에서 자격 증명 패턴, 비공개 키 블록, 인증 헤더, 자격 증명이 포함된 URL, 민감해 보이는 경로를 가립니다.
 - **상태표시줄**은 모델, 컨텍스트, 비용 신호를 짧게 보여주고, 트랜스크립트 데이터가 있으면 캐시 읽기와 캐시 재사용 신호도 함께 표시합니다.
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
 - **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드와 별도의 바이트 감소 간접 증거를 기록합니다.
+
+## brief 모드 (권고)
+
+brief 모드는 코딩 에이전트가 군더더기를 줄이되 증거(파일 경로, 명령, 명령 출력과 오류, 코드 블록, 검증 상태, 변경 파일, 남은 과제, 주의사항)는 유지하도록 요청하는 에이전트 중립·권고형 규칙 스니펫을 제공합니다. 강제가 아니라 최선 노력 안내이며, 토큰·비용 절감을 **보장하지 않습니다.**
+
+세 가지 결정적 레벨(`lite`, `standard`, `ultra`)이 [`brief/`](brief/)에 있습니다. 각 레벨은 마커로 구분된 하나의 블록이며, 에이전트의 규칙·지시 파일(`AGENTS.md`, `CLAUDE.md`, Cursor 규칙 파일, Copilot 지시 등)에 설치하고 블록을 지워서 제거합니다. 자세한 내용은 [`brief/README.md`](brief/README.md)를 참고하세요.
 
 ## 절감 수치를 과장하지 않습니다
 

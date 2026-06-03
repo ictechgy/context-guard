@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard is a Claude Code plugin and local helper toolkit for keeping Claude Code context focused. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, statusline visibility, transcript audits, and repeatable token/cost measurement.
+ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents, shipped as a Claude Code plugin first. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, statusline visibility, transcript audits, and repeatable token/cost measurement, and extends to other agents through local helper commands and advisory rule snippets.
 
 Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context hygiene scan, does not mutate global Claude settings, and does not configure external AI offload.
 
@@ -56,6 +56,7 @@ context-guard-setup
 context-guard-diet scan . --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
+context-guard-compress --json < large-output.txt
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -70,11 +71,18 @@ context-guard-statusline-merged
 - **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large or secret-like `CLAUDE.md` / `AGENTS.md` context files.
 - **Large-read guard and symbol reader** guide Claude from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Artifact store** saves large sanitized command output under `.context-guard/artifacts` by default and returns compact receipts or exact requested slices. `get` and `list` can also read legacy `.claude-token-optimizer/artifacts` receipts.
+- **Conservative compressor** classifies sanitized stdin as JSON, diff, log, search output, code, or prose and shrinks it with observed byte evidence plus estimated token proxies.
 - **Output trimmer** preserves the wrapped command exit code, trims long logs, and can emit `--digest markdown` or `--digest json` summaries with runner failure facts and suggested next queries.
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
 - **Repeated-failure nudge** warns after repeated Bash failures so Claude switches strategy instead of retrying the same context-heavy path.
 - **Benchmark helper** records matched baseline/variant runs with real token and cost fields plus separate byte-reduction proxy evidence.
+
+## Brief mode (advisory)
+
+Brief mode ships agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
+
+Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brief/`](brief/). Each is a single marker-delimited block you install into an agent's rule/instruction file (such as `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions) and remove by deleting the block. See [`brief/README.md`](brief/README.md).
 
 ## Conservative claims
 
