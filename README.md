@@ -149,7 +149,7 @@ Most users should start with `/context-guard:setup`. The helper commands below a
 ./plugins/context-guard/bin/context-guard-diet scan .
 ```
 
-The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like files, and settings that can make AI-agent sessions unnecessarily expensive.
+The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like instruction/rule files across common AI-agent surfaces, and local context-exclusion recommendations for bulky or sensitive paths. Recommendations are heuristic/advisory unless they are emitted as Claude `permissions.deny` entries.
 
 ### Read symbols instead of whole large files
 
@@ -224,9 +224,7 @@ The report compares successful baseline/variant runs by real tokens and `cost_us
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- instruction-bloat scanning for large `AGENTS.md`, `CLAUDE.md`, and project rule files,
 - cache-friendly prompt audits that flag frequently changing content near the front of prompts,
-- ignore recommendation generation for files that should stay out of AI context,
 - workflow-specific before/after benchmark report examples beyond the minimal report-shape fixture.
 
 ## Repository layout

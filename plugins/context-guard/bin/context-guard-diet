@@ -20,8 +20,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-CONTEXT_FILE_NAMES = {"CLAUDE.md", "AGENTS.md"}
-CONTEXT_MD_DIRS = {".claude/commands", ".claude/agents", ".claude/skills"}
+CONTEXT_FILE_NAMES = {"CLAUDE.md", "AGENTS.md", "GEMINI.md"}
+CONTEXT_EXACT_REL_FILES = {
+    ".clinerules",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
+    ".windsurfrules",
+}
+CONTEXT_MD_DIRS = {
+    ".claude/agents",
+    ".claude/commands",
+    ".claude/skills",
+    ".cursor/rules",
+    ".windsurf/rules",
+}
+CONTEXT_SURFACE_LABELS = {
+    "claude": "Claude Code instructions",
+    "codex": "OpenAI Codex AGENTS.md",
+    "gemini": "Gemini CLI instructions",
+    "cursor": "Cursor rules",
+    "windsurf": "Windsurf rules",
+    "cline": "Cline rules",
+    "copilot": "GitHub Copilot instructions",
+}
 EXCLUDED_DIR_NAMES = {
     ".cache",
     ".git",
@@ -208,6 +229,37 @@ def rel_path(path: Path, root: Path) -> str:
     except (OSError, RuntimeError, ValueError):
         name = sanitize_path_component(path.name or "path")
         return f"{name}#path:{display_path_hash(path)}"
+
+
+def raw_rel_path(path: Path, root: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def context_surface_for_rel(raw_rel: str, name: str) -> dict[str, str] | None:
+    if name == "CLAUDE.md" or raw_rel.startswith(".claude/"):
+        key = "claude"
+    elif name == "AGENTS.md":
+        key = "codex"
+    elif name == "GEMINI.md":
+        key = "gemini"
+    elif raw_rel == ".cursorrules" or raw_rel.startswith(".cursor/rules/"):
+        key = "cursor"
+    elif raw_rel in {".windsurfrules", ".windsurf/rules/contextguard.md"} or raw_rel.startswith(".windsurf/rules/"):
+        key = "windsurf"
+    elif raw_rel == ".clinerules":
+        key = "cline"
+    elif raw_rel == ".github/copilot-instructions.md":
+        key = "copilot"
+    else:
+        return None
+    return {
+        "surface": key,
+        "surface_label": CONTEXT_SURFACE_LABELS.get(key, key),
+        "surface_kind": "agent_rule",
+    }
 
 
 class SettingsFileTooLargeError(ValueError):
@@ -447,6 +499,70 @@ def project_path_exists(root: Path, rel: str) -> bool:
     return (root / rel).exists()
 
 
+def generic_context_pattern(rel: str) -> str:
+    if rel in {".env", ".npmrc", ".pypirc", ".netrc"}:
+        return rel
+    if rel.endswith(".*"):
+        return rel
+    if "*" in rel:
+        return rel.replace("./", "")
+    return f"{rel.rstrip('/')}/**"
+
+
+def context_exclusion_recommendation(
+    *,
+    label: str,
+    rel: str,
+    recommended: str,
+    category: str,
+    severity: str,
+    deny_entries: list[str],
+) -> dict[str, Any]:
+    already_denied = path_target_denied(deny_entries, recommended)
+    return {
+        "id": f"context-exclude-{safe_id_part(label)}",
+        "severity": severity,
+        "path": rel,
+        "category": category,
+        "status": "already_denied" if already_denied else "missing",
+        "reason": (
+            "Sensitive local file should not be read into AI-agent context."
+            if category == "sensitive"
+            else "Bulky generated/cache path should stay out of AI-agent context."
+        ),
+        "recommended_deny": recommended,
+        "generic_pattern": generic_context_pattern(rel),
+        "applies_to": ["claude-permissions.deny", "agent-ignore-advisory"],
+        "surfaces": ["Claude Code permissions.deny", "generic agent ignore/exclude rules"],
+    }
+
+
+def build_context_exclusion_recommendations(root: Path, deny_entries: list[str]) -> list[dict[str, Any]]:
+    recommendations: list[dict[str, Any]] = []
+    for label, rel, recommended in HEAVY_PROJECT_DENIES:
+        if project_path_exists(root, rel):
+            recommendations.append(context_exclusion_recommendation(
+                label=label,
+                rel=rel,
+                recommended=recommended,
+                category="generated_cache",
+                severity="medium",
+                deny_entries=deny_entries,
+            ))
+    for label, rel, recommended in SENSITIVE_PROJECT_DENIES:
+        if project_path_exists(root, rel):
+            recommendations.append(context_exclusion_recommendation(
+                label=label,
+                rel=rel,
+                recommended=recommended,
+                category="sensitive",
+                severity="high",
+                deny_entries=deny_entries,
+            ))
+    recommendations.sort(key=lambda item: (SEVERITY_ORDER.get(str(item["severity"]), 99), item["id"]))
+    return recommendations
+
+
 def scan_settings(root: Path, settings: list[dict[str, Any]]) -> tuple[dict[str, Any], list[Finding]]:
     findings: list[Finding] = []
     merged = merged_settings(settings)
@@ -639,7 +755,12 @@ def has_statusline(settings: dict[str, Any]) -> bool:
 def should_scan_context_file(path: Path, root: Path) -> bool:
     if path.name in CONTEXT_FILE_NAMES:
         return True
-    rel = rel_path(path, root)
+    raw_rel = raw_rel_path(path, root)
+    if raw_rel is None:
+        return False
+    if raw_rel in CONTEXT_EXACT_REL_FILES:
+        return True
+    rel = sanitize_rel_path(raw_rel)
     return any(rel.startswith(prefix + "/") and path.suffix.lower() == ".md" for prefix in CONTEXT_MD_DIRS)
 
 
@@ -742,6 +863,7 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
     findings: list[Finding] = []
     for path in sorted(iter_context_files(root), key=lambda p: rel_path(p, root)):
         rel = rel_path(path, root)
+        surface = context_surface_for_rel(raw_rel_path(path, root) or rel, path.name)
         try:
             st = path.lstat()
             if not stat.S_ISREG(st.st_mode):
@@ -774,25 +896,33 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
             "sample_truncated": sample_truncated,
             "code_fences": code_fences,
         }
+        if surface is not None:
+            item.update(surface)
         context_files.append(item)
 
         if size >= huge_bytes:
+            evidence = {"bytes": size, "threshold_bytes": huge_bytes}
+            if surface is not None:
+                evidence.update(surface)
             findings.append(context_finding(
                 "huge-context-file",
                 "high",
                 rel,
                 f"Context-like file is very large ({size} bytes).",
                 "Move long procedures/logs/examples into opt-in skills or commands and keep only a short index in always-loaded context.",
-                {"bytes": size, "threshold_bytes": huge_bytes},
+                evidence,
             ))
         elif size >= large_bytes or lines >= long_lines:
+            evidence = {"bytes": size, "large_bytes": large_bytes, "sampled_lines": lines, "long_lines": long_lines}
+            if surface is not None:
+                evidence.update(surface)
             findings.append(context_finding(
                 "large-context-file",
                 "medium",
                 rel,
                 f"Context-like file is large ({size} bytes, sampled {lines} lines).",
                 "Trim stable instructions, move volatile or lengthy material to skills/custom commands, and keep examples short.",
-                {"bytes": size, "large_bytes": large_bytes, "sampled_lines": lines, "long_lines": long_lines},
+                evidence,
             ))
         if code_fences >= 12:
             findings.append(context_finding(
@@ -828,6 +958,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     settings, settings_findings = collect_settings(root)
     settings_summary, config_findings = scan_settings(root, settings)
     context_files, context_findings = scan_context(root, args.large_context_bytes, args.huge_context_bytes, args.long_context_lines)
+    deny_entries = merged_settings(settings)["permissions"]["deny"]
+    exclusion_recommendations = build_context_exclusion_recommendations(root, deny_entries)
     findings = settings_findings + config_findings + context_findings
     findings.sort(key=lambda item: (SEVERITY_ORDER.get(item.severity, 99), item.id, item.path))
     return {
@@ -835,6 +967,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "root": root_label(root, args.show_paths),
         "settings": settings_summary,
         "context_files": sorted(context_files, key=lambda item: item["bytes"], reverse=True)[: args.top],
+        "context_exclusion_recommendations": exclusion_recommendations[: args.top],
         "finding_count": len(findings),
         "findings": [item.as_dict() for item in findings],
     }
@@ -855,7 +988,15 @@ def print_text(report: dict[str, Any]) -> None:
     if report["context_files"]:
         print("\nTop context-like files:")
         for item in report["context_files"]:
-            print(f"- {item['path']} ({item['bytes']} bytes, sampled_lines={item['sampled_lines']})")
+            surface = f", surface={item['surface']}" if item.get("surface") else ""
+            print(f"- {item['path']} ({item['bytes']} bytes, sampled_lines={item['sampled_lines']}{surface})")
+    if report.get("context_exclusion_recommendations"):
+        print("\nContext exclusion recommendations:")
+        for item in report["context_exclusion_recommendations"]:
+            status = item.get("status", "missing")
+            print(f"- [{item['severity'].upper()}] {item['id']} @ {item['path']} ({status})")
+            print(f"  claude: {item['recommended_deny']}")
+            print(f"  generic: {item['generic_pattern']}")
     print("\nFindings:")
     if not report["findings"]:
         print("- none")
