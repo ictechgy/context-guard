@@ -86,6 +86,29 @@ USER_PROMPT_ROLES = {"user", "human"}
 TEXT_BLOCK_TYPES = {"text", "input_text"}
 
 
+def push_bounded(
+    stack: list[tuple[Any, int]],
+    items: Iterable[Any],
+    depth: int,
+    *,
+    visited: int,
+    max_nodes: int,
+) -> bool:
+    """Push traversal children without letting broad structures grow unbounded."""
+    budget = max(0, max_nodes - visited - len(stack))
+    if budget <= 0:
+        return True
+    pushed = 0
+    capped = False
+    for item in items:
+        if pushed >= budget:
+            capped = True
+            break
+        stack.append((item, depth))
+        pushed += 1
+    return capped
+
+
 @dataclass(frozen=True)
 class PromptSegmentSample:
     prefix_hashes: tuple[str, ...]
@@ -330,7 +353,7 @@ def collect_content_text(value: Any, out: list[str]) -> bool:
         visited += 1
         if visited > PROMPT_AUDIT_MAX_CONTENT_NODES or depth > PROMPT_AUDIT_MAX_DEPTH:
             capped = True
-            continue
+            break
         if isinstance(current, str):
             if current.strip():
                 out.append(current)
@@ -339,7 +362,13 @@ def collect_content_text(value: Any, out: list[str]) -> bool:
             if depth >= PROMPT_AUDIT_MAX_DEPTH:
                 capped = True
                 continue
-            stack.extend((item, depth + 1) for item in reversed(current))
+            capped = push_bounded(
+                stack,
+                reversed(current),
+                depth + 1,
+                visited=visited,
+                max_nodes=PROMPT_AUDIT_MAX_CONTENT_NODES,
+            ) or capped
             continue
         if not isinstance(current, dict):
             continue
@@ -351,9 +380,21 @@ def collect_content_text(value: Any, out: list[str]) -> bool:
             capped = True
             continue
         if "content" in current:
-            stack.append((current.get("content"), depth + 1))
+            capped = push_bounded(
+                stack,
+                (current.get("content"),),
+                depth + 1,
+                visited=visited,
+                max_nodes=PROMPT_AUDIT_MAX_CONTENT_NODES,
+            ) or capped
         if isinstance(current.get("text"), str):
-            stack.append((current.get("text"), depth + 1))
+            capped = push_bounded(
+                stack,
+                (current.get("text"),),
+                depth + 1,
+                visited=visited,
+                max_nodes=PROMPT_AUDIT_MAX_CONTENT_NODES,
+            ) or capped
     if stack or len(out) >= PROMPT_AUDIT_MAX_TEXT_VALUES:
         capped = True
     return capped
@@ -370,7 +411,7 @@ def extract_prompt_texts(root: Any) -> tuple[list[str], bool]:
         visited += 1
         if visited > PROMPT_AUDIT_MAX_ROOT_NODES or depth > PROMPT_AUDIT_MAX_DEPTH:
             capped = True
-            continue
+            break
         if isinstance(current, dict):
             role = current.get("role")
             role_text = str(role).lower() if isinstance(role, str) else ""
@@ -390,12 +431,24 @@ def extract_prompt_texts(root: Any) -> tuple[list[str], bool]:
             if depth >= PROMPT_AUDIT_MAX_DEPTH:
                 capped = True
                 continue
-            stack.extend((value, depth + 1) for value in reversed(list(current.values())))
+            capped = push_bounded(
+                stack,
+                current.values(),
+                depth + 1,
+                visited=visited,
+                max_nodes=PROMPT_AUDIT_MAX_ROOT_NODES,
+            ) or capped
         elif isinstance(current, list):
             if depth >= PROMPT_AUDIT_MAX_DEPTH:
                 capped = True
                 continue
-            stack.extend((item, depth + 1) for item in reversed(current))
+            capped = push_bounded(
+                stack,
+                reversed(current),
+                depth + 1,
+                visited=visited,
+                max_nodes=PROMPT_AUDIT_MAX_ROOT_NODES,
+            ) or capped
     if stack or len(texts) >= PROMPT_AUDIT_MAX_TEXT_VALUES:
         capped = True
     return texts, capped
@@ -909,6 +962,27 @@ def segment_stability(samples: list[PromptSegmentSample], attr: str, window: int
     return sum(stabilities) / len(stabilities), unique_total, observed_positions
 
 
+def segment_position_stats(samples: list[PromptSegmentSample], attr: str, window: int) -> list[dict[str, Any]]:
+    stats: list[dict[str, Any]] = []
+    for pos in range(window):
+        values: list[str] = []
+        for sample in samples:
+            hashes = getattr(sample, attr)
+            if len(hashes) > pos:
+                values.append(hashes[pos])
+        if not values:
+            continue
+        counts = Counter(values)
+        stability = max(counts.values()) / len(values)
+        stats.append({
+            "position": pos,
+            "stability": stability,
+            "volatile_share": 1.0 - stability,
+            "unique_hashes": len(counts),
+        })
+    return stats
+
+
 def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     audit = summary.prompt_cache_audit
     skipped = bool(
@@ -921,12 +995,13 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     samples = audit.samples
     if not samples:
         return {
-            "status": "partial" if audit.prompt_collection_capped_records else "missing",
+            "status": "partial" if skipped else "missing",
             "evidence": EVIDENCE_UNAVAILABLE,
             "heuristic": True,
             "sampled_records": audit.sampled_records,
             "analyzed_prompt_records": 0,
             "prompt_collection_capped_records": audit.prompt_collection_capped_records,
+            "skipped_evidence": skipped,
             "segment_window": {"prefix_segments": PROMPT_AUDIT_PREFIX_SEGMENTS, "tail_segments": PROMPT_AUDIT_TAIL_SEGMENTS},
             "signals": {
                 "stable_prefix_share": None,
@@ -945,24 +1020,31 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
 
     prefix_stability, prefix_unique, prefix_positions = segment_stability(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
     tail_stability, tail_unique, tail_positions = segment_stability(samples, "tail_hashes", PROMPT_AUDIT_TAIL_SEGMENTS)
+    prefix_position_stats = segment_position_stats(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
     volatile_prefix = 1.0 - prefix_stability
     volatile_tail = 1.0 - tail_stability
+    most_volatile_prefix = max(prefix_position_stats, key=lambda item: item["volatile_share"], default=None)
+    max_prefix_position_volatile = float(most_volatile_prefix["volatile_share"]) if most_volatile_prefix else 0.0
     analyzed = audit.analyzed_prompt_records
     status = "available"
     if skipped or analyzed < PROMPT_AUDIT_MIN_RECORDS:
         status = "partial"
-    findings: list[dict[str, Any]] = []
-    if (
-        analyzed >= PROMPT_AUDIT_MIN_RECORDS
-        and volatile_prefix >= PROMPT_PREFIX_VOLATILE_THRESHOLD
+    average_prefix_churn = (
+        volatile_prefix >= PROMPT_PREFIX_VOLATILE_THRESHOLD
         and (volatile_prefix - volatile_tail) >= PROMPT_PREFIX_TAIL_CHURN_DELTA
-    ):
+    )
+    early_prefix_churn = (
+        max_prefix_position_volatile >= PROMPT_PREFIX_VOLATILE_THRESHOLD
+        and (max_prefix_position_volatile - volatile_tail) >= PROMPT_PREFIX_TAIL_CHURN_DELTA
+    )
+    findings: list[dict[str, Any]] = []
+    if analyzed >= PROMPT_AUDIT_MIN_RECORDS and (average_prefix_churn or early_prefix_churn):
         findings.append({
             "id": "volatile-content-near-prefix",
             "severity": "P1",
             "title": "Volatile content appears near prompt prefix",
             "reason": (
-                "Observed prompt segment hashes churn much more in the prefix window than in the tail window; "
+                "Observed user prompt segment hashes churn much more near the prefix than in the tail window; "
                 "provider cache telemetry is used only as corroborating diagnostic context."
             ),
             "action": "Move generated logs, diffs, file evidence, and run-specific context after stable instructions and reusable policy text.",
@@ -975,6 +1057,9 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
                 "tail_unique_hashes": tail_unique,
                 "volatile_prefix_share": round(volatile_prefix, 4),
                 "volatile_tail_share": round(volatile_tail, 4),
+                "max_prefix_position_volatile_share": round(max_prefix_position_volatile, 4),
+                "max_prefix_position": most_volatile_prefix["position"] if most_volatile_prefix else None,
+                "trigger": "prefix_window_average" if average_prefix_churn else "early_prefix_position",
                 "cache_creation": summary.tokens.get("cache_creation", 0),
                 "cache_read": summary.tokens.get("cache_read", 0),
             },
@@ -988,6 +1073,7 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
         "analyzed_prompt_records": analyzed,
         "capped_records": audit.capped_records,
         "prompt_collection_capped_records": audit.prompt_collection_capped_records,
+        "skipped_evidence": skipped,
         "total_segments": audit.total_segments,
         "total_bytes_sampled": audit.total_bytes_sampled,
         "redacted_segments": audit.redacted_segments,
@@ -1001,12 +1087,13 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
             "stable_prefix_share": round(prefix_stability, 4),
             "volatile_prefix_share": round(volatile_prefix, 4),
             "volatile_tail_share": round(volatile_tail, 4),
+            "max_prefix_position_volatile_share": round(max_prefix_position_volatile, 4),
             "cache_reuse_ratio": summary.cache_amortization if summary.cache_amortization_defined else None,
             "cache_read_share": summary.cache_hit_rate,
         },
         "findings": findings,
         "caveats": [
-            "Prompt layout findings are heuristic and based on bounded redacted segment hashes, not raw prompt text.",
+            "Prompt layout findings are heuristic and based on bounded redacted user-message segment hashes, not raw prompt text or exact provider cache-prefix state.",
             "Deep or broad prompt content structures are bounded and make cache-friendliness evidence partial.",
             "Provider cache read/write fields are diagnostic telemetry and do not prove ContextGuard-caused token reduction.",
             "Unknown transcript prompt schemas are skipped rather than inferred aggressively.",

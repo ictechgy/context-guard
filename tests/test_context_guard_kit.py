@@ -7179,6 +7179,47 @@ for malformed in malformed_values:
                     self.assertNotIn("volatile branch diff", proc.stdout)
                     self.assertNotIn("Stable instruction tail", proc.stdout)
 
+    def test_transcript_audit_cache_friendliness_flags_single_early_volatile_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    f"volatile run evidence {idx}",
+                    "Stable instruction prefix",
+                    "Stable workflow prefix",
+                    "Stable instruction tail",
+                    "Stable project tail",
+                    "Stable verification tail",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            rec_ids = {rec["id"] for rec in data["recommendations"]}
+            self.assertIn("move-volatile-context-after-stable-prefix", rec_ids)
+            finding = data["cache_friendliness"]["findings"][0]
+            self.assertEqual(finding["evidence"]["trigger"], "early_prefix_position")
+            self.assertEqual(finding["evidence"]["max_prefix_position"], 0)
+            self.assertGreaterEqual(finding["evidence"]["max_prefix_position_volatile_share"], 0.66)
+            self.assertLess(data["cache_friendliness"]["signals"]["volatile_prefix_share"], 0.66)
+            self.assertNotIn("volatile run evidence", proc.stdout)
+
     def test_transcript_audit_cache_telemetry_alone_does_not_trigger_layout_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -7255,6 +7296,62 @@ for malformed in malformed_values:
                     self.assertGreaterEqual(data["cache_friendliness"]["prompt_collection_capped_records"], 1)
                     self.assertNotIn(secret, proc.stdout)
                     self.assertNotIn("deep prompt leaf", proc.stdout)
+
+    def test_transcript_audit_cache_friendliness_bounds_broad_prompt_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            broad_content = [{"content": []} for _ in range(6000)]
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "usage": {"input_tokens": 10},
+                        "content": broad_content,
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["cache_friendliness"]["status"], "partial")
+            self.assertEqual(data["cache_friendliness"]["analyzed_prompt_records"], 0)
+            self.assertGreaterEqual(data["cache_friendliness"]["prompt_collection_capped_records"], 1)
+
+    def test_transcript_audit_cache_friendliness_marks_skipped_prompt_evidence_partial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable prefix\\nStable tail"}],
+                        "usage": {"input_tokens": 10},
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "claude_transcript_cost_audit.py"),
+                    str(sample),
+                    "--json",
+                    "--max-line-bytes",
+                    "64",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertGreaterEqual(data["skipped_records"], 1)
+            self.assertEqual(data["cache_friendliness"]["status"], "partial")
+            self.assertTrue(data["cache_friendliness"]["skipped_evidence"])
 
     def test_transcript_audit_feasibility_distinguishes_missing_and_zero_cache_fields(self):
         scenarios = [
