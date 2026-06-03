@@ -1569,8 +1569,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("checksum mismatch", tampered.stderr)
 
     def test_artifact_escrow_receipt_metadata_stays_under_read_cap(self):
-        raw = "".join(f"ERROR unique {i} {'x' * 1900}\n" for i in range(12))
-        raw += "".join((f"duplicate group {i} {'y' * 1900}\n") * 2 for i in range(12))
+        raw = "".join(f"ERROR unique {i} {'😀' * 1900}\n" for i in range(12))
+        raw += "".join((f"duplicate group {i} {'😀' * 1900}\n") * 2 for i in range(12))
         for index, script in enumerate(ARTIFACT_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_artifact_metadata_budget_{index}")
@@ -1591,9 +1591,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(receipt["digest"]["duplicate_line_groups"])
                     for item in receipt["digest"]["top_error_lines"]:
                         self.assertLessEqual(len(item), module.MAX_DIGEST_TEXT_CHARS)
+                        self.assertLessEqual(len(item.encode("utf-8")), module.MAX_DIGEST_TEXT_BYTES)
                     for collection in ("top_error_receipts", "duplicate_line_groups"):
                         for item in receipt["digest"][collection]:
                             self.assertLessEqual(len(item["text"]), module.MAX_DIGEST_TEXT_CHARS)
+                            self.assertLessEqual(len(item["text"].encode("utf-8")), module.MAX_DIGEST_TEXT_BYTES)
 
                     get = subprocess.run(
                         [sys.executable, str(script), "--dir", str(artifact_dir), "get", artifact_id, "--lines", "1:1"],
@@ -1842,6 +1844,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(artifact.bounded_int("not-int", 7, 1, 9), 7)
         self.assertEqual(artifact.bounded_int(99, 7, 1, 9), 9)
         self.assertIn("[line trimmed:", artifact.cap_line("x" * 100, 32))
+        self.assertLessEqual(len(artifact.cap_utf8_bytes("😀" * 100, 64).encode("utf-8")), 64)
         self.assertEqual(artifact.compact_items([" one ", "one", "", " two ", "three"], limit=2), ["one", "two"])
 
         fallback = artifact.FallbackLineSanitizer()

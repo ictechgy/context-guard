@@ -25,6 +25,8 @@ DEFAULT_MAX_CHARS = 20_000
 MAX_QUERY_LINES = 5_000
 MAX_LINE_CHARS = 2_000
 MAX_DIGEST_TEXT_CHARS = 360
+MAX_DIGEST_TEXT_BYTES = 512
+MAX_COMMAND_PREVIEW_BYTES = 2_048
 MAX_TOP_ERROR_RECEIPTS = 12
 MAX_DUPLICATE_GROUPS = 12
 MAX_SUGGESTED_QUERIES = 12
@@ -62,6 +64,30 @@ def cap_line(line: str, limit: int = MAX_LINE_CHARS) -> str:
     return line[: max(0, limit - len(marker))] + marker
 
 
+def cap_utf8_bytes(text: str, limit: int) -> str:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= limit:
+        return text
+    marker = f"...[line trimmed: {len(text)} chars/{len(encoded)} bytes]"
+    marker_bytes = marker.encode("utf-8")
+    if len(marker_bytes) >= limit:
+        return marker_bytes[:limit].decode("utf-8", errors="ignore")
+    keep = limit - len(marker_bytes)
+    out: list[str] = []
+    used = 0
+    for char in text:
+        char_bytes = char.encode("utf-8", errors="replace")
+        if used + len(char_bytes) > keep:
+            break
+        out.append(char)
+        used += len(char_bytes)
+    return "".join(out) + marker
+
+
+def cap_digest_text(text: str) -> str:
+    return cap_utf8_bytes(cap_line(text, limit=MAX_DIGEST_TEXT_CHARS), MAX_DIGEST_TEXT_BYTES)
+
+
 def normalized_link_target(parent: Path, raw_target: str) -> Path:
     target = Path(raw_target)
     if not target.is_absolute():
@@ -87,11 +113,13 @@ def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
     return expected.joinpath(*path.parts[2:])
 
 
-def compact_items(lines: Iterable[str], *, limit: int, max_chars: int = MAX_LINE_CHARS) -> list[str]:
+def compact_items(lines: Iterable[str], *, limit: int, max_chars: int = MAX_LINE_CHARS, max_bytes: int | None = None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for line in lines:
         item = cap_line(line.strip(), limit=max_chars)
+        if max_bytes is not None:
+            item = cap_utf8_bytes(item, max_bytes)
         if not item or item in seen:
             continue
         out.append(item)
@@ -152,7 +180,7 @@ def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
 
 def sanitize_one_line(text: str, *, show_paths: bool = False) -> str:
     sanitized, _ = sanitize_text(text + "\n", show_paths=show_paths)
-    return cap_line(" ".join(sanitized.strip().split()))
+    return cap_utf8_bytes(cap_line(" ".join(sanitized.strip().split())), MAX_COMMAND_PREVIEW_BYTES)
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -422,7 +450,7 @@ def line_query_cli(artifact_id: str, start: int, end: int) -> str:
 def line_receipt(artifact_id: str, line_number: int, text: str) -> dict[str, object]:
     return {
         "line": line_number,
-        "text": cap_line(text.strip(), limit=MAX_DIGEST_TEXT_CHARS),
+        "text": cap_digest_text(text.strip()),
         "selector": {"type": "lines", "start": line_number, "end": line_number},
         "cli": line_query_cli(artifact_id, line_number, line_number),
     }
@@ -434,7 +462,7 @@ def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[st
     for line_number, line in enumerate(lines, start=1):
         if not ERROR_RE.search(line):
             continue
-        text = cap_line(line.strip(), limit=MAX_DIGEST_TEXT_CHARS)
+        text = cap_digest_text(line.strip())
         if not text or text in seen:
             continue
         receipt = line_receipt(artifact_id, line_number, text)
@@ -449,7 +477,7 @@ def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: in
     counts: dict[str, int] = {}
     first_line: dict[str, int] = {}
     for line_number, line in enumerate(lines, start=1):
-        text = cap_line(line.strip(), limit=MAX_DIGEST_TEXT_CHARS)
+        text = cap_digest_text(line.strip())
         if not text:
             continue
         if text not in counts:
@@ -476,7 +504,12 @@ def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: in
 
 def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) -> dict[str, object]:
     lines = sanitized_text.splitlines()
-    top_errors = compact_items((line for line in lines if ERROR_RE.search(line)), limit=12, max_chars=MAX_DIGEST_TEXT_CHARS)
+    top_errors = compact_items(
+        (line for line in lines if ERROR_RE.search(line)),
+        limit=12,
+        max_chars=MAX_DIGEST_TEXT_CHARS,
+        max_bytes=MAX_DIGEST_TEXT_BYTES,
+    )
     return {
         "status": "has_errors" if top_errors else "stored",
         "redacted_lines": redacted_lines,
@@ -487,8 +520,18 @@ def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) 
         "top_error_lines": top_errors,
         "top_error_receipts": build_top_error_receipts(artifact_id, lines),
         "duplicate_line_groups": build_duplicate_line_groups(artifact_id, lines),
-        "representative_head": compact_items(lines, limit=8, max_chars=MAX_DIGEST_TEXT_CHARS),
-        "representative_tail": compact_items(lines[-8:], limit=8, max_chars=MAX_DIGEST_TEXT_CHARS),
+        "representative_head": compact_items(
+            lines,
+            limit=8,
+            max_chars=MAX_DIGEST_TEXT_CHARS,
+            max_bytes=MAX_DIGEST_TEXT_BYTES,
+        ),
+        "representative_tail": compact_items(
+            lines[-8:],
+            limit=8,
+            max_chars=MAX_DIGEST_TEXT_CHARS,
+            max_bytes=MAX_DIGEST_TEXT_BYTES,
+        ),
     }
 
 
@@ -538,6 +581,49 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
         ],
         "suggested_queries": suggested_queries_for(metadata),
     }
+
+
+def metadata_json_text(metadata: dict[str, object]) -> str:
+    return json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def metadata_size_bytes(metadata: dict[str, object]) -> int:
+    return len(metadata_json_text(metadata).encode("utf-8", errors="replace"))
+
+
+def shrink_digest_for_metadata_cap(metadata: dict[str, object]) -> None:
+    """Keep stored metadata inside the trusted read cap before writing it.
+
+    Digest fields are advisory receipts over the authoritative `.txt` artifact.
+    If future fields or multi-byte text push metadata near the hard read cap,
+    prefer dropping low-priority digest examples over writing a file that `get`
+    and `list` will later reject as untrusted.
+    """
+    digest = metadata.get("digest")
+    if not isinstance(digest, dict):
+        if metadata_size_bytes(metadata) > MAX_METADATA_BYTES:
+            raise ValueError("artifact metadata exceeds trusted size cap before write")
+        return
+    if metadata_size_bytes(metadata) <= MAX_METADATA_BYTES:
+        return
+
+    digest["capped_for_metadata"] = True
+    digest["metadata_cap_bytes"] = MAX_METADATA_BYTES
+    shrink_order = (
+        "representative_tail",
+        "representative_head",
+        "duplicate_line_groups",
+        "top_error_lines",
+        "top_error_receipts",
+    )
+    while metadata_size_bytes(metadata) > MAX_METADATA_BYTES:
+        for key in shrink_order:
+            items = digest.get(key)
+            if isinstance(items, list) and items:
+                items.pop()
+                break
+        else:
+            raise ValueError("artifact metadata exceeds trusted size cap before write")
 
 
 def store_command(args: argparse.Namespace) -> int:
@@ -591,8 +677,9 @@ def store_command(args: argparse.Namespace) -> int:
             ),
         },
     }
+    shrink_digest_for_metadata_cap(metadata)
     write_private_text(content_path, sanitized_text)
-    write_private_text(meta_path, json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    write_private_text(meta_path, metadata_json_text(metadata))
     receipt = receipt_for(metadata)
     if args.json:
         print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
