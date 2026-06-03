@@ -68,6 +68,31 @@ SECRET_VALUE_RE = re.compile(
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 COMMAND_KEYS = ("command", "cmd")
 TOOL_NAME_KEYS = ("tool_name", "toolName", "tool")
+PROMPT_AUDIT_MAX_RECORDS = 200
+PROMPT_AUDIT_MAX_TEXT_BYTES = 32 * 1024
+PROMPT_AUDIT_MAX_SEGMENTS_PER_RECORD = 32
+PROMPT_AUDIT_PREFIX_SEGMENTS = 3
+PROMPT_AUDIT_TAIL_SEGMENTS = 3
+PROMPT_AUDIT_MIN_RECORDS = 3
+PROMPT_PREFIX_VOLATILE_THRESHOLD = 0.66
+PROMPT_PREFIX_TAIL_CHURN_DELTA = 0.34
+PROMPT_AUDIT_MAX_FINDINGS = 5
+PROMPT_SEGMENT_HASH_CHARS = 16
+PROMPT_AUDIT_MAX_TEXT_VALUES = 64
+PROMPT_AUDIT_MAX_ROOT_NODES = 4096
+PROMPT_AUDIT_MAX_CONTENT_NODES = 2048
+PROMPT_AUDIT_MAX_DEPTH = 64
+USER_PROMPT_ROLES = {"user", "human"}
+TEXT_BLOCK_TYPES = {"text", "input_text"}
+
+
+@dataclass(frozen=True)
+class PromptSegmentSample:
+    prefix_hashes: tuple[str, ...]
+    tail_hashes: tuple[str, ...]
+    segment_count: int
+    bytes_sampled: int
+    redactions: int
 
 
 @dataclass
@@ -76,6 +101,40 @@ class RecordUsage:
     cost_usd: float = 0.0
     commands: set[str] = field(default_factory=set)
     tools: set[str] = field(default_factory=set)
+
+
+@dataclass
+class PromptCacheAudit:
+    sampled_records: int = 0
+    analyzed_prompt_records: int = 0
+    capped_records: int = 0
+    prompt_collection_capped_records: int = 0
+    total_segments: int = 0
+    total_bytes_sampled: int = 0
+    redacted_segments: int = 0
+    samples: list[PromptSegmentSample] = field(default_factory=list)
+
+    def observe(self, root: Any) -> None:
+        self.sampled_records += 1
+        segments, bytes_sampled, redactions, collection_capped = prompt_segments_for_record(root)
+        if collection_capped:
+            self.prompt_collection_capped_records += 1
+        if not segments:
+            return
+        if len(self.samples) >= PROMPT_AUDIT_MAX_RECORDS:
+            self.capped_records += 1
+            return
+        self.analyzed_prompt_records += 1
+        self.total_segments += len(segments)
+        self.total_bytes_sampled += bytes_sampled
+        self.redacted_segments += redactions
+        self.samples.append(PromptSegmentSample(
+            prefix_hashes=tuple(stable_hash(segment, PROMPT_SEGMENT_HASH_CHARS) for segment in segments[:PROMPT_AUDIT_PREFIX_SEGMENTS]),
+            tail_hashes=tuple(stable_hash(segment, PROMPT_SEGMENT_HASH_CHARS) for segment in segments[-PROMPT_AUDIT_TAIL_SEGMENTS:]),
+            segment_count=len(segments),
+            bytes_sampled=bytes_sampled,
+            redactions=redactions,
+        ))
 
 
 @dataclass
@@ -95,6 +154,7 @@ class UsageSummary:
     by_tool: Counter[str] = field(default_factory=Counter)
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
+    prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
 
     @property
     def total_tokens(self) -> int:
@@ -246,6 +306,130 @@ def sanitize_label(value: str, limit: int = 120) -> str:
 
 def stable_hash(value: str, length: int = 12) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:length]
+
+
+def truncate_utf8(text: str, max_bytes: int) -> tuple[str, bool]:
+    raw = text.encode("utf-8", errors="replace")
+    if len(raw) <= max_bytes:
+        return text, False
+    return raw[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def collect_content_text(value: Any, out: list[str]) -> bool:
+    """Collect allowlisted text blocks without recursive descent.
+
+    Returns True when collection hit a bounded traversal cap. Deep or very broad
+    transcript shapes should downgrade cache-friendliness evidence instead of
+    crashing the whole audit.
+    """
+    capped = False
+    visited = 0
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack and len(out) < PROMPT_AUDIT_MAX_TEXT_VALUES:
+        current, depth = stack.pop()
+        visited += 1
+        if visited > PROMPT_AUDIT_MAX_CONTENT_NODES or depth > PROMPT_AUDIT_MAX_DEPTH:
+            capped = True
+            continue
+        if isinstance(current, str):
+            if current.strip():
+                out.append(current)
+            continue
+        if isinstance(current, list):
+            if depth >= PROMPT_AUDIT_MAX_DEPTH:
+                capped = True
+                continue
+            stack.extend((item, depth + 1) for item in reversed(current))
+            continue
+        if not isinstance(current, dict):
+            continue
+        block_type = current.get("type")
+        if block_type in TEXT_BLOCK_TYPES and isinstance(current.get("text"), str):
+            stack.append((current.get("text"), depth + 1))
+            continue
+        if depth >= PROMPT_AUDIT_MAX_DEPTH:
+            capped = True
+            continue
+        if "content" in current:
+            stack.append((current.get("content"), depth + 1))
+        if isinstance(current.get("text"), str):
+            stack.append((current.get("text"), depth + 1))
+    if stack or len(out) >= PROMPT_AUDIT_MAX_TEXT_VALUES:
+        capped = True
+    return capped
+
+
+def extract_prompt_texts(root: Any) -> tuple[list[str], bool]:
+    """Best-effort prompt text extraction from allowlisted user/prompt shapes."""
+    texts: list[str] = []
+    capped = False
+    visited = 0
+    stack: list[tuple[Any, int]] = [(root, 0)]
+    while stack and len(texts) < PROMPT_AUDIT_MAX_TEXT_VALUES:
+        current, depth = stack.pop()
+        visited += 1
+        if visited > PROMPT_AUDIT_MAX_ROOT_NODES or depth > PROMPT_AUDIT_MAX_DEPTH:
+            capped = True
+            continue
+        if isinstance(current, dict):
+            role = current.get("role")
+            role_text = str(role).lower() if isinstance(role, str) else ""
+            if role_text in USER_PROMPT_ROLES:
+                if "content" in current:
+                    capped = collect_content_text(current.get("content"), texts) or capped
+                if isinstance(current.get("text"), str):
+                    capped = collect_content_text(current.get("text"), texts) or capped
+                if isinstance(current.get("prompt"), str):
+                    capped = collect_content_text(current.get("prompt"), texts) or capped
+                # Role-scoped content was handled above; do not re-walk it and
+                # risk duplicating text blocks.
+                continue
+            prompt = current.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                texts.append(prompt)
+            if depth >= PROMPT_AUDIT_MAX_DEPTH:
+                capped = True
+                continue
+            stack.extend((value, depth + 1) for value in reversed(list(current.values())))
+        elif isinstance(current, list):
+            if depth >= PROMPT_AUDIT_MAX_DEPTH:
+                capped = True
+                continue
+            stack.extend((item, depth + 1) for item in reversed(current))
+    if stack or len(texts) >= PROMPT_AUDIT_MAX_TEXT_VALUES:
+        capped = True
+    return texts, capped
+
+
+def prompt_segments_for_record(root: Any) -> tuple[list[str], int, int, bool]:
+    texts, collection_capped = extract_prompt_texts(root)
+    if not texts:
+        return [], 0, 0, collection_capped
+    budget = PROMPT_AUDIT_MAX_TEXT_BYTES
+    segments: list[str] = []
+    bytes_sampled = 0
+    redactions = 0
+    for text in texts:
+        if budget <= 0 or len(segments) >= PROMPT_AUDIT_MAX_SEGMENTS_PER_RECORD:
+            break
+        clipped, _truncated = truncate_utf8(text, budget)
+        sanitized, count = SECRET_VALUE_RE.subn("[REDACTED]", clipped)
+        redactions += count
+        bytes_sampled += len(sanitized.encode("utf-8", errors="replace"))
+        budget = max(0, PROMPT_AUDIT_MAX_TEXT_BYTES - bytes_sampled)
+        for raw_line in sanitized.splitlines():
+            compact = " ".join(raw_line.strip().split())
+            if not compact:
+                continue
+            segment, _ = truncate_utf8(compact, 512)
+            segments.append(segment)
+            if len(segments) >= PROMPT_AUDIT_MAX_SEGMENTS_PER_RECORD:
+                break
+        if not segments and sanitized.strip():
+            segment, _ = truncate_utf8(" ".join(sanitized.strip().split()), 512)
+            if segment:
+                segments.append(segment)
+    return segments, bytes_sampled, redactions, collection_capped
 
 
 def safe_resolve(path: Path) -> Path:
@@ -434,6 +618,7 @@ def add_usage(
         root_query_source = first_string(root, QUERY_SOURCE_KEYS)
 
     record = RecordUsage()
+    summary.prompt_cache_audit.observe(root)
     for d in walk(root):
         local_tokens: Counter[str] = Counter()
         present_buckets = add_token_groups(local_tokens, d)
@@ -703,6 +888,132 @@ def build_metric_availability(summary: UsageSummary) -> dict[str, Any]:
     }
 
 
+def segment_stability(samples: list[PromptSegmentSample], attr: str, window: int) -> tuple[float, int, int]:
+    stabilities: list[float] = []
+    unique_total = 0
+    observed_positions = 0
+    for pos in range(window):
+        values: list[str] = []
+        for sample in samples:
+            hashes = getattr(sample, attr)
+            if len(hashes) > pos:
+                values.append(hashes[pos])
+        if not values:
+            continue
+        counts = Counter(values)
+        observed_positions += 1
+        unique_total += len(counts)
+        stabilities.append(max(counts.values()) / len(values))
+    if not stabilities:
+        return 0.0, 0, 0
+    return sum(stabilities) / len(stabilities), unique_total, observed_positions
+
+
+def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
+    audit = summary.prompt_cache_audit
+    skipped = bool(
+        summary.skipped_files
+        or summary.skipped_records
+        or summary.parse_errors
+        or audit.capped_records
+        or audit.prompt_collection_capped_records
+    )
+    samples = audit.samples
+    if not samples:
+        return {
+            "status": "partial" if audit.prompt_collection_capped_records else "missing",
+            "evidence": EVIDENCE_UNAVAILABLE,
+            "heuristic": True,
+            "sampled_records": audit.sampled_records,
+            "analyzed_prompt_records": 0,
+            "prompt_collection_capped_records": audit.prompt_collection_capped_records,
+            "segment_window": {"prefix_segments": PROMPT_AUDIT_PREFIX_SEGMENTS, "tail_segments": PROMPT_AUDIT_TAIL_SEGMENTS},
+            "signals": {
+                "stable_prefix_share": None,
+                "volatile_prefix_share": None,
+                "volatile_tail_share": None,
+                "cache_reuse_ratio": summary.cache_amortization if summary.cache_amortization_defined else None,
+                "cache_read_share": summary.cache_hit_rate,
+            },
+            "findings": [],
+            "caveats": [
+                "No allowlisted user prompt text was found in scanned transcript records; cache layout cannot be inferred.",
+                "Deep or broad prompt content structures are bounded and skipped rather than recursively expanded.",
+                "Provider cache token fields, when present, remain diagnostic telemetry rather than ContextGuard-caused token reduction.",
+            ],
+        }
+
+    prefix_stability, prefix_unique, prefix_positions = segment_stability(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
+    tail_stability, tail_unique, tail_positions = segment_stability(samples, "tail_hashes", PROMPT_AUDIT_TAIL_SEGMENTS)
+    volatile_prefix = 1.0 - prefix_stability
+    volatile_tail = 1.0 - tail_stability
+    analyzed = audit.analyzed_prompt_records
+    status = "available"
+    if skipped or analyzed < PROMPT_AUDIT_MIN_RECORDS:
+        status = "partial"
+    findings: list[dict[str, Any]] = []
+    if (
+        analyzed >= PROMPT_AUDIT_MIN_RECORDS
+        and volatile_prefix >= PROMPT_PREFIX_VOLATILE_THRESHOLD
+        and (volatile_prefix - volatile_tail) >= PROMPT_PREFIX_TAIL_CHURN_DELTA
+    ):
+        findings.append({
+            "id": "volatile-content-near-prefix",
+            "severity": "P1",
+            "title": "Volatile content appears near prompt prefix",
+            "reason": (
+                "Observed prompt segment hashes churn much more in the prefix window than in the tail window; "
+                "provider cache telemetry is used only as corroborating diagnostic context."
+            ),
+            "action": "Move generated logs, diffs, file evidence, and run-specific context after stable instructions and reusable policy text.",
+            "heuristic": True,
+            "evidence": {
+                "records": analyzed,
+                "prefix_positions": prefix_positions,
+                "tail_positions": tail_positions,
+                "prefix_unique_hashes": prefix_unique,
+                "tail_unique_hashes": tail_unique,
+                "volatile_prefix_share": round(volatile_prefix, 4),
+                "volatile_tail_share": round(volatile_tail, 4),
+                "cache_creation": summary.tokens.get("cache_creation", 0),
+                "cache_read": summary.tokens.get("cache_read", 0),
+            },
+        })
+    findings = findings[:PROMPT_AUDIT_MAX_FINDINGS]
+    return {
+        "status": status,
+        "evidence": EVIDENCE_OBSERVED,
+        "heuristic": True,
+        "sampled_records": audit.sampled_records,
+        "analyzed_prompt_records": analyzed,
+        "capped_records": audit.capped_records,
+        "prompt_collection_capped_records": audit.prompt_collection_capped_records,
+        "total_segments": audit.total_segments,
+        "total_bytes_sampled": audit.total_bytes_sampled,
+        "redacted_segments": audit.redacted_segments,
+        "segment_window": {"prefix_segments": PROMPT_AUDIT_PREFIX_SEGMENTS, "tail_segments": PROMPT_AUDIT_TAIL_SEGMENTS},
+        "thresholds": {
+            "min_records": PROMPT_AUDIT_MIN_RECORDS,
+            "prefix_volatile_threshold": PROMPT_PREFIX_VOLATILE_THRESHOLD,
+            "prefix_tail_churn_delta": PROMPT_PREFIX_TAIL_CHURN_DELTA,
+        },
+        "signals": {
+            "stable_prefix_share": round(prefix_stability, 4),
+            "volatile_prefix_share": round(volatile_prefix, 4),
+            "volatile_tail_share": round(volatile_tail, 4),
+            "cache_reuse_ratio": summary.cache_amortization if summary.cache_amortization_defined else None,
+            "cache_read_share": summary.cache_hit_rate,
+        },
+        "findings": findings,
+        "caveats": [
+            "Prompt layout findings are heuristic and based on bounded redacted segment hashes, not raw prompt text.",
+            "Deep or broad prompt content structures are bounded and make cache-friendliness evidence partial.",
+            "Provider cache read/write fields are diagnostic telemetry and do not prove ContextGuard-caused token reduction.",
+            "Unknown transcript prompt schemas are skipped rather than inferred aggressively.",
+        ],
+    }
+
+
 def build_metric_caveats(summary: UsageSummary) -> list[str]:
     caveats = [
         "Values are observed from local Claude Code transcript JSON/JSONL fields and are not official billing records.",
@@ -736,6 +1047,7 @@ def feasibility_json(
     integrity = scan_integrity(summary)
     stable_tokens = stable_token_counter(summary.tokens)
     stable_total_tokens = sum(stable_tokens.values())
+    cache_friendliness = build_cache_friendliness(summary)
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -753,6 +1065,7 @@ def feasibility_json(
                 "redaction_mode",
                 "context_availability",
                 "headroom_availability",
+                "cache_friendliness",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
@@ -779,6 +1092,7 @@ def feasibility_json(
         },
         "context_availability": availability["context"],
         "headroom_availability": availability["headroom"],
+        "cache_friendliness": cache_friendliness,
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,
@@ -828,6 +1142,22 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     cache_read = summary.tokens.get("cache_read", 0)
     output_ratio = output_tokens / total
     input_ratio = input_tokens / total
+    cache_friendliness = build_cache_friendliness(summary)
+    for finding in cache_friendliness.get("findings", []):
+        if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
+            evidence = dict(finding.get("evidence") or {})
+            evidence["heuristic"] = True
+            rec = recommendation(
+                "move-volatile-context-after-stable-prefix",
+                "Volatile context appears before stable prompt prefix",
+                str(finding.get("reason") or "Observed prompt prefix churn is higher than tail churn."),
+                str(finding.get("action") or "Move run-specific context after stable instructions."),
+                str(finding.get("severity") or "P1"),
+                evidence,
+            )
+            rec["heuristic"] = True
+            recs.append(rec)
+            break
     if output_tokens >= 5_000 or output_ratio >= 0.35:
         recs.append(recommendation(
             "trim-output-heavy-sessions",
@@ -890,6 +1220,29 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 "heuristic": True,
             },
         ))
+    if cache_read >= 10_000 and summary.cache_hit_rate >= 0.5:
+        rec = recommendation(
+            "separate-cache-discounts-from-token-reduction",
+            "Provider cache reuse is visible, but it is not token reduction",
+            (
+                f"Cache read share is {summary.cache_hit_rate:.0%}; this can reduce provider input cost/latency, "
+                "but the prompt content may still be sent logically and should not be counted as ContextGuard token reduction."
+            ),
+            (
+                "Report cache_read/cache_creation separately from bytes avoided by local guards, and keep stable cached "
+                "instructions before volatile evidence to preserve provider-cache eligibility."
+            ),
+            "P2",
+            {
+                "cache_read": cache_read,
+                "cache_creation": cache_creation,
+                "cache_hit_rate": round(summary.cache_hit_rate, 4),
+                "cache_amortization": round(summary.cache_amortization, 4) if summary.cache_amortization_defined else None,
+                "provider_cache_telemetry_only": True,
+            },
+        )
+        rec["heuristic"] = True
+        recs.append(rec)
 
     for command, record_count in summary.by_command.most_common(top):
         lowered = command.lower()
@@ -975,6 +1328,7 @@ def summary_json(
         "top_files": counter_json(summary.by_file, top),
         "top_commands": counter_json(summary.by_command, top),
         "top_tools": counter_json(summary.by_tool, top),
+        "cache_friendliness": build_cache_friendliness(summary),
     }
     if include_recommendations:
         data["recommendations"] = build_recommendations(summary, top)
@@ -1067,6 +1421,25 @@ def main() -> int:
         print("  cache_amortization       n/a (no cache writes observed)")
     print(f"  cache_read_tokens        {summary.tokens.get('cache_read', 0):12d}")
     print(f"  cache_creation_tokens    {summary.tokens.get('cache_creation', 0):12d}")
+    cache_friendliness = build_cache_friendliness(summary)
+    if cache_friendliness.get("status") != "missing":
+        signals = cache_friendliness.get("signals", {})
+        print("\nCache friendliness")
+        print(f"  status                  {cache_friendliness.get('status')}")
+        print(f"  heuristic               {str(cache_friendliness.get('heuristic')).lower()}")
+        print(f"  analyzed_prompt_records {cache_friendliness.get('analyzed_prompt_records', 0):12d}")
+        stable_prefix = signals.get("stable_prefix_share")
+        volatile_prefix = signals.get("volatile_prefix_share")
+        volatile_tail = signals.get("volatile_tail_share")
+        if stable_prefix is not None:
+            print(f"  stable_prefix_share     {stable_prefix:.2%}")
+        if volatile_prefix is not None:
+            print(f"  volatile_prefix_share   {volatile_prefix:.2%}")
+        if volatile_tail is not None:
+            print(f"  volatile_tail_share     {volatile_tail:.2%}")
+        for finding in cache_friendliness.get("findings", []):
+            if isinstance(finding, dict):
+                print(f"  finding                 [{finding.get('severity')}] {finding.get('id')}: {finding.get('title')}")
 
     model_totals = Counter({model: sum(tokens.values()) for model, tokens in summary.by_model.items()})
     print_counter("By model", model_totals, args.top)

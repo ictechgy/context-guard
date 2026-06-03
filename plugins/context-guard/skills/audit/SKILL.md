@@ -31,8 +31,9 @@ Report:
 - query_source distribution: main, subagent, auxiliary;
 - top transcript files and commands observed;
 - generated recommendations with priority, reason, action, and evidence;
+- `cache_friendliness` status, bounded prefix/tail churn signals, and any cache-layout findings;
 - top likely causes and one safe next experiment.
 
-Privacy: default output uses basename+hash transcript labels and command category+hash labels. Do not ask for `--show-paths` or `--show-commands` unless the user explicitly wants local identifiers in the report. Recommendations are heuristics; treat them as hypotheses, especially with small `files` or `records` counts.
+Privacy: default output uses basename+hash transcript labels and command category+hash labels. Do not ask for `--show-paths` or `--show-commands` unless the user explicitly wants local identifiers in the report. Cache-friendliness diagnostics use bounded redacted segment hashes and do not print raw prompt text. Recommendations are heuristics; treat them as hypotheses, especially with small `files` or `records` counts.
 
-Caveat: Claude Code transcript schemas can change. Treat this as an operational signal, not billing authority. For billing authority, use Claude Console, cloud-provider billing, or configured OpenTelemetry metrics.
+Caveat: Claude Code transcript schemas can change. Treat this as an operational signal, not billing authority. `cache_read`/`cache_creation` and `cache_friendliness` are provider-cache diagnostics, not proof of ContextGuard-caused token reduction. For billing authority, use Claude Console, cloud-provider billing, or configured OpenTelemetry metrics.

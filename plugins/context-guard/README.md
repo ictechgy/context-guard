@@ -6,7 +6,7 @@ Start with `/context-guard:setup`. Setup is explicit, project-local, and reversi
 
 ## Token-waste paths it targets
 
-ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, and audit/benchmark evidence stays tied to your own tasks.
+ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, cache-friendly prompt layout can be audited from bounded redacted segment hashes, and audit/benchmark evidence stays tied to your own tasks.
 
 ## Rebrand note
 
@@ -78,6 +78,7 @@ context-guard-statusline-merged
 - **Output trimmer** preserves the wrapped command exit code, trims long logs, and can emit `--digest markdown` or `--digest json` summaries with runner failure facts, sanitized failure signatures, duplicate-line groups, and suggested next queries.
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
+- **Transcript audit** aggregates usage/cost/cache buckets, flags likely token hotspots, and exposes `cache_friendliness` prompt-layout findings from bounded redacted segment hashes without printing raw prompt text.
 - **Repeated-failure nudge** warns after repeated Bash failures so the agent switches strategy instead of retrying the same context-heavy path.
 - **Benchmark helper** records matched baseline/variant runs with real token and cost fields, separate byte-reduction proxy evidence, diagnostic `wall_time_seconds`, `provider_cached_tokens`, and provider-cache availability telemetry.
 
@@ -89,7 +90,7 @@ Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brie
 
 ## Conservative claims
 
-These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks; token-savings claims require `primary_tokens_measured` on both matched sides, and wall-time/provider-cache fields are diagnostic telemetry, not standalone savings proof. Benchmark CSV schemas are strict, so start a new CSV or migrate the header after helper upgrades.
+These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks; token-savings claims require `primary_tokens_measured` on both matched sides, and wall-time/provider-cache fields are diagnostic telemetry, not standalone savings proof. Audit `cache_friendliness` findings are heuristic layout signals, not billing authority. Benchmark CSV schemas are strict, so start a new CSV or migrate the header after helper upgrades.
 
 ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally.
 

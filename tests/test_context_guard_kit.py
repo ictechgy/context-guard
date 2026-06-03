@@ -7094,6 +7094,168 @@ for malformed in malformed_values:
                     self.assertNotIn(str(root), proc.stdout)
                     self.assertNotIn(secret, proc.stdout)
 
+    def test_transcript_audit_cache_friendliness_stable_prefix_no_layout_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    "Stable system instructions",
+                    "Stable project rules",
+                    "Stable workflow contract",
+                    f"volatile evidence chunk {idx}",
+                    f"volatile diff line {idx}",
+                    f"volatile command output {idx}",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cache_creation_input_tokens": 2000,
+                            "cache_read_input_tokens": 1200,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            cache_friendliness = data["cache_friendliness"]
+            self.assertEqual(cache_friendliness["status"], "available")
+            self.assertGreater(cache_friendliness["signals"]["stable_prefix_share"], 0.9)
+            rec_ids = {rec["id"] for rec in data["recommendations"]}
+            self.assertNotIn("move-volatile-context-after-stable-prefix", rec_ids)
+            self.assertNotIn("volatile evidence chunk", proc.stdout)
+
+    def test_transcript_audit_cache_friendliness_flags_volatile_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            secret = "ghp_" + ("V" * 36)
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    f"volatile branch diff {idx} {secret}",
+                    f"volatile command output {idx}",
+                    f"volatile timestamp {idx}",
+                    "Stable instruction tail",
+                    "Stable project tail",
+                    "Stable verification tail",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--recommend"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
+                    self.assertIn("move-volatile-context-after-stable-prefix", recs_by_id)
+                    self.assertTrue(recs_by_id["move-volatile-context-after-stable-prefix"]["heuristic"])
+                    finding = data["cache_friendliness"]["findings"][0]
+                    self.assertTrue(finding["heuristic"])
+                    self.assertGreaterEqual(finding["evidence"]["volatile_prefix_share"], 0.66)
+                    self.assertLessEqual(data["cache_friendliness"]["total_segments"], 96)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn("volatile branch diff", proc.stdout)
+                    self.assertNotIn("Stable instruction tail", proc.stdout)
+
+    def test_transcript_audit_cache_telemetry_alone_does_not_trigger_layout_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cache_creation_input_tokens": 25_000,
+                            "cache_read_input_tokens": 100,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            rec_ids = {rec["id"] for rec in data["recommendations"]}
+            self.assertIn("improve-prompt-cache-reuse", rec_ids)
+            self.assertNotIn("move-volatile-context-after-stable-prefix", rec_ids)
+            self.assertEqual(data["cache_friendliness"]["status"], "missing")
+
+    def test_transcript_audit_feasibility_lists_cache_friendliness_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable prefix\nStable tail"}],
+                        "usage": {"input_tokens": 10},
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--feasibility-json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("cache_friendliness", data["consumer_contract"]["stable_top_level_fields"])
+            self.assertIn("cache_friendliness", data)
+            self.assertEqual(data["cache_friendliness"]["status"], "partial")
+
+    def test_transcript_audit_cache_friendliness_bounds_deep_prompt_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            secret = "ghp_" + ("D" * 36)
+            nested_content = '{"content":' * 1500 + json.dumps(f"deep prompt leaf {secret}") + "}" * 1500
+            sample.write_text(
+                '{"message":{"role":"user","usage":{"input_tokens":10},"content":'
+                + nested_content
+                + "}}\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--recommend"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["cache_friendliness"]["status"], "partial")
+                    self.assertEqual(data["cache_friendliness"]["analyzed_prompt_records"], 0)
+                    self.assertGreaterEqual(data["cache_friendliness"]["prompt_collection_capped_records"], 1)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn("deep prompt leaf", proc.stdout)
+
     def test_transcript_audit_feasibility_distinguishes_missing_and_zero_cache_fields(self):
         scenarios = [
             (
