@@ -9727,6 +9727,30 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertFalse(cost_measured)
         self.assertFalse(primary_tokens_measured)
 
+    def test_collect_usage_requires_core_input_and_output_token_buckets(self):
+        """부분 token bucket 만 있으면 savings 근거로 쓰지 않는다."""
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_usage_partial")
+        partial_payloads = [
+            {"usage": {"completion_tokens": 100}},
+            {"usage": {"prompt_tokens": 100}},
+            {"usage": {"cache_read_input_tokens": 100}},
+        ]
+        for payload in partial_payloads:
+            with self.subTest(payload=payload):
+                tokens, _cost, _cost_measured, primary_tokens_measured = module.collect_usage(payload)
+                self.assertFalse(primary_tokens_measured)
+                self.assertEqual(
+                    tokens["input_tokens"] + tokens["output_tokens"] + tokens["cache_read"] + tokens["cache_creation"],
+                    100,
+                )
+
+        tokens, _cost, _cost_measured, primary_tokens_measured = module.collect_usage(
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 25}}
+        )
+        self.assertTrue(primary_tokens_measured)
+        self.assertEqual(tokens["input_tokens"], 100)
+        self.assertEqual(tokens["output_tokens"], 25)
+
 
 class StatuslineMergedWrapperTests(unittest.TestCase):
     """결합 wrapper 의 4 분기 출력 시나리오 검증.

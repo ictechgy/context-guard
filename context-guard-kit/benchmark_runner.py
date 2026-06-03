@@ -557,7 +557,13 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool, bool]:
             queue.extend(cur.values())
         elif isinstance(cur, list):
             queue.extend(cur)
-    return tokens, cost, seen_cost, any(seen_token.values())
+    # Token-savings claims require a comparable primary-token total.  Cache
+    # buckets are optional zeroes in normal provider payloads, but the core
+    # input/output buckets must both be observed; otherwise an output-only or
+    # input-only partial payload would be treated as measured zero for the
+    # missing side and could overstate savings.
+    primary_tokens_measured = seen_token["input_tokens"] and seen_token["output_tokens"]
+    return tokens, cost, seen_cost, primary_tokens_measured
 
 
 def collect_provider_cache_telemetry(payload: Any) -> tuple[int, bool]:
