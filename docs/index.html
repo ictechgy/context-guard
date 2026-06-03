@@ -344,6 +344,7 @@
         <article class="card"><span class="icon">▣</span><h3>로컬 아티팩트 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
         <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
         <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 트랜스크립트 감사, A/B 벤치마크로 사용량과 절감 근거를 확인합니다.</p></article>
+        <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 정제 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>교차 에이전트 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run 후 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>보수적 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
       </div>
@@ -355,7 +356,7 @@
         <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 불필요한 파일·로그·출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 걸러내는 로컬 가드레일입니다.</p>
       </div>
       <div class="comparison-grid">
-        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕습니다.</p></article>
+        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하고, 감사로 volatile prefix 가능성을 알립니다.</p></article>
         <article class="card"><span class="icon" title="Semantic response cache">S</span><h3>Semantic response cache</h3><p>같거나 비슷한 요청의 이전 답변을 재사용합니다. ContextGuard는 AI 답변 캐시를 제공하지 않습니다.</p></article>
         <article class="card"><span class="icon" title="Prompt compression">C</span><h3>Prompt compression</h3><p>이미 선택된 텍스트를 더 짧게 만듭니다. ContextGuard는 로컬 출력 축약과 요약을 제공하지만 무손실 의미 압축을 보장하지 않습니다.</p></article>
         <article class="card"><span class="icon" title="ContextGuard">G</span><h3>ContextGuard</h3><p>큰 파일, 긴 로그, 반복 실패, 잡음 많은 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이도록 안내하고, 직접 측정할 수 있는 전후 비교 근거를 남깁니다.</p></article>
@@ -404,7 +405,7 @@
       <div class="split">
         <div class="section-head">
           <h2>세션 상태를 한눈에</h2>
-          <p>상태표시줄은 모델, 저장소, 브랜치, 컨텍스트 사용률, 비용, 캐시 재사용 신호를 짧게 보여줍니다. cache와 reuse 값은 ContextGuard가 만든 절감률이 아니라 관측된 트랜스크립트·provider cache 신호입니다.</p>
+          <p>상태표시줄은 모델, 저장소, 브랜치, 컨텍스트 사용률, 비용, 캐시 재사용 신호를 짧게 보여줍니다. cache와 reuse 값은 ContextGuard가 만든 절감률이 아니라 관측된 트랜스크립트·provider cache 신호입니다. 프롬프트 배치 감사도 휴리스틱 진단이며 청구 기준이 아닙니다.</p>
           <span class="statusline">[Sonnet] repo | main | ctx 86% ⚠ | cost $0.123 | cache 80% | reuse 8.0x</span>
         </div>
         <div class="terminal-card">

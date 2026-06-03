@@ -54,6 +54,7 @@ ContextGuard does not make the model cheaper by itself. It reduces avoidable con
 | Repeated failing commands | Warn after repeated Bash failures so the agent changes strategy before more stale logs enter context. |
 | Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
 | Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
+| Volatile context before stable prompt prefixes | Audit bounded redacted prompt-segment hashes and flag likely cache-unfriendly prompt layouts without exposing raw prompt text. |
 
 ## How it fits with caching and compression tools
 
@@ -61,7 +62,7 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 
 | Tool category | Saves by | ContextGuard relationship |
 | --- | --- | --- |
-| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner. |
+| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, and `context-guard-audit` can flag likely volatile prefix layouts. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
@@ -86,7 +87,7 @@ When you need a savings claim, measure it on your own tasks:
 
 - full-file reads versus symbol or line-range reads
 - raw logs versus digest output or artifact receipts
-- transcript hotspots reported by `context-guard-audit`
+- transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
 - matched successful baseline/variant runs from `context-guard-bench`
 
@@ -113,7 +114,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack with omission reasons and exact slice commands. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
-| Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage hotspots, and records conservative before/after evidence. |
+| Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage and cache-friendliness hotspots, and records conservative before/after evidence. |
 
 ## Install in Claude Code
 
@@ -214,7 +215,7 @@ The sanitizer reduces the chance that token-like, key-like, password-like, or se
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts, so a corrupt trace cannot dominate memory or hide scan gaps.
+The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts, so a corrupt trace cannot dominate memory or hide scan gaps. JSON output also includes `cache_friendliness`: a heuristic prompt-layout diagnostic built from bounded, redacted segment hashes. It can flag likely volatile content near the prompt prefix, but it does not print raw prompt text and may be `missing` or `partial` when transcript schemas do not expose allowlisted prompt text.
 
 ### Watch context and cache health in the statusline
 
@@ -238,7 +239,6 @@ The report compares successful baseline/variant runs by real tokens and `cost_us
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- cache-friendly prompt audits that flag frequently changing content near the front of prompts,
 - workflow-specific before/after benchmark report examples beyond the minimal report-shape fixture.
 
 ## Repository layout

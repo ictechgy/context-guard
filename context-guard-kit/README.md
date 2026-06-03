@@ -7,7 +7,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `statusline.sh` — context/cost/model을 statusline에 표시
 - `trim_command_output.py` — 긴 명령 output을 head/tail/error와 pytest/Jest/Vitest/Go/Rust 실패 요약 중심으로 축약하고 원래 exit code 보존
 - `rewrite_bash_for_token_budget.py` — Claude Code `PreToolUse` hook에서 test/build/lint 명령을 wrapper로 감쌈
-- `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost field를 집계하고 `--recommend`로 절감 액션 제안
+- `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost/cache field와 cache-friendly prompt layout 신호를 집계하고 `--recommend`로 절감 액션 제안
 - `context_guard_diet.py` — project `.claude/settings.json` deny/hook/statusline, 여러 AI 에이전트 rule file의 context bloat, local context-exclusion 추천을 스캔
 - `guard_large_read.py` — Claude Code `PreToolUse` Read hook에서 큰 파일 전체 읽기를 막고 symbol/line-range 읽기로 유도
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
@@ -47,7 +47,7 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 시 안전하도록 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
-대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 노출됩니다.
+대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 노출됩니다. JSON summary/feasibility 출력의 `cache_friendliness`는 제한된 정제 segment hash로 안정적인 prefix와 volatile prefix/tail 신호를 비교하는 휴리스틱입니다. 원문 prompt text는 출력하지 않고, provider cache token field는 ContextGuard가 만든 토큰 절감 증거가 아니라 별도 진단 텔레메트리로 해석하세요.
 
 `context_guard_diet.py scan`은 항상 로컬에서만 읽는 read-only 스캐너입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
 
