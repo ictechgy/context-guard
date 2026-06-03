@@ -110,6 +110,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
+| Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack with omission reasons and exact slice commands. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage hotspots, and records conservative before/after evidence. |
@@ -167,6 +168,19 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ```
 
 Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+
+### Build a budgeted context pack
+
+```bash
+./plugins/context-guard/bin/context-guard-pack build \
+  --root . \
+  --source 'path=README.md,priority=100,lines=1:120' \
+  --source 'path=src/app.py,priority=50' \
+  --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
+```
+
+`context-guard-pack` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval. Byte counts are observed; token counts remain estimated proxies.
 
 ### Compress selected local text conservatively
 

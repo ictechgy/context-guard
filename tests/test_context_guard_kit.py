@@ -31,6 +31,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"),
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
     (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
+    (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
@@ -55,6 +56,7 @@ READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-r
 NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"]
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
 COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
+PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -1449,6 +1451,256 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 meta = json.loads(self._run_compress(script, '{"a":1}\n', "--type", "prose", "--metadata-only").stdout)
                 self.assertEqual(meta["content_type"], "prose")
                 self.assertEqual(meta["type_source"], "override")
+
+    def _run_pack(self, script: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+    def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+                    (root / "b.txt").write_text("".join(f"line {i}\n" for i in range(1, 80)), encoding="utf-8")
+                    (root / "c.txt").write_text("low priority\n" * 40, encoding="utf-8")
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--source",
+                        "path=a.txt,priority=100,lines=1:2",
+                        "--source",
+                        "path=b.txt,priority=50",
+                        "--source",
+                        "path=c.txt,priority=1",
+                        "--budget-bytes",
+                        "900",
+                        "--json",
+                        "--no-artifact",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tool"], "context-guard-pack")
+                    self.assertEqual(data["pack_bytes"], len(data["pack"].encode("utf-8")))
+                    self.assertLessEqual(data["pack_bytes"], data["budget_bytes"])
+                    self.assertEqual(data["included_sources"][0]["path"], "a.txt")
+                    self.assertTrue(any(item["status"] == "partial" for item in data["included_sources"]))
+                    self.assertTrue(any(item["reason"] == "budget_exhausted" for item in data["omitted_sources"]))
+                    self.assertEqual(data["token_proxy"]["measurement"], "estimated")
+
+    def test_context_pack_manifest_source_grammar_and_duplicates_are_deterministic(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "README.md").write_text("readme\n", encoding="utf-8")
+                    (root / "src.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+                    manifest = root / "pack.json"
+                    manifest.write_text(
+                        json.dumps({
+                            "version": 1,
+                            "sources": [
+                                {"path": "README.md", "priority": 5, "label": "readme"},
+                                {"path": "src.py", "priority": 20, "lines": "1:2"},
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    args = [
+                        "build",
+                        "--root",
+                        ".",
+                        "--manifest",
+                        str(manifest),
+                        "--source",
+                        "path=src.py,priority=10,lines=1:2",
+                        "--source",
+                        "src.py",
+                        "--source",
+                        "path=README.md,lines=bogus",
+                        "--budget-bytes",
+                        "4000",
+                        "--json",
+                        "--no-artifact",
+                    ]
+                    first = json.loads(self._run_pack(script, root, *args).stdout)
+                    second = json.loads(self._run_pack(script, root, *args).stdout)
+                    self.assertEqual(first["pack_id"], second["pack_id"])
+                    self.assertEqual(first["included_sources"][0]["path"], "src.py")
+                    self.assertTrue(any(item["reason"] == "duplicate_source" for item in first["omitted_sources"]))
+                    self.assertTrue(any(item["reason"] == "invalid_lines" for item in first["omitted_sources"]))
+
+    def test_context_pack_slice_returns_exact_sanitized_lines(self):
+        secret = "ghp_" + ("A" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "file.txt").write_text(f"one\nTOKEN={secret}\nthree\nfour\n", encoding="utf-8")
+                    proc = self._run_pack(script, root, "slice", "--root", ".", "--path", "file.txt", "--lines", "2:3", "--json")
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["query"]["returned_lines"], 2)
+                    self.assertEqual(data["content"], "TOKEN=[REDACTED]\nthree\n")
+                    self.assertNotIn(secret, proc.stdout)
+
+    def test_context_pack_redacts_before_pack_and_private_receipt(self):
+        secret = "sk-" + ("C" * 32)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "secret.txt").write_text(f"OPENAI_KEY={secret}\nnormal\n", encoding="utf-8")
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--source",
+                        "secret.txt",
+                        "--budget-bytes",
+                        "2000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertIn("[REDACTED]", data["pack"])
+                    receipt = root / data["artifact"]["path"]
+                    self.assertTrue(receipt.is_file())
+                    self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(receipt.parent.stat().st_mode), 0o700)
+                    self.assertNotIn(secret, receipt.read_text(encoding="utf-8"))
+
+                    no_artifact = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--source",
+                            "secret.txt",
+                            "--budget-bytes",
+                            "2000",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    self.assertFalse(no_artifact["artifact"]["stored"])
+
+    @unittest.skipIf(not hasattr(os, "symlink"), "symlink creation unsupported on this platform")
+    def test_context_pack_refuses_symlinked_receipt_directory(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    root = sandbox / "repo"
+                    outside = sandbox / "outside"
+                    root.mkdir()
+                    outside.mkdir()
+                    (root / "ok.txt").write_text("ok\n", encoding="utf-8")
+                    (root / ".context-guard").mkdir()
+                    try:
+                        (root / ".context-guard" / "packs").symlink_to(outside, target_is_directory=True)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink creation unsupported on this filesystem")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--source",
+                        "ok.txt",
+                        "--budget-bytes",
+                        "2000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertFalse(data["artifact"]["stored"])
+                    self.assertEqual(data["artifact"]["error"], "unsafe_artifact_dir")
+                    self.assertEqual(list(outside.iterdir()), [])
+
+    def test_context_pack_omits_unsafe_missing_and_outside_paths(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    outside = root.parent / "outside-context-pack.txt"
+                    outside.write_text("outside\n", encoding="utf-8")
+                    (root / "ok.txt").write_text("ok\n", encoding="utf-8")
+                    if hasattr(os, "symlink"):
+                        (root / "link.txt").symlink_to(outside)
+                    manifest = root / "pack.json"
+                    sources = [
+                        {"path": "ok.txt", "priority": 10},
+                        {"path": "../outside-context-pack.txt", "priority": 9},
+                        {"path": "missing.txt", "priority": 8},
+                    ]
+                    if hasattr(os, "symlink"):
+                        sources.append({"path": "link.txt", "priority": 7})
+                    manifest.write_text(json.dumps({"version": 1, "sources": sources}), encoding="utf-8")
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            str(manifest),
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    reasons = {item["reason"] for item in data["omitted_sources"]}
+                    self.assertIn("outside_root", reasons)
+                    self.assertIn("missing", reasons)
+                    if hasattr(os, "symlink"):
+                        self.assertIn("unsafe_path", reasons)
+                    self.assertIn("ok.txt", data["pack"])
+
+    def test_context_pack_receipt_cap_does_not_write_oversized_metadata(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "ok.txt").write_text("ok\n", encoding="utf-8")
+                    manifest = root / "pack.json"
+                    sources = [{"path": "ok.txt", "priority": 1}]
+                    sources.extend({"path": f"missing-{i}.txt", "label": "x" * 300} for i in range(1200))
+                    manifest.write_text(json.dumps({"version": 1, "sources": sources}), encoding="utf-8")
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            str(manifest),
+                            "--budget-bytes",
+                            "2000",
+                            "--json",
+                        ).stdout
+                    )
+                    artifact = data["artifact"]
+                    if artifact["stored"]:
+                        self.assertLessEqual(artifact["bytes"], 64_000)
+                        self.assertTrue(artifact["capped"])
+                    else:
+                        self.assertEqual(artifact["error"], "receipt_metadata_too_large")
+                        self.assertFalse((root / ".context-guard" / "packs" / f"{data['pack_id']}.json").exists())
 
     def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
         generic_openai_key = "sk-" + ("C" * 32)

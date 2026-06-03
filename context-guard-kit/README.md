@@ -13,6 +13,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
 - `context_escrow.py` — 큰 command output을 sanitize 후 로컬 artifact로 저장하고 line/pattern query로 다시 조회
+- `context_pack.py` — 우선순위 local file evidence를 byte budget 안의 Markdown context pack으로 조립하고 omission/retrieval receipt를 기록
 - `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report 생성
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합
 - `failed_attempt_nudge.py` — 반복 Bash 실패 시 `/clear`/`/compact`와 strategy switch를 짧게 권유
@@ -29,6 +30,8 @@ python3 context-guard-kit/context_guard_diet.py scan . --json
 python3 context-guard-kit/read_symbol.py path/to/file.py TargetSymbol
 long-command 2>&1 | python3 context-guard-kit/context_escrow.py store --command "long-command" --json
 python3 context-guard-kit/context_escrow.py get <artifact_id> --lines 1:80
+python3 context-guard-kit/context_pack.py build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
+python3 context-guard-kit/context_pack.py slice --root . --path README.md --lines 1:40 --json
 python3 context-guard-kit/benchmark_runner.py --tasks bench/tasks.json --variants bench/variants.json --csv bench/results.csv --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 python3 context-guard-kit/sanitize_output.py -- rg -n "TOKEN|SECRET" .
 python3 context-guard-kit/sanitize_output.py -- git diff
@@ -37,6 +40,9 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 `trim_command_output.py`는 output이 budget을 넘을 때 runner별 failure summary를 먼저 보여줍니다. 예를 들어 pytest node id, Jest/Vitest 실패 파일/테스트, `go test`의 실패 test와 `_test.go:line`, `cargo test` panic 위치를 짧게 보존해 Claude가 전체 로그를 다시 읽지 않고도 다음에 수정할 파일을 고를 수 있게 합니다. head/tail 로그 대신 더 작은 의미 요약만 필요하면 `--digest markdown` 또는 `--digest json`을 추가하세요. digest mode는 status, exit code, truncation count, runner failure facts, 정제된 failure signature, 중복 라인 그룹, 대표 라인, redaction count, 다음 query 제안을 남깁니다. 감싼 명령은 기본 600초 후 timeout 처리되며(`--timeout-seconds`로 조정), 가능한 환경에서는 process group까지 종료한 뒤 124를 반환합니다. ANSI color code는 제거하며, 절대경로는 기본적으로 `basename#path:<hash>`로 익명화합니다. 로컬 디버깅에서 원문 절대경로가 꼭 필요하면 `--show-paths`를 추가하세요.
 
 `context_escrow.py`는 대용량 output을 Claude context에 그대로 넣지 않고 `.context-guard/artifacts` 아래 `0o600` 파일로 저장합니다. 저장 전에 sanitizer를 적용해 secret/path 노출을 줄이고, receipt에는 `artifact_id`, line/byte count, 줄 번호가 포함된 top-error receipt, 중복 라인 그룹, 대표 head/tail, 정제된 bounded `suggested_queries`와 `get --lines`/`get --pattern` query 예시만 출력합니다. `get`과 `list`는 legacy 기본 위치인 `.claude-token-optimizer/artifacts`도 함께 읽어 리브랜딩 전 receipt를 계속 조회할 수 있습니다. 저장된 artifact는 sanitize된 사본이며, 필요할 때만 `get <artifact_id> --lines 10:40`처럼 정확한 범위를 조회하세요. 파이프라인 저장은 capture/query 용도이므로 producer 명령의 exit code가 필요한 release check에서는 shell `pipefail`/별도 `$?` 저장을 쓰거나 `trim_command_output.py -- ...`로 감싸세요.
+
+
+`context_pack.py`는 여러 로컬 파일 source를 우선순위와 줄 범위에 따라 정렬하고, 렌더링된 UTF-8 byte budget 안에서 Markdown context pack을 만듭니다. 포함·부분 포함·누락 source, 누락 사유, `.context-guard/packs` bounded receipt, 그리고 `slice --lines` 정확 재조회 명령을 JSON으로 남깁니다. pack 본문/영수증을 만들기 전에 sanitizer를 적용하며, token 값은 관측값이 아닌 추정 proxy로만 표시합니다.
 
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 
