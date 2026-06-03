@@ -1,12 +1,12 @@
 # ContextGuard
 
-ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents, shipped as a Claude Code plugin first. It adds project-local guardrails for noisy command output, large file reads, repeated failures, likely-secret values, statusline visibility, transcript audits, and repeatable token/cost measurement, and extends to other agents through local helper commands and advisory rule snippets.
+ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships as a Claude Code plugin first, then extends the same project-local guardrails to other agents through plain local helper commands and advisory brief-mode rule snippets.
 
 Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context hygiene scan, does not mutate global Claude settings, and does not configure external AI offload.
 
 ## Token-waste paths it targets
 
-ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat by steering large file reads toward search/symbol/line-range slices, trimming or digesting long command output, storing large logs as local artifact receipts, redacting noisy secret-like values, warning on repeated Bash failures, and surfacing audit/benchmark evidence for your own tasks.
+ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, and audit/benchmark evidence stays tied to your own tasks.
 
 ## Rebrand note
 
@@ -69,13 +69,13 @@ context-guard-statusline-merged
 
 - **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `--no-diet-scan` when automation needs setup output without the post-apply scan.
 - **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, and large or secret-like `CLAUDE.md` / `AGENTS.md` context files.
-- **Large-read guard and symbol reader** guide Claude from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
+- **Large-read guard and symbol reader** guide the agent from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Artifact store** saves large sanitized command output under `.context-guard/artifacts` by default and returns compact receipts or exact requested slices. `get` and `list` can also read legacy `.claude-token-optimizer/artifacts` receipts.
 - **Conservative compressor** classifies sanitized stdin as JSON, diff, log, search output, code, or prose and shrinks it with observed byte evidence plus estimated token proxies.
 - **Output trimmer** preserves the wrapped command exit code, trims long logs, and can emit `--digest markdown` or `--digest json` summaries with runner failure facts and suggested next queries.
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
-- **Repeated-failure nudge** warns after repeated Bash failures so Claude switches strategy instead of retrying the same context-heavy path.
+- **Repeated-failure nudge** warns after repeated Bash failures so the agent switches strategy instead of retrying the same context-heavy path.
 - **Benchmark helper** records matched baseline/variant runs with real token and cost fields plus separate byte-reduction proxy evidence.
 
 ## Brief mode (advisory)
@@ -88,7 +88,9 @@ Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brie
 
 These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks.
 
-ContextGuard also does not send work to external AI providers to save Claude tokens. All helper commands run locally.
+ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally.
+
+Cross-agent rule snippets are advisory: the target agent may ignore them, so measure actual before/after behavior when you need a savings claim.
 
 ## Local test before publishing
 
