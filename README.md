@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships a Claude Code plugin first, and the same project-local guardrails — for noisy command output, large file reads, repeated failures, likely-secret values, usage visibility, and repeatable token/cost measurement — extend to other agents through local helper commands and advisory rule snippets.
+ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships as a Claude Code plugin first — install once, apply per project, reverse if needed. The same guardrails for noisy command output, large file reads, repeated failures, likely-secret values, and usage measurement extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
@@ -22,15 +22,36 @@ Then apply setup inside the project you want to protect.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure real before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
+## Claude Code first, other agents too
+
+ContextGuard ships as a Claude Code plugin, and that is still the fastest path to value. Once installed, the same local-first guardrails can be reused by other AI coding and tool agents through:
+
+- **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
+- **Advisory brief-mode rule snippets** you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
+- **Dry-run cross-agent setup** that writes only local files, backs up before changing anything, and applies only with explicit approval.
+
+Current setup surfaces:
+
+| Agent or tool | ContextGuard surface |
+| --- | --- |
+| Claude Code | Native plugin setup for project-local hooks, deny rules, and statusline configuration. |
+| OpenAI Codex CLI | Advisory `AGENTS.md` rule block. |
+| Gemini CLI | Advisory `GEMINI.md` rule block. |
+| Cursor | Advisory project-rule block, usually `.cursorrules`. |
+| Windsurf | Advisory `.windsurf/rules/contextguard.md` rule block. |
+| Cline | Advisory `.clinerules` rule block, with file/directory handling. |
+| GitHub Copilot Coding Agent | Advisory `.github/copilot-instructions.md` rule block. |
+| OpenCode, ForgeCode, or unknown agents | Manual shell-helper usage with local evidence; no automatic hooks. |
+
 ## How ContextGuard reduces token waste
 
-ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches Claude Code, then gives you signals to measure whether that helped.
+ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether that helped.
 
 | Waste path | ContextGuard guardrail |
 | --- | --- |
 | Whole-file reads for one function | Suggest search, symbol slices, bounded outlines, and small line ranges before a full read. |
 | Long test, build, search, or diff output | Trim output, emit structured digests, or store large logs locally and return compact receipts. |
-| Repeated failing commands | Warn after repeated Bash failures so Claude changes strategy before more stale logs enter context. |
+| Repeated failing commands | Warn after repeated Bash failures so the agent changes strategy before more stale logs enter context. |
 | Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
 | Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
 
@@ -43,16 +64,14 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter Claude context. | Local Claude Code guardrails plus measurement. |
+| ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
-## ContextGuard for AI coding and tool agents
-
-ContextGuard began as a Claude Code plugin and still ships that integration first. The same local-first guardrails apply to other AI coding and tool agents: helpers run as plain local commands, and advisory rule snippets install into an agent's own instruction file. Cross-agent setup is dry-run first, writes only local files, backs up before changing anything, and applies only with explicit approval.
+Related patterns that informed the design:
 
 | Approach | What it emphasizes | ContextGuard relationship |
 | --- | --- | --- |
-| Headroom-style compression | Shortening text already selected for the model. | ContextGuard prefers local, reversible artifact storage with exact retrieval over lossy one-way compression. |
-| Caveman-style brief / cross-agent install | Terse-output rules installed across many agents. | ContextGuard offers advisory brief-mode snippets and dry-run cross-agent setup, without claiming guaranteed savings. |
+| Compression-first | Shortening text already selected for the model, often with lossy transforms. | ContextGuard prefers local artifact storage with exact slice retrieval over lossy one-way compression; you can get the original back. |
+| Terse-output rulesets across agents | Installing brief-mode output rules into many agents at once. | ContextGuard offers advisory brief-mode snippets and dry-run cross-agent setup — opt-in per project, no guaranteed savings claimed. |
 | ContextGuard | Avoiding unnecessary files, logs, and output before they enter context, with conservative measurement. | Local guardrails, reversible artifacts and retrieval, and benchmark evidence you measure yourself. |
 
 ## Brief mode (advisory)
@@ -74,7 +93,7 @@ When you need a savings claim, measure it on your own tasks:
 ## What ContextGuard does not do
 
 - It does not guarantee a fixed token or cost reduction.
-- It does not send work to external AI providers to save Claude tokens.
+- It does not send work to external AI providers to save model tokens.
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
@@ -88,11 +107,11 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Claude Code plugin skills | Guided setup, optimization, and transcript usage audits. |
 | Project-local setup wizard | Applies recommended `.claude/settings.json` options without touching global settings. |
 | Context hygiene scanner | Finds missing guardrails, noisy hooks, broad reads, large context files, secret-like files, excessive MCP servers, and expensive defaults. |
-| Large-read guard and symbol reader | Nudges Claude toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
-| Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before Claude sees them. |
+| Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
+| Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
-| Repeated-failure nudge | Warns after repeated Bash failures so Claude changes strategy before stale logs fill the context. |
+| Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage hotspots, and records conservative before/after evidence. |
 
 ## Install in Claude Code
@@ -130,7 +149,7 @@ Most users should start with `/context-guard:setup`. The helper commands below a
 ./plugins/context-guard/bin/context-guard-diet scan .
 ```
 
-The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like files, and settings that can make Claude sessions unnecessarily expensive.
+The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like files, and settings that can make AI-agent sessions unnecessarily expensive.
 
 ### Read symbols instead of whole large files
 
@@ -173,7 +192,7 @@ Use `--digest markdown` or `--digest json` for a compact semantic digest instead
 ./plugins/context-guard/bin/context-guard-sanitize-output -- git diff
 ```
 
-The sanitizer reduces the chance that token-like, key-like, password-like, or sensitive path values are copied into Claude context.
+The sanitizer reduces the chance that token-like, key-like, password-like, or sensitive path values are copied into agent context.
 
 ### Audit local transcript usage
 
@@ -201,14 +220,14 @@ The audit command skips oversized transcript files and JSONL records by default 
 
 The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress.
 
-## Future opportunities
+## What is not yet shipped
 
-The market around token-saving tools points to useful follow-up work, but these are **not shipped features** unless documented elsewhere:
+These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
 - instruction-bloat scanning for large `AGENTS.md`, `CLAUDE.md`, and project rule files,
 - cache-friendly prompt audits that flag frequently changing content near the front of prompts,
 - ignore recommendation generation for files that should stay out of AI context,
-- sample before/after benchmark reports for common Claude Code workflows.
+- sample before/after benchmark reports for common AI coding workflows.
 
 ## Repository layout
 
