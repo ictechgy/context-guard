@@ -1,0 +1,57 @@
+{
+  "schema": "context-guard-bench-report-v1",
+  "baseline_variant": "baseline",
+  "claim_status": "token_savings_observed_cost_unmeasured",
+  "summary_by_variant": {
+    "baseline": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 1000,
+      "primary_tokens_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 12.4,
+      "wall_time_seconds_measured_successful": 1,
+      "provider_cached_tokens_successful": 0,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    },
+    "context_hygiene": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 650,
+      "primary_tokens_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 10.8,
+      "wall_time_seconds_measured_successful": 1,
+      "provider_cached_tokens_successful": 120,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "variant": "context_hygiene",
+      "baseline_variant": "baseline",
+      "quality_gate": "pass",
+      "matched_successful_task_count": 1,
+      "paired_token_task_count": 1,
+      "paired_wall_time_task_count": 1,
+      "token_savings_pct": 35.0,
+      "cost_savings_pct_with_shift": null,
+      "wall_time_change_pct": -12.9
+    }
+  ],
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings."
+}

@@ -76,7 +76,7 @@ context-guard-statusline-merged
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
 - **Repeated-failure nudge** warns after repeated Bash failures so the agent switches strategy instead of retrying the same context-heavy path.
-- **Benchmark helper** records matched baseline/variant runs with real token and cost fields plus separate byte-reduction proxy evidence.
+- **Benchmark helper** records matched baseline/variant runs with real token and cost fields, separate byte-reduction proxy evidence, diagnostic `wall_time_seconds`, `provider_cached_tokens`, and provider-cache availability telemetry.
 
 ## Brief mode (advisory)
 
@@ -86,7 +86,7 @@ Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brie
 
 ## Conservative claims
 
-These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks.
+These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks; token-savings claims require `primary_tokens_measured` on both matched sides, and wall-time/provider-cache fields are diagnostic telemetry, not standalone savings proof. Benchmark CSV schemas are strict, so start a new CSV or migrate the header after helper upgrades.
 
 ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally.
 

@@ -85,8 +85,11 @@ CSV_COLUMNS = [
     "output_tokens",
     "cache_read",
     "cache_creation",
+    "provider_cached_tokens",
+    "provider_cached_tokens_measured",
     "cost_usd",
     "cost_measured",
+    "wall_time_seconds",
     "turns",
     "hook_triggers",
     "bytes_before",
@@ -100,6 +103,7 @@ CSV_COLUMNS = [
     "success",
     "corrections",
     "notes",
+    "primary_tokens_measured",
 ]
 MAX_CSV_NOTE_CHARS = 500
 MAX_CSV_ROWS = 100_000
@@ -139,14 +143,22 @@ SECRET_NOTE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
 )
 
-# claude -p --output-format json 의 usage 키 후보. Anthropic SDK 와 Claude Code 의 출력
-# 형식이 시간이 지나며 바뀔 수 있어 다중 후보로 best-effort 매칭한다.
+# claude -p --output-format json 및 호환 벤치마크 provider usage 키 후보.
+# Anthropic SDK, Claude Code, OpenAI-style JSON 출력 형식이 시간이 지나며 바뀔 수
+# 있어 다중 후보로 best-effort 매칭한다.
 USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("input_tokens", ("input_tokens",)),
-    ("output_tokens", ("output_tokens",)),
+    ("input_tokens", ("input_tokens", "inputTokens", "prompt_tokens", "promptTokens")),
+    ("output_tokens", ("output_tokens", "outputTokens", "completion_tokens", "completionTokens")),
     ("cache_read", ("cache_read_input_tokens", "cacheRead")),
     ("cache_creation", ("cache_creation_input_tokens", "cacheCreation")),
 )
+PROVIDER_CACHE_DETAIL_KEYS = (
+    "prompt_tokens_details",
+    "promptTokensDetails",
+    "input_tokens_details",
+    "inputTokensDetails",
+)
+PROVIDER_CACHED_TOKEN_KEYS = ("cached_tokens", "cachedTokens")
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 SHIFT_METRIC_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("turns", ("turns", "num_turns", "total_turns")),
@@ -359,6 +371,7 @@ class RunResult:
     notes: str
     corrections: int = 0
     cost_measured: bool = False
+    wall_time_seconds: float = 0.0
     turns: int = 0
     hook_triggers: int = 0
     bytes_before: int = 0
@@ -368,6 +381,9 @@ class RunResult:
     external_tokens_measured: bool = False
     external_cost_usd: float = 0.0
     external_cost_measured: bool = False
+    provider_cached_tokens: int = 0
+    provider_cached_tokens_measured: bool = False
+    primary_tokens_measured: bool = False
 
 
 @dataclass
@@ -505,7 +521,7 @@ def parse_variants(path: Path) -> list[Variant]:
     return variants
 
 
-def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
+def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool, bool]:
     """`claude -p --output-format json` 응답에서 token / cost 추출.
 
     의도된 정책: 한 응답에 top-level usage 와 nested per-message usage 가 동시에 있으면
@@ -541,7 +557,45 @@ def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool]:
             queue.extend(cur.values())
         elif isinstance(cur, list):
             queue.extend(cur)
-    return tokens, cost, seen_cost
+    return tokens, cost, seen_cost, any(seen_token.values())
+
+
+def collect_provider_cache_telemetry(payload: Any) -> tuple[int, bool]:
+    """Extract provider-specific prompt-cache telemetry without changing token totals.
+
+    OpenAI-style responses expose cached prompt tokens under
+    `usage.prompt_tokens_details.cached_tokens`.  That number is useful cache
+    telemetry, but `prompt_tokens` may already include cached tokens, so keep it
+    separate from the primary token buckets and from ContextGuard savings claims.
+    Anthropic-style `cache_read_input_tokens` remains in the normal `cache_read`
+    bucket handled by `collect_usage`.
+    """
+    queue: collections.deque[Any] = collections.deque([payload])
+    while queue:
+        cur = queue.popleft()
+        if isinstance(cur, dict):
+            for details_key in PROVIDER_CACHE_DETAIL_KEYS:
+                details = cur.get(details_key)
+                if not isinstance(details, dict):
+                    continue
+                for cached_key in PROVIDER_CACHED_TOKEN_KEYS:
+                    cached = normalize_usage_token(details.get(cached_key))
+                    if cached is not None:
+                        return cached, True
+            queue.extend(cur.values())
+        elif isinstance(cur, list):
+            queue.extend(cur)
+    return 0, False
+
+
+def collect_provider_cached_tokens(payload: Any) -> int:
+    """Return cached-token telemetry value for callers that only need the count."""
+    cached_tokens, _measured = collect_provider_cache_telemetry(payload)
+    return cached_tokens
+
+
+def elapsed_seconds_since(start: float) -> float:
+    return max(0.0, time.monotonic() - start)
 
 
 def first_normalized_token(cur: dict[str, Any], keys: tuple[str, ...]) -> int | None:
@@ -872,11 +926,13 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
 def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
                 project_root: Path, dry_run: bool) -> RunResult:
     argv = build_claude_argv(claude_bin, task, variant)
+    started_at = time.monotonic()
     if dry_run:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=True, notes=f"dry-run: {shlex.join(argv)}",
+            wall_time_seconds=0.0,
         )
     argv[0] = executable_argv0(argv[0])
     try:
@@ -891,24 +947,28 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude launch failed: {exc}",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
     if proc.timed_out:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes="claude timed out after 1800s",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
     if proc.output_truncated:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude output limit exceeded ({CLAUDE_OUTPUT_MAX_BYTES} bytes)",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
     if proc.returncode != 0:
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude exit={proc.returncode}: {proc.stderr[-200:].strip()}",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
     try:
         payload = json.loads(proc.stdout)
@@ -917,14 +977,18 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=False, notes=f"claude returned non-JSON: {exc.msg}",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
-    tokens, cost, cost_measured = collect_usage(payload)
+    tokens, cost, cost_measured, primary_tokens_measured = collect_usage(payload)
+    provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(payload)
     shift_metrics = collect_shift_metrics(payload)
     success, success_note = run_success_command(task, project_root)
     return RunResult(
         task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
         tokens=tokens, cost_usd=cost, success=success, notes=success_note,
         cost_measured=cost_measured,
+        primary_tokens_measured=primary_tokens_measured,
+        wall_time_seconds=elapsed_seconds_since(started_at),
         turns=int(shift_metrics["turns"]),
         hook_triggers=int(shift_metrics["hook_triggers"]),
         bytes_before=int(shift_metrics["bytes_before"]),
@@ -934,6 +998,8 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
         external_tokens_measured=bool(shift_metrics["external_tokens_measured"]),
         external_cost_usd=float(shift_metrics["external_cost_usd"]),
         external_cost_measured=bool(shift_metrics["external_cost_measured"]),
+        provider_cached_tokens=provider_cached_tokens,
+        provider_cached_tokens_measured=provider_cached_tokens_measured,
     )
 
 
@@ -967,8 +1033,13 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "output_tokens": tokens.get("output_tokens", 0),
                     "cache_read": tokens.get("cache_read", 0),
                     "cache_creation": tokens.get("cache_creation", 0),
+                    "provider_cached_tokens": result.provider_cached_tokens,
+                    "provider_cached_tokens_measured": (
+                        "true" if result.provider_cached_tokens_measured else "false"
+                    ),
                     "cost_usd": f"{result.cost_usd:.6f}",
                     "cost_measured": "true" if result.cost_measured else "false",
+                    "wall_time_seconds": f"{result.wall_time_seconds:.6f}",
                     "turns": result.turns,
                     "hook_triggers": result.hook_triggers,
                     "bytes_before": result.bytes_before,
@@ -984,6 +1055,7 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
                     "success": "true" if result.success else "false",
                     "corrections": result.corrections,
                     "notes": sanitize_csv_note(result.notes),
+                    "primary_tokens_measured": "true" if result.primary_tokens_measured else "false",
                 })
         finally:
             if fd != -1:
@@ -1046,6 +1118,10 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
         "success": result.success,
         "primary_cost_measured": result.cost_measured,
         "primary_cost_usd": round(result.cost_usd, 6),
+        "primary_tokens_measured": result.primary_tokens_measured,
+        "provider_cached_tokens": result.provider_cached_tokens,
+        "provider_cached_tokens_measured": result.provider_cached_tokens_measured,
+        "wall_time_seconds": round(result.wall_time_seconds, 6),
         "external_tokens_measured": result.external_tokens_measured,
         "external_cost_measured": result.external_cost_measured,
         "external_cost_usd": round(result.external_cost_usd, 6),
@@ -1175,6 +1251,10 @@ def row_optional_float(row: dict[str, str], key: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def row_has_finite_float(row: dict[str, str], key: str) -> bool:
+    return row_optional_float(row, key) is not None
+
+
 def row_bool(row: dict[str, str], key: str) -> bool:
     return str(row.get(key) or "").strip().lower() == "true"
 
@@ -1208,13 +1288,23 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 "successful_runs": 0,
                 "failed_runs": 0,
                 "total_tokens_all_runs": 0,
+                "primary_tokens_measured_runs": 0,
                 "primary_cost_all_runs_usd": 0.0,
                 "primary_cost_measured_runs": 0,
+                "wall_time_seconds_all_runs": 0.0,
+                "wall_time_seconds_measured_runs": 0,
+                "provider_cached_tokens_all_runs": 0,
+                "provider_cached_tokens_measured_runs": 0,
                 "total_cost_with_shift_all_runs_usd": 0.0,
                 "total_cost_with_shift_measured_runs": 0,
                 "total_tokens_successful": 0,
+                "primary_tokens_measured_successful": 0,
                 "primary_cost_successful_usd": 0.0,
                 "primary_cost_measured_successful": 0,
+                "wall_time_seconds_successful": 0.0,
+                "wall_time_seconds_measured_successful": 0,
+                "provider_cached_tokens_successful": 0,
+                "provider_cached_tokens_measured_successful": 0,
                 "external_cost_successful_usd": 0.0,
                 "external_cost_unknown_successful": 0,
                 "total_cost_with_shift_successful_usd": 0.0,
@@ -1231,6 +1321,14 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         )
         bucket["runs"] += 1
         bucket["total_tokens_all_runs"] += row_int(row, "total_tokens")
+        if row_bool(row, "primary_tokens_measured"):
+            bucket["primary_tokens_measured_runs"] += 1
+        bucket["wall_time_seconds_all_runs"] += row_float(row, "wall_time_seconds")
+        if row_has_finite_float(row, "wall_time_seconds"):
+            bucket["wall_time_seconds_measured_runs"] += 1
+        bucket["provider_cached_tokens_all_runs"] += row_int(row, "provider_cached_tokens")
+        if row_bool(row, "provider_cached_tokens_measured"):
+            bucket["provider_cached_tokens_measured_runs"] += 1
         if row_bool(row, "cost_measured"):
             bucket["primary_cost_all_runs_usd"] += row_float(row, "cost_usd")
             bucket["primary_cost_measured_runs"] += 1
@@ -1245,6 +1343,14 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         successful_tasks_by_variant.setdefault(variant, set()).add(task_id)
         successful_rows_by_variant_task.setdefault(variant, {}).setdefault(task_id, []).append(row)
         bucket["total_tokens_successful"] += row_int(row, "total_tokens")
+        if row_bool(row, "primary_tokens_measured"):
+            bucket["primary_tokens_measured_successful"] += 1
+        bucket["wall_time_seconds_successful"] += row_float(row, "wall_time_seconds")
+        if row_has_finite_float(row, "wall_time_seconds"):
+            bucket["wall_time_seconds_measured_successful"] += 1
+        bucket["provider_cached_tokens_successful"] += row_int(row, "provider_cached_tokens")
+        if row_bool(row, "provider_cached_tokens_measured"):
+            bucket["provider_cached_tokens_measured_successful"] += 1
         if row_bool(row, "cost_measured"):
             bucket["primary_cost_successful_usd"] += row_float(row, "cost_usd")
             bucket["primary_cost_measured_successful"] += 1
@@ -1276,6 +1382,14 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         if bucket["task_count"]:
             bucket["tokens_per_task_including_failures"] = (
                 bucket["total_tokens_all_runs"] / bucket["task_count"]
+                if bucket["primary_tokens_measured_runs"] == runs
+                else None
+            )
+            bucket["wall_time_seconds_per_task_including_failures"] = (
+                bucket["wall_time_seconds_all_runs"] / bucket["task_count"]
+            )
+            bucket["provider_cached_tokens_per_task_including_failures"] = (
+                bucket["provider_cached_tokens_all_runs"] / bucket["task_count"]
             )
             if bucket["primary_cost_measured_runs"] == runs:
                 bucket["primary_cost_per_task_including_failures_usd"] = (
@@ -1291,10 +1405,20 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 bucket["total_cost_with_shift_per_task_including_failures_usd"] = None
         else:
             bucket["tokens_per_task_including_failures"] = None
+            bucket["wall_time_seconds_per_task_including_failures"] = None
+            bucket["provider_cached_tokens_per_task_including_failures"] = None
             bucket["primary_cost_per_task_including_failures_usd"] = None
             bucket["total_cost_with_shift_per_task_including_failures_usd"] = None
         if successes:
-            bucket["tokens_per_successful_task"] = bucket["total_tokens_successful"] / successes
+            bucket["tokens_per_successful_task"] = (
+                bucket["total_tokens_successful"] / successes
+                if bucket["primary_tokens_measured_successful"] == successes
+                else None
+            )
+            bucket["wall_time_seconds_per_successful_task"] = bucket["wall_time_seconds_successful"] / successes
+            bucket["provider_cached_tokens_per_successful_task"] = (
+                bucket["provider_cached_tokens_successful"] / successes
+            )
             if bucket["primary_cost_measured_successful"] == successes:
                 bucket["primary_cost_per_successful_task_usd"] = (
                     bucket["primary_cost_successful_usd"] / successes
@@ -1319,6 +1443,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["byte_reduction_ratio"] = (after / before) if before else None
         else:
             bucket["tokens_per_successful_task"] = None
+            bucket["wall_time_seconds_per_successful_task"] = None
+            bucket["provider_cached_tokens_per_successful_task"] = None
             bucket["primary_cost_per_successful_task_usd"] = None
             bucket["total_cost_with_shift_per_successful_task_usd"] = None
             bucket["external_tokens_per_successful_task"] = None
@@ -1349,7 +1475,10 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             bucket["token_proxy_saved_successful"] = None
             bucket["token_proxy_saved_per_successful_task"] = None
         bucket["observed_telemetry"] = {
-            "tokens": "observed",
+            "tokens": (
+                "observed" if runs and bucket["primary_tokens_measured_runs"] == runs
+                else ("partial" if bucket["primary_tokens_measured_runs"] else "unavailable")
+            ),
             "primary_cost": (
                 "observed" if runs and bucket["primary_cost_measured_runs"] == runs
                 else ("partial" if bucket["primary_cost_measured_runs"] else "unavailable")
@@ -1360,6 +1489,14 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             ),
             "byte_savings": "observed" if byte_metrics_present else "unavailable",
             "token_proxy": "inferred" if (successes and byte_metrics_present) else "unavailable",
+            "wall_time": (
+                "observed" if runs and bucket["wall_time_seconds_measured_runs"] == runs
+                else ("partial" if bucket["wall_time_seconds_measured_runs"] else "unavailable")
+            ),
+            "provider_cache": (
+                "observed" if runs and bucket["provider_cached_tokens_measured_runs"] == runs
+                else ("partial" if bucket["provider_cached_tokens_measured_runs"] else "unavailable")
+            ),
         }
 
     def average_task_metric(variant: str, task_id: str, key: str) -> float | None:
@@ -1432,7 +1569,27 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             continue
         variant_successful_tasks = successful_tasks_by_variant.get(variant, set())
         matched_tasks = baseline_successful_tasks & variant_successful_tasks
-        base_tokens, variant_tokens, token_task_count = average_paired_metric(variant, matched_tasks, "total_tokens")
+        token_matched_tasks = {
+            task_id for task_id in matched_tasks
+            if all(
+                row_bool(row, "primary_tokens_measured")
+                for row in successful_rows_by_variant_task[baseline_variant][task_id]
+            )
+            and all(
+                row_bool(row, "primary_tokens_measured")
+                for row in successful_rows_by_variant_task[variant][task_id]
+            )
+        }
+        base_tokens, variant_tokens, token_task_count = average_paired_metric(
+            variant,
+            token_matched_tasks,
+            "total_tokens",
+        )
+        base_wall_time, variant_wall_time, wall_time_task_count = average_paired_metric(
+            variant,
+            matched_tasks,
+            "wall_time_seconds",
+        )
         base_corrections, variant_corrections, corrections_task_count = average_paired_int_metric(
             variant,
             matched_tasks,
@@ -1498,6 +1655,18 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         else:
             comparison["token_savings_pct"] = None
             comparison["paired_token_task_count"] = 0
+        if (
+            isinstance(base_wall_time, (int, float))
+            and isinstance(variant_wall_time, (int, float))
+            and base_wall_time
+        ):
+            comparison["wall_time_delta_seconds_per_successful_task"] = variant_wall_time - base_wall_time
+            comparison["wall_time_change_pct"] = (variant_wall_time - base_wall_time) / base_wall_time * 100.0
+            comparison["paired_wall_time_task_count"] = wall_time_task_count
+        else:
+            comparison["wall_time_delta_seconds_per_successful_task"] = None
+            comparison["wall_time_change_pct"] = None
+            comparison["paired_wall_time_task_count"] = wall_time_task_count
         if isinstance(base_cost, (int, float)) and isinstance(variant_cost, (int, float)) and base_cost:
             comparison["total_cost_with_shift_delta_usd"] = variant_cost - base_cost
             comparison["cost_savings_pct_with_shift"] = (base_cost - variant_cost) / base_cost * 100.0
@@ -1541,7 +1710,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         "caveat": (
             "Proxy byte reductions are reported separately from matched-task token/cost metrics; "
             "shifted cost savings require measured primary cost and measured external cost when "
-            "external tokens are present."
+            "external tokens are present. Wall time and provider cached-token fields are diagnostic "
+            "telemetry, not proof of ContextGuard-caused token or cost savings."
         ),
     }
 
@@ -1705,7 +1875,10 @@ def main() -> int:
             suffix = " (CSV not updated; row already present)"
         else:
             suffix = ""
-        print(f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} {sanitize_note_text(result.notes)}{suffix}")
+        print(
+            f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
+            f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
+        )
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
     if args.report_json is not None and not args.dry_run:
         report = write_report_json(args.csv, args.report_json, args.baseline_variant)
