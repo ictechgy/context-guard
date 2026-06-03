@@ -633,27 +633,6 @@ def ensure_private_pack_dir(root: Path) -> tuple[Path | None, int | None, str | 
                 pass
 
 
-def write_private_json(path: Path, data: dict[str, Any]) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-    except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
 def write_private_json_at(dir_fd: int, filename: str, data: dict[str, Any]) -> None:
     if "/" in filename or filename in {"", ".", ".."}:
         raise PackError("unsafe_artifact_path")

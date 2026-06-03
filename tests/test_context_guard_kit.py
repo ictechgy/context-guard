@@ -1668,8 +1668,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp)
-                    outside = root.parent / "outside-context-pack.txt"
+                    sandbox = Path(tmp)
+                    root = sandbox / "repo"
+                    root.mkdir()
+                    outside = sandbox / "outside-context-pack.txt"
                     outside.write_text("outside\n", encoding="utf-8")
                     (root / "ok.txt").write_text("ok\n", encoding="utf-8")
                     if hasattr(os, "symlink"):
