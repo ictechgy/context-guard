@@ -8384,7 +8384,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "bytes_before",
             "bytes_after",
             "artifacts_used",
+            "primary_tokens_measured",
+            "provider_cached_tokens",
+            "provider_cached_tokens_measured",
             "cost_measured",
+            "wall_time_seconds",
             "external_tokens",
             "external_tokens_measured",
             "external_cost_usd",
@@ -8454,6 +8458,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                             "cost_usd": "0",
                             "cost_measured": "false",
                             "external_tokens": "0",
@@ -8468,6 +8473,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
+                            "primary_tokens_measured": "true",
                             "cost_usd": "0",
                             "cost_measured": "false",
                             "external_tokens": "0",
@@ -8494,6 +8500,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
                             "external_tokens": "0",
@@ -8508,6 +8515,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
+                            "primary_tokens_measured": "true",
                             "cost_usd": "0.05",
                             "cost_measured": "true",
                             "external_tokens": "9",
@@ -8603,24 +8611,28 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                         },
                         {
                             "task_id": "t02",
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                         },
                         {
                             "task_id": "t01",
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
+                            "primary_tokens_measured": "true",
                         },
                         {
                             "task_id": "t02",
                             "variant": "optimized",
                             "success": "false",
                             "total_tokens": "25",
+                            "primary_tokens_measured": "true",
                         },
                     ],
                     "baseline",
@@ -8645,6 +8657,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                             "corrections": "0",
                         },
                         {
@@ -8652,6 +8665,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
+                            "primary_tokens_measured": "true",
                             "corrections": "2",
                         },
                     ],
@@ -8673,6 +8687,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "baseline",
                             "success": "true",
                             "total_tokens": "100",
+                            "primary_tokens_measured": "true",
                             "corrections": "0",
                         },
                         {
@@ -8680,6 +8695,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "variant": "optimized",
                             "success": "true",
                             "total_tokens": "50",
+                            "primary_tokens_measured": "true",
                             "corrections": "nan",
                         },
                     ],
@@ -8860,6 +8876,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "output_tokens": 30,
                         "cache_read_input_tokens": 800,
                         "cache_creation_input_tokens": 50,
+                        "prompt_tokens_details": {"cached_tokens": 64},
                     })
                     (root / "tasks.json").write_text(json.dumps([
                         {"id": "t01", "prompt": "echo hi", "model": "sonnet",
@@ -8888,8 +8905,12 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(row["output_tokens"], "30")
                     self.assertEqual(row["cache_read"], "800")
                     self.assertEqual(row["cache_creation"], "50")
+                    self.assertEqual(row["provider_cached_tokens"], "64")
+                    self.assertEqual(row["provider_cached_tokens_measured"], "true")
+                    self.assertEqual(row["primary_tokens_measured"], "true")
                     self.assertEqual(row["total_tokens"], "980")
                     self.assertEqual(row["success"], "true")
+                    self.assertGreater(float(row["wall_time_seconds"]), 0)
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
 
     def test_benchmark_runner_writes_cost_shift_ledger_and_ab_report(self):
@@ -8902,7 +8923,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "#!/usr/bin/env python3\n"
                         "import json, sys\n"
                         "optimized = '--optimized' in sys.argv\n"
-                        "usage = {'input_tokens': 50 if optimized else 100, 'output_tokens': 10 if optimized else 20}\n"
+                        "usage = {'input_tokens': 50 if optimized else 100, 'output_tokens': 10 if optimized else 20, 'prompt_tokens_details': {'cached_tokens': 25 if optimized else 0}}\n"
                         "payload = {\n"
                         "    'message': {'usage': usage},\n"
                         "    'total_cost_usd': 0.06 if optimized else 0.12,\n"
@@ -8952,6 +8973,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(optimized["bytes_after"], "120")
                     self.assertEqual(optimized["artifacts_used"], "1")
                     self.assertEqual(optimized["external_tokens"], "5")
+                    self.assertEqual(optimized["provider_cached_tokens"], "25")
+                    self.assertEqual(optimized["provider_cached_tokens_measured"], "true")
+                    self.assertEqual(optimized["primary_tokens_measured"], "true")
+                    self.assertGreater(float(optimized["wall_time_seconds"]), 0)
                     self.assertEqual(optimized["external_tokens_measured"], "true")
                     self.assertEqual(optimized["cost_measured"], "true")
                     self.assertEqual(optimized["external_cost_measured"], "true")
@@ -8964,25 +8989,144 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(ledger_rows), 2)
                     optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
                     self.assertTrue(optimized_ledger["primary_cost_measured"])
+                    self.assertTrue(optimized_ledger["primary_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_cost_measured"])
+                    self.assertEqual(optimized_ledger["provider_cached_tokens"], 25)
+                    self.assertTrue(optimized_ledger["provider_cached_tokens_measured"])
+                    self.assertGreater(optimized_ledger["wall_time_seconds"], 0)
                     self.assertAlmostEqual(optimized_ledger["total_cost_with_shift_usd"], 0.07, places=6)
 
                     report = json.loads(report_path.read_text(encoding="utf-8"))
                     self.assertEqual(report["schema"], "context-guard-bench-report-v1")
                     self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
+                    self.assertEqual(
+                        report["summary_by_variant"]["baseline"]["primary_tokens_measured_successful"],
+                        1,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["primary_tokens_measured_successful"],
+                        1,
+                    )
                     comparison = next(item for item in report["comparisons"] if item["variant"] == "optimized")
                     self.assertEqual(comparison["quality_gate"], "pass")
                     self.assertEqual(comparison["matched_successful_task_count"], 1)
                     self.assertGreater(comparison["token_savings_pct"], 0)
+                    self.assertEqual(comparison["paired_wall_time_task_count"], 1)
+                    self.assertIn("wall_time_change_pct", comparison)
                     self.assertGreater(
                         report["summary_by_variant"]["optimized"]["external_cost_successful_usd"],
                         0,
                     )
                     self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["provider_cached_tokens_successful"],
+                        25,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["baseline"]["provider_cached_tokens_successful"],
+                        0,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["baseline"]["wall_time_seconds_measured_successful"],
+                        1,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["wall_time_seconds_measured_successful"],
+                        1,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["baseline"]["provider_cached_tokens_measured_successful"],
+                        1,
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["baseline"]["observed_telemetry"]["provider_cache"],
+                        "observed",
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["observed_telemetry"]["provider_cache"],
+                        "observed",
+                    )
+                    self.assertEqual(
+                        report["summary_by_variant"]["optimized"]["observed_telemetry"]["wall_time"],
+                        "observed",
+                    )
+                    self.assertEqual(
                         report["summary_by_variant"]["optimized"]["external_tokens_successful"],
                         5,
                     )
+                    self.assertIn("Wall time", report["caveat"])
+
+    def test_benchmark_report_example_documents_diagnostic_shape(self):
+        sample = json.loads((ROOT / "docs" / "benchmark-report.example.json").read_text(encoding="utf-8"))
+        self.assertEqual(sample["schema"], "context-guard-bench-report-v1")
+        baseline = sample["summary_by_variant"]["baseline"]
+        optimized = sample["summary_by_variant"]["context_hygiene"]
+        comparison = sample["comparisons"][0]
+        self.assertEqual(baseline["primary_tokens_measured_successful"], 1)
+        self.assertEqual(baseline["provider_cached_tokens_successful"], 0)
+        self.assertEqual(baseline["provider_cached_tokens_measured_successful"], 1)
+        self.assertEqual(baseline["wall_time_seconds_measured_successful"], 1)
+        self.assertEqual(optimized["primary_tokens_measured_successful"], 1)
+        self.assertEqual(optimized["provider_cached_tokens_successful"], 120)
+        self.assertEqual(optimized["provider_cached_tokens_measured_successful"], 1)
+        self.assertEqual(optimized["wall_time_seconds_measured_successful"], 1)
+        self.assertEqual(comparison["paired_token_task_count"], 1)
+        self.assertEqual(comparison["paired_wall_time_task_count"], 1)
+        self.assertIn("diagnostic telemetry", sample["caveat"])
+
+    def test_benchmark_report_marks_missing_wall_time_unavailable(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_wall_time_availability")
+        report = module.summarize_benchmark_rows(
+            [
+                {
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "total_tokens": "100",
+                    "success": "true",
+                    "cost_measured": "false",
+                },
+            ],
+            "baseline",
+        )
+        self.assertEqual(
+            report["summary_by_variant"]["baseline"]["observed_telemetry"]["wall_time"],
+            "unavailable",
+        )
+        self.assertEqual(report["summary_by_variant"]["baseline"]["wall_time_seconds_measured_successful"], 0)
+
+    def test_benchmark_report_does_not_claim_token_savings_without_primary_token_telemetry(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_primary_token_availability")
+        report = module.summarize_benchmark_rows(
+            [
+                {
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "success": "true",
+                    "total_tokens": "100",
+                    "primary_tokens_measured": "true",
+                    "corrections": "0",
+                },
+                {
+                    "task_id": "t01",
+                    "variant": "optimized",
+                    "success": "true",
+                    "total_tokens": "0",
+                    "primary_tokens_measured": "false",
+                    "corrections": "0",
+                },
+            ],
+            "baseline",
+        )
+        comparison = report["comparisons"][0]
+        self.assertEqual(report["claim_status"], "insufficient_paired_data")
+        self.assertEqual(comparison["quality_gate"], "pass")
+        self.assertEqual(comparison["paired_token_task_count"], 0)
+        self.assertIsNone(comparison["token_savings_pct"])
+        self.assertEqual(
+            report["summary_by_variant"]["optimized"]["observed_telemetry"]["tokens"],
+            "unavailable",
+        )
+        self.assertIsNone(report["summary_by_variant"]["optimized"]["tokens_per_successful_task"])
 
     def test_benchmark_runner_bounds_claude_stdout_before_json_parse(self):
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -9492,13 +9636,43 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 }, "cost_usd": 9.0},
             ],
         }
-        tokens, cost, cost_measured = module.collect_usage(payload)
+        tokens, cost, cost_measured, primary_tokens_measured = module.collect_usage(payload)
         self.assertEqual(tokens["input_tokens"], 100)
         self.assertEqual(tokens["output_tokens"], 30)
         self.assertEqual(tokens["cache_read"], 800)
         self.assertEqual(tokens["cache_creation"], 50)
         self.assertAlmostEqual(cost, 0.05, places=6)
         self.assertTrue(cost_measured)
+        self.assertTrue(primary_tokens_measured)
+
+    def test_collect_provider_cached_tokens_tracks_openai_prompt_cache_separately(self):
+        """OpenAI cached_tokens 는 진단 텔레메트리이며 primary token 합계에 섞지 않는다."""
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache")
+        payload = {
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 64},
+            },
+            "messages": [
+                {"usage": {"prompt_tokens_details": {"cached_tokens": 999}}},
+            ],
+        }
+        tokens, _cost, _cost_measured, primary_tokens_measured = module.collect_usage(payload)
+        self.assertEqual(tokens["input_tokens"], 120)
+        self.assertEqual(tokens["output_tokens"], 30)
+        self.assertEqual(tokens["cache_read"], 0)
+        self.assertTrue(primary_tokens_measured)
+        self.assertEqual(module.collect_provider_cached_tokens(payload), 64)
+        self.assertEqual(module.collect_provider_cache_telemetry(payload), (64, True))
+        input_details_payload = {
+            "usage": {
+                "prompt_tokens": 88,
+                "completion_tokens": 12,
+                "input_tokens_details": {"cached_tokens": 7},
+            },
+        }
+        self.assertEqual(module.collect_provider_cache_telemetry(input_details_payload), (7, True))
 
     def test_collect_usage_skips_nonfinite_negative_and_huge_metrics(self):
         """Claude JSON 의 비정상 metric 은 CSV 에 NaN/Infinity/거대값으로 전파되면 안 된다."""
@@ -9523,13 +9697,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 }
             ],
         }
-        tokens, cost, cost_measured = module.collect_usage(payload)
+        tokens, cost, cost_measured, primary_tokens_measured = module.collect_usage(payload)
         self.assertEqual(tokens["input_tokens"], 7)
         self.assertEqual(tokens["output_tokens"], 3)
         self.assertEqual(tokens["cache_read"], 2)
         self.assertEqual(tokens["cache_creation"], 1)
         self.assertAlmostEqual(cost, 0.25, places=6)
         self.assertTrue(cost_measured)
+        self.assertTrue(primary_tokens_measured)
 
     def test_collect_usage_leaves_missing_or_all_invalid_metrics_zero(self):
         """모든 metric 후보가 비정상이면 safe zero 로 남겨 CSV 직렬화를 안정화한다."""
@@ -9541,7 +9716,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             },
             "cost_usd": -5,
         }
-        tokens, cost, cost_measured = module.collect_usage(payload)
+        tokens, cost, cost_measured, primary_tokens_measured = module.collect_usage(payload)
         self.assertEqual(tokens, {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -9550,6 +9725,31 @@ class BenchmarkRunnerTests(unittest.TestCase):
         })
         self.assertEqual(cost, 0.0)
         self.assertFalse(cost_measured)
+        self.assertFalse(primary_tokens_measured)
+
+    def test_collect_usage_requires_core_input_and_output_token_buckets(self):
+        """부분 token bucket 만 있으면 savings 근거로 쓰지 않는다."""
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_usage_partial")
+        partial_payloads = [
+            {"usage": {"completion_tokens": 100}},
+            {"usage": {"prompt_tokens": 100}},
+            {"usage": {"cache_read_input_tokens": 100}},
+        ]
+        for payload in partial_payloads:
+            with self.subTest(payload=payload):
+                tokens, _cost, _cost_measured, primary_tokens_measured = module.collect_usage(payload)
+                self.assertFalse(primary_tokens_measured)
+                self.assertEqual(
+                    tokens["input_tokens"] + tokens["output_tokens"] + tokens["cache_read"] + tokens["cache_creation"],
+                    100,
+                )
+
+        tokens, _cost, _cost_measured, primary_tokens_measured = module.collect_usage(
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 25}}
+        )
+        self.assertTrue(primary_tokens_measured)
+        self.assertEqual(tokens["input_tokens"], 100)
+        self.assertEqual(tokens["output_tokens"], 25)
 
 
 class StatuslineMergedWrapperTests(unittest.TestCase):

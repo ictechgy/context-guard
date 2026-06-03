@@ -218,7 +218,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-보고서는 성공한 기준/변형 실행을 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교합니다. 바이트 감소는 간접 증거로만 기록하며, 그 자체를 절감 증명으로 보지 않습니다. 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다. 절감 주장은 양쪽 모두 성공한 태스크 대응 기준이며, 실패율 가드레일이 악화되면 경고 수준으로 조정합니다.
+보고서는 성공한 기준/변형 실행을 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교합니다. 바이트 감소는 간접 증거로만 기록하며, 그 자체를 절감 증명으로 보지 않습니다. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다. `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다. 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다. 절감 주장은 양쪽 모두 성공한 태스크 대응 기준이며, 실패율 가드레일이 악화되면 경고 수준으로 조정합니다. CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요. 최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을 참고하세요.
 
 ## 아직 제공하지 않는 기능
 
@@ -227,7 +227,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 - 큰 `AGENTS.md`, `CLAUDE.md`, 프로젝트 규칙 파일을 찾는 지시문 비대화 검사
 - 프롬프트 앞부분에 자주 바뀌는 내용이 들어가 provider cache 적중률을 낮추는지 확인하는 캐시 친화성 감사
 - AI 컨텍스트에서 제외하면 좋은 파일을 제안하는 `ignore` 규칙 추천 생성
-- AI 코딩 작업 유형별 전후 비교 벤치마크 예시 리포트
+- 최소 보고서 형태 fixture를 넘어서는 작업 유형별 전후 비교 벤치마크 예시 모음
 
 ## 저장소 구조
 

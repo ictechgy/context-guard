@@ -218,7 +218,7 @@ The audit command skips oversized transcript files and JSONL records by default 
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress.
+The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. Token-savings claims require `primary_tokens_measured` on both sides of a matched task. `wall_time_seconds`, `provider_cached_tokens`, and `provider_cached_tokens_measured` are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress. CSV schemas are strict; after upgrading the benchmark helper, start a new `--csv` file or migrate the header named in the mismatch error. See [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json) for a minimal report-shape example.
 
 ## What is not yet shipped
 
@@ -227,7 +227,7 @@ These are directions the project has noted, not committed features. Nothing here
 - instruction-bloat scanning for large `AGENTS.md`, `CLAUDE.md`, and project rule files,
 - cache-friendly prompt audits that flag frequently changing content near the front of prompts,
 - ignore recommendation generation for files that should stay out of AI context,
-- sample before/after benchmark reports for common AI coding workflows.
+- workflow-specific before/after benchmark report examples beyond the minimal report-shape fixture.
 
 ## Repository layout
 
