@@ -14,7 +14,7 @@ ContextGuard's shipped helpers reduce avoidable local context bloat before an AI
 A lane can move from radar to shipped feature only when it satisfies the same evidence discipline used by [`benchmark-plan.md`](benchmark-plan.md):
 
 1. **Matched successful tasks**: compare baseline and variant only on tasks that succeed in both conditions.
-2. **Failure-rate guardrail**: downgrade or reject a technique if failure rate regresses by 10 percentage points or more.
+2. **Failure-rate guardrail**: use [`benchmark-plan.md`](benchmark-plan.md) as the source of truth for the threshold (`10%p`, i.e. 10 percentage points); downgrade or reject a technique if failure rate regresses by that amount or more.
 3. **Human-correction tracking**: treat higher correction burden as a quality watch even when token counts fall.
 4. **Shifted-cost accounting**: include external/subagent/local-service costs where the work moved elsewhere.
 5. **Provider-measured evidence**: token or cost savings require measured primary token/cost fields, not only bytes saved.
