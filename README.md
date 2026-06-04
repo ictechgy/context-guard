@@ -174,7 +174,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
 ```
 
-Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. When a suggested `--lines START:END` query also includes `--max-lines`, that flag is only the returned-line cap for the selected range; it does not broaden the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
 
 ### Build a budgeted context pack
 

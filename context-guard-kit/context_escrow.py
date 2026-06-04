@@ -416,8 +416,18 @@ def build_retrieval_hints(
             "cli": line_query_cli(artifact_id, 1, end_line),
             "exact": total_lines <= MAX_QUERY_LINES,
         }
+        if end_line > DEFAULT_MAX_LINES:
+            lines_hint["max_lines"] = end_line
+            lines_hint["max_lines_required"] = True
+            lines_hint["note"] = (
+                "`--max-lines` in this suggested query is only the returned-line cap for the selected "
+                "`--lines` range; the explicit line range remains the selector."
+            )
         if total_lines > MAX_QUERY_LINES:
-            lines_hint["note"] = f"first {MAX_QUERY_LINES} lines only; request later ranges for the full artifact"
+            lines_hint["note"] = (
+                f"first {MAX_QUERY_LINES} lines only; request later ranges for the full artifact. "
+                "`--max-lines` is only the returned-line cap for the selected range."
+            )
             lines_hint["total_lines"] = total_lines
         hints.append(lines_hint)
     anchor = first_error_anchor(sanitized_text)
@@ -591,6 +601,31 @@ def metadata_size_bytes(metadata: dict[str, object]) -> int:
     return len(metadata_json_text(metadata).encode("utf-8", errors="replace"))
 
 
+def metadata_cap_diagnostic(metadata: dict[str, object], *, stage: str) -> str:
+    digest = metadata.get("digest")
+    digest_counts: dict[str, int] = {}
+    if isinstance(digest, dict):
+        for key in (
+            "representative_tail",
+            "representative_head",
+            "duplicate_line_groups",
+            "top_error_lines",
+            "top_error_receipts",
+        ):
+            value = digest.get(key)
+            if isinstance(value, list):
+                digest_counts[key] = len(value)
+    counts_text = ",".join(f"{key}={value}" for key, value in digest_counts.items()) or "none"
+    return (
+        "artifact metadata exceeds trusted size cap before write: "
+        f"metadata_bytes={metadata_size_bytes(metadata)} "
+        f"metadata_cap_bytes={MAX_METADATA_BYTES} "
+        f"stage={stage} "
+        f"remaining_digest_items={counts_text}; "
+        "authoritative artifact content was not written because the receipt would be unreadable"
+    )
+
+
 def shrink_digest_for_metadata_cap(metadata: dict[str, object]) -> None:
     """Keep stored metadata inside the trusted read cap before writing it.
 
@@ -602,7 +637,7 @@ def shrink_digest_for_metadata_cap(metadata: dict[str, object]) -> None:
     digest = metadata.get("digest")
     if not isinstance(digest, dict):
         if metadata_size_bytes(metadata) > MAX_METADATA_BYTES:
-            raise ValueError("artifact metadata exceeds trusted size cap before write")
+            raise ValueError(metadata_cap_diagnostic(metadata, stage="no_digest"))
         return
     if metadata_size_bytes(metadata) <= MAX_METADATA_BYTES:
         return
@@ -623,7 +658,7 @@ def shrink_digest_for_metadata_cap(metadata: dict[str, object]) -> None:
                 items.pop()
                 break
         else:
-            raise ValueError("artifact metadata exceeds trusted size cap before write")
+            raise ValueError(metadata_cap_diagnostic(metadata, stage="digest_shrink_exhausted"))
 
 
 def store_command(args: argparse.Namespace) -> int:
@@ -875,7 +910,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return int(args.func(args))
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"context-guard-artifact: {exc}", file=sys.stderr)
         return 1
 

@@ -2519,6 +2519,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(lines_hint["selector"], {"start": 1, "end": 90})
                     self.assertIn("--lines 1:90", lines_hint["cli"])
                     self.assertIn("--max-lines 90", lines_hint["cli"])
+                    self.assertEqual(lines_hint["max_lines"], 90)
+                    self.assertTrue(lines_hint["max_lines_required"])
+                    self.assertIn("returned-line cap", lines_hint["note"])
+                    self.assertIn("line range remains the selector", lines_hint["note"])
                     self.assertEqual(receipt["suggested_queries"][0], lines_hint["cli"])
 
                     query = subprocess.run(
@@ -2541,6 +2545,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(data["query"]["returned_lines"], 90)
                     self.assertEqual(data["query"]["matched_lines"], 90)
                     self.assertEqual(data["content"], raw)
+
+    def test_artifact_escrow_metadata_cap_failure_is_diagnostic(self):
+        for index, script in enumerate(ARTIFACT_SCRIPTS):
+            with self.subTest(script=script):
+                artifact = load_python_script_module(script, f"_artifact_metadata_cap_diagnostic_{index}")
+                metadata = {
+                    "artifact_id": "a" * 20,
+                    "large_unshrinkable_field": "x" * 200,
+                    "digest": {
+                        "representative_tail": [],
+                        "representative_head": [],
+                        "duplicate_line_groups": [],
+                        "top_error_lines": [],
+                        "top_error_receipts": [],
+                    },
+                }
+                original_cap = artifact.MAX_METADATA_BYTES
+                try:
+                    artifact.MAX_METADATA_BYTES = 80
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        r"metadata_bytes=\d+ metadata_cap_bytes=80 stage=digest_shrink_exhausted",
+                    ) as ctx:
+                        artifact.shrink_digest_for_metadata_cap(metadata)
+                finally:
+                    artifact.MAX_METADATA_BYTES = original_cap
+                message = str(ctx.exception)
+                self.assertIn("remaining_digest_items=representative_tail=0", message)
+                self.assertIn("authoritative artifact content was not written", message)
 
     def test_artifact_escrow_fails_closed_when_primary_sanitizer_cannot_load(self):
         for index, script in enumerate(ARTIFACT_SCRIPTS):
