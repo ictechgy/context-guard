@@ -53,12 +53,12 @@ SECRET_RE = re.compile(
     r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
-    r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|access[_-]?key(?:id)?|accesskeyid)=[^&#\s,}\]]+|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|access[_-]?key(?:id)?|accesskeyid)\s*[:=]\s*[^\s,}\]]+"
+    r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|awsaccesskeyid)=[^&#\s,}\]]+|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|awsaccesskeyid)\s*[:=]\s*[^\s,}\]]+"
     r")"
 )
 SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid|access[_-]?key(?:id)?|accesskeyid|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey)"
+    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey)"
 )
 VALUE_BEARING_KEY_RE = re.compile(r"(?i)^(default|const|enum|example|examples|value|values)$")
 
@@ -191,6 +191,7 @@ def sanitize_value(value: Any, *, sensitive_context: bool = False, sensitive_sch
 
 
 def read_limited_path(path: Path, max_bytes: int) -> str:
+    reject_symlink_components(path)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(str(path), flags)
@@ -393,9 +394,9 @@ def reject_symlink_components(path: Path) -> None:
         except FileNotFoundError:
             return
         if stat.S_ISLNK(st.st_mode):
-            fail(f"refusing store path with symlink component: {current}")
+            fail(f"refusing path with symlink component: {current}")
         if not stat.S_ISDIR(st.st_mode) and current != path:
-            fail(f"refusing store path through non-directory component: {current}")
+            fail(f"refusing path through non-directory component: {current}")
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -653,13 +654,6 @@ def select_catalog(args: argparse.Namespace) -> str:
     if receipt_size > max_receipt_bytes:
         fail(f"receipt exceeds --max-receipt-bytes: {receipt_size} > {max_receipt_bytes}")
 
-    # Only write after every size gate has passed, so failures leave no success receipt.
-    ensure_private_dir(store_dir)
-    written_payload_bytes = write_private_json_atomic(payload_path, payload, max_bytes=max_payload_bytes, label="payload")
-    if written_payload_bytes != payload_bytes:
-        fail("payload byte size changed during write")
-    written_receipt_bytes = write_private_json_atomic(receipt_path, receipt, max_bytes=max_receipt_bytes, label="receipt")
-
     selected: list[dict[str, Any]] = []
     selected_schema_bytes = 0
     for cand in ranked[:top]:
@@ -682,7 +676,7 @@ def select_catalog(args: argparse.Namespace) -> str:
         "omitted_tools_truncated_count": omitted_truncated,
         "receipt": {
             **receipt,
-            "bytes": written_receipt_bytes,
+            "bytes": receipt_size,
         },
         "token_proxy": {"measurement": "estimated", "chars_per_token": TOKEN_PROXY_CHARS_PER_TOKEN},
         "caveats": [
@@ -692,10 +686,20 @@ def select_catalog(args: argparse.Namespace) -> str:
         ],
         "redaction": {"redacted_values": total_redactions},
     }
-    return shrink_result_for_output(result, max_output_bytes)
+    rendered = shrink_result_for_output(result, max_output_bytes)
+
+    # Only write after every size gate has passed, so failures leave no success receipt.
+    ensure_private_dir(store_dir)
+    written_payload_bytes = write_private_json_atomic(payload_path, payload, max_bytes=max_payload_bytes, label="payload")
+    if written_payload_bytes != payload_bytes:
+        fail("payload byte size changed during write")
+    written_receipt_bytes = write_private_json_atomic(receipt_path, receipt, max_bytes=max_receipt_bytes, label="receipt")
+    if written_receipt_bytes != receipt_size:
+        fail("receipt byte size changed during write")
+    return rendered
 
 
-def payload_path_from_receipt(store_dir: str, receipt_id: str, receipt: dict[str, Any]) -> Path:
+def payload_path_from_receipt(store_dir: Path, receipt_id: str, receipt: dict[str, Any]) -> Path:
     expected_name = f"{receipt_id}.payload.json"
     raw = str(receipt.get("payload_path") or "")
     if raw:
@@ -704,7 +708,7 @@ def payload_path_from_receipt(store_dir: str, receipt_id: str, receipt: dict[str
             fail("receipt payload_path must be relative")
         if raw_path.name != expected_name:
             fail("receipt payload_path does not match receipt_id")
-    return Path(store_dir).expanduser() / expected_name
+    return store_dir / expected_name
 
 
 def get_schema(args: argparse.Namespace) -> str:
@@ -714,11 +718,13 @@ def get_schema(args: argparse.Namespace) -> str:
     receipt_id = args.receipt_id
     if not RECEIPT_ID_RE.fullmatch(receipt_id):
         fail("receipt_id must be 16-64 lowercase hex chars")
-    _store, receipt_path, _payload = store_paths(args.store_dir, receipt_id)
+    store_dir, receipt_path, _payload = store_paths(args.store_dir, receipt_id)
+    reject_symlink_components(receipt_path)
     receipt = read_private_json(receipt_path, max_bytes=max_receipt_bytes, label="receipt")
     if receipt.get("receipt_id") != receipt_id:
         fail("receipt id mismatch")
-    payload_path = payload_path_from_receipt(args.store_dir, receipt_id, receipt)
+    payload_path = payload_path_from_receipt(store_dir, receipt_id, receipt)
+    reject_symlink_components(payload_path)
     expected_bytes = receipt.get("payload_bytes")
     expected_sha = receipt.get("payload_sha256")
     if not isinstance(expected_bytes, int) or expected_bytes < 0:

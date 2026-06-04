@@ -1677,7 +1677,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.skipTest("symlink unavailable")
                     proc = self._run_tool_prune(script, root, "select", "--catalog", str(link), check=False)
                     self.assertNotEqual(proc.returncode, 0)
-                    self.assertIn("catalog read failed", proc.stderr)
+                    self.assertIn("symlink component", proc.stderr)
+
+                    symlink_parent = root / "catalog-link-parent"
+                    symlink_parent.symlink_to(root, target_is_directory=True)
+                    parent_proc = self._run_tool_prune(script, root, "select", "--catalog", str(symlink_parent / "tools.json"), check=False)
+                    self.assertNotEqual(parent_proc.returncode, 0)
+                    self.assertIn("symlink component", parent_proc.stderr)
 
     def test_tool_prune_get_returns_full_sanitized_schema_after_budget_omission(self):
         for script in TOOL_PRUNE_SCRIPTS:
@@ -1738,9 +1744,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
         structured_secret = "hunter2"
         private_key_value = "short-private-key-value"
         access_key_value = "short-access-key-value"
+        access_key_id_value = "short-access-key-id-value"
+        aws_access_key_id_value = "short-aws-access-key-id-value"
         ssh_key_value = "short-ssh-key-value"
         schema_default_secret = "schema-default-secret"
         schema_enum_secret = "schema-enum-secret"
+        query_access_key_id_secret = "query-access-key-id-secret"
+        query_aws_access_key_id_secret = "query-aws-access-key-id-secret"
+        query_url_access_key_id_secret = "query-url-access-key-id-secret"
         signed_url = f"https://example.test/object?X-Amz-Signature={signed_secret}&X-Amz-Credential={credential_secret}"
         for script in TOOL_PRUNE_SCRIPTS:
             with self.subTest(script=script):
@@ -1754,6 +1765,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     catalog["servers"][0]["tools"][0]["inputSchema"]["headers"] = {"Authorization": "Bearer short-secret"}
                     catalog["servers"][0]["tools"][0]["inputSchema"]["private_key"] = private_key_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["accessKeyId"] = access_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["access_key_id"] = access_key_id_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["aws_access_key_id"] = aws_access_key_id_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["sshKey"] = ssh_key_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["properties"]["apiKey"] = {
                         "type": "string",
@@ -1766,7 +1779,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         root,
                         "select",
                         "--query",
-                        f"read file {query_secret}",
+                        (
+                            f"read file {query_secret} "
+                            f"access_key_id={query_access_key_id_secret} "
+                            f"aws_access_key_id: {query_aws_access_key_id_secret} "
+                            f"https://example.test/?access_key_id={query_url_access_key_id_secret}"
+                        ),
                         "--top",
                         "1",
                         "--json",
@@ -1782,9 +1800,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("short-secret", proc.stdout)
                     self.assertNotIn(private_key_value, proc.stdout)
                     self.assertNotIn(access_key_value, proc.stdout)
+                    self.assertNotIn(access_key_id_value, proc.stdout)
+                    self.assertNotIn(aws_access_key_id_value, proc.stdout)
                     self.assertNotIn(ssh_key_value, proc.stdout)
                     self.assertNotIn(schema_default_secret, proc.stdout)
                     self.assertNotIn(schema_enum_secret, proc.stdout)
+                    self.assertNotIn(query_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_aws_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_url_access_key_id_secret, proc.stdout)
                     data = json.loads(proc.stdout)
                     self.assertIn("[REDACTED]", data["query"])
                     receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
@@ -1800,9 +1823,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn("short-secret", text)
                         self.assertNotIn(private_key_value, text)
                         self.assertNotIn(access_key_value, text)
+                        self.assertNotIn(access_key_id_value, text)
+                        self.assertNotIn(aws_access_key_id_value, text)
                         self.assertNotIn(ssh_key_value, text)
                         self.assertNotIn(schema_default_secret, text)
                         self.assertNotIn(schema_enum_secret, text)
+                        self.assertNotIn(query_access_key_id_secret, text)
+                        self.assertNotIn(query_aws_access_key_id_secret, text)
+                        self.assertNotIn(query_url_access_key_id_secret, text)
                     self.assertIn("[REDACTED]", payload_text)
                     get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
                     self.assertNotIn(secret, get_proc.stdout)
@@ -1815,9 +1843,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("short-secret", get_proc.stdout)
                     self.assertNotIn(private_key_value, get_proc.stdout)
                     self.assertNotIn(access_key_value, get_proc.stdout)
+                    self.assertNotIn(access_key_id_value, get_proc.stdout)
+                    self.assertNotIn(aws_access_key_id_value, get_proc.stdout)
                     self.assertNotIn(ssh_key_value, get_proc.stdout)
                     self.assertNotIn(schema_default_secret, get_proc.stdout)
                     self.assertNotIn(schema_enum_secret, get_proc.stdout)
+                    self.assertNotIn(query_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_aws_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_url_access_key_id_secret, get_proc.stdout)
                     self.assertIn("[REDACTED]", get_proc.stdout)
                     api_key_property = json.loads(get_proc.stdout)["schema"]["inputSchema"]["properties"]["apiKey"]
                     self.assertEqual(api_key_property["type"], "string")
@@ -1864,6 +1897,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotEqual(too_small_output.returncode, 0)
                     self.assertEqual(too_small_output.stdout, "")
                     self.assertIn("max-output-bytes", too_small_output.stderr)
+                    self.assertFalse((root / ".context-guard" / "tool-prune").exists())
                     empty = self._run_tool_prune(script, root, "select", input_data="{}", check=False)
                     self.assertNotEqual(empty.returncode, 0)
                     self.assertIn("no tools", empty.stderr)
@@ -1899,6 +1933,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     proc = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
                     data = json.loads(proc.stdout)
                     receipt_id = data["receipt"]["receipt_id"]
+                    real_store = root / ".context-guard" / "tool-prune"
+                    linked_store = root / "linked-tool-prune"
+                    linked_store.symlink_to(real_store, target_is_directory=True)
+                    symlink_get = self._run_tool_prune(script, root, "get", receipt_id, "--store-dir", str(linked_store), "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(symlink_get.returncode, 0)
+                    self.assertIn("symlink component", symlink_get.stderr)
                     payload_path = root / data["receipt"]["payload_path"]
                     payload_path.write_text(payload_path.read_text(encoding="utf-8") + "\n ", encoding="utf-8")
                     tampered = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "read_file", "--json", check=False)
