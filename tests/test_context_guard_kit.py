@@ -154,6 +154,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         for claim_gate in [
             "do not guarantee hosted api token or cost savings",
+            "benchmark-plan.md",
             "provider-measured",
             "matched successful tasks",
             "failure-rate guardrail",
@@ -165,6 +166,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         self.assertRegex(text, r"self-hosted[^\n]+memory/latency")
         self.assertRegex(text, r"not hosted api token-savings claims?")
+        benchmark_text = (ROOT / "research" / "benchmark-plan.md").read_text(encoding="utf-8").lower()
+        self.assertIn("10%p", benchmark_text)
+        self.assertRegex(text, r"benchmark-plan\.md[^\n]+10(?:%p|\s+percentage\s+points)")
 
     def test_experimental_radar_user_docs_are_claim_safe(self):
         docs = [
@@ -177,15 +181,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
         ]
         forbidden_claim_patterns = [
             r"guarantees?\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"guaranteed\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
             r"fixed\s+\d+%\s+(?:token|cost)\s+savings",
-            r"(?:토큰|비용)\s*절감\s*보장",
+            r"reduces?\s+tokens?\s+by\s+\d+%",
+            r"cuts?\s+costs?\s+by\s+\d+%",
+            r"(?:토큰|비용)\s*절감\s*보장(?!하지)",
+            r"(?:토큰|비용)\s*절감(?:률)?(?:을|를)?\s*보장(?!하지|할\s+수)",
+            r"(?:토큰|비용)\s*절감(?:을|를)?\s*보장합니다",
             r"고정\s*\d+%\s*(?:토큰|비용)\s*절감",
         ]
         for pattern, fixture in [
             (forbidden_claim_patterns[0], "guarantees hosted api token savings"),
-            (forbidden_claim_patterns[1], "fixed 30% cost savings"),
-            (forbidden_claim_patterns[2], "토큰 절감 보장"),
-            (forbidden_claim_patterns[3], "고정 30% 비용 절감"),
+            (forbidden_claim_patterns[1], "guaranteed hosted api cost savings"),
+            (forbidden_claim_patterns[2], "fixed 30% token savings"),
+            (forbidden_claim_patterns[3], "reduces tokens by 30%"),
+            (forbidden_claim_patterns[4], "cuts costs by 30%"),
+            (forbidden_claim_patterns[5], "토큰 절감 보장"),
+            (forbidden_claim_patterns[6], "토큰 절감률을 보장"),
+            (forbidden_claim_patterns[7], "비용 절감을 보장합니다"),
+            (forbidden_claim_patterns[8], "고정 30% 비용 절감"),
         ]:
             with self.subTest(pattern=pattern):
                 self.assertRegex(fixture, pattern)
@@ -193,10 +207,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for doc in docs:
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8").lower()
+                plain_text = re.sub(r"[*_`]+", "", text)
                 self.assertIn("experimental-token-reduction-radar", text)
-                self.assertRegex(text, r"hosted api|provider")
+                self.assertRegex(plain_text, r"hosted api|provider")
+                self.assertRegex(plain_text, r"does\s+not\s+guarantee|not\s+a\s+hosted\s+api\s+savings\s+claim|보장하지")
+                self.assertRegex(plain_text, r"provider-measured|matched[-\s]+task|matched\s+successful|provider가\s+측정|matched-task\s+근거")
                 for pattern in forbidden_claim_patterns:
-                    self.assertNotRegex(text, pattern)
+                    self.assertNotRegex(plain_text, pattern)
 
         radar_text = (ROOT / "research" / "experimental-token-reduction-radar.md").read_text(encoding="utf-8").lower()
         for pattern in forbidden_claim_patterns:
@@ -212,17 +229,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
             r"\blearned\b",
             r"\bmultimodal\b",
             r"\bocr\b",
-            r"visual\s+token",
+            r"visual[-\s]+token",
             r"\bkv\b",
             r"\blatent\b",
         ]
         for pattern, fixture in [
-            (forbidden_description_terms[0], "learned compression"),
+            (forbidden_description_terms[0], "learned-compression"),
             (forbidden_description_terms[1], "multimodal compression"),
             (forbidden_description_terms[2], "ocr preprocessing"),
-            (forbidden_description_terms[3], "visual token reduction"),
-            (forbidden_description_terms[4], "kv cache"),
-            (forbidden_description_terms[5], "latent inference"),
+            (forbidden_description_terms[3], "visual-token reduction"),
+            (forbidden_description_terms[4], "kv-cache"),
+            (forbidden_description_terms[5], "latent-inference"),
         ]:
             with self.subTest(pattern=pattern):
                 self.assertRegex(fixture, pattern)
@@ -237,7 +254,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     description = str(item.get("description", "")).lower()
                     for pattern in forbidden_description_terms:
                         self.assertIsNone(re.search(pattern, description), f"{pattern} leaked into description")
-                    terms = set(item.get("keywords", [])) | set(item.get("tags", []))
+                    terms = {str(term).lower() for term in item.get("keywords", [])} | {str(term).lower() for term in item.get("tags", [])}
+                    for term in terms:
+                        for pattern in forbidden_description_terms:
+                            self.assertIsNone(re.search(pattern, term), f"{pattern} leaked into metadata term {term!r}")
                     self.assertTrue(generic_terms & terms)
 
     def test_hook_secret_helper_imports_are_file_bound_and_fail_closed_against_shadows(self):
@@ -1850,13 +1870,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
         private_key_value = "short-private-key-value"
         access_key_value = "short-access-key-value"
         access_key_id_value = "short-access-key-id-value"
+        hyphen_access_key_id_value = "short-hyphen-access-key-id-value"
         aws_access_key_id_value = "short-aws-access-key-id-value"
         ssh_key_value = "short-ssh-key-value"
         schema_default_secret = "schema-default-secret"
         schema_enum_secret = "schema-enum-secret"
         query_access_key_id_secret = "query-access-key-id-secret"
+        query_hyphen_access_key_id_secret = "query-hyphen-access-key-id-secret"
         query_aws_access_key_id_secret = "query-aws-access-key-id-secret"
         query_url_access_key_id_secret = "query-url-access-key-id-secret"
+        query_url_hyphen_access_key_id_secret = "query-url-hyphen-access-key-id-secret"
         signed_url = f"https://example.test/object?X-Amz-Signature={signed_secret}&X-Amz-Credential={credential_secret}"
         for script in TOOL_PRUNE_SCRIPTS:
             with self.subTest(script=script):
@@ -1871,6 +1894,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     catalog["servers"][0]["tools"][0]["inputSchema"]["private_key"] = private_key_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["accessKeyId"] = access_key_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["access_key_id"] = access_key_id_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["access-key-id"] = hyphen_access_key_id_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["aws_access_key_id"] = aws_access_key_id_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["sshKey"] = ssh_key_value
                     catalog["servers"][0]["tools"][0]["inputSchema"]["properties"]["apiKey"] = {
@@ -1887,8 +1911,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         (
                             f"read file {query_secret} "
                             f"access_key_id={query_access_key_id_secret} "
+                            f"access-key-id={query_hyphen_access_key_id_secret} "
                             f"aws_access_key_id: {query_aws_access_key_id_secret} "
-                            f"https://example.test/?access_key_id={query_url_access_key_id_secret}"
+                            f"https://example.test/?access_key_id={query_url_access_key_id_secret}&access-key-id={query_url_hyphen_access_key_id_secret}"
                         ),
                         "--top",
                         "1",
@@ -1906,13 +1931,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(private_key_value, proc.stdout)
                     self.assertNotIn(access_key_value, proc.stdout)
                     self.assertNotIn(access_key_id_value, proc.stdout)
+                    self.assertNotIn(hyphen_access_key_id_value, proc.stdout)
                     self.assertNotIn(aws_access_key_id_value, proc.stdout)
                     self.assertNotIn(ssh_key_value, proc.stdout)
                     self.assertNotIn(schema_default_secret, proc.stdout)
                     self.assertNotIn(schema_enum_secret, proc.stdout)
                     self.assertNotIn(query_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_hyphen_access_key_id_secret, proc.stdout)
                     self.assertNotIn(query_aws_access_key_id_secret, proc.stdout)
                     self.assertNotIn(query_url_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_url_hyphen_access_key_id_secret, proc.stdout)
                     data = json.loads(proc.stdout)
                     self.assertIn("[REDACTED]", data["query"])
                     receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
@@ -1929,13 +1957,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(private_key_value, text)
                         self.assertNotIn(access_key_value, text)
                         self.assertNotIn(access_key_id_value, text)
+                        self.assertNotIn(hyphen_access_key_id_value, text)
                         self.assertNotIn(aws_access_key_id_value, text)
                         self.assertNotIn(ssh_key_value, text)
                         self.assertNotIn(schema_default_secret, text)
                         self.assertNotIn(schema_enum_secret, text)
                         self.assertNotIn(query_access_key_id_secret, text)
+                        self.assertNotIn(query_hyphen_access_key_id_secret, text)
                         self.assertNotIn(query_aws_access_key_id_secret, text)
                         self.assertNotIn(query_url_access_key_id_secret, text)
+                        self.assertNotIn(query_url_hyphen_access_key_id_secret, text)
                     self.assertIn("[REDACTED]", payload_text)
                     get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
                     self.assertNotIn(secret, get_proc.stdout)
@@ -1949,13 +1980,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(private_key_value, get_proc.stdout)
                     self.assertNotIn(access_key_value, get_proc.stdout)
                     self.assertNotIn(access_key_id_value, get_proc.stdout)
+                    self.assertNotIn(hyphen_access_key_id_value, get_proc.stdout)
                     self.assertNotIn(aws_access_key_id_value, get_proc.stdout)
                     self.assertNotIn(ssh_key_value, get_proc.stdout)
                     self.assertNotIn(schema_default_secret, get_proc.stdout)
                     self.assertNotIn(schema_enum_secret, get_proc.stdout)
                     self.assertNotIn(query_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_hyphen_access_key_id_secret, get_proc.stdout)
                     self.assertNotIn(query_aws_access_key_id_secret, get_proc.stdout)
                     self.assertNotIn(query_url_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_url_hyphen_access_key_id_secret, get_proc.stdout)
                     self.assertIn("[REDACTED]", get_proc.stdout)
                     api_key_property = json.loads(get_proc.stdout)["schema"]["inputSchema"]["properties"]["apiKey"]
                     self.assertEqual(api_key_property["type"], "string")
