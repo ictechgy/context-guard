@@ -1,6 +1,11 @@
 import Foundation
 
 public let contextGuardFeasibilitySchemaVersion = "contextguard.metric-feasibility.v1"
+public let contextGuardLatestFeasibilitySchemaVersion = "contextguard.metric-feasibility.v1.1"
+public let contextGuardSupportedFeasibilitySchemaVersions: Set<String> = [
+    contextGuardFeasibilitySchemaVersion,
+    contextGuardLatestFeasibilitySchemaVersion,
+]
 
 public enum FeasibilityReportError: Error, Equatable, LocalizedError {
     case unsupportedSchema(String)
@@ -62,7 +67,7 @@ public struct FeasibilityReport: Decodable, Equatable {
     }
 
     public func validateSupportedSchema() throws {
-        guard schemaVersion == contextGuardFeasibilitySchemaVersion else {
+        guard contextGuardSupportedFeasibilitySchemaVersions.contains(schemaVersion) else {
             throw FeasibilityReportError.unsupportedSchema(schemaVersion)
         }
     }
