@@ -187,7 +187,7 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
-`context-guard-pack` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval. Byte counts are observed; token counts remain estimated proxies.
+`context-guard-pack` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
 
 ### Prune a tool/MCP catalog for a task
 
