@@ -347,6 +347,7 @@
         <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 정제 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>교차 에이전트 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run 후 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>보수적 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
+        <article class="card"><span class="icon">⌗</span><h3>Tool schema pruner</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 정제 schema는 로컬 receipt로 다시 가져옵니다.</p></article>
       </div>
     </section>
 
@@ -417,7 +418,10 @@
 long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact store --json
 
 <span class="comment"># 출력 축약과 종료 코드 보존</span>
-./plugins/context-guard/bin/context-guard-trim-output -- npm test</code></pre>
+./plugins/context-guard/bin/context-guard-trim-output -- npm test
+
+<span class="comment"># tool/MCP catalog top-k 자문</span>
+./plugins/context-guard/bin/context-guard-tool-prune select --catalog tools.json --query "review failing tests" --json</code></pre>
         </div>
       </div>
     </section>

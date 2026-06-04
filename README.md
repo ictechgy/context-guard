@@ -55,6 +55,7 @@ ContextGuard does not make the model cheaper by itself. It reduces avoidable con
 | Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
 | Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
 | Volatile context before stable prompt prefixes | Audit bounded redacted prompt-segment hashes and flag likely cache-unfriendly prompt layouts without exposing raw prompt text. |
+| Large tool/MCP catalogs for one narrow task | Rank a local tool catalog into a bounded top-k schema report while keeping full sanitized schemas retrievable from local receipts. |
 
 ## How it fits with caching and compression tools
 
@@ -90,6 +91,7 @@ When you need a savings claim, measure it on your own tasks:
 - transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
 - matched successful baseline/variant runs from `context-guard-bench`
+- large tool/MCP catalogs versus `context-guard-tool-prune` top-k reports plus receipt retrieval
 
 ## What ContextGuard does not do
 
@@ -112,6 +114,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack with omission reasons and exact slice commands. |
+| Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage and cache-friendliness hotspots, and records conservative before/after evidence. |
@@ -182,6 +185,18 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ```
 
 `context-guard-pack` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval. Byte counts are observed; token counts remain estimated proxies.
+
+### Prune a tool/MCP catalog for a task
+
+```bash
+./plugins/context-guard/bin/context-guard-tool-prune select \
+  --catalog tools.json \
+  --query "review failing tests" \
+  --top 5 --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-tool-prune get <receipt_id> --tool read_file --json
+```
+
+`context-guard-tool-prune` ranks a local tool or MCP catalog with deterministic lexical heuristics and emits a bounded top-k advisory report. Inline selected schemas respect an observed UTF-8 byte budget, and omitted or budget-skipped schemas remain recoverable from a compact local receipt plus a separate sanitized payload under `.context-guard/tool-prune`. This is advisory only: it does not mutate MCP configuration, and token counts remain estimated proxies rather than measured provider savings.
 
 ### Compress selected local text conservatively
 

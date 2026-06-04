@@ -63,6 +63,8 @@ context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
 context-guard-sanitize-output -- git diff
 context-guard-pack build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
+context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
+context-guard-tool-prune get <receipt_id> --tool read_file --json
 context-guard-statusline
 context-guard-statusline-merged
 ```
@@ -74,6 +76,7 @@ context-guard-statusline-merged
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 에이전트를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
 - **로컬 아티팩트 보관소**는 큰 명령 출력을 기본적으로 `.context-guard/artifacts`에 정제해 저장하고, 줄 번호가 있는 top error, 중복 라인 그룹, 정제된 bounded suggested query가 담긴 요약 영수증이나 요청한 정확한 줄 범위만 반환합니다. `get`과 `list`는 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 영수증도 읽을 수 있습니다.
 - **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 영수증, 정확한 정제 `slice` 명령을 남깁니다.
+- **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact receipt와 payload integrity check로 전체 정제 schema 재조회를 보존합니다.
 - **보수적 압축기**는 정제된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보, 정제된 failure signature, 중복 라인 그룹, 다음 조회 제안이 담긴 요약을 만들 수 있습니다.
 - **정제기**는 검색, diff, 로그 출력에서 자격 증명 패턴, 비공개 키 블록, 인증 헤더, 자격 증명이 포함된 URL, 민감해 보이는 경로를 가립니다.

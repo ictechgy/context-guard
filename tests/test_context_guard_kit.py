@@ -32,6 +32,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
     (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
     (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
+    (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
@@ -57,6 +58,7 @@ NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guar
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
 COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
+TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -1500,6 +1502,281 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(budget_omitted)
                     self.assertTrue(all("retrieval_cli" in item for item in budget_omitted))
                     self.assertEqual(data["token_proxy"]["measurement"], "estimated")
+
+
+    def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=cwd,
+            input=input_data,
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+
+    def _tool_catalog(self, secret: str | None = None) -> dict:
+        secret_text = f" token={secret}" if secret else ""
+        return {
+            "servers": [
+                {
+                    "name": "filesystem",
+                    "tools": [
+                        {
+                            "name": "read_file",
+                            "description": "Read project files and inspect file content" + secret_text,
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "description": "file path to read", "default": secret or "README.md"}
+                                },
+                            },
+                        },
+                        {
+                            "name": "git_status",
+                            "description": "Read git diff and status for changed files",
+                            "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                        },
+                        {
+                            "name": "browser_click",
+                            "description": "Click a web page element in the browser",
+                            "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}},
+                        },
+                    ],
+                }
+            ]
+        }
+
+    def test_tool_prune_select_ranks_relevant_tools_and_writes_receipts(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = root / "tools.json"
+                    catalog.write_text(json.dumps(self._tool_catalog()), encoding="utf-8")
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--catalog",
+                        str(catalog),
+                        "--query",
+                        "read git diff file",
+                        "--top",
+                        "2",
+                        "--budget-bytes",
+                        "5000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tool"], "context-guard-tool-prune")
+                    self.assertEqual(data["schema_version"], "contextguard.tool-prune.v1")
+                    names = [item["name"] for item in data["selected_tools"]]
+                    self.assertIn("read_file", names)
+                    self.assertIn("git_status", names)
+                    self.assertNotIn("browser_click", names)
+                    self.assertGreaterEqual(data["selected_tools"][0]["score"], data["selected_tools"][-1]["score"])
+                    self.assertLessEqual(data["selected_schema_bytes"], data["budget_bytes"])
+                    receipt = data["receipt"]
+                    self.assertFalse(Path(receipt["path"]).is_absolute())
+                    self.assertFalse(Path(receipt["payload_path"]).is_absolute())
+                    receipt_path = root / receipt["path"]
+                    payload_path = root / receipt["payload_path"]
+                    self.assertTrue(receipt_path.is_file())
+                    self.assertTrue(payload_path.is_file())
+                    self.assertEqual(stat.S_IMODE((root / ".context-guard" / "tool-prune").stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(payload_path.stat().st_mode), 0o600)
+                    payload_text = payload_path.read_text(encoding="utf-8")
+                    self.assertEqual(len(payload_text.encode("utf-8")), receipt["payload_bytes"])
+                    self.assertEqual(hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(), receipt["payload_sha256"])
+
+    def test_tool_prune_get_returns_full_sanitized_schema_after_budget_omission(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = {"tools": [{"name": "read_file", "description": "read file", "inputSchema": {"blob": "x" * 500}}]}
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--query",
+                        "read file",
+                        "--top",
+                        "1",
+                        "--budget-bytes",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(catalog),
+                    )
+                    data = json.loads(proc.stdout)
+                    selected = data["selected_tools"][0]
+                    self.assertFalse(selected["schema_included"])
+                    self.assertEqual(selected["schema_omitted_reason"], "budget")
+                    self.assertIn("retrieval", selected)
+                    receipt_id = data["receipt"]["receipt_id"]
+                    get_proc = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "read_file", "--json")
+                    got = json.loads(get_proc.stdout)
+                    self.assertEqual(got["mode"], "get")
+                    self.assertEqual(got["schema"]["inputSchema"]["blob"], "x" * 500)
+
+    def test_tool_prune_normalizes_common_catalog_shapes(self):
+        shapes = [
+            [{"name": "alpha_tool"}],
+            {"tools": [{"name": "alpha_tool"}]},
+            {"servers": [{"name": "srv", "tools": [{"name": "alpha_tool"}]}]},
+            {"mcpServers": {"srv": {"tools": [{"name": "alpha_tool"}]}}},
+            {"alpha_tool": {"description": "map shape"}},
+        ]
+        for script in TOOL_PRUNE_SCRIPTS:
+            for shape in shapes:
+                with self.subTest(script=script, shape=type(shape).__name__):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        proc = self._run_tool_prune(script, Path(tmp), "select", "--query", "alpha", "--top", "1", "--json", input_data=json.dumps(shape))
+                        data = json.loads(proc.stdout)
+                        self.assertEqual(data["candidate_count"], 1)
+                        self.assertEqual(data["selected_tools"][0]["name"], "alpha_tool")
+
+    def test_tool_prune_redacts_stdout_receipt_payload_and_get_output(self):
+        secret = "ghp_" + ("A" * 36)
+        query_secret = "sk-ant-" + ("B" * 18)
+        private_body = "abc123SECRETKEYBODYabc123"
+        pgp_body = "pgpSECRETKEYBODYxyz"
+        private_key = f"-----BEGIN PRIVATE KEY-----\n{private_body}\n-----END PRIVATE KEY-----"
+        pgp_private_key = f"-----BEGIN PGP PRIVATE KEY BLOCK-----\n{pgp_body}\n-----END PGP PRIVATE KEY BLOCK-----"
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = self._tool_catalog(secret=secret)
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["privateKey"] = private_key
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["pgpPrivateKey"] = pgp_private_key
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--query",
+                        f"read file {query_secret}",
+                        "--top",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(catalog),
+                    )
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(query_secret, proc.stdout)
+                    self.assertNotIn(private_body, proc.stdout)
+                    self.assertNotIn(pgp_body, proc.stdout)
+                    data = json.loads(proc.stdout)
+                    self.assertIn("[REDACTED]", data["query"])
+                    receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
+                    payload_text = (root / data["receipt"]["payload_path"]).read_text(encoding="utf-8")
+                    for text in [receipt_text, payload_text]:
+                        self.assertNotIn(secret, text)
+                        self.assertNotIn(query_secret, text)
+                        self.assertNotIn(private_body, text)
+                        self.assertNotIn(pgp_body, text)
+                    self.assertIn("[REDACTED]", payload_text)
+                    get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
+                    self.assertNotIn(secret, get_proc.stdout)
+                    self.assertNotIn(query_secret, get_proc.stdout)
+                    self.assertNotIn(private_body, get_proc.stdout)
+                    self.assertNotIn(pgp_body, get_proc.stdout)
+                    self.assertIn("[REDACTED]", get_proc.stdout)
+
+    def test_tool_prune_retrieval_command_shell_quotes_tool_names(self):
+        catalog = {"tools": [{"name": "read_file; echo PWNED #", "description": "read file"}]}
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = self._run_tool_prune(script, Path(tmp), "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(catalog))
+                    retrieval = json.loads(proc.stdout)["selected_tools"][0]["retrieval"]
+                    self.assertIn("'read_file; echo PWNED #'", retrieval)
+                    self.assertNotIn("--tool read_file; echo", retrieval)
+
+    def test_tool_prune_bounds_and_fail_closed_errors(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    oversized = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-catalog-bytes",
+                        "5",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(oversized.returncode, 0)
+                    self.assertIn("max-catalog-bytes", oversized.stderr)
+                    too_small_output = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-output-bytes",
+                        "50",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(too_small_output.returncode, 0)
+                    self.assertEqual(too_small_output.stdout, "")
+                    self.assertIn("max-output-bytes", too_small_output.stderr)
+                    empty = self._run_tool_prune(script, root, "select", input_data="{}", check=False)
+                    self.assertNotEqual(empty.returncode, 0)
+                    self.assertIn("no tools", empty.stderr)
+
+    def test_tool_prune_payload_receipt_caps_and_integrity_failures(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    payload_too_small = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-payload-bytes",
+                        "100",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(payload_too_small.returncode, 0)
+                    self.assertIn("max-payload-bytes", payload_too_small.stderr)
+                    receipt_too_small = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-receipt-bytes",
+                        "100",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(receipt_too_small.returncode, 0)
+                    self.assertIn("max-receipt-bytes", receipt_too_small.stderr)
+
+                    proc = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
+                    data = json.loads(proc.stdout)
+                    receipt_id = data["receipt"]["receipt_id"]
+                    payload_path = root / data["receipt"]["payload_path"]
+                    payload_path.write_text(payload_path.read_text(encoding="utf-8") + "\n ", encoding="utf-8")
+                    tampered = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(tampered.returncode, 0)
+                    self.assertRegex(tampered.stderr, "size mismatch|sha256")
+
+                    proc2 = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
+                    data2 = json.loads(proc2.stdout)
+                    receipt_path = root / data2["receipt"]["path"]
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    receipt["payload_sha256"] = "0" * 64
+                    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                    tampered_receipt = self._run_tool_prune(script, root, "get", data2["receipt"]["receipt_id"], "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(tampered_receipt.returncode, 0)
+                    self.assertIn("sha256", tampered_receipt.stderr)
+
+                    receipt_path.write_text("{", encoding="utf-8")
+                    malformed = self._run_tool_prune(script, root, "get", data2["receipt"]["receipt_id"], "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(malformed.returncode, 0)
+                    self.assertIn("malformed JSON", malformed.stderr)
 
     def test_context_pack_manifest_source_grammar_and_duplicates_are_deterministic(self):
         for script in PACK_SCRIPTS:
