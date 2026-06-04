@@ -32,6 +32,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
     (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
     (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
+    (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
@@ -57,6 +58,7 @@ NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guar
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
 COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
+TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -1500,6 +1502,463 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(budget_omitted)
                     self.assertTrue(all("retrieval_cli" in item for item in budget_omitted))
                     self.assertEqual(data["token_proxy"]["measurement"], "estimated")
+
+
+    def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=cwd,
+            input=input_data,
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+
+    def _tool_catalog(self, secret: str | None = None) -> dict:
+        secret_text = f" token={secret}" if secret else ""
+        return {
+            "servers": [
+                {
+                    "name": "filesystem",
+                    "tools": [
+                        {
+                            "name": "read_file",
+                            "description": "Read project files and inspect file content" + secret_text,
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "description": "file path to read", "default": secret or "README.md"}
+                                },
+                            },
+                        },
+                        {
+                            "name": "git_status",
+                            "description": "Read git diff and status for changed files",
+                            "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                        },
+                        {
+                            "name": "browser_click",
+                            "description": "Click a web page element in the browser",
+                            "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}}},
+                        },
+                    ],
+                }
+            ]
+        }
+
+    def test_tool_prune_select_ranks_relevant_tools_and_writes_receipts(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = root / "tools.json"
+                    catalog.write_text(json.dumps(self._tool_catalog()), encoding="utf-8")
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--catalog",
+                        str(catalog),
+                        "--query",
+                        "read git diff file",
+                        "--top",
+                        "2",
+                        "--budget-bytes",
+                        "5000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tool"], "context-guard-tool-prune")
+                    self.assertEqual(data["schema_version"], "contextguard.tool-prune.v1")
+                    names = [item["name"] for item in data["selected_tools"]]
+                    self.assertIn("read_file", names)
+                    self.assertIn("git_status", names)
+                    self.assertNotIn("browser_click", names)
+                    self.assertGreaterEqual(data["selected_tools"][0]["score"], data["selected_tools"][-1]["score"])
+                    self.assertLessEqual(data["selected_schema_bytes"], data["budget_bytes"])
+                    receipt = data["receipt"]
+                    self.assertFalse(Path(receipt["path"]).is_absolute())
+                    self.assertFalse(Path(receipt["payload_path"]).is_absolute())
+                    receipt_path = root / receipt["path"]
+                    payload_path = root / receipt["payload_path"]
+                    self.assertTrue(receipt_path.is_file())
+                    self.assertTrue(payload_path.is_file())
+                    self.assertEqual(stat.S_IMODE((root / ".context-guard" / "tool-prune").stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(payload_path.stat().st_mode), 0o600)
+                    payload_text = payload_path.read_text(encoding="utf-8")
+                    self.assertEqual(len(payload_text.encode("utf-8")), receipt["payload_bytes"])
+                    self.assertEqual(hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(), receipt["payload_sha256"])
+
+    def test_tool_prune_custom_store_dir_retrieval_hints_are_copy_pasteable(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    store_dir = root / "custom receipts"
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--store-dir",
+                        str(store_dir),
+                        "--query",
+                        "read",
+                        "--top",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                    )
+                    data = json.loads(proc.stdout)
+                    retrieval = data["selected_tools"][0]["retrieval"]
+                    self.assertIn("--store-dir", retrieval)
+                    self.assertIn("custom receipts", retrieval)
+                    self.assertIn("--store-dir", data["receipt"]["retrieval_hint"])
+                    get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--store-dir", str(store_dir), "--tool", "read_file", "--json")
+                    self.assertEqual(json.loads(get_proc.stdout)["tool_name"], "read_file")
+
+    def test_tool_prune_get_resanitizes_valid_legacy_payload_before_output(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    store = root / ".context-guard" / "tool-prune"
+                    store.mkdir(parents=True)
+                    os.chmod(store, 0o700)
+                    receipt_id = "a" * 20
+                    leaked_body = "legacyPRIVATEBODY"
+                    signed_secret = "legacy-signed-secret"
+                    payload = {
+                        "tool": "context-guard-tool-prune",
+                        "schema_version": "contextguard.tool-prune.v1",
+                        "receipt_id": receipt_id,
+                        "tools": [{
+                            "name": "legacy_tool",
+                            "schema": {
+                                "private": f"-----BEGIN PRIVATE KEY-----\n{leaked_body}\n-----END PRIVATE KEY-----",
+                                "url": f"https://example.test/?X-Amz-Signature={signed_secret}",
+                                "apiKey": "hunter2",
+                            },
+                        }],
+                    }
+                    payload_text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                    payload_path = store / f"{receipt_id}.payload.json"
+                    payload_path.write_text(payload_text, encoding="utf-8")
+                    os.chmod(payload_path, 0o600)
+                    receipt = {
+                        "tool": "context-guard-tool-prune",
+                        "schema_version": "contextguard.tool-prune.v1",
+                        "receipt_id": receipt_id,
+                        "path": f".context-guard/tool-prune/{receipt_id}.receipt.json",
+                        "payload_path": f".context-guard/tool-prune/{receipt_id}.payload.json",
+                        "payload_bytes": len(payload_text.encode("utf-8")),
+                        "payload_sha256": hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(),
+                    }
+                    receipt_path = store / f"{receipt_id}.receipt.json"
+                    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                    os.chmod(receipt_path, 0o600)
+                    proc = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "legacy_tool", "--json")
+                    self.assertNotIn(leaked_body, proc.stdout)
+                    self.assertNotIn(signed_secret, proc.stdout)
+                    self.assertNotIn("hunter2", proc.stdout)
+                    self.assertIn("[REDACTED]", proc.stdout)
+
+    def test_tool_prune_rejects_symlink_catalog_path(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real = root / "tools.json"
+                    real.write_text(json.dumps(self._tool_catalog()), encoding="utf-8")
+                    link = root / "tools-link.json"
+                    try:
+                        link.symlink_to(real)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink unavailable")
+                    proc = self._run_tool_prune(script, root, "select", "--catalog", str(link), check=False)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("symlink component", proc.stderr)
+
+                    symlink_parent = root / "catalog-link-parent"
+                    symlink_parent.symlink_to(root, target_is_directory=True)
+                    parent_proc = self._run_tool_prune(script, root, "select", "--catalog", str(symlink_parent / "tools.json"), check=False)
+                    self.assertNotEqual(parent_proc.returncode, 0)
+                    self.assertIn("symlink component", parent_proc.stderr)
+
+    def test_tool_prune_get_returns_full_sanitized_schema_after_budget_omission(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = {"tools": [{"name": "read_file", "description": "read file", "inputSchema": {"blob": "x" * 500}}]}
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--query",
+                        "read file",
+                        "--top",
+                        "1",
+                        "--budget-bytes",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(catalog),
+                    )
+                    data = json.loads(proc.stdout)
+                    selected = data["selected_tools"][0]
+                    self.assertFalse(selected["schema_included"])
+                    self.assertEqual(selected["schema_omitted_reason"], "budget")
+                    self.assertIn("retrieval", selected)
+                    receipt_id = data["receipt"]["receipt_id"]
+                    get_proc = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "read_file", "--json")
+                    got = json.loads(get_proc.stdout)
+                    self.assertEqual(got["mode"], "get")
+                    self.assertEqual(got["schema"]["inputSchema"]["blob"], "x" * 500)
+
+    def test_tool_prune_normalizes_common_catalog_shapes(self):
+        shapes = [
+            [{"name": "alpha_tool"}],
+            {"tools": [{"name": "alpha_tool"}]},
+            {"servers": [{"name": "srv", "tools": [{"name": "alpha_tool"}]}]},
+            {"mcpServers": {"srv": {"tools": [{"name": "alpha_tool"}]}}},
+            {"alpha_tool": {"description": "map shape"}},
+        ]
+        for script in TOOL_PRUNE_SCRIPTS:
+            for shape in shapes:
+                with self.subTest(script=script, shape=type(shape).__name__):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        proc = self._run_tool_prune(script, Path(tmp), "select", "--query", "alpha", "--top", "1", "--json", input_data=json.dumps(shape))
+                        data = json.loads(proc.stdout)
+                        self.assertEqual(data["candidate_count"], 1)
+                        self.assertEqual(data["selected_tools"][0]["name"], "alpha_tool")
+
+    def test_tool_prune_redacts_stdout_receipt_payload_and_get_output(self):
+        secret = "ghp_" + ("A" * 36)
+        query_secret = "sk-ant-" + ("B" * 18)
+        private_body = "abc123SECRETKEYBODYabc123"
+        pgp_body = "pgpSECRETKEYBODYxyz"
+        private_key = f"-----BEGIN PRIVATE KEY-----\n{private_body}\n-----END PRIVATE KEY-----"
+        pgp_private_key = f"-----BEGIN PGP PRIVATE KEY BLOCK-----\n{pgp_body}\n-----END PGP PRIVATE KEY BLOCK-----"
+        signed_secret = "abcdef1234567890signed"
+        credential_secret = "AKIAIOSFODNN7EXAMPLE/20260604/us-east-1/s3/aws4_request"
+        structured_secret = "hunter2"
+        private_key_value = "short-private-key-value"
+        access_key_value = "short-access-key-value"
+        access_key_id_value = "short-access-key-id-value"
+        aws_access_key_id_value = "short-aws-access-key-id-value"
+        ssh_key_value = "short-ssh-key-value"
+        schema_default_secret = "schema-default-secret"
+        schema_enum_secret = "schema-enum-secret"
+        query_access_key_id_secret = "query-access-key-id-secret"
+        query_aws_access_key_id_secret = "query-aws-access-key-id-secret"
+        query_url_access_key_id_secret = "query-url-access-key-id-secret"
+        signed_url = f"https://example.test/object?X-Amz-Signature={signed_secret}&X-Amz-Credential={credential_secret}"
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    catalog = self._tool_catalog(secret=secret)
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["privateKey"] = private_key
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["pgpPrivateKey"] = pgp_private_key
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["signedUrl"] = signed_url
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["apiKey"] = structured_secret
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["headers"] = {"Authorization": "Bearer short-secret"}
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["private_key"] = private_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["accessKeyId"] = access_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["access_key_id"] = access_key_id_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["aws_access_key_id"] = aws_access_key_id_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["sshKey"] = ssh_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["properties"]["apiKey"] = {
+                        "type": "string",
+                        "description": "API key",
+                        "default": schema_default_secret,
+                        "enum": [schema_enum_secret],
+                    }
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--query",
+                        (
+                            f"read file {query_secret} "
+                            f"access_key_id={query_access_key_id_secret} "
+                            f"aws_access_key_id: {query_aws_access_key_id_secret} "
+                            f"https://example.test/?access_key_id={query_url_access_key_id_secret}"
+                        ),
+                        "--top",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(catalog),
+                    )
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(query_secret, proc.stdout)
+                    self.assertNotIn(private_body, proc.stdout)
+                    self.assertNotIn(pgp_body, proc.stdout)
+                    self.assertNotIn(signed_secret, proc.stdout)
+                    self.assertNotIn(credential_secret, proc.stdout)
+                    self.assertNotIn(structured_secret, proc.stdout)
+                    self.assertNotIn("short-secret", proc.stdout)
+                    self.assertNotIn(private_key_value, proc.stdout)
+                    self.assertNotIn(access_key_value, proc.stdout)
+                    self.assertNotIn(access_key_id_value, proc.stdout)
+                    self.assertNotIn(aws_access_key_id_value, proc.stdout)
+                    self.assertNotIn(ssh_key_value, proc.stdout)
+                    self.assertNotIn(schema_default_secret, proc.stdout)
+                    self.assertNotIn(schema_enum_secret, proc.stdout)
+                    self.assertNotIn(query_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_aws_access_key_id_secret, proc.stdout)
+                    self.assertNotIn(query_url_access_key_id_secret, proc.stdout)
+                    data = json.loads(proc.stdout)
+                    self.assertIn("[REDACTED]", data["query"])
+                    receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
+                    payload_text = (root / data["receipt"]["payload_path"]).read_text(encoding="utf-8")
+                    for text in [receipt_text, payload_text]:
+                        self.assertNotIn(secret, text)
+                        self.assertNotIn(query_secret, text)
+                        self.assertNotIn(private_body, text)
+                        self.assertNotIn(pgp_body, text)
+                        self.assertNotIn(signed_secret, text)
+                        self.assertNotIn(credential_secret, text)
+                        self.assertNotIn(structured_secret, text)
+                        self.assertNotIn("short-secret", text)
+                        self.assertNotIn(private_key_value, text)
+                        self.assertNotIn(access_key_value, text)
+                        self.assertNotIn(access_key_id_value, text)
+                        self.assertNotIn(aws_access_key_id_value, text)
+                        self.assertNotIn(ssh_key_value, text)
+                        self.assertNotIn(schema_default_secret, text)
+                        self.assertNotIn(schema_enum_secret, text)
+                        self.assertNotIn(query_access_key_id_secret, text)
+                        self.assertNotIn(query_aws_access_key_id_secret, text)
+                        self.assertNotIn(query_url_access_key_id_secret, text)
+                    self.assertIn("[REDACTED]", payload_text)
+                    get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
+                    self.assertNotIn(secret, get_proc.stdout)
+                    self.assertNotIn(query_secret, get_proc.stdout)
+                    self.assertNotIn(private_body, get_proc.stdout)
+                    self.assertNotIn(pgp_body, get_proc.stdout)
+                    self.assertNotIn(signed_secret, get_proc.stdout)
+                    self.assertNotIn(credential_secret, get_proc.stdout)
+                    self.assertNotIn(structured_secret, get_proc.stdout)
+                    self.assertNotIn("short-secret", get_proc.stdout)
+                    self.assertNotIn(private_key_value, get_proc.stdout)
+                    self.assertNotIn(access_key_value, get_proc.stdout)
+                    self.assertNotIn(access_key_id_value, get_proc.stdout)
+                    self.assertNotIn(aws_access_key_id_value, get_proc.stdout)
+                    self.assertNotIn(ssh_key_value, get_proc.stdout)
+                    self.assertNotIn(schema_default_secret, get_proc.stdout)
+                    self.assertNotIn(schema_enum_secret, get_proc.stdout)
+                    self.assertNotIn(query_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_aws_access_key_id_secret, get_proc.stdout)
+                    self.assertNotIn(query_url_access_key_id_secret, get_proc.stdout)
+                    self.assertIn("[REDACTED]", get_proc.stdout)
+                    api_key_property = json.loads(get_proc.stdout)["schema"]["inputSchema"]["properties"]["apiKey"]
+                    self.assertEqual(api_key_property["type"], "string")
+                    self.assertEqual(api_key_property["description"], "API key")
+                    self.assertEqual(api_key_property["default"], "[REDACTED]")
+                    self.assertEqual(api_key_property["enum"], ["[REDACTED]"])
+
+    def test_tool_prune_retrieval_command_shell_quotes_tool_names(self):
+        catalog = {"tools": [{"name": "read_file; echo PWNED #", "description": "read file"}]}
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = self._run_tool_prune(script, Path(tmp), "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(catalog))
+                    retrieval = json.loads(proc.stdout)["selected_tools"][0]["retrieval"]
+                    self.assertIn("'read_file; echo PWNED #'", retrieval)
+                    self.assertNotIn("--tool read_file; echo", retrieval)
+
+    def test_tool_prune_bounds_and_fail_closed_errors(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    oversized = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-catalog-bytes",
+                        "5",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(oversized.returncode, 0)
+                    self.assertIn("max-catalog-bytes", oversized.stderr)
+                    too_small_output = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-output-bytes",
+                        "50",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(too_small_output.returncode, 0)
+                    self.assertEqual(too_small_output.stdout, "")
+                    self.assertIn("max-output-bytes", too_small_output.stderr)
+                    self.assertFalse((root / ".context-guard" / "tool-prune").exists())
+                    empty = self._run_tool_prune(script, root, "select", input_data="{}", check=False)
+                    self.assertNotEqual(empty.returncode, 0)
+                    self.assertIn("no tools", empty.stderr)
+
+    def test_tool_prune_payload_receipt_caps_and_integrity_failures(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    payload_too_small = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-payload-bytes",
+                        "100",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(payload_too_small.returncode, 0)
+                    self.assertIn("max-payload-bytes", payload_too_small.stderr)
+                    receipt_too_small = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--max-receipt-bytes",
+                        "100",
+                        input_data=json.dumps(self._tool_catalog()),
+                        check=False,
+                    )
+                    self.assertNotEqual(receipt_too_small.returncode, 0)
+                    self.assertIn("max-receipt-bytes", receipt_too_small.stderr)
+
+                    proc = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
+                    data = json.loads(proc.stdout)
+                    receipt_id = data["receipt"]["receipt_id"]
+                    real_store = root / ".context-guard" / "tool-prune"
+                    linked_store = root / "linked-tool-prune"
+                    linked_store.symlink_to(real_store, target_is_directory=True)
+                    symlink_get = self._run_tool_prune(script, root, "get", receipt_id, "--store-dir", str(linked_store), "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(symlink_get.returncode, 0)
+                    self.assertIn("symlink component", symlink_get.stderr)
+                    payload_path = root / data["receipt"]["payload_path"]
+                    payload_path.write_text(payload_path.read_text(encoding="utf-8") + "\n ", encoding="utf-8")
+                    tampered = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(tampered.returncode, 0)
+                    self.assertRegex(tampered.stderr, "size mismatch|sha256")
+
+                    proc2 = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
+                    data2 = json.loads(proc2.stdout)
+                    receipt_path = root / data2["receipt"]["path"]
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    receipt["payload_sha256"] = "0" * 64
+                    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                    tampered_receipt = self._run_tool_prune(script, root, "get", data2["receipt"]["receipt_id"], "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(tampered_receipt.returncode, 0)
+                    self.assertIn("sha256", tampered_receipt.stderr)
+
+                    receipt_path.write_text("{", encoding="utf-8")
+                    malformed = self._run_tool_prune(script, root, "get", data2["receipt"]["receipt_id"], "--tool", "read_file", "--json", check=False)
+                    self.assertNotEqual(malformed.returncode, 0)
+                    self.assertIn("malformed JSON", malformed.stderr)
 
     def test_context_pack_manifest_source_grammar_and_duplicates_are_deterministic(self):
         for script in PACK_SCRIPTS:

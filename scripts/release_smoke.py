@@ -43,6 +43,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "context-guard-bench": {"args": ["--help"], "mode": "text"},
     "context-guard-compress": {"args": ["--help"], "mode": "text"},
     "context-guard-pack": {"args": ["--help"], "mode": "text"},
+    "context-guard-tool-prune": {"args": ["--help"], "mode": "text"},
     "context-guard-diet": {"args": ["--help"], "mode": "text"},
     "context-guard-failed-nudge": {"args": [], "mode": "hook-json"},
     "context-guard-guard-read": {"args": [], "mode": "hook-json"},

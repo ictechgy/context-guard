@@ -67,6 +67,7 @@ IMPLEMENTATION_PAIRS = (
     ("context_escrow.py", "context-guard-artifact"),
     ("context_compress.py", "context-guard-compress"),
     ("context_pack.py", "context-guard-pack"),
+    ("tool_schema_pruner.py", "context-guard-tool-prune"),
     ("claude_transcript_cost_audit.py", "context-guard-audit"),
     ("context_guard_diet.py", "context-guard-diet"),
     ("failed_attempt_nudge.py", "context-guard-failed-nudge"),

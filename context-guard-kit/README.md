@@ -14,6 +14,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
 - `context_escrow.py` — 큰 command output을 sanitize 후 로컬 artifact로 저장하고 line/pattern query로 다시 조회
 - `context_pack.py` — 우선순위 local file evidence를 byte budget 안의 Markdown context pack으로 조립하고 omission/retrieval receipt를 기록
+- `tool_schema_pruner.py` — 로컬 tool/MCP catalog를 top-k schema 자문 리포트로 줄이고 전체 정제 schema는 receipt/payload로 재조회
 - `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report 생성
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합
 - `failed_attempt_nudge.py` — 반복 Bash 실패 시 `/clear`/`/compact`와 strategy switch를 짧게 권유
@@ -32,6 +33,8 @@ long-command 2>&1 | python3 context-guard-kit/context_escrow.py store --command 
 python3 context-guard-kit/context_escrow.py get <artifact_id> --lines 1:80
 python3 context-guard-kit/context_pack.py build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
 python3 context-guard-kit/context_pack.py slice --root . --path README.md --lines 1:40 --json
+python3 context-guard-kit/tool_schema_pruner.py select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
+python3 context-guard-kit/tool_schema_pruner.py get <receipt_id> --tool read_file --json
 python3 context-guard-kit/benchmark_runner.py --tasks bench/tasks.json --variants bench/variants.json --csv bench/results.csv --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 python3 context-guard-kit/sanitize_output.py -- rg -n "TOKEN|SECRET" .
 python3 context-guard-kit/sanitize_output.py -- git diff
@@ -43,6 +46,8 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 
 `context_pack.py`는 여러 로컬 파일 source를 우선순위와 줄 범위에 따라 정렬하고, 렌더링된 UTF-8 byte budget 안에서 Markdown context pack을 만듭니다. 포함·부분 포함·누락 source, 누락 사유, `.context-guard/packs` bounded receipt, 그리고 `slice --lines` 정확 재조회 명령을 JSON으로 남깁니다. pack 본문/영수증을 만들기 전에 sanitizer를 적용하며, token 값은 관측값이 아닌 추정 proxy로만 표시합니다.
+
+`tool_schema_pruner.py`는 provider-neutral tool/MCP catalog helper입니다. `select`는 task query와 lexical overlap으로 top-k tool을 고르고, inline schema는 `--budget-bytes` 안에만 넣으며, compact receipt와 별도 sanitized payload를 `.context-guard/tool-prune`에 기록합니다. `get`은 payload size/SHA-256을 검증한 뒤 전체 정제 schema를 반환합니다. 이 helper는 MCP 설정을 바꾸지 않으며, token 절감은 측정값이 아니라 추정 proxy로만 표현합니다.
 
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 

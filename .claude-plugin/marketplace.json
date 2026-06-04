@@ -31,7 +31,11 @@
         "interactive-setup",
         "artifact-escrow",
         "context-escrow",
-        "queryable-logs"
+        "queryable-logs",
+        "tool-schema",
+        "mcp",
+        "schema-pruning",
+        "context-pack"
       ],
       "category": "developer-tools",
       "tags": [
@@ -49,7 +53,11 @@
         "interactive-setup",
         "artifact-escrow",
         "context-escrow",
-        "queryable-logs"
+        "queryable-logs",
+        "tool-schema",
+        "mcp",
+        "schema-pruning",
+        "context-pack"
       ],
       "version": "0.3.1"
     }
