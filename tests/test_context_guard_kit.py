@@ -402,6 +402,74 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("release notes missing version entry", str(ctx.exception))
         self.assertNotIn(str(tmp), str(ctx.exception))
 
+    def test_prepublish_check_rejects_npm_install_lifecycle_scripts(self):
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_npm_metadata_test")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            for command in prepublish.REQUIRED_NPM_BINS:
+                path = bin_dir / command
+                path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+                path.chmod(0o700)
+            package = {
+                "name": "@ictechgy/context-guard",
+                "version": "1.2.3",
+                "license": "Apache-2.0",
+                "bin": {command: f"bin/{command}" for command in prepublish.REQUIRED_NPM_BINS},
+                "files": ["bin/**", "README.md"],
+                "scripts": {"postinstall": "context-guard setup --yes"},
+            }
+            package_json = tmp / "package.json"
+            package_json.write_text(json.dumps(package), encoding="utf-8")
+            old_root, old_package = prepublish.ROOT, prepublish.NPM_PACKAGE
+            try:
+                prepublish.ROOT = tmp
+                prepublish.NPM_PACKAGE = package_json
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_npm_package_metadata("1.2.3")
+            finally:
+                prepublish.ROOT, prepublish.NPM_PACKAGE = old_root, old_package
+        self.assertIn("install-time lifecycle scripts", str(ctx.exception))
+
+    def test_prepublish_check_rejects_unexpected_npm_pack_files(self):
+        unexpected = KIT_DIR / "unexpected_release_gate.py"
+        try:
+            unexpected.write_text("print('unexpected package file')\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("npm pack includes unexpected files", combined)
+            self.assertIn("context-guard-kit/unexpected_release_gate.py", combined)
+        finally:
+            try:
+                unexpected.unlink()
+            except FileNotFoundError:
+                pass
+
+    def test_prepublish_check_rejects_awkward_korean_doc_terms(self):
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_korean_terms_test")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            good = tmp / "good.md"
+            bad = tmp / "bad.md"
+            good.write_text("컨텍스트 관리와 요약 기록을 사용합니다.\n", encoding="utf-8")
+            bad.write_text("컨텍스트 위생과 영수증이라는 표현은 쓰지 않습니다.\n", encoding="utf-8")
+            old_docs = prepublish.KOREAN_DOCS
+            try:
+                prepublish.KOREAN_DOCS = (good,)
+                prepublish.check_korean_copy_terms()
+                prepublish.KOREAN_DOCS = (bad,)
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_korean_copy_terms()
+            finally:
+                prepublish.KOREAN_DOCS = old_docs
+        self.assertIn("awkward Korean term", str(ctx.exception))
+
     def test_prepublish_check_rejects_executable_plugin_helper(self):
         _kit, plugin = HELPER_PAIRS[0]
         original_mode = stat.S_IMODE(plugin.stat().st_mode)
@@ -1150,7 +1218,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("forbidden package symlink: symlink-artifact", proc.stdout + proc.stderr)
+            self.assertIn("forbidden package symlink: plugins/context-guard/symlink-artifact", proc.stdout + proc.stderr)
+        finally:
+            try:
+                link.unlink()
+            except FileNotFoundError:
+                pass
+
+    def test_prepublish_rejects_package_symlinks_outside_plugin_dir(self):
+        link = KIT_DIR / "symlink-artifact.py"
+        try:
+            try:
+                link.unlink()
+            except FileNotFoundError:
+                pass
+            os.symlink(ROOT / "README.md", link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable: {exc}")
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "prepublish_check.py"), "--skip-tests"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("forbidden package symlink: context-guard-kit/symlink-artifact.py", proc.stdout + proc.stderr)
         finally:
             try:
                 link.unlink()
@@ -11770,6 +11862,117 @@ class CrossAgentAdapterTests(unittest.TestCase):
                         1,
                     )
 
+    def test_codex_with_skill_generates_project_skill_idempotently(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--with-init", "--with-skill", "--yes", "--no-diet-scan"],
+                    )
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "codex")
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["project_skill_file"], ".agents/skills/context-guard/SKILL.md")
+                    self.assertEqual(entry["project_skill_status"], "applied")
+                    skill = root / ".agents" / "skills" / "context-guard" / "SKILL.md"
+                    self.assertTrue(skill.is_file())
+                    text = skill.read_text(encoding="utf-8")
+                    self.assertIn("name: context-guard", text)
+                    self.assertIn("description:", text)
+                    self.assertIn("contextguard:codex-skill:begin", text)
+                    self.assertIn("context-guard setup --agent codex --scope project", text)
+                    self.assertIn("Do not claim fixed token or cost savings", text)
+                    self.assertTrue((root / "AGENTS.md").is_file())
+                    self.assertFalse((root / ".claude").exists())
+
+                    again = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--with-init", "--with-skill", "--yes", "--no-diet-scan"],
+                    )
+                    again_entry = again["adapter_plan"][0]
+                    self.assertEqual(again_entry["status"], "exists")
+                    self.assertEqual(again_entry["project_skill_status"], "exists")
+                    self.assertEqual(again["actions"], [])
+
+    def test_codex_skill_plan_is_read_only_and_foreign_skill_is_not_overwritten(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    planned = self._run(script, root, ["--agent", "codex", "--with-skill", "--plan"])
+                    self.assertEqual(planned["adapter_plan"][0]["project_skill_status"], "missing")
+                    self.assertFalse((root / ".agents" / "skills" / "context-guard" / "SKILL.md").exists())
+
+                    skill = root / ".agents" / "skills" / "context-guard" / "SKILL.md"
+                    skill.parent.mkdir(parents=True)
+                    skill.write_text("# user skill\n", encoding="utf-8")
+                    applied = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--with-skill", "--yes", "--no-diet-scan"],
+                    )
+                    entry = applied["adapter_plan"][0]
+                    self.assertEqual(entry["project_skill_status"], "skipped")
+                    self.assertIn("refused to overwrite", "\n".join(entry["planned_actions"]))
+                    self.assertEqual(skill.read_text(encoding="utf-8"), "# user skill\n")
+
+    def test_codex_setup_skips_unreadable_rule_and_skill_files(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents = root / "AGENTS.md"
+                    agents.write_text("Existing private rules.\n", encoding="utf-8")
+                    skill = root / ".agents" / "skills" / "context-guard" / "SKILL.md"
+                    skill.parent.mkdir(parents=True)
+                    skill.write_text("# private skill\n", encoding="utf-8")
+                    old_agents_mode = stat.S_IMODE(agents.stat().st_mode)
+                    old_skill_mode = stat.S_IMODE(skill.stat().st_mode)
+                    try:
+                        agents.chmod(0)
+                        skill.chmod(0)
+                        data = self._run(
+                            script,
+                            root,
+                            ["--agent", "codex", "--with-init", "--with-skill", "--yes", "--no-diet-scan"],
+                        )
+                    finally:
+                        agents.chmod(old_agents_mode)
+                        skill.chmod(old_skill_mode)
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["status"], "skipped")
+                    self.assertEqual(entry["project_skill_status"], "unsafe")
+                    self.assertIn("could not read", "\n".join(entry["planned_actions"]))
+                    self.assertEqual(agents.read_text(encoding="utf-8"), "Existing private rules.\n")
+                    self.assertEqual(skill.read_text(encoding="utf-8"), "# private skill\n")
+
+    def test_codex_setup_skips_broken_symlink_rule_and_skill_files(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    try:
+                        (root / "AGENTS.md").symlink_to(root / "missing-rules.md")
+                        skill = root / ".agents" / "skills" / "context-guard" / "SKILL.md"
+                        skill.parent.mkdir(parents=True)
+                        skill.symlink_to(root / "missing-skill.md")
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink creation unsupported on this filesystem")
+                    data = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--with-init", "--with-skill", "--yes", "--no-diet-scan"],
+                    )
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["status"], "skipped")
+                    self.assertEqual(entry["project_skill_status"], "unsafe")
+                    self.assertTrue((root / "AGENTS.md").is_symlink())
+                    self.assertTrue((root / ".agents" / "skills" / "context-guard" / "SKILL.md").is_symlink())
+
     def test_with_init_dry_run_does_not_write_rule_file(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
@@ -11778,6 +11981,229 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     data = self._run(script, root, ["--only", "codex", "--with-init", "--plan"])
                     self.assertEqual(data["adapter_plan"][0]["status"], "planned")
                     self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_agent_alias_and_project_scope_keep_setup_project_local(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "project"
+                    home = Path(tmp) / "home"
+                    root.mkdir()
+                    home.mkdir()
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--root",
+                            str(root),
+                            "--scope",
+                            "project",
+                            "--agent",
+                            "codex",
+                            "--with-init",
+                            "--plan",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["scope"], "project")
+                    self.assertEqual(data["root"], str(root.resolve()))
+                    self.assertEqual([entry["key"] for entry in data["adapter_plan"]], ["codex"])
+                    self.assertEqual(data["adapter_plan"][0]["scope"], "project")
+                    self.assertFalse((home / ".claude" / "settings.json").exists())
+                    self.assertFalse((root / "AGENTS.md").exists())
+
+    def test_codex_only_setup_ignores_malformed_or_symlinked_claude_settings(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    claude_settings = root / ".claude" / "settings.json"
+                    claude_settings.parent.mkdir()
+                    claude_settings.write_text("{", encoding="utf-8")
+                    data = self._run(script, root, ["--agent", "codex", "--with-init", "--plan"])
+                    self.assertEqual(data["adapter_plan"][0]["key"], "codex")
+                    self.assertFalse(data["applied"])
+
+                    claude_settings.unlink()
+                    try:
+                        claude_settings.symlink_to(root / "outside-settings.json")
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink creation unsupported on this filesystem")
+                    data = self._run(script, root, ["--agent", "codex", "--with-init", "--plan"])
+                    self.assertEqual(data["adapter_plan"][0]["key"], "codex")
+                    self.assertFalse(data["applied"])
+
+    def test_user_scope_rejects_apply_without_explicit_agent(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--scope", "user", "--yes", "--json"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("explicit agent", proc.stderr)
+                    self.assertFalse((home / ".claude" / "settings.json").exists())
+                    self.assertFalse((home / ".context-guard").exists())
+
+    def test_user_scope_claude_writes_home_settings_with_rollback_record(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    settings = home / ".claude" / "settings.json"
+                    settings.parent.mkdir()
+                    settings.write_text(json.dumps({"permissions": {"deny": ["Read(./custom/**)"]}}), encoding="utf-8")
+                    os.chmod(settings, 0o600)
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--scope",
+                            "user",
+                            "--agent",
+                            "claude",
+                            "--yes",
+                            "--no-diet-scan",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(data["scope"], "user")
+                    self.assertEqual(data["root"], str(home.resolve()))
+                    self.assertEqual(data["settings_path"], str(settings.resolve()))
+                    self.assertTrue(data["backup_path"])
+                    self.assertTrue(Path(data["backup_path"]).is_file())
+                    self.assertTrue(data["rollback_id"])
+                    rollback_path = Path(data["rollback_path"])
+                    self.assertTrue(rollback_path.is_file())
+                    rollback = json.loads(rollback_path.read_text(encoding="utf-8"))
+                    self.assertEqual(rollback["schema_version"], "contextguard.rollback.v1")
+                    self.assertEqual(rollback["target_path"], str(settings.resolve()))
+                    self.assertEqual(rollback["backup_path"], data["backup_path"])
+                    self.assertIn("--yes and explicit --agent", " ".join(data["warnings"]))
+                    self.assertIn("Read(./custom/**)", json.loads(settings.read_text(encoding="utf-8"))["permissions"]["deny"])
+
+    def test_user_scope_existing_claude_settings_rejects_no_backup(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    settings = home / ".claude" / "settings.json"
+                    settings.parent.mkdir()
+                    settings.write_text("{}", encoding="utf-8")
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--scope",
+                            "user",
+                            "--agent",
+                            "claude",
+                            "--yes",
+                            "--no-backup",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("Refusing --no-backup for user-scope", proc.stderr)
+                    self.assertFalse((home / ".context-guard" / "rollback").exists())
+
+    def test_user_scope_non_claude_adapter_is_precise_noop(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--scope",
+                            "user",
+                            "--agent",
+                            "codex",
+                            "--with-init",
+                            "--yes",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertFalse(data["applied"])
+                    self.assertTrue(data["apply_requested"])
+                    entry = data["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "codex")
+                    self.assertEqual(entry["scope"], "user")
+                    self.assertEqual(entry["status"], "unsupported")
+                    self.assertFalse(entry["writable"])
+                    self.assertIn("not implemented/verified", entry["unsupported_reason"])
+                    self.assertEqual(data["actions"], [])
+                    self.assertFalse((home / "AGENTS.md").exists())
+                    self.assertFalse((home / ".claude").exists())
+                    self.assertFalse((home / ".context-guard").exists())
+
+    def test_codex_project_skill_dirs_are_shared_repo_readable(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--with-skill", "--yes", "--no-diet-scan"],
+                    )
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(stat.S_IMODE((root / ".agents").stat().st_mode), 0o755)
+                    self.assertEqual(stat.S_IMODE((root / ".agents" / "skills").stat().st_mode), 0o755)
+                    self.assertEqual(
+                        stat.S_IMODE((root / ".agents" / "skills" / "context-guard").stat().st_mode),
+                        0o755,
+                    )
+
+    def test_codex_root_rule_write_preserves_existing_project_root_mode(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "private-project"
+                    root.mkdir()
+                    root.chmod(0o700)
+                    data = self._run(script, root, ["--agent", "codex", "--with-init", "--yes", "--no-diet-scan"])
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+                    self.assertTrue((root / "AGENTS.md").is_file())
 
     def test_default_plan_detects_repo_rule_agents_present_in_repo(self):
         for script in SETUP_SCRIPTS:

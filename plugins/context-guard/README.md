@@ -32,7 +32,15 @@ After installation, use these skills inside Claude Code:
 
 ## Helper commands and PATH
 
-The canonical helper prefix is `context-guard-*`. Claude Code plugin skills can call the packaged helpers, but your normal shell may not automatically add the plugin `bin/` directory to `PATH`.
+The canonical command is `context-guard`; backwards-compatible helper commands keep the `context-guard-*` prefix. Claude Code plugin skills can call the packaged helpers, but your normal shell may not automatically add the plugin `bin/` directory to `PATH`.
+
+For Codex or other terminal-first agents, install the npm package or run it one-off with npx. Installation is passive and does not write configuration.
+
+```bash
+npm install -g @ictechgy/context-guard
+context-guard setup --agent codex --scope project --with-init --with-skill --plan
+npx @ictechgy/context-guard --version
+```
 
 From this repository root, run helpers by path:
 

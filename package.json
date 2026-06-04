@@ -1,0 +1,70 @@
+{
+  "name": "@ictechgy/context-guard",
+  "version": "0.4.0",
+  "description": "ContextGuard CLI helpers for keeping AI coding agent context focused and local-first.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ictechgy/context-guard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ictechgy/context-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ictechgy/context-guard/issues"
+  },
+  "type": "commonjs",
+  "bin": {
+    "context-guard": "plugins/context-guard/bin/context-guard",
+    "context-guard-setup": "plugins/context-guard/bin/context-guard-setup",
+    "context-guard-diet": "plugins/context-guard/bin/context-guard-diet",
+    "context-guard-audit": "plugins/context-guard/bin/context-guard-audit",
+    "context-guard-trim-output": "plugins/context-guard/bin/context-guard-trim-output",
+    "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",
+    "context-guard-artifact": "plugins/context-guard/bin/context-guard-artifact",
+    "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
+    "context-guard-tool-prune": "plugins/context-guard/bin/context-guard-tool-prune",
+    "context-guard-compress": "plugins/context-guard/bin/context-guard-compress",
+    "context-guard-bench": "plugins/context-guard/bin/context-guard-bench",
+    "context-guard-read-symbol": "plugins/context-guard/bin/context-guard-read-symbol",
+    "context-guard-rewrite-bash": "plugins/context-guard/bin/context-guard-rewrite-bash",
+    "context-guard-guard-read": "plugins/context-guard/bin/context-guard-guard-read",
+    "context-guard-failed-nudge": "plugins/context-guard/bin/context-guard-failed-nudge",
+    "context-guard-statusline": "plugins/context-guard/bin/context-guard-statusline",
+    "context-guard-statusline-merged": "plugins/context-guard/bin/context-guard-statusline-merged"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "README.ko.md",
+    "context-guard-kit/*.py",
+    "context-guard-kit/*.sh",
+    "context-guard-kit/README.md",
+    "context-guard-kit/settings.example.json",
+    "plugins/context-guard/.claude-plugin/plugin.json",
+    "plugins/context-guard/README.md",
+    "plugins/context-guard/README.ko.md",
+    "plugins/context-guard/LICENSE",
+    "plugins/context-guard/bin/**",
+    "plugins/context-guard/brief/**",
+    "plugins/context-guard/lib/**",
+    "plugins/context-guard/skills/**",
+    "docs/distribution.md",
+    "packaging/homebrew/context-guard.rb.template"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "keywords": [
+    "ai",
+    "codex",
+    "claude-code",
+    "context",
+    "token-budget",
+    "cli"
+  ]
+}

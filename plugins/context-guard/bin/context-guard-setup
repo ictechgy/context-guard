@@ -113,11 +113,16 @@ class Choices:
 class SetupResult:
     root: Path
     settings_path: Path
+    scope: str
     changed: bool
     applied: bool
+    apply_requested: bool
     choices: Choices
     actions: list[str]
     backup_path: Path | None = None
+    rollback_id: str | None = None
+    rollback_path: Path | None = None
+    warnings: list[str] | None = None
     diet_scan: dict[str, Any] | None = None
     # Per-agent cross-agent plan; None preserves the legacy Claude-only payload
     # shape for callers that never engage the adapter registry.
@@ -127,9 +132,14 @@ class SetupResult:
         return {
             "root": str(self.root),
             "settings_path": str(self.settings_path),
+            "scope": self.scope,
             "changed": self.changed,
             "applied": self.applied,
+            "apply_requested": self.apply_requested,
             "backup_path": str(self.backup_path) if self.backup_path else None,
+            "rollback_id": self.rollback_id,
+            "rollback_path": str(self.rollback_path) if self.rollback_path else None,
+            "warnings": self.warnings or [],
             "choices": self.choices.__dict__,
             "actions": self.actions,
             "diet_scan": self.diet_scan,
@@ -152,6 +162,9 @@ class SetupResult:
 
 ADAPTER_RULE_BLOCK_BEGIN = "<!-- contextguard:begin -->"
 ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
+CODEX_SKILL_REL = ".agents/skills/context-guard/SKILL.md"
+CODEX_SKILL_MARKER_BEGIN = "<!-- contextguard:codex-skill:begin -->"
+CODEX_SKILL_MARKER_END = "<!-- contextguard:codex-skill:end -->"
 
 
 class CapabilityClass:
@@ -173,6 +186,7 @@ class AgentAdapter:
     summary: str
     settings_rel: str | None = None
     rule_file: str | None = None
+    project_skill_rel: str | None = None
     detect: tuple[str, ...] = ()
 
 
@@ -190,8 +204,9 @@ AGENT_ADAPTERS: tuple[AgentAdapter, ...] = (
         key="codex",
         display_name="OpenAI Codex CLI",
         capability=CapabilityClass.REPO_RULE,
-        summary="Reads AGENTS.md; add an advisory ContextGuard rule block with --with-init.",
+        summary="Reads AGENTS.md; add an advisory ContextGuard rule block with --with-init and optional project skill with --with-skill.",
         rule_file="AGENTS.md",
+        project_skill_rel=CODEX_SKILL_REL,
         detect=("AGENTS.md", ".codex"),
     ),
     AgentAdapter(
@@ -272,6 +287,7 @@ def adapter_registry_payload() -> list[dict[str, Any]]:
             "summary": adapter.summary,
             "settings_rel": adapter.settings_rel,
             "rule_file": adapter.rule_file,
+            "project_skill_rel": adapter.project_skill_rel,
             "detect": list(adapter.detect),
         }
         for adapter in AGENT_ADAPTERS
@@ -339,25 +355,77 @@ def render_repo_rule_block() -> str:
     ])
 
 
-def _read_rule_file_text(path: Path) -> str | None:
-    """Best-effort no-follow read; treat missing/unreadable/symlinked files as absent.
+def render_codex_skill() -> str:
+    """Render the optional project-local Codex skill for ContextGuard."""
+    return "\n".join([
+        "---",
+        "name: context-guard",
+        "description: Use ContextGuard helpers to keep Codex context focused with local-first setup, audit, trimming, and artifact commands.",
+        "---",
+        "",
+        CODEX_SKILL_MARKER_BEGIN,
+        "# ContextGuard for Codex",
+        "",
+        "Use this skill when a task would otherwise paste large files, long logs, or repeated setup context into Codex.",
+        "",
+        "## Progressive disclosure",
+        "- Prefer `context-guard audit . --json` or `context-guard diet scan . --json` before broad repo reads.",
+        "- Use `context-guard pack` for a small, prioritized local context pack.",
+        "- Use `context-guard artifact` for large logs, then query only the relevant slices.",
+        "- Use `context-guard trim-output` or `context-guard sanitize-output` before sharing noisy command output.",
+        "",
+        "## Setup",
+        "- Project activation: `context-guard setup --agent codex --scope project --with-init --with-skill --yes`.",
+        "- Plan first: `context-guard setup --agent codex --scope project --with-init --with-skill --plan`.",
+        "- If `context-guard` is not on PATH, install it explicitly or run via `npx @ictechgy/context-guard`.",
+        "",
+        "Do not claim fixed token or cost savings from these helpers; treat byte reductions as local proxy evidence only.",
+        CODEX_SKILL_MARKER_END,
+        "",
+    ])
 
-    Unlike settings reads, a symlinked or unreadable repo rule file must not abort
-    the whole setup — planning simply treats it as not-yet-initialized and the
-    write path refuses to follow the symlink.
+
+def _read_rule_file_text(path: Path) -> str | None:
+    """Best-effort no-follow read; only a missing file is treated as absent.
+
+    Unreadable, symlinked, directory, or otherwise unsafe targets must not be
+    collapsed into "missing"; doing so could overwrite user-owned instruction
+    files. Callers that want a non-throwing view should use
+    ``_rule_file_state`` and skip unsafe targets explicitly.
     """
     try:
         return _read_text_no_follow(path)
     except FileNotFoundError:
         return None
-    except OSError:
-        return None
+
+
+def _rule_file_state(path: Path) -> dict[str, Any]:
+    """Return a non-throwing state for project rule/skill files."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return {"status": "missing", "text": None, "reason": None}
+    except OSError as exc:
+        return {"status": "unsafe", "text": None, "reason": f"could not inspect rule file: {exc.__class__.__name__}"}
+    if stat.S_ISLNK(st.st_mode):
+        return {"status": "unsafe", "text": None, "reason": f"refused to read symlinked rule file: {path.name}"}
+    if stat.S_ISDIR(st.st_mode):
+        return {"status": "directory", "text": None, "reason": f"refused to replace directory rule target: {path.name}"}
+    try:
+        text = _read_text_no_follow(path)
+    except OSError as exc:
+        return {
+            "status": "unsafe",
+            "text": None,
+            "reason": f"could not read rule file without following symlinks: {exc.__class__.__name__}",
+        }
+    return {"status": "file", "text": text, "reason": None}
 
 
 def repo_rule_block_present(path: Path) -> bool:
     """True when the advisory ContextGuard block already exists in the rule file."""
-    text = _read_rule_file_text(path)
-    return text is not None and ADAPTER_RULE_BLOCK_BEGIN in text
+    state = _rule_file_state(path)
+    return state["status"] == "file" and ADAPTER_RULE_BLOCK_BEGIN in str(state.get("text") or "")
 
 
 def write_repo_rule_init(path: Path) -> dict[str, Any]:
@@ -366,11 +434,10 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
     Returns a status dict: ``applied`` (block written), ``exists`` (already
     present), or ``skipped`` (refused, e.g. symlinked target) with a reason.
     """
-    if path.exists() and path.is_symlink():
-        return {"status": "skipped", "reason": f"refused to write through symlinked rule file: {path.name}"}
-    if path.exists() and path.is_dir():
-        return {"status": "skipped", "reason": f"refused to replace directory rule target: {path.name}"}
-    existing = _read_rule_file_text(path)
+    state = _rule_file_state(path)
+    if state["status"] not in {"missing", "file"}:
+        return {"status": "skipped", "reason": state.get("reason") or f"refused unsafe rule target: {path.name}"}
+    existing = state.get("text")
     if existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing:
         return {"status": "exists"}
     block = render_repo_rule_block()
@@ -381,10 +448,44 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
         new_text = block + "\n"
         mode = 0o644
     try:
-        atomic_write(path, new_text, mode)
+        atomic_write(path, new_text, mode, dir_mode=0o755)
     except OSError as exc:
         return {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
     return {"status": "applied"}
+
+
+def codex_skill_status(path: Path) -> str:
+    state = _rule_file_state(path)
+    if state["status"] == "missing":
+        return "missing"
+    if state["status"] != "file":
+        return "unsafe"
+    text = str(state.get("text") or "")
+    if text == render_codex_skill():
+        return "exists"
+    if CODEX_SKILL_MARKER_BEGIN in text and CODEX_SKILL_MARKER_END in text:
+        return "update-needed"
+    return "foreign"
+
+
+def write_codex_project_skill(path: Path) -> dict[str, Any]:
+    """Idempotently create/update the project-local Codex ContextGuard skill."""
+    state = _rule_file_state(path)
+    if state["status"] not in {"missing", "file"}:
+        return {"status": "skipped", "reason": state.get("reason") or f"refused unsafe skill target: {path.name}"}
+    status = codex_skill_status(path)
+    if status == "exists":
+        return {"status": "exists"}
+    if status == "foreign":
+        return {
+            "status": "skipped",
+            "reason": f"refused to overwrite non-ContextGuard Codex skill file: {path}",
+        }
+    try:
+        atomic_write(path, render_codex_skill(), 0o644, dir_mode=0o755)
+    except OSError as exc:
+        return {"status": "skipped", "reason": f"could not write Codex skill file {path}: {exc.__class__.__name__}"}
+    return {"status": "updated" if status == "update-needed" else "applied"}
 
 
 def adapter_rule_path(root: Path, adapter: AgentAdapter) -> Path | None:
@@ -410,10 +511,12 @@ def build_adapter_plan(
     root: Path,
     targets: list[AgentAdapter],
     *,
+    scope: str,
     claude_actions: list[str],
     claude_changed: bool,
     claude_applied: bool,
     with_init: bool,
+    with_skill: bool,
     applied: bool,
 ) -> list[dict[str, Any]]:
     """Render a per-adapter plan, performing safe repo-rule writes when applied.
@@ -429,13 +532,25 @@ def build_adapter_plan(
             "key": adapter.key,
             "display_name": adapter.display_name,
             "capability": adapter.capability,
+            "scope": scope,
             "detected": adapter.key in detected,
             "summary": adapter.summary,
             "writable": False,
             "status": "report-only",
             "planned_actions": [],
             "applied_actions": [],
+            "unsupported_reason": None,
         }
+        if scope == "user" and adapter.key != "claude":
+            entry["status"] = "unsupported"
+            entry["writable"] = False
+            entry["unsupported_reason"] = (
+                f"user-scope activation for {adapter.display_name} is not implemented/verified yet; "
+                "use --scope project or run the helper commands manually."
+            )
+            entry["planned_actions"] = [entry["unsupported_reason"]]
+            plan.append(entry)
+            continue
         if adapter.capability == CapabilityClass.NATIVE_PLUGIN:
             entry["writable"] = True
             if adapter.settings_rel:
@@ -470,6 +585,42 @@ def build_adapter_plan(
                     entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
                 else:
                     entry["planned_actions"] = [result.get("reason", "skipped")]
+            if adapter.key == "codex" and adapter.project_skill_rel:
+                skill_path = root / adapter.project_skill_rel
+                entry["project_skill_file"] = adapter.project_skill_rel
+                skill_state = codex_skill_status(skill_path)
+                entry["project_skill_status"] = skill_state
+                if skill_state == "exists":
+                    entry["planned_actions"].append(
+                        f"project Codex skill already present in {adapter.project_skill_rel}"
+                    )
+                elif skill_state == "unsafe":
+                    entry["planned_actions"].append(
+                        f"refused unsafe project Codex skill target at {adapter.project_skill_rel}"
+                    )
+                elif not with_skill:
+                    entry["planned_actions"].append(
+                        f"run with --with-skill to generate project Codex skill at {adapter.project_skill_rel}"
+                    )
+                elif not applied:
+                    entry["planned_actions"].append(
+                        f"would generate project Codex skill at {adapter.project_skill_rel}"
+                    )
+                else:
+                    skill_result = write_codex_project_skill(skill_path)
+                    entry["project_skill_status"] = skill_result["status"]
+                    if skill_result["status"] in {"applied", "updated"}:
+                        action = f"wrote project Codex skill to {adapter.project_skill_rel}"
+                        entry["applied_actions"].append(action)
+                        entry["planned_actions"].append(action)
+                        if entry["status"] in {"planned", "exists", "unchanged"}:
+                            entry["status"] = "applied"
+                    elif skill_result["status"] == "exists":
+                        entry["planned_actions"].append(
+                            f"project Codex skill already present in {adapter.project_skill_rel}"
+                        )
+                    else:
+                        entry["planned_actions"].append(skill_result.get("reason", "skipped"))
         elif adapter.capability == CapabilityClass.NATIVE_SKILL:
             entry["planned_actions"] = [adapter.summary]
         else:  # REPORT_ONLY
@@ -499,6 +650,40 @@ def resolve_setup_root(raw_root: str | None) -> Path:
     if not root.exists():
         raise SystemExit(f"Project root does not exist: {root}")
     return root.parent if root.is_file() else root
+
+
+def normalize_scope(raw_scope: str | None) -> str:
+    scope = str(raw_scope or "project").strip().lower()
+    if scope == "global":
+        return "user"
+    if scope not in {"project", "user"}:
+        raise SystemExit("Unknown setup scope: {!r}. Known scopes: project, user.".format(raw_scope))
+    return scope
+
+
+def resolve_scope_root(raw_root: str | None, scope: str) -> Path:
+    if scope == "project":
+        return resolve_setup_root(raw_root)
+    home = Path.home().expanduser().resolve()
+    if home == Path(home.anchor or "/"):
+        raise SystemExit("Refusing user-scope setup because HOME resolves to a filesystem root.")
+    if not home.exists() or not home.is_dir():
+        raise SystemExit(f"Refusing user-scope setup because HOME is not a directory: {home}")
+    return home
+
+
+def explicit_agent_selection(args: argparse.Namespace) -> list[str] | None:
+    values: list[str] = []
+    for attr in ("agent", "only"):
+        raw_values = getattr(args, attr, None)
+        if not raw_values:
+            continue
+        for raw in raw_values:
+            for part in str(raw).split(","):
+                key = part.strip()
+                if key:
+                    values.append(key)
+    return values or None
 
 
 def validate_settings_target(root: Path, settings_path: Path, *, allow_home_settings: bool) -> None:
@@ -647,7 +832,7 @@ def _open_regular_no_symlink(path: Path) -> int:
         os.close(dir_fd)
 
 
-def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
+def _ensure_directory_no_symlink(path: Path, mode: int | None = None, *, parents_mode: int | None = None) -> int:
     if os.mkdir not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative directory creation")
     path = _normalize_allowed_first_absolute_symlink(path)
@@ -658,16 +843,22 @@ def _ensure_directory_no_symlink(path: Path, mode: int | None = None) -> int:
     dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
     try:
         for index, component in enumerate(components):
+            created = False
+            mkdir_mode = (
+                mode
+                if mode is not None and index == len(components) - 1
+                else (parents_mode if parents_mode is not None else PRIVATE_DIR_MODE)
+            )
             try:
                 next_fd = _open_directory_at(dir_fd, component, path)
             except FileNotFoundError:
-                mkdir_mode = mode if mode is not None and index == len(components) - 1 else PRIVATE_DIR_MODE
                 _mkdir_directory_entry_at(dir_fd, component, mkdir_mode)
                 next_fd = _open_directory_at(dir_fd, component, path)
+                created = True
+            if created and hasattr(os, "fchmod"):
+                os.fchmod(next_fd, mkdir_mode)
             os.close(dir_fd)
             dir_fd = next_fd
-        if mode is not None and hasattr(os, "fchmod"):
-            os.fchmod(dir_fd, mode)
         return dir_fd
     except Exception:
         os.close(dir_fd)
@@ -1060,10 +1251,10 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
     return actions
 
 
-def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+def atomic_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = PRIVATE_DIR_MODE) -> None:
     if os.rename not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative atomic writes")
-    parent_fd = _ensure_directory_no_symlink(path.parent)
+    parent_fd = _ensure_directory_no_symlink(path.parent, dir_mode, parents_mode=dir_mode)
     tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | _no_follow_flag()
     fd = os.open(tmp_name, flags, mode, dir_fd=parent_fd)
@@ -1116,6 +1307,43 @@ def backup_existing(path: Path) -> Path | None:
     backup = path.with_name(f"{path.name}.bak-{stamp}-{uuid.uuid4().hex[:8]}")
     atomic_write(backup, text, mode)
     return backup
+
+
+def write_rollback_record(
+    *,
+    root: Path,
+    scope: str,
+    settings_path: Path,
+    backup_path: Path | None,
+    original_existed: bool,
+) -> tuple[str | None, Path | None]:
+    """Record a minimal rollback handle for user-scope writes.
+
+    Project-scope setup keeps the legacy backup-only behavior. User-scope setup
+    can affect many future projects, so every write gets a local rollback record
+    under the user's ContextGuard state directory.
+    """
+    if scope != "user":
+        return None, None
+    rollback_id = _dt.datetime.now().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    rollback_dir = root / ".context-guard" / "rollback"
+    rollback_path = rollback_dir / f"{rollback_id}.json"
+    record = {
+        "schema_version": "contextguard.rollback.v1",
+        "rollback_id": rollback_id,
+        "created_at": _dt.datetime.now(_dt.UTC).isoformat().replace("+00:00", "Z"),
+        "scope": scope,
+        "target_path": str(settings_path),
+        "backup_path": str(backup_path) if backup_path else None,
+        "original_existed": original_existed,
+        "restore": (
+            f"cp {shlex.quote(str(backup_path))} {shlex.quote(str(settings_path))}"
+            if backup_path
+            else f"rm -f {shlex.quote(str(settings_path))}"
+        ),
+    }
+    atomic_write(rollback_path, json.dumps(record, indent=2, sort_keys=True) + "\n", 0o600)
+    return rollback_id, rollback_path
 
 
 def acquire_settings_lock(path: Path) -> int:
@@ -1198,14 +1426,19 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
 
 
 def render_text(result: SetupResult) -> str:
-    mode = "applied" if result.applied else "plan only"
+    mode = "applied" if result.applied else ("apply requested; no writes" if result.apply_requested else "plan only")
     lines = [
         f"ContextGuard setup ({mode})",
+        f"scope={result.scope}",
         f"root={result.root}",
         f"settings={result.settings_path}",
     ]
     if result.backup_path:
         lines.append(f"backup={result.backup_path}")
+    if result.rollback_path:
+        lines.append(f"rollback={result.rollback_path}")
+    for warning in result.warnings or []:
+        lines.append(f"warning={warning}")
     if result.diet_scan:
         scan = result.diet_scan
         lines.append("post-setup diet scan:")
@@ -1234,25 +1467,39 @@ def render_text(result: SetupResult) -> str:
             lines.append(f"- {entry['key']} [{entry['capability']}] status={entry['status']}")
             for action in entry.get("planned_actions", []):
                 lines.append(f"  - {action}")
-    if not result.applied:
+    if result.apply_requested and not result.applied:
+        lines.append("No supported writes were applied.")
+    elif not result.applied:
         lines.append("Run with --yes to apply the selected plan non-interactively.")
     return "\n".join(lines) + "\n"
 
 
 def run(args: argparse.Namespace) -> SetupResult:
     require_no_follow_file_ops_supported()
-    root = resolve_setup_root(args.root)
+    scope = normalize_scope(getattr(args, "scope", "project"))
+    root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
-    validate_settings_target(root, settings_path, allow_home_settings=args.allow_home_settings)
+    warnings: list[str] = []
+    if scope == "user":
+        warnings.append(
+            "user-scope setup can affect future projects; writes require --yes and explicit --agent/--only selection"
+        )
 
     # Cross-agent targets. Default keeps Claude compatibility (Claude is always
     # targeted plus any detected agent); --only narrows to an explicit set.
-    targets = resolve_target_adapters(root, getattr(args, "only", None))
+    selected_agents = explicit_agent_selection(args)
+    targets = resolve_target_adapters(root, selected_agents)
     claude_targeted = any(adapter.key == "claude" for adapter in targets)
 
-    original_text = _read_optional_text_no_follow(settings_path)
-    original = _parse_json_object_text(original_text, settings_path)
-    settings = json.loads(json.dumps(original))
+    if claude_targeted:
+        validate_settings_target(root, settings_path, allow_home_settings=(args.allow_home_settings or scope == "user"))
+        original_text = _read_optional_text_no_follow(settings_path)
+        original = _parse_json_object_text(original_text, settings_path)
+        settings = json.loads(json.dumps(original))
+    else:
+        original_text = None
+        original = {}
+        settings = {}
 
     choices = choices_from_args(args)
     interactive = (
@@ -1268,14 +1515,40 @@ def run(args: argparse.Namespace) -> SetupResult:
     actions = apply_choices(settings, choices) if claude_targeted else []
     changed = (settings != original) if claude_targeted else False
 
-    applied = bool(args.yes and not args.dry_run and not args.plan)
+    apply_requested = bool(args.yes and not args.dry_run and not args.plan)
+    if scope == "user" and apply_requested and not selected_agents:
+        raise SystemExit(
+            "Refusing user-scope writes without an explicit agent. "
+            "Pass --agent claude (or another specific adapter) with --scope user."
+        )
     if interactive and changed:
-        preview = SetupResult(root, settings_path, changed, False, choices, actions)
+        preview = SetupResult(
+            root=root,
+            settings_path=settings_path,
+            scope=scope,
+            changed=changed,
+            applied=False,
+            apply_requested=False,
+            choices=choices,
+            actions=actions,
+            warnings=warnings,
+        )
         print("\n" + render_text(preview))
-        applied = prompt_bool("Apply these project-local changes now?", True)
+        prompt_scope = "user-level" if scope == "user" else "project-local"
+        apply_requested = prompt_bool(f"Apply these {prompt_scope} changes now?", True)
+        if scope == "user" and apply_requested and not selected_agents:
+            raise SystemExit(
+                "Refusing user-scope writes without an explicit agent. "
+                "Pass --agent claude (or another specific adapter) with --scope user."
+            )
 
     backup_path = None
-    if claude_targeted and applied and changed:
+    rollback_id = None
+    rollback_path = None
+    claude_settings_written = False
+    if claude_targeted and apply_requested and changed:
+        if scope == "user" and original_text is not None and args.no_backup:
+            raise SystemExit("Refusing --no-backup for user-scope changes to existing Claude settings.")
         lock_fd = acquire_settings_lock(settings_path)
         try:
             current_text = _read_optional_text_no_follow(settings_path)
@@ -1291,6 +1564,14 @@ def run(args: argparse.Namespace) -> SetupResult:
                     json.dumps(settings, indent=2, sort_keys=True) + "\n",
                     existing_mode_or_default(settings_path, 0o600),
                 )
+                claude_settings_written = True
+                rollback_id, rollback_path = write_rollback_record(
+                    root=root,
+                    scope=scope,
+                    settings_path=settings_path,
+                    backup_path=backup_path,
+                    original_existed=(original_text is not None),
+                )
         finally:
             release_settings_lock(lock_fd)
 
@@ -1299,23 +1580,40 @@ def run(args: argparse.Namespace) -> SetupResult:
     adapter_plan = build_adapter_plan(
         root,
         targets,
+        scope=scope,
         claude_actions=actions,
         claude_changed=changed,
-        claude_applied=(claude_targeted and applied),
+        claude_applied=(claude_targeted and apply_requested),
         with_init=bool(getattr(args, "with_init", False)),
-        applied=applied,
+        with_skill=bool(getattr(args, "with_skill", False)),
+        applied=apply_requested,
     )
     # Surface any repo-rule writes in the top-level actions for visibility. Claude
     # actions are already in ``actions``; only adapter-side writes are appended.
     for entry in adapter_plan:
         actions.extend(entry.get("applied_actions", []))
+    adapter_writes = any(entry.get("applied_actions") for entry in adapter_plan)
+    applied = bool(claude_settings_written or adapter_writes)
 
     diet_scan = None
-    if applied and not getattr(args, "no_diet_scan", False):
+    if (applied or (apply_requested and claude_targeted)) and not getattr(args, "no_diet_scan", False):
         diet_scan = run_post_setup_diet_scan(root)
 
     return SetupResult(
-        root, settings_path, changed, applied, choices, actions, backup_path, diet_scan, adapter_plan
+        root=root,
+        settings_path=settings_path,
+        scope=scope,
+        changed=changed,
+        applied=applied,
+        apply_requested=apply_requested,
+        choices=choices,
+        actions=actions,
+        backup_path=backup_path,
+        rollback_id=rollback_id,
+        rollback_path=rollback_path,
+        warnings=warnings,
+        diet_scan=diet_scan,
+        adapter_plan=adapter_plan,
     )
 
 
@@ -1323,9 +1621,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Interactively configure ContextGuard project settings.")
     parser.add_argument("--root", default=None, help="project root to configure (default: nearest git root, else current directory)")
     parser.add_argument(
+        "--scope",
+        choices=("project", "user", "global"),
+        default="project",
+        help="setup scope: project-local by default; user/global targets only known user-level paths and requires explicit --agent for writes",
+    )
+    parser.add_argument(
         "--allow-home-settings",
         action="store_true",
-        help="allow writing ~/.claude/settings.json; off by default to keep setup project-local",
+        help="deprecated compatibility alias for user-level Claude settings; prefer --scope user --agent claude",
     )
     parser.add_argument("--yes", action="store_true", help="apply the recommended/selected setup without prompts")
     parser.add_argument("--plan", action="store_true", help="show the setup plan without writing files")
@@ -1338,6 +1642,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
     parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")
+    parser.add_argument(
+        "--agent",
+        action="append",
+        default=None,
+        metavar="ADAPTER",
+        help="adapter key(s) to configure; comma-separated or repeatable. Alias for --only.",
+    )
     parser.add_argument(
         "--only",
         action="append",
@@ -1352,6 +1663,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also write advisory ContextGuard rule files for repo-rule agents (AGENTS.md, GEMINI.md, .cursorrules, etc.) "
         "when applying; safe and idempotent.",
+    )
+    parser.add_argument(
+        "--with-skill",
+        dest="with_skill",
+        action="store_true",
+        help="also generate optional project-local skill files where supported, currently Codex .agents/skills/context-guard/SKILL.md.",
     )
     parser.add_argument(
         "--list-adapters",

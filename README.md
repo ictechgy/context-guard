@@ -7,18 +7,25 @@ ContextGuard is a local-first context-hygiene toolkit for AI coding and tool age
 
 ## TL;DR
 
-Install the plugin, run `/context-guard:setup` inside a project, and ContextGuard adds reversible project-local guardrails without changing your global Claude settings.
+Install and activation are separate. Installing ContextGuard only puts local helpers or Claude plugin skills in reach; configuration changes happen later through an explicit setup command.
 
-```text
-/plugin marketplace add ictechgy/context-guard
-/plugin install context-guard@context-guard
+| If you use... | Install | Activate |
+| --- | --- | --- |
+| Claude Code | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Run `/context-guard:setup` inside the project. |
+| Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan`, then rerun with `--yes`. |
+| Other rule-file agents | npm/npx install above | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
+| macOS/Homebrew users | planned release path: `brew tap ictechgy/contextguard && brew install context-guard` | Same `context-guard setup ...` commands after install. |
+
+Common commands:
+
+```bash
+npm install -g @ictechgy/context-guard
+npx @ictechgy/context-guard --version
+context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent claude --scope user --plan
 ```
 
-Then apply setup inside the project you want to protect.
-
-```text
-/context-guard:setup
-```
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups/rollback metadata, and never runs during package installation.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure real before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
@@ -35,7 +42,7 @@ Current setup surfaces:
 | Agent or tool | ContextGuard surface |
 | --- | --- |
 | Claude Code | Native plugin setup for project-local hooks, deny rules, and statusline configuration. |
-| OpenAI Codex CLI | Advisory `AGENTS.md` rule block. |
+| OpenAI Codex CLI | Advisory `AGENTS.md` rule block plus optional project skill at `.agents/skills/context-guard/SKILL.md`. |
 | Gemini CLI | Advisory `GEMINI.md` rule block. |
 | Cursor | Advisory project-rule block, usually `.cursorrules`. |
 | Windsurf | Advisory `.windsurf/rules/contextguard.md` rule block. |
@@ -146,6 +153,37 @@ Available plugin skills:
 | `/context-guard:audit` | Audit local Claude transcript token/cost hotspots. |
 
 Setup is explicit, project-local, and reversible. The plugin does not configure external model delegation or offload; all helper commands run locally. See [`plugins/context-guard/examples/settings.example.json`](plugins/context-guard/examples/settings.example.json) for an example settings file.
+
+## Install with npm/npx
+
+The npm package exposes a canonical `context-guard` command plus the backwards-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself.
+
+```bash
+npm install -g @ictechgy/context-guard
+context-guard --version
+context-guard setup --agent codex --scope project --with-init --with-skill --plan
+```
+
+For a one-off run without global installation:
+
+```bash
+npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --plan
+npm exec @ictechgy/context-guard -- --version
+```
+
+Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skills/...`. Use `--scope user` only when you intentionally want a user-level path; applying user scope requires `--yes` plus an explicit `--agent`, and supported writes record rollback metadata.
+
+## Homebrew release path
+
+Homebrew is documented as the macOS release path once formula publishing is wired to a verified release artifact:
+
+```bash
+brew tap ictechgy/contextguard
+brew install context-guard
+context-guard --version
+```
+
+Until the tap is published, use npm/npx or the Claude plugin install path above.
 
 ## Helper commands
 
