@@ -2,6 +2,15 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.4.0] - 2026-06-04
+
+- Added budgeted context packs with prioritized local evidence, bounded receipts, safe slice retrieval hints, and explicit proxy-token labeling.
+- Added tool/MCP schema pruning that emits bounded top-k advisory reports while keeping full sanitized schemas retrievable from local receipts.
+- Added conservative stdin compression helpers for JSON, diff, logs, search output, code, and prose with observed byte evidence and estimated token proxies.
+- Expanded context hygiene scanning across multi-agent rule surfaces, context-exclusion recommendations, and bounded scanner reporting.
+- Improved artifact receipts, benchmark evidence gates, cache-friendliness diagnostics, and redaction safeguards so savings claims remain measured and conservative.
+- Added brief-mode rule snippets and refreshed README/GitHub Pages copy for broader AI-tool positioning without fixed token-savings promises.
+
 ## [0.3.1] - 2026-06-01
 
 - Fixed setup migration for upgraded projects that still had legacy `claude-token-*` hook commands, rewriting them to current `context-guard-*` helpers so Claude no longer reports `command not found` hook errors.
