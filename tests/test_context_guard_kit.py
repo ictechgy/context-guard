@@ -7870,6 +7870,40 @@ for malformed in malformed_values:
             self.assertEqual(data["cache_friendliness"]["status"], "partial")
             self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.1")
 
+    def test_transcript_audit_cache_friendliness_marks_low_record_evidence_partial_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            prompt = "\n".join(f"non overlapping segment {idx}" for idx in range(12))
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    cache_friendliness = data["cache_friendliness"]
+                    self.assertEqual(cache_friendliness["status"], "partial")
+                    self.assertEqual(cache_friendliness["confidence"], "partial")
+                    self.assertEqual(cache_friendliness["analyzed_prompt_records"], 1)
+                    self.assertEqual(cache_friendliness["non_overlapping_prompt_records"], 1)
+                    self.assertEqual(cache_friendliness["overlapping_prompt_records"], 0)
+
     def test_transcript_audit_cache_friendliness_marks_overlapping_windows_partial_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"

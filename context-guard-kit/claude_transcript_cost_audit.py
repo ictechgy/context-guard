@@ -1046,7 +1046,6 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     prefix_position_stats = segment_position_stats(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
     non_overlapping_prompt_records, overlapping_prompt_records = prompt_window_overlap_counts(samples)
     prefix_tail_windows_overlap = overlapping_prompt_records > 0
-    confidence = "partial" if skipped or prefix_tail_windows_overlap else "observed"
     volatile_prefix = 1.0 - prefix_stability
     volatile_tail = 1.0 - tail_stability
     most_volatile_prefix = max(prefix_position_stats, key=lambda item: item["volatile_share"], default=None)
@@ -1055,6 +1054,7 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     status = "available"
     if skipped or analyzed < PROMPT_AUDIT_MIN_RECORDS or non_overlapping_prompt_records == 0:
         status = "partial"
+    confidence = "partial" if status == "partial" or prefix_tail_windows_overlap else "observed"
     average_prefix_churn = (
         volatile_prefix >= PROMPT_PREFIX_VOLATILE_THRESHOLD
         and (volatile_prefix - volatile_tail) >= PROMPT_PREFIX_TAIL_CHURN_DELTA
