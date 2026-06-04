@@ -248,7 +248,7 @@ def context_surface_for_rel(raw_rel: str, name: str) -> dict[str, str] | None:
         key = "gemini"
     elif raw_rel == ".cursorrules" or raw_rel.startswith(".cursor/rules/"):
         key = "cursor"
-    elif raw_rel in {".windsurfrules", ".windsurf/rules/contextguard.md"} or raw_rel.startswith(".windsurf/rules/"):
+    elif raw_rel == ".windsurfrules" or raw_rel.startswith(".windsurf/rules/"):
         key = "windsurf"
     elif raw_rel == ".clinerules" or raw_rel.startswith(".clinerules/"):
         key = "cline"
@@ -1015,7 +1015,7 @@ def main() -> int:
     scan.add_argument("path", nargs="?", default=".")
     scan.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     scan.add_argument("--show-paths", action="store_true", help="show raw absolute root path instead of a stable anonymized root label; local debugging only because private paths may be exposed")
-    scan.add_argument("--top", type=int, default=20, help="maximum context-like files to list")
+    scan.add_argument("--top", type=int, default=20, help="maximum context-like files and context-exclusion recommendations to list")
     scan.add_argument("--large-context-bytes", type=int, default=DEFAULT_LARGE_CONTEXT_BYTES)
     scan.add_argument("--huge-context-bytes", type=int, default=DEFAULT_HUGE_CONTEXT_BYTES)
     scan.add_argument("--long-context-lines", type=int, default=DEFAULT_LONG_CONTEXT_LINES)

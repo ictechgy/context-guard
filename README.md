@@ -157,7 +157,7 @@ Most users should start with `/context-guard:setup`. The helper commands below a
 ./plugins/context-guard/bin/context-guard-diet scan .
 ```
 
-The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like instruction/rule files across common AI-agent surfaces, and local context-exclusion recommendations for bulky or sensitive paths. Recommendations are heuristic/advisory unless they are emitted as Claude `permissions.deny` entries.
+The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like instruction/rule files across common AI-agent surfaces, and local context-exclusion recommendations for bulky or sensitive paths. `--top` caps both the reported context-like files and context-exclusion recommendations. Recommendations are heuristic/advisory unless they are emitted as Claude `permissions.deny` entries.
 
 ### Read symbols instead of whole large files
 
