@@ -53,5 +53,5 @@
       "wall_time_change_pct": -12.9
     }
   ],
-  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings."
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. Provider-cache discounts must stay separate from token-reduction claims. This example documents report shape only; make real savings claims only from your own matched successful task runs."
 }

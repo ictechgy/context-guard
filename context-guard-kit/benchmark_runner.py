@@ -1717,7 +1717,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             "Proxy byte reductions are reported separately from matched-task token/cost metrics; "
             "shifted cost savings require measured primary cost and measured external cost when "
             "external tokens are present. Wall time and provider cached-token fields are diagnostic "
-            "telemetry, not proof of ContextGuard-caused token or cost savings."
+            "telemetry, not proof of ContextGuard-caused token or cost savings; provider-cache "
+            "discounts must stay separate from token-reduction claims."
         ),
     }
 
