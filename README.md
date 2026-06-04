@@ -66,6 +66,7 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, and `context-guard-audit` can flag likely volatile prefix layouts. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
+| Experimental learned/multimodal/self-hosted techniques | Compressing prompts, reducing visual evidence, or optimizing self-hosted inference internals. | Tracked only in the experimental radar until matched benchmarks prove quality-preserving value; not a hosted API savings claim. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
@@ -92,6 +93,7 @@ When you need a savings claim, measure it on your own tasks:
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
 - matched successful baseline/variant runs from `context-guard-bench`
 - large tool/MCP catalogs versus `context-guard-tool-prune` top-k reports plus receipt retrieval
+- optional experimental lanes in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md), measured with the same matched-task benchmark gates before any savings claim
 
 ## What ContextGuard does not do
 
@@ -99,6 +101,7 @@ When you need a savings claim, measure it on your own tasks:
 - It does not send work to external AI providers to save model tokens.
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
+- It does not ship learned compression, multimodal OCR/crop pruning, or self-hosted KV/latent inference optimization as runtime features; those remain gated experiments in the research radar.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
 Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin/` so existing automation can migrate gradually.
@@ -255,6 +258,7 @@ The report compares successful baseline/variant runs by real tokens and `cost_us
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
 - workflow-specific before/after benchmark report examples beyond the minimal report-shape fixture.
+- learned prompt/context compression, multimodal crop/OCR or visual-token pruning, and self-hosted KV/latent inference optimizations. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md); these lanes require matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, and provider-measured token/cost evidence before any hosted API savings claim.
 
 ## Repository layout
 

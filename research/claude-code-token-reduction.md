@@ -411,3 +411,7 @@ unset DISABLE_PROMPT_CACHING DISABLE_PROMPT_CACHING_HAIKU DISABLE_PROMPT_CACHING
 - CLI reference: https://code.claude.com/docs/en/cli-reference
 - Tools reference/LSP/Monitor: https://code.claude.com/docs/en/tools-reference
 - Claude Help Center usage/limits: https://support.claude.com/en/articles/14552983-models-usage-and-limits-in-claude-code
+
+## 부록: 실험적 token-reduction radar
+
+미래 learned compression, multimodal crop/OCR, self-hosted KV/latent optimization 아이디어는 [`experimental-token-reduction-radar.md`](experimental-token-reduction-radar.md)에 별도로 gate한다. 이 항목들은 runtime 기본 기능이 아니며, hosted API 절감 주장은 provider-measured matched-task evidence가 있을 때만 허용한다.

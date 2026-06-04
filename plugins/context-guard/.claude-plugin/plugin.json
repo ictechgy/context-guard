@@ -31,7 +31,11 @@
     "tool-schema",
     "mcp",
     "schema-pruning",
-    "context-pack"
+    "context-pack",
+    "research-radar",
+    "experimental-roadmap",
+    "gated-experiments",
+    "future-roadmap"
   ],
   "version": "0.3.1"
 }

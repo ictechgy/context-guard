@@ -8,6 +8,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -134,6 +135,79 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse((KIT_DIR / "aux_ai_delegate.py").exists())
         self.assertFalse((PLUGIN_BIN / "context-guard-delegate").exists())
         self.assertFalse((PLUGIN_DIR / "skills" / "delegate").exists())
+
+    def test_experimental_token_reduction_radar_claim_discipline(self):
+        radar = ROOT / "research" / "experimental-token-reduction-radar.md"
+        self.assertTrue(radar.is_file())
+        text = radar.read_text(encoding="utf-8").lower()
+        plain_text = re.sub(r"[*_`]+", "", text)
+
+        for phrase in [
+            "learned prompt/context compression",
+            "multimodal crop, ocr",
+            "visual-token",
+            "self-hosted kv-cache",
+            "latent inference",
+        ]:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
+        for claim_gate in [
+            "do not guarantee hosted api token or cost savings",
+            "provider-measured",
+            "matched successful tasks",
+            "failure-rate guardrail",
+            "human-correction tracking",
+            "shifted-cost accounting",
+        ]:
+            with self.subTest(claim_gate=claim_gate):
+                self.assertIn(claim_gate, plain_text)
+
+        self.assertRegex(text, r"self-hosted[^\\n]+memory/latency")
+        self.assertRegex(text, r"not hosted api token-savings claims?")
+
+    def test_experimental_radar_user_docs_are_claim_safe(self):
+        docs = [
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "index.html",
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                self.assertIn("experimental-token-reduction-radar", text)
+                self.assertRegex(text, r"hosted api|provider")
+                self.assertNotRegex(text, r"guarantees?\\s+(?:hosted\\s+api\\s+)?(?:token|cost)\\s+savings")
+                self.assertNotRegex(text, r"fixed\\s+\\d+%\\s+(?:token|cost)\\s+savings")
+
+    def test_experimental_radar_metadata_descriptions_stay_shipped_surface_safe(self):
+        manifests = [
+            ROOT / ".claude-plugin" / "marketplace.json",
+            PLUGIN_DIR / ".claude-plugin" / "plugin.json",
+        ]
+        forbidden_description_terms = [
+            r"\\blearned\\b",
+            r"\\bmultimodal\\b",
+            r"\\bocr\\b",
+            r"visual\\s+token",
+            r"\\bkv\\b",
+            r"\\blatent\\b",
+        ]
+        generic_terms = {"research-radar", "experimental-roadmap", "gated-experiments", "future-roadmap"}
+        for manifest in manifests:
+            with self.subTest(manifest=manifest):
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                plugin_items = data.get("plugins", [data])
+                self.assertTrue(plugin_items)
+                for item in plugin_items:
+                    description = str(item.get("description", "")).lower()
+                    for pattern in forbidden_description_terms:
+                        self.assertIsNone(re.search(pattern, description), f"{pattern} leaked into description")
+                    terms = set(item.get("keywords", [])) | set(item.get("tags", []))
+                    self.assertTrue(generic_terms & terms)
 
     def test_hook_secret_helper_imports_are_file_bound_and_fail_closed_against_shadows(self):
         cases = [
