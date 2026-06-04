@@ -53,13 +53,14 @@ SECRET_RE = re.compile(
     r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
-    r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret)=[^&#\s,}\]]+|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig)\s*[:=]\s*[^\s,}\]]+"
+    r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|access[_-]?key(?:id)?|accesskeyid)=[^&#\s,}\]]+|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|access[_-]?key(?:id)?|accesskeyid)\s*[:=]\s*[^\s,}\]]+"
     r")"
 )
 SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid)"
+    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid|access[_-]?key(?:id)?|accesskeyid|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey)"
 )
+VALUE_BEARING_KEY_RE = re.compile(r"(?i)^(default|const|enum|example|examples|value|values)$")
 
 
 class ToolPruneError(ValueError):
@@ -133,18 +134,37 @@ def redact_string(value: str) -> tuple[str, int]:
     return SECRET_RE.subn(repl, value)
 
 
-def sanitize_value(value: Any, *, sensitive_context: bool = False) -> tuple[Any, int]:
-    if isinstance(value, str):
-        if sensitive_context:
-            return "[REDACTED]", 1
-        return redact_string(value)
-    if isinstance(value, (int, float, bool)) and sensitive_context:
-        return "[REDACTED]", 1
+def redact_whole_value(value: Any) -> tuple[Any, int]:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        count = 0
+        for key, item in value.items():
+            safe_key, key_redactions = redact_string(str(key))
+            sanitized, item_redactions = redact_whole_value(item)
+            out[safe_key] = sanitized
+            count += key_redactions + item_redactions
+        return out, count
     if isinstance(value, list):
         out: list[Any] = []
         count = 0
         for item in value:
-            sanitized, redactions = sanitize_value(item, sensitive_context=sensitive_context)
+            sanitized, item_redactions = redact_whole_value(item)
+            out.append(sanitized)
+            count += item_redactions
+        return out, count
+    return "[REDACTED]", 1
+
+
+def sanitize_value(value: Any, *, sensitive_context: bool = False, sensitive_schema_context: bool = False) -> tuple[Any, int]:
+    if sensitive_context:
+        return redact_whole_value(value)
+    if isinstance(value, str):
+        return redact_string(value)
+    if isinstance(value, list):
+        out: list[Any] = []
+        count = 0
+        for item in value:
+            sanitized, redactions = sanitize_value(item, sensitive_schema_context=sensitive_schema_context)
             out.append(sanitized)
             count += redactions
         return out, count
@@ -154,8 +174,16 @@ def sanitize_value(value: Any, *, sensitive_context: bool = False) -> tuple[Any,
         for key, item in value.items():
             raw_key = str(key)
             safe_key, key_redactions = redact_string(raw_key)
-            child_sensitive = sensitive_context or bool(SENSITIVE_KEY_RE.search(raw_key))
-            sanitized, item_redactions = sanitize_value(item, sensitive_context=child_sensitive)
+            key_sensitive = bool(SENSITIVE_KEY_RE.search(raw_key))
+            value_bearing = bool(VALUE_BEARING_KEY_RE.search(raw_key))
+            if key_sensitive and not isinstance(item, dict):
+                sanitized, item_redactions = sanitize_value(item, sensitive_context=True)
+            elif key_sensitive:
+                sanitized, item_redactions = sanitize_value(item, sensitive_schema_context=True)
+            elif sensitive_schema_context and value_bearing:
+                sanitized, item_redactions = sanitize_value(item, sensitive_context=True)
+            else:
+                sanitized, item_redactions = sanitize_value(item, sensitive_schema_context=sensitive_schema_context)
             out[safe_key] = sanitized
             count += key_redactions + item_redactions
         return out, count

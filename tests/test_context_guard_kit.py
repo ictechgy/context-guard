@@ -1736,6 +1736,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
         signed_secret = "abcdef1234567890signed"
         credential_secret = "AKIAIOSFODNN7EXAMPLE/20260604/us-east-1/s3/aws4_request"
         structured_secret = "hunter2"
+        private_key_value = "short-private-key-value"
+        access_key_value = "short-access-key-value"
+        ssh_key_value = "short-ssh-key-value"
+        schema_default_secret = "schema-default-secret"
+        schema_enum_secret = "schema-enum-secret"
         signed_url = f"https://example.test/object?X-Amz-Signature={signed_secret}&X-Amz-Credential={credential_secret}"
         for script in TOOL_PRUNE_SCRIPTS:
             with self.subTest(script=script):
@@ -1747,6 +1752,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     catalog["servers"][0]["tools"][0]["inputSchema"]["signedUrl"] = signed_url
                     catalog["servers"][0]["tools"][0]["inputSchema"]["apiKey"] = structured_secret
                     catalog["servers"][0]["tools"][0]["inputSchema"]["headers"] = {"Authorization": "Bearer short-secret"}
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["private_key"] = private_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["accessKeyId"] = access_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["sshKey"] = ssh_key_value
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["properties"]["apiKey"] = {
+                        "type": "string",
+                        "description": "API key",
+                        "default": schema_default_secret,
+                        "enum": [schema_enum_secret],
+                    }
                     proc = self._run_tool_prune(
                         script,
                         root,
@@ -1766,6 +1780,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(credential_secret, proc.stdout)
                     self.assertNotIn(structured_secret, proc.stdout)
                     self.assertNotIn("short-secret", proc.stdout)
+                    self.assertNotIn(private_key_value, proc.stdout)
+                    self.assertNotIn(access_key_value, proc.stdout)
+                    self.assertNotIn(ssh_key_value, proc.stdout)
+                    self.assertNotIn(schema_default_secret, proc.stdout)
+                    self.assertNotIn(schema_enum_secret, proc.stdout)
                     data = json.loads(proc.stdout)
                     self.assertIn("[REDACTED]", data["query"])
                     receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
@@ -1779,6 +1798,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(credential_secret, text)
                         self.assertNotIn(structured_secret, text)
                         self.assertNotIn("short-secret", text)
+                        self.assertNotIn(private_key_value, text)
+                        self.assertNotIn(access_key_value, text)
+                        self.assertNotIn(ssh_key_value, text)
+                        self.assertNotIn(schema_default_secret, text)
+                        self.assertNotIn(schema_enum_secret, text)
                     self.assertIn("[REDACTED]", payload_text)
                     get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
                     self.assertNotIn(secret, get_proc.stdout)
@@ -1789,7 +1813,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(credential_secret, get_proc.stdout)
                     self.assertNotIn(structured_secret, get_proc.stdout)
                     self.assertNotIn("short-secret", get_proc.stdout)
+                    self.assertNotIn(private_key_value, get_proc.stdout)
+                    self.assertNotIn(access_key_value, get_proc.stdout)
+                    self.assertNotIn(ssh_key_value, get_proc.stdout)
+                    self.assertNotIn(schema_default_secret, get_proc.stdout)
+                    self.assertNotIn(schema_enum_secret, get_proc.stdout)
                     self.assertIn("[REDACTED]", get_proc.stdout)
+                    api_key_property = json.loads(get_proc.stdout)["schema"]["inputSchema"]["properties"]["apiKey"]
+                    self.assertEqual(api_key_property["type"], "string")
+                    self.assertEqual(api_key_property["description"], "API key")
+                    self.assertEqual(api_key_property["default"], "[REDACTED]")
+                    self.assertEqual(api_key_property["enum"], ["[REDACTED]"])
 
     def test_tool_prune_retrieval_command_shell_quotes_tool_names(self):
         catalog = {"tools": [{"name": "read_file; echo PWNED #", "description": "read file"}]}
