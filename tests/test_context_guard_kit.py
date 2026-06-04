@@ -8930,6 +8930,7 @@ for malformed in malformed_values:
                     bloat_findings = [item for item in data["findings"] if item["rule_id"] == "large-context-file"]
                     bloat_paths = {item["path"] for item in bloat_findings}
                     self.assertIn("GEMINI.md", bloat_paths)
+                    self.assertIn(".clinerules/contextguard.md", bloat_paths)
                     self.assertTrue(any(item["evidence"].get("surface") == "windsurf" for item in bloat_findings))
                     self.assertTrue(any(item["evidence"].get("surface") == "cline" for item in bloat_findings))
 
@@ -8943,6 +8944,39 @@ for malformed in malformed_values:
                     self.assertEqual(recommendations[".context-guard"]["generic_pattern"], ".context-guard/**")
                     self.assertIn("claude-permissions.deny", recommendations[".env"]["applies_to"])
                     self.assertNotIn(str(root), proc.stdout)
+
+    def test_token_diet_scan_top_caps_context_files_and_exclusion_recommendations(self):
+        for script in DIET_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".claude").mkdir()
+                    (root / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+                    for rel in ["GEMINI.md", ".cursorrules", ".clinerules/contextguard.md"]:
+                        target = root / rel
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(f"{rel} rule\n" * 500, encoding="utf-8")
+                    for rel in ["node_modules", "dist", "build"]:
+                        (root / rel).mkdir()
+
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "scan", str(root), "--json", "--top", "1"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertLessEqual(len(data["context_files"]), 1)
+                    self.assertLessEqual(len(data["context_exclusion_recommendations"]), 1)
+
+                    help_proc = subprocess.run(
+                        [sys.executable, str(script), "scan", "--help"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("context-like files and context-exclusion", help_proc.stdout)
+                    self.assertIn("recommendations to list", help_proc.stdout)
 
     def test_token_diet_scan_reports_cline_exact_rule_bloat(self):
         for script in DIET_SCRIPTS:
