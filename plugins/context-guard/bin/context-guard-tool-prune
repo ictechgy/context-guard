@@ -35,6 +35,10 @@ MAX_LABEL_CHARS = 160
 MAX_DESCRIPTION_CHARS = 360
 MAX_OMITTED_TOOLS = 30
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 TERM_RE = re.compile(r"[A-Za-z0-9_]+")
 SECRET_RE = re.compile(
@@ -49,8 +53,12 @@ SECRET_RE = re.compile(
     r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
-    r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s,}\]]+"
+    r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret)=[^&#\s,}\]]+|"
+    r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig)\s*[:=]\s*[^\s,}\]]+"
     r")"
+)
+SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid)"
 )
 
 
@@ -112,23 +120,31 @@ def cap_text(value: object, limit: int = MAX_LABEL_CHARS) -> str:
 def redact_string(value: str) -> tuple[str, int]:
     def repl(match: re.Match[str]) -> str:
         text = match.group(0)
-        if "=" in text and re.search(r"(?i)(key|token|secret|password)", text.split("=", 1)[0]):
-            return text.split("=", 1)[0] + "=[REDACTED]"
-        if ":" in text and re.search(r"(?i)(authorization|key|token|secret|password)", text.split(":", 1)[0]):
-            return text.split(":", 1)[0] + ": [REDACTED]"
+        if "=" in text:
+            key = text.split("=", 1)[0]
+            if SENSITIVE_KEY_RE.search(key):
+                return key + "=[REDACTED]"
+        if ":" in text:
+            key = text.split(":", 1)[0]
+            if SENSITIVE_KEY_RE.search(key):
+                return key + ": [REDACTED]"
         return "[REDACTED]"
 
     return SECRET_RE.subn(repl, value)
 
 
-def sanitize_value(value: Any) -> tuple[Any, int]:
+def sanitize_value(value: Any, *, sensitive_context: bool = False) -> tuple[Any, int]:
     if isinstance(value, str):
+        if sensitive_context:
+            return "[REDACTED]", 1
         return redact_string(value)
+    if isinstance(value, (int, float, bool)) and sensitive_context:
+        return "[REDACTED]", 1
     if isinstance(value, list):
         out: list[Any] = []
         count = 0
         for item in value:
-            sanitized, redactions = sanitize_value(item)
+            sanitized, redactions = sanitize_value(item, sensitive_context=sensitive_context)
             out.append(sanitized)
             count += redactions
         return out, count
@@ -136,8 +152,10 @@ def sanitize_value(value: Any) -> tuple[Any, int]:
         out: dict[str, Any] = {}
         count = 0
         for key, item in value.items():
-            safe_key, key_redactions = redact_string(str(key))
-            sanitized, item_redactions = sanitize_value(item)
+            raw_key = str(key)
+            safe_key, key_redactions = redact_string(raw_key)
+            child_sensitive = sensitive_context or bool(SENSITIVE_KEY_RE.search(raw_key))
+            sanitized, item_redactions = sanitize_value(item, sensitive_context=child_sensitive)
             out[safe_key] = sanitized
             count += key_redactions + item_redactions
         return out, count
@@ -145,17 +163,20 @@ def sanitize_value(value: Any) -> tuple[Any, int]:
 
 
 def read_limited_path(path: Path, max_bytes: int) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        st = path.stat()
-    except OSError as exc:
-        fail(f"catalog not readable: {exc}")
-    if st.st_size > max_bytes:
-        fail(f"catalog exceeds --max-catalog-bytes: {st.st_size} > {max_bytes}")
-    try:
-        with path.open("rb") as handle:
-            data = handle.read(max_bytes + 1)
+        fd = os.open(str(path), flags)
     except OSError as exc:
         fail(f"catalog read failed: {exc}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail("catalog must be a regular file")
+        if st.st_size > max_bytes:
+            fail(f"catalog exceeds --max-catalog-bytes: {st.st_size} > {max_bytes}")
+        data = os.read(fd, max_bytes + 1)
+    finally:
+        os.close(fd)
     if len(data) > max_bytes:
         fail(f"catalog exceeds --max-catalog-bytes: > {max_bytes}")
     return data.decode("utf-8", errors="replace")
@@ -307,7 +328,33 @@ def rank_candidates(candidates: list[Candidate], query: str) -> list[Candidate]:
     return ranked
 
 
+def normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
 def reject_symlink_components(path: Path) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
     current = Path(path.anchor) if path.is_absolute() else Path()
     for part in path.parts:
         if path.is_absolute() and part == path.anchor:
@@ -324,6 +371,7 @@ def reject_symlink_components(path: Path) -> None:
 
 
 def ensure_private_dir(path: Path) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
     reject_symlink_components(path)
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -430,7 +478,7 @@ def display_path(path: Path) -> str:
 def store_paths(store_dir: str, receipt_id: str) -> tuple[Path, Path, Path]:
     if not RECEIPT_ID_RE.fullmatch(receipt_id):
         fail("receipt_id must be 16-64 lowercase hex chars")
-    root = Path(store_dir).expanduser()
+    root = normalize_allowed_first_absolute_symlink(Path(store_dir).expanduser())
     return root, root / f"{receipt_id}.receipt.json", root / f"{receipt_id}.payload.json"
 
 
@@ -476,7 +524,17 @@ def compact_omitted(candidates: list[Candidate], limit: int) -> tuple[list[dict[
     return items, max(0, len(candidates) - len(items))
 
 
-def selected_tool_record(cand: Candidate, receipt_id: str, budget_left: int) -> tuple[dict[str, Any], int]:
+def retrieval_command(receipt_id: str, *, store_dir: str, tool_name: str | None = None) -> str:
+    parts = ["context-guard-tool-prune", "get", receipt_id]
+    if store_dir != DEFAULT_STORE_DIR:
+        parts.extend(["--store-dir", shlex.quote(store_dir)])
+    if tool_name is not None:
+        parts.extend(["--tool", shlex.quote(tool_name)])
+    parts.append("--json")
+    return " ".join(parts)
+
+
+def selected_tool_record(cand: Candidate, receipt_id: str, budget_left: int, *, store_dir: str) -> tuple[dict[str, Any], int]:
     schema_size = byte_len_json(cand.schema)
     record: dict[str, Any] = {
         "name": cand.name,
@@ -485,7 +543,7 @@ def selected_tool_record(cand: Candidate, receipt_id: str, budget_left: int) -> 
         "rank": cand.rank,
         "description": cand.description,
         "schema_bytes": schema_size,
-        "retrieval": f"context-guard-tool-prune get {receipt_id} --tool {shlex.quote(cand.name)} --json",
+        "retrieval": retrieval_command(receipt_id, store_dir=store_dir, tool_name=cand.name),
     }
     if schema_size <= budget_left:
         record["schema_included"] = True
@@ -561,7 +619,7 @@ def select_catalog(args: argparse.Namespace) -> str:
         "tool_count": len(ranked),
         "tools": [cand.name for cand in ranked[:50]],
         "tools_truncated": len(ranked) > 50,
-        "retrieval_hint": f"context-guard-tool-prune get {receipt_id} --tool <name> --json",
+        "retrieval_hint": retrieval_command(receipt_id, store_dir=args.store_dir, tool_name="<name>"),
     }
     receipt_size = byte_len_text(json_bytes(receipt, indent=2) + "\n")
     if receipt_size > max_receipt_bytes:
@@ -570,14 +628,14 @@ def select_catalog(args: argparse.Namespace) -> str:
     # Only write after every size gate has passed, so failures leave no success receipt.
     ensure_private_dir(store_dir)
     written_payload_bytes = write_private_json_atomic(payload_path, payload, max_bytes=max_payload_bytes, label="payload")
-    receipt["payload_bytes"] = written_payload_bytes
-    receipt["payload_sha256"] = sha256_text((json_bytes(payload, indent=2) + "\n").rstrip("\n"))
+    if written_payload_bytes != payload_bytes:
+        fail("payload byte size changed during write")
     written_receipt_bytes = write_private_json_atomic(receipt_path, receipt, max_bytes=max_receipt_bytes, label="receipt")
 
     selected: list[dict[str, Any]] = []
     selected_schema_bytes = 0
     for cand in ranked[:top]:
-        record, used = selected_tool_record(cand, receipt_id, budget_bytes - selected_schema_bytes)
+        record, used = selected_tool_record(cand, receipt_id, budget_bytes - selected_schema_bytes, store_dir=args.store_dir)
         selected_schema_bytes += used
         selected.append(record)
     omitted_tools, omitted_truncated = compact_omitted(ranked[top:], MAX_OMITTED_TOOLS)
@@ -675,7 +733,8 @@ def get_schema(args: argparse.Namespace) -> str:
                 found = item
                 break
         if found is None:
-            fail(f"tool not found in receipt: {args.tool}")
+            safe_tool, _tool_redactions = redact_string(args.tool)
+            fail(f"tool not found in receipt: {safe_tool}")
         result = {
             "tool": TOOL_NAME,
             "schema_version": SCHEMA_VERSION,
@@ -685,7 +744,10 @@ def get_schema(args: argparse.Namespace) -> str:
             "server": found.get("server"),
             "schema": found.get("schema"),
         }
-    text = json_bytes(result, indent=2) + "\n"
+    sanitized_result, _redactions = sanitize_value(result)
+    if not isinstance(sanitized_result, dict):
+        fail("get result sanitation failed")
+    text = json_bytes(sanitized_result, indent=2) + "\n"
     if byte_len_text(text) > max_output_bytes:
         fail(f"get report exceeds --max-output-bytes: {byte_len_text(text)} > {max_output_bytes}")
     return text

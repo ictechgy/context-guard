@@ -1590,6 +1590,95 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(len(payload_text.encode("utf-8")), receipt["payload_bytes"])
                     self.assertEqual(hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(), receipt["payload_sha256"])
 
+    def test_tool_prune_custom_store_dir_retrieval_hints_are_copy_pasteable(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    store_dir = root / "custom receipts"
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "select",
+                        "--store-dir",
+                        str(store_dir),
+                        "--query",
+                        "read",
+                        "--top",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                    )
+                    data = json.loads(proc.stdout)
+                    retrieval = data["selected_tools"][0]["retrieval"]
+                    self.assertIn("--store-dir", retrieval)
+                    self.assertIn("custom receipts", retrieval)
+                    self.assertIn("--store-dir", data["receipt"]["retrieval_hint"])
+                    get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--store-dir", str(store_dir), "--tool", "read_file", "--json")
+                    self.assertEqual(json.loads(get_proc.stdout)["tool_name"], "read_file")
+
+    def test_tool_prune_get_resanitizes_valid_legacy_payload_before_output(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    store = root / ".context-guard" / "tool-prune"
+                    store.mkdir(parents=True)
+                    os.chmod(store, 0o700)
+                    receipt_id = "a" * 20
+                    leaked_body = "legacyPRIVATEBODY"
+                    signed_secret = "legacy-signed-secret"
+                    payload = {
+                        "tool": "context-guard-tool-prune",
+                        "schema_version": "contextguard.tool-prune.v1",
+                        "receipt_id": receipt_id,
+                        "tools": [{
+                            "name": "legacy_tool",
+                            "schema": {
+                                "private": f"-----BEGIN PRIVATE KEY-----\n{leaked_body}\n-----END PRIVATE KEY-----",
+                                "url": f"https://example.test/?X-Amz-Signature={signed_secret}",
+                                "apiKey": "hunter2",
+                            },
+                        }],
+                    }
+                    payload_text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                    payload_path = store / f"{receipt_id}.payload.json"
+                    payload_path.write_text(payload_text, encoding="utf-8")
+                    os.chmod(payload_path, 0o600)
+                    receipt = {
+                        "tool": "context-guard-tool-prune",
+                        "schema_version": "contextguard.tool-prune.v1",
+                        "receipt_id": receipt_id,
+                        "path": f".context-guard/tool-prune/{receipt_id}.receipt.json",
+                        "payload_path": f".context-guard/tool-prune/{receipt_id}.payload.json",
+                        "payload_bytes": len(payload_text.encode("utf-8")),
+                        "payload_sha256": hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(),
+                    }
+                    receipt_path = store / f"{receipt_id}.receipt.json"
+                    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                    os.chmod(receipt_path, 0o600)
+                    proc = self._run_tool_prune(script, root, "get", receipt_id, "--tool", "legacy_tool", "--json")
+                    self.assertNotIn(leaked_body, proc.stdout)
+                    self.assertNotIn(signed_secret, proc.stdout)
+                    self.assertNotIn("hunter2", proc.stdout)
+                    self.assertIn("[REDACTED]", proc.stdout)
+
+    def test_tool_prune_rejects_symlink_catalog_path(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real = root / "tools.json"
+                    real.write_text(json.dumps(self._tool_catalog()), encoding="utf-8")
+                    link = root / "tools-link.json"
+                    try:
+                        link.symlink_to(real)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink unavailable")
+                    proc = self._run_tool_prune(script, root, "select", "--catalog", str(link), check=False)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("catalog read failed", proc.stderr)
+
     def test_tool_prune_get_returns_full_sanitized_schema_after_budget_omission(self):
         for script in TOOL_PRUNE_SCRIPTS:
             with self.subTest(script=script):
@@ -1644,6 +1733,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
         pgp_body = "pgpSECRETKEYBODYxyz"
         private_key = f"-----BEGIN PRIVATE KEY-----\n{private_body}\n-----END PRIVATE KEY-----"
         pgp_private_key = f"-----BEGIN PGP PRIVATE KEY BLOCK-----\n{pgp_body}\n-----END PGP PRIVATE KEY BLOCK-----"
+        signed_secret = "abcdef1234567890signed"
+        credential_secret = "AKIAIOSFODNN7EXAMPLE/20260604/us-east-1/s3/aws4_request"
+        structured_secret = "hunter2"
+        signed_url = f"https://example.test/object?X-Amz-Signature={signed_secret}&X-Amz-Credential={credential_secret}"
         for script in TOOL_PRUNE_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -1651,6 +1744,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     catalog = self._tool_catalog(secret=secret)
                     catalog["servers"][0]["tools"][0]["inputSchema"]["privateKey"] = private_key
                     catalog["servers"][0]["tools"][0]["inputSchema"]["pgpPrivateKey"] = pgp_private_key
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["signedUrl"] = signed_url
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["apiKey"] = structured_secret
+                    catalog["servers"][0]["tools"][0]["inputSchema"]["headers"] = {"Authorization": "Bearer short-secret"}
                     proc = self._run_tool_prune(
                         script,
                         root,
@@ -1666,6 +1762,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn(query_secret, proc.stdout)
                     self.assertNotIn(private_body, proc.stdout)
                     self.assertNotIn(pgp_body, proc.stdout)
+                    self.assertNotIn(signed_secret, proc.stdout)
+                    self.assertNotIn(credential_secret, proc.stdout)
+                    self.assertNotIn(structured_secret, proc.stdout)
+                    self.assertNotIn("short-secret", proc.stdout)
                     data = json.loads(proc.stdout)
                     self.assertIn("[REDACTED]", data["query"])
                     receipt_text = (root / data["receipt"]["path"]).read_text(encoding="utf-8")
@@ -1675,12 +1775,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(query_secret, text)
                         self.assertNotIn(private_body, text)
                         self.assertNotIn(pgp_body, text)
+                        self.assertNotIn(signed_secret, text)
+                        self.assertNotIn(credential_secret, text)
+                        self.assertNotIn(structured_secret, text)
+                        self.assertNotIn("short-secret", text)
                     self.assertIn("[REDACTED]", payload_text)
                     get_proc = self._run_tool_prune(script, root, "get", data["receipt"]["receipt_id"], "--tool", "read_file", "--json")
                     self.assertNotIn(secret, get_proc.stdout)
                     self.assertNotIn(query_secret, get_proc.stdout)
                     self.assertNotIn(private_body, get_proc.stdout)
                     self.assertNotIn(pgp_body, get_proc.stdout)
+                    self.assertNotIn(signed_secret, get_proc.stdout)
+                    self.assertNotIn(credential_secret, get_proc.stdout)
+                    self.assertNotIn(structured_secret, get_proc.stdout)
+                    self.assertNotIn("short-secret", get_proc.stdout)
                     self.assertIn("[REDACTED]", get_proc.stdout)
 
     def test_tool_prune_retrieval_command_shell_quotes_tool_names(self):
