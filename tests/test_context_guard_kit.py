@@ -1627,6 +1627,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(budget_omitted)
                     self.assertTrue(all("retrieval_cli" in item for item in budget_omitted))
                     self.assertEqual(data["token_proxy"]["measurement"], "estimated")
+                    self.assertEqual(data["token_proxy"]["method"], "chars_div_4")
 
 
     def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
