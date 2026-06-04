@@ -1,6 +1,6 @@
 {
   "name": "context-guard",
-  "description": "ContextGuard keeps Claude Code context lean, safe, and auditable with project-local setup, context scans, large-read guards, output trimming/sanitizing, queryable log artifacts, statusline visibility, and usage audits.",
+  "description": "ContextGuard keeps AI coding-agent context lean, safe, and auditable with project-local setup, scans, large-read guards, output trimming/sanitizing, queryable log artifacts, budgeted context packs, tool/MCP schema pruning, statusline visibility, and usage audits.",
   "author": {
     "name": "jinhongan"
   },
@@ -37,5 +37,5 @@
     "gated-experiments",
     "future-roadmap"
   ],
-  "version": "0.3.1"
+  "version": "0.4.0"
 }
