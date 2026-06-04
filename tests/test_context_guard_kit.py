@@ -163,7 +163,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(claim_gate=claim_gate):
                 self.assertIn(claim_gate, plain_text)
 
-        self.assertRegex(text, r"self-hosted[^\\n]+memory/latency")
+        self.assertRegex(text, r"self-hosted[^\n]+memory/latency")
         self.assertRegex(text, r"not hosted api token-savings claims?")
 
     def test_experimental_radar_user_docs_are_claim_safe(self):
@@ -175,13 +175,33 @@ class ClaudeTokenKitTests(unittest.TestCase):
             PLUGIN_DIR / "README.ko.md",
             ROOT / "docs" / "index.html",
         ]
+        forbidden_claim_patterns = [
+            r"guarantees?\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"fixed\s+\d+%\s+(?:token|cost)\s+savings",
+            r"(?:토큰|비용)\s*절감\s*보장",
+            r"고정\s*\d+%\s*(?:토큰|비용)\s*절감",
+        ]
+        for pattern, fixture in [
+            (forbidden_claim_patterns[0], "guarantees hosted api token savings"),
+            (forbidden_claim_patterns[1], "fixed 30% cost savings"),
+            (forbidden_claim_patterns[2], "토큰 절감 보장"),
+            (forbidden_claim_patterns[3], "고정 30% 비용 절감"),
+        ]:
+            with self.subTest(pattern=pattern):
+                self.assertRegex(fixture, pattern)
+
         for doc in docs:
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8").lower()
                 self.assertIn("experimental-token-reduction-radar", text)
                 self.assertRegex(text, r"hosted api|provider")
-                self.assertNotRegex(text, r"guarantees?\\s+(?:hosted\\s+api\\s+)?(?:token|cost)\\s+savings")
-                self.assertNotRegex(text, r"fixed\\s+\\d+%\\s+(?:token|cost)\\s+savings")
+                for pattern in forbidden_claim_patterns:
+                    self.assertNotRegex(text, pattern)
+
+        radar_text = (ROOT / "research" / "experimental-token-reduction-radar.md").read_text(encoding="utf-8").lower()
+        for pattern in forbidden_claim_patterns:
+            with self.subTest(radar_pattern=pattern):
+                self.assertNotRegex(radar_text, pattern)
 
     def test_experimental_radar_metadata_descriptions_stay_shipped_surface_safe(self):
         manifests = [
@@ -189,13 +209,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
             PLUGIN_DIR / ".claude-plugin" / "plugin.json",
         ]
         forbidden_description_terms = [
-            r"\\blearned\\b",
-            r"\\bmultimodal\\b",
-            r"\\bocr\\b",
-            r"visual\\s+token",
-            r"\\bkv\\b",
-            r"\\blatent\\b",
+            r"\blearned\b",
+            r"\bmultimodal\b",
+            r"\bocr\b",
+            r"visual\s+token",
+            r"\bkv\b",
+            r"\blatent\b",
         ]
+        for pattern, fixture in [
+            (forbidden_description_terms[0], "learned compression"),
+            (forbidden_description_terms[1], "multimodal compression"),
+            (forbidden_description_terms[2], "ocr preprocessing"),
+            (forbidden_description_terms[3], "visual token reduction"),
+            (forbidden_description_terms[4], "kv cache"),
+            (forbidden_description_terms[5], "latent inference"),
+        ]:
+            with self.subTest(pattern=pattern):
+                self.assertRegex(fixture, pattern)
+
         generic_terms = {"research-radar", "experimental-roadmap", "gated-experiments", "future-roadmap"}
         for manifest in manifests:
             with self.subTest(manifest=manifest):
