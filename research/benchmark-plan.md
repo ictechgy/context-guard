@@ -119,3 +119,7 @@ date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,outpu
 `claim_status`는 실제 성공 run의 token/cost 지표를 기준으로 하며, byte 절감은 별도 caveat로
 분리된다. cost field가 0이거나 없으면 token 절감만 별도 상태로 표시하고 shifted-cost
 절감을 주장하지 않는다.
+
+## 7. Experimental radar 연계
+
+`experimental-token-reduction-radar.md`의 learned, multimodal, self-hosted lane은 이 문서의 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting 원칙을 통과하기 전까지 hosted API token/cost 절감 주장으로 승격하지 않는다.

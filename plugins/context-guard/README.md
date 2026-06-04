@@ -97,6 +97,8 @@ These helpers reduce common sources of context bloat, but they do not guarantee 
 
 ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally.
 
+Future learned, multimodal, and self-hosted optimization ideas are tracked only in [`../../research/experimental-token-reduction-radar.md`](../../research/experimental-token-reduction-radar.md). That radar is not a shipped runtime feature and does not claim hosted API savings without provider-measured matched-task evidence.
+
 Cross-agent rule snippets are advisory: the target agent may ignore them, so measure actual before/after behavior when you need a savings claim.
 
 ## Local test before publishing
