@@ -412,22 +412,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 path = bin_dir / command
                 path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
                 path.chmod(0o700)
-            package = {
-                "name": "@ictechgy/context-guard",
-                "version": "1.2.3",
-                "license": "Apache-2.0",
-                "bin": {command: f"bin/{command}" for command in prepublish.REQUIRED_NPM_BINS},
-                "files": ["bin/**", "README.md"],
-                "scripts": {"postinstall": "context-guard setup --yes"},
-            }
-            package_json = tmp / "package.json"
-            package_json.write_text(json.dumps(package), encoding="utf-8")
             old_root, old_package = prepublish.ROOT, prepublish.NPM_PACKAGE
             try:
                 prepublish.ROOT = tmp
-                prepublish.NPM_PACKAGE = package_json
-                with self.assertRaises(SystemExit) as ctx:
-                    prepublish.check_npm_package_metadata("1.2.3")
+                for lifecycle_name in ("postinstall", "prepack"):
+                    with self.subTest(lifecycle_name=lifecycle_name):
+                        package = {
+                            "name": "@ictechgy/context-guard",
+                            "version": "1.2.3",
+                            "license": "Apache-2.0",
+                            "bin": {command: f"bin/{command}" for command in prepublish.REQUIRED_NPM_BINS},
+                            "files": ["bin/**", "README.md"],
+                            "scripts": {lifecycle_name: "context-guard setup --yes"},
+                        }
+                        package_json = tmp / "package.json"
+                        package_json.write_text(json.dumps(package), encoding="utf-8")
+                        prepublish.NPM_PACKAGE = package_json
+                        with self.assertRaises(SystemExit) as ctx:
+                            prepublish.check_npm_package_metadata("1.2.3")
+                        self.assertIn(lifecycle_name, str(ctx.exception))
             finally:
                 prepublish.ROOT, prepublish.NPM_PACKAGE = old_root, old_package
         self.assertIn("install-time lifecycle scripts", str(ctx.exception))
@@ -904,6 +907,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 smoke.entrypoint_smoke_plan(plugin_bin)
             self.assertIn("no launch plan", str(ctx.exception))
 
+
             self.assertEqual(smoke.load_json('{"ok": true}', "cmd")["ok"], True)
             for stdout, expected in (("[1]", "must be an object"), ("{", "valid JSON")):
                 with self.subTest(stdout=stdout):
@@ -1034,6 +1038,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 prepublish.MARKETPLACE_MANIFEST = old_marketplace
                 prepublish.PLUGIN_BIN = old_plugin_bin
                 prepublish.SKILLS_DIR = old_skills_dir
+
+    def test_release_smoke_rejects_npm_lifecycle_scripts(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_npm_lifecycle")
+        with tempfile.TemporaryDirectory() as tmp:
+            package_json = Path(tmp) / "package.json"
+            package_json.write_text(
+                json.dumps({"name": "demo", "scripts": {"prepack": "echo should-not-run"}}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                smoke.check_npm_package_lifecycle_scripts(package_json)
+        self.assertIn("prepack", str(ctx.exception))
 
     def test_show_paths_help_warns_private_path_exposure(self):
         commands = [
@@ -12135,6 +12151,39 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertNotEqual(proc.returncode, 0)
                     self.assertIn("Refusing --no-backup for user-scope", proc.stderr)
                     self.assertFalse((home / ".context-guard" / "rollback").exists())
+
+    def test_user_scope_rollback_failure_does_not_modify_settings(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    settings = home / ".claude" / "settings.json"
+                    settings.parent.mkdir()
+                    original = {"permissions": {"deny": ["Read(./custom/**)"]}}
+                    settings.write_text(json.dumps(original), encoding="utf-8")
+                    blocker = home / ".context-guard"
+                    blocker.write_text("not a directory\n", encoding="utf-8")
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--scope",
+                            "user",
+                            "--agent",
+                            "claude",
+                            "--yes",
+                            "--no-diet-scan",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), original)
 
     def test_user_scope_non_claude_adapter_is_precise_noop(self):
         for script in SETUP_SCRIPTS:

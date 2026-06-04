@@ -1559,12 +1559,6 @@ def run(args: argparse.Namespace) -> SetupResult:
             if original_text is not None and not args.no_backup and settings != original:
                 backup_path = backup_existing(settings_path)
             if settings != original:
-                atomic_write(
-                    settings_path,
-                    json.dumps(settings, indent=2, sort_keys=True) + "\n",
-                    existing_mode_or_default(settings_path, 0o600),
-                )
-                claude_settings_written = True
                 rollback_id, rollback_path = write_rollback_record(
                     root=root,
                     scope=scope,
@@ -1572,6 +1566,12 @@ def run(args: argparse.Namespace) -> SetupResult:
                     backup_path=backup_path,
                     original_existed=(original_text is not None),
                 )
+                atomic_write(
+                    settings_path,
+                    json.dumps(settings, indent=2, sort_keys=True) + "\n",
+                    existing_mode_or_default(settings_path, 0o600),
+                )
+                claude_settings_written = True
         finally:
             release_settings_lock(lock_fd)
 

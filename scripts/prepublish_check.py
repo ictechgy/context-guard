@@ -120,13 +120,22 @@ REQUIRED_NPM_BINS = {
     "context-guard-read-symbol",
 }
 FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
+    "dependencies",
     "preinstall",
     "install",
     "postinstall",
+    "prepack",
+    "postpack",
     "prepublish",
+    "prepublishOnly",
+    "publish",
+    "postpublish",
     "preprepare",
     "prepare",
     "postprepare",
+    "preversion",
+    "version",
+    "postversion",
 }
 FORBIDDEN_NPM_PACK_PREFIXES = (
     ".git/",
@@ -497,7 +506,7 @@ def check_npm_pack_file_list() -> None:
     with tempfile.TemporaryDirectory(prefix="context-guard-npm-pack-") as td:
         try:
             proc = subprocess.run(
-                [npm, "pack", "--json", "--dry-run", "--pack-destination", td],
+                [npm, "pack", "--json", "--dry-run", "--ignore-scripts", "--pack-destination", td],
                 cwd=ROOT,
                 text=True,
                 capture_output=True,

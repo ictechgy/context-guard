@@ -86,6 +86,24 @@ PRESERVED_ENV_KEYS = (
     "LC_CTYPE",
 )
 NPM_PACKAGE_JSON = ROOT / "package.json"
+FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
+    "dependencies",
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepack",
+    "postpack",
+    "prepublish",
+    "prepublishOnly",
+    "publish",
+    "postpublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+    "preversion",
+    "version",
+    "postversion",
+}
 
 
 def fail(message: str) -> NoReturn:
@@ -147,6 +165,23 @@ def load_json(stdout: str, command: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         fail(f"{command} JSON output must be an object")
     return data
+
+
+def check_npm_package_lifecycle_scripts(package_json: Path) -> None:
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(f"package.json did not emit valid JSON: line {exc.lineno}: {exc.msg}")
+    if not isinstance(data, dict):
+        fail("package.json JSON output must be an object")
+    scripts = data.get("scripts", {})
+    if scripts is None:
+        scripts = {}
+    if not isinstance(scripts, dict):
+        fail("package.json scripts must be an object when present")
+    forbidden = sorted(FORBIDDEN_NPM_LIFECYCLE_SCRIPTS & set(scripts))
+    if forbidden:
+        fail(f"package.json contains npm lifecycle scripts that release smoke must not run: {', '.join(forbidden)}")
 
 
 def command_path(plugin_bin: Path, name: str) -> Path:
@@ -482,6 +517,7 @@ def run_npm_package_smoke(timeout: float) -> None:
     if npm is None or not NPM_PACKAGE_JSON.is_file():
         print("npm package smoke: skipped")
         return
+    check_npm_package_lifecycle_scripts(NPM_PACKAGE_JSON)
     with tempfile.TemporaryDirectory(prefix="context-guard-npm-smoke-") as td:
         root = Path(td)
         pack_dir = root / "pack"
@@ -494,7 +530,7 @@ def run_npm_package_smoke(timeout: float) -> None:
         tmp.mkdir()
         env = smoke_environment(home, tmp)
         pack = run_bounded_command(
-            [npm, "pack", "--json", "--pack-destination", str(pack_dir)],
+            [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", str(pack_dir)],
             cwd=ROOT,
             env=env,
             timeout=timeout,
@@ -518,7 +554,7 @@ def run_npm_package_smoke(timeout: float) -> None:
         if not tarball.is_file():
             fail(f"npm pack tarball missing: {tarball}")
         run_command(
-            [npm, "exec", "--yes", "--package", str(tarball), "--", "context-guard", "--version"],
+            [npm, "exec", "--ignore-scripts", "--yes", "--package", str(tarball), "--", "context-guard", "--version"],
             cwd=project,
             env=env,
             timeout=timeout,
@@ -528,6 +564,7 @@ def run_npm_package_smoke(timeout: float) -> None:
             [
                 npm,
                 "exec",
+                "--ignore-scripts",
                 "--yes",
                 "--package",
                 str(tarball),
@@ -555,7 +592,7 @@ def run_npm_package_smoke(timeout: float) -> None:
         npx = shutil.which("npx")
         if npx is not None:
             run_command(
-                [npx, "--yes", "--package", str(tarball), "context-guard", "--version"],
+                [npx, "--ignore-scripts", "--yes", "--package", str(tarball), "context-guard", "--version"],
                 cwd=project,
                 env=env,
                 timeout=timeout,
