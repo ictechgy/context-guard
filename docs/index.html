@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="ContextGuard는 AI 코딩 에이전트 컨텍스트에 들어가기 전 파일·로그·명령 출력 낭비를 줄이는 로컬 우선 가드레일입니다.">
+  <meta name="description" content="ContextGuard는 파일·로그·명령 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이는 로컬 우선 가드레일입니다.">
   <title>ContextGuard — AI 코딩 에이전트 컨텍스트 위생</title>
   <style>
     :root {
@@ -282,10 +282,10 @@
       <div class="nav-links" aria-label="페이지 이동">
         <a href="#problem">문제</a>
         <a href="#features">기능</a>
-        <a href="#positioning">차이</a>
-        <a href="#fit">적합성</a>
+        <a href="#positioning">도구 차이</a>
+        <a href="#fit">효과적인 경우</a>
         <a href="#setup">설치</a>
-        <a href="#trust">원칙</a>
+        <a href="#trust">보수적 원칙</a>
         <a href="https://github.com/ictechgy/context-guard/blob/main/README.md">English README</a>
         <a href="https://github.com/ictechgy/context-guard/blob/main/README.ko.md">한국어 README</a>
       </div>
@@ -296,12 +296,12 @@
     <header class="hero shell">
       <div class="hero-grid">
         <div>
-          <span class="eyebrow">Claude Code 플러그인 · AI 코딩 에이전트 가드레일</span>
+          <span class="eyebrow">Claude Code 플러그인 · 로컬 가드레일 · 에이전트 간 규칙</span>
           <h1>ContextGuard</h1>
-          <p class="tagline">파일·로그·출력이 AI 컨텍스트에 들어가기 전에 줄입니다.</p>
+          <p class="tagline">파일·로그·출력을 AI 컨텍스트에 들어가기 전에 줄입니다.</p>
           <p class="subtitle">
-            ContextGuard는 컨텍스트 낭비를 줄이는 로컬 우선 가드레일입니다.
-            Claude Code 플러그인으로 시작하고, 다른 AI 코딩·도구 에이전트에도 같은 규칙을 적용할 수 있습니다.
+            ContextGuard는 불필요한 파일·로그·출력이 AI 에이전트 컨텍스트에 유입되기 전에 걸러내는 로컬 가드레일입니다.
+            Claude Code 플러그인으로 바로 시작하고, 다른 AI 코딩·도구 에이전트에도 같은 규칙을 적용할 수 있습니다.
           </p>
           <div class="cta-row">
             <a class="button primary" href="#setup">빠른 시작</a>
@@ -322,11 +322,11 @@
     <section id="problem" class="shell">
       <div class="section-head">
         <h2>컨텍스트가 커질수록 판단은 흐려집니다.</h2>
-        <p>긴 로그, 전체 파일 읽기, 반복 실패 출력, 민감 정보가 섞인 검색 결과는 AI 코딩 에이전트 세션을 빠르게 무겁게 만듭니다.</p>
+        <p>긴 로그, 전체 파일 읽기, 반복 실패 출력, 민감 정보가 섞인 검색 결과는 AI 코딩 에이전트 세션을 빠르게 비대하게 만듭니다.</p>
       </div>
       <div class="problem-grid">
         <article class="card"><span class="icon">01</span><h3>긴 출력</h3><p>테스트·빌드 로그가 대화에 그대로 들어오면 중요한 실패 원인이 묻힙니다.</p></article>
-        <article class="card"><span class="icon">02</span><h3>대용량 읽기</h3><p>필요한 함수 하나를 찾으려고 파일 전체를 읽으면 컨텍스트가 금방 소모됩니다.</p></article>
+        <article class="card"><span class="icon">02</span><h3>대용량 읽기</h3><p>필요한 함수 하나를 찾으려고 파일 전체를 읽으면 컨텍스트가 금방 차오릅니다.</p></article>
         <article class="card"><span class="icon">03</span><h3>민감 정보</h3><p>grep·diff 결과에 토큰, 키, 비밀번호처럼 보이는 값이 포함될 수 있습니다.</p></article>
         <article class="card"><span class="icon">04</span><h3>반복 실패</h3><p>같은 명령이 계속 실패하면 스택 트레이스와 오류 로그가 컨텍스트를 빠르게 채웁니다.</p></article>
       </div>
@@ -335,32 +335,33 @@
     <section id="features" class="shell">
       <div class="section-head">
         <h2>ContextGuard가 하는 일</h2>
-        <p>설치는 간단하지만, 적용은 명시적입니다. 전역 설정을 건드리지 않고 프로젝트 안에서만 동작합니다.</p>
+        <p>설치는 간단하지만 적용은 명시적입니다. 전역 설정을 건드리지 않고 프로젝트 안에서만 동작합니다.</p>
       </div>
       <div class="feature-grid">
         <article class="card"><span class="icon">↧</span><h3>출력 축약</h3><p>긴 로그를 head/tail 또는 의미 요약으로 줄이고 원래 명령의 종료 코드는 보존합니다.</p></article>
         <article class="card"><span class="icon">✦</span><h3>민감 정보 정제</h3><p>에이전트 컨텍스트에 들어가기 전 토큰·키·비밀번호처럼 보이는 값을 가립니다.</p></article>
         <article class="card"><span class="icon">⌁</span><h3>대용량 파일 가드</h3><p>전체 파일 읽기 대신 검색, 심볼 구간, 작은 줄 범위 읽기를 안내합니다.</p></article>
         <article class="card"><span class="icon">▣</span><h3>로컬 아티팩트 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
+        <article class="card"><span class="icon">⊡</span><h3>예산 기반 컨텍스트 팩</h3><p>우선순위 있는 로컬 파일을 바이트 예산 안의 Markdown 팩으로 조립하고, 생략 사유와 정확한 slice 명령을 함께 기록합니다.</p></article>
         <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
-        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 트랜스크립트 감사, A/B 벤치마크로 사용량과 절감 근거를 확인합니다.</p></article>
-        <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 정제 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
-        <article class="card"><span class="icon">↔</span><h3>교차 에이전트 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run 후 설치합니다.</p></article>
-        <article class="card"><span class="icon">∴</span><h3>보수적 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
-        <article class="card"><span class="icon">⌗</span><h3>Tool schema pruner</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 정제 schema는 로컬 receipt로 다시 가져옵니다.</p></article>
+        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 트랜스크립트 감사, 기준/변형 쌍 비교로 사용량과 절감 근거를 확인합니다.</p></article>
+        <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 범위의 정제 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
+        <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
+        <article class="card"><span class="icon">∴</span><h3>안전한 텍스트 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
+        <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 정제 schema는 로컬 receipt로 다시 조회합니다.</p></article>
       </div>
     </section>
 
     <section id="positioning" class="shell">
       <div class="section-head">
         <h2>캐시 도구를 대체하지 않고, 그 앞단의 낭비를 줄입니다.</h2>
-        <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 불필요한 파일·로그·출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 걸러내는 로컬 가드레일입니다.</p>
+        <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 그보다 앞단에서 불필요한 입력을 걸러내는 로컬 가드레일입니다.</p>
       </div>
       <div class="comparison-grid">
-        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하고, 감사로 volatile prefix 가능성을 알립니다.</p></article>
+        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕고, 감사로 volatile prefix 가능성을 알립니다.</p></article>
         <article class="card"><span class="icon" title="Semantic response cache">S</span><h3>Semantic response cache</h3><p>같거나 비슷한 요청의 이전 답변을 재사용합니다. ContextGuard는 AI 답변 캐시를 제공하지 않습니다.</p></article>
         <article class="card"><span class="icon" title="Prompt compression">C</span><h3>Prompt compression</h3><p>이미 선택된 텍스트를 더 짧게 만듭니다. ContextGuard는 로컬 출력 축약과 요약을 제공하지만 무손실 의미 압축을 보장하지 않습니다.</p></article>
-        <article class="card"><span class="icon" title="ContextGuard">G</span><h3>ContextGuard</h3><p>큰 파일, 긴 로그, 반복 실패, 잡음 많은 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이도록 안내하고, 직접 측정할 수 있는 전후 비교 근거를 남깁니다.</p></article>
+        <article class="card"><span class="icon" title="ContextGuard">G</span><h3>ContextGuard</h3><p>큰 파일, 긴 로그, 반복 실패, 과도한 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이도록 안내하고, 직접 측정할 수 있는 전후 비교 근거를 남깁니다.</p></article>
       </div>
     </section>
 
@@ -399,7 +400,7 @@
         <article class="card step"><h3>프로젝트 설정</h3><p><code>/context-guard:setup</code><br>전역 설정은 변경하지 않고 현재 프로젝트에만 가드레일을 적용합니다.</p></article>
         <article class="card step"><h3>감사와 측정</h3><p><code>/context-guard:audit</code><br>필요하면 벤치마크로 실제 토큰·비용 변화를 측정합니다.</p></article>
       </div>
-      <p class="setup-note">Claude Code 밖에서는 <code>context-guard-*</code> 로컬 헬퍼와 brief 모드 규칙 스니펫을 사용합니다. 교차 에이전트 설정은 먼저 dry-run으로 계획을 보여주고, 로컬 파일만 백업 후 수정합니다.</p>
+      <p class="setup-note">Claude Code 밖에서는 <code>context-guard-*</code> 로컬 헬퍼와 brief 모드 스니펫을 사용합니다. 에이전트 간 설정은 먼저 dry-run으로 계획을 보여주고, 로컬 파일만 대상으로 하며 수정 전 백업을 남깁니다.</p>
     </section>
 
     <section class="shell">
@@ -420,6 +421,9 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
 <span class="comment"># 출력 축약과 종료 코드 보존</span>
 ./plugins/context-guard/bin/context-guard-trim-output -- npm test
 
+<span class="comment"># 예산 기반 컨텍스트 팩</span>
+./plugins/context-guard/bin/context-guard-pack build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
+
 <span class="comment"># tool/MCP catalog top-k 자문</span>
 ./plugins/context-guard/bin/context-guard-tool-prune select --catalog tools.json --query "review failing tests" --json</code></pre>
         </div>
@@ -429,13 +433,13 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
     <section id="trust" class="shell">
       <div class="section-head">
         <h2>과장하지 않는 도구</h2>
-        <p>ContextGuard는 “항상 몇 퍼센트 절감” 같은 약속 대신, 줄일 수 있는 컨텍스트 팽창을 줄이고 직접 측정할 수 있는 증거를 남깁니다.</p>
+        <p>ContextGuard는 “항상 몇 퍼센트 절감” 같은 약속 대신, 줄일 수 있는 컨텍스트 팽창을 먼저 줄이고 직접 측정할 수 있는 증거를 남깁니다.</p>
       </div>
       <div class="trust-grid">
         <article class="card"><span class="icon">✓</span><h3>측정 근거를 직접 남깁니다</h3><p>벤치마크·감사·상태표시줄 신호로 실제 전후 변화를 측정하고, 절감 효과가 없으면 그대로 보고합니다.</p></article>
         <article class="card warning-card"><span class="icon">!</span><h3>고정 절감률을 보장하지 않습니다</h3><p>저장소와 작업 방식에 따라 효과가 달라집니다. 벤치마크 도구로 직접 측정하세요.</p></article>
         <article class="card warning-card"><span class="icon">↯</span><h3>외부 AI로 작업을 보내지 않습니다</h3><p>토큰을 줄이기 위해 작업을 다른 AI 서비스로 보내거나 대신 실행하지 않습니다. 헬퍼는 로컬에서 동작합니다.</p></article>
-        <article class="card warning-card"><span class="icon">?</span><h3>실험 radar는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 미래 gated experiment를 기록합니다. provider가 측정한 matched-task 근거 없이 hosted API 절감을 주장하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 단계적으로 검증할 실험 후보를 기록합니다. provider가 측정한 matched-task 근거 없이 hosted API 절감을 주장하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">⌂</span><h3>전역 설정을 자동 변경하지 않습니다</h3><p>설정은 프로젝트 단위로, 사용자가 명시적으로 적용할 때만 반영됩니다.</p></article>
         <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼는 계속 제공합니다.</p></article>
       </div>
