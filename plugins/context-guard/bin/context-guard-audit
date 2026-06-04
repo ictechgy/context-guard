@@ -45,7 +45,7 @@ TOKEN_TYPE_ALIASES = {
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MODEL_KEYS = ("model", "model_id", "modelId")
 QUERY_SOURCE_KEYS = ("query_source", "querySource")
-FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1"
+FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.1"
 FEASIBILITY_PRODUCER = "context-guard-audit"
 MAX_ERROR_EXAMPLES = 20
 JSON_PARSE_RECURSION_LIMIT = 10_000
@@ -178,6 +178,7 @@ class UsageSummary:
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
+    cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def total_tokens(self) -> int:
@@ -983,6 +984,24 @@ def segment_position_stats(samples: list[PromptSegmentSample], attr: str, window
     return stats
 
 
+def prompt_window_overlap_counts(samples: list[PromptSegmentSample]) -> tuple[int, int]:
+    """Return (non_overlapping, overlapping) prefix/tail evidence counts.
+
+    Prefix and tail segment windows are independent evidence only when the
+    sampled prompt has enough segments for the configured windows not to share
+    positions. Short prompts are still useful, but prefix-vs-tail deltas from
+    overlapping windows are lower-confidence diagnostics.
+    """
+    non_overlapping = 0
+    overlapping = 0
+    for sample in samples:
+        if sample.segment_count >= PROMPT_AUDIT_PREFIX_SEGMENTS + PROMPT_AUDIT_TAIL_SEGMENTS:
+            non_overlapping += 1
+        else:
+            overlapping += 1
+    return non_overlapping, overlapping
+
+
 def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     audit = summary.prompt_cache_audit
     skipped = bool(
@@ -996,10 +1015,14 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     if not samples:
         return {
             "status": "partial" if skipped else "missing",
+            "confidence": "partial" if skipped else "unavailable",
             "evidence": EVIDENCE_UNAVAILABLE,
             "heuristic": True,
             "sampled_records": audit.sampled_records,
             "analyzed_prompt_records": 0,
+            "non_overlapping_prompt_records": 0,
+            "overlapping_prompt_records": 0,
+            "prefix_tail_windows_overlap": False,
             "prompt_collection_capped_records": audit.prompt_collection_capped_records,
             "skipped_evidence": skipped,
             "segment_window": {"prefix_segments": PROMPT_AUDIT_PREFIX_SEGMENTS, "tail_segments": PROMPT_AUDIT_TAIL_SEGMENTS},
@@ -1021,14 +1044,17 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     prefix_stability, prefix_unique, prefix_positions = segment_stability(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
     tail_stability, tail_unique, tail_positions = segment_stability(samples, "tail_hashes", PROMPT_AUDIT_TAIL_SEGMENTS)
     prefix_position_stats = segment_position_stats(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS)
+    non_overlapping_prompt_records, overlapping_prompt_records = prompt_window_overlap_counts(samples)
+    prefix_tail_windows_overlap = overlapping_prompt_records > 0
     volatile_prefix = 1.0 - prefix_stability
     volatile_tail = 1.0 - tail_stability
     most_volatile_prefix = max(prefix_position_stats, key=lambda item: item["volatile_share"], default=None)
     max_prefix_position_volatile = float(most_volatile_prefix["volatile_share"]) if most_volatile_prefix else 0.0
     analyzed = audit.analyzed_prompt_records
     status = "available"
-    if skipped or analyzed < PROMPT_AUDIT_MIN_RECORDS:
+    if skipped or analyzed < PROMPT_AUDIT_MIN_RECORDS or non_overlapping_prompt_records == 0:
         status = "partial"
+    confidence = "partial" if status == "partial" or prefix_tail_windows_overlap else "observed"
     average_prefix_churn = (
         volatile_prefix >= PROMPT_PREFIX_VOLATILE_THRESHOLD
         and (volatile_prefix - volatile_tail) >= PROMPT_PREFIX_TAIL_CHURN_DELTA
@@ -1042,6 +1068,7 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
         findings.append({
             "id": "volatile-content-near-prefix",
             "severity": "P1",
+            "confidence": confidence,
             "title": "Volatile content appears near prompt prefix",
             "reason": (
                 "Observed user prompt segment hashes churn much more near the prefix than in the tail window; "
@@ -1051,6 +1078,10 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
             "heuristic": True,
             "evidence": {
                 "records": analyzed,
+                "non_overlapping_prompt_records": non_overlapping_prompt_records,
+                "overlapping_prompt_records": overlapping_prompt_records,
+                "prefix_tail_windows_overlap": prefix_tail_windows_overlap,
+                "confidence": confidence,
                 "prefix_positions": prefix_positions,
                 "tail_positions": tail_positions,
                 "prefix_unique_hashes": prefix_unique,
@@ -1067,10 +1098,14 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
     findings = findings[:PROMPT_AUDIT_MAX_FINDINGS]
     return {
         "status": status,
+        "confidence": confidence,
         "evidence": EVIDENCE_OBSERVED,
         "heuristic": True,
         "sampled_records": audit.sampled_records,
         "analyzed_prompt_records": analyzed,
+        "non_overlapping_prompt_records": non_overlapping_prompt_records,
+        "overlapping_prompt_records": overlapping_prompt_records,
+        "prefix_tail_windows_overlap": prefix_tail_windows_overlap,
         "capped_records": audit.capped_records,
         "prompt_collection_capped_records": audit.prompt_collection_capped_records,
         "skipped_evidence": skipped,
@@ -1094,11 +1129,18 @@ def build_cache_friendliness(summary: UsageSummary) -> dict[str, Any]:
         "findings": findings,
         "caveats": [
             "Prompt layout findings are heuristic and based on bounded redacted user-message segment hashes, not raw prompt text or exact provider cache-prefix state.",
+            "When prefix and tail segment windows overlap in short prompts, cache-friendliness findings are partial-confidence diagnostics.",
             "Deep or broad prompt content structures are bounded and make cache-friendliness evidence partial.",
             "Provider cache read/write fields are diagnostic telemetry and do not prove ContextGuard-caused token reduction.",
             "Unknown transcript prompt schemas are skipped rather than inferred aggressively.",
         ],
     }
+
+
+def cache_friendliness_for_summary(summary: UsageSummary) -> dict[str, Any]:
+    if summary.cache_friendliness_cache is None:
+        summary.cache_friendliness_cache = build_cache_friendliness(summary)
+    return summary.cache_friendliness_cache
 
 
 def build_metric_caveats(summary: UsageSummary) -> list[str]:
@@ -1134,7 +1176,7 @@ def feasibility_json(
     integrity = scan_integrity(summary)
     stable_tokens = stable_token_counter(summary.tokens)
     stable_total_tokens = sum(stable_tokens.values())
-    cache_friendliness = build_cache_friendliness(summary)
+    cache_friendliness = cache_friendliness_for_summary(summary)
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -1229,11 +1271,13 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     cache_read = summary.tokens.get("cache_read", 0)
     output_ratio = output_tokens / total
     input_ratio = input_tokens / total
-    cache_friendliness = build_cache_friendliness(summary)
+    cache_friendliness = cache_friendliness_for_summary(summary)
     for finding in cache_friendliness.get("findings", []):
         if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
             evidence = dict(finding.get("evidence") or {})
             evidence["heuristic"] = True
+            if finding.get("confidence"):
+                evidence["confidence"] = finding.get("confidence")
             rec = recommendation(
                 "move-volatile-context-after-stable-prefix",
                 "Volatile context appears before stable prompt prefix",
@@ -1243,6 +1287,8 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 evidence,
             )
             rec["heuristic"] = True
+            if finding.get("confidence"):
+                rec["confidence"] = finding.get("confidence")
             recs.append(rec)
             break
     if output_tokens >= 5_000 or output_ratio >= 0.35:
@@ -1415,7 +1461,7 @@ def summary_json(
         "top_files": counter_json(summary.by_file, top),
         "top_commands": counter_json(summary.by_command, top),
         "top_tools": counter_json(summary.by_tool, top),
-        "cache_friendliness": build_cache_friendliness(summary),
+        "cache_friendliness": cache_friendliness_for_summary(summary),
     }
     if include_recommendations:
         data["recommendations"] = build_recommendations(summary, top)
@@ -1508,7 +1554,7 @@ def main() -> int:
         print("  cache_amortization       n/a (no cache writes observed)")
     print(f"  cache_read_tokens        {summary.tokens.get('cache_read', 0):12d}")
     print(f"  cache_creation_tokens    {summary.tokens.get('cache_creation', 0):12d}")
-    cache_friendliness = build_cache_friendliness(summary)
+    cache_friendliness = cache_friendliness_for_summary(summary)
     if cache_friendliness.get("status") != "missing":
         signals = cache_friendliness.get("signals", {})
         print("\nCache friendliness")

@@ -99,6 +99,17 @@ final class AuditCLIAdapterTests: XCTestCase {
         }
     }
 
+    func testAdditiveMinorSchemaFromCLIIsAccepted() throws {
+        let temp = try temporaryDirectory()
+        let helper = try writeHelper(in: temp, body: "/bin/cat <<'JSON'\n\(feasibilityFixture(schemaVersion: contextGuardLatestFeasibilitySchemaVersion))\nJSON\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, environment: ["PATH": ""])
+
+        let report = try adapter.loadReport(transcriptDirectory: temp)
+
+        XCTAssertEqual(report.schemaVersion, "contextguard.metric-feasibility.v1.1")
+        XCTAssertEqual(report.totals.tokens.cacheRead, 800)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("contextguard-mac-tests-")

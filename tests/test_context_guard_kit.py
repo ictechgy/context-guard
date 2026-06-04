@@ -7674,7 +7674,7 @@ for malformed in malformed_values:
                         check=True,
                     )
                     data = json.loads(proc.stdout)
-                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1")
+                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.1")
                     self.assertEqual(data["producer"], "context-guard-audit")
                     self.assertIn("summary", data["consumer_contract"]["diagnostic_fields"])
                     self.assertIn("metric_availability", data["consumer_contract"]["stable_top_level_fields"])
@@ -7868,6 +7868,90 @@ for malformed in malformed_values:
             self.assertIn("cache_friendliness", data["consumer_contract"]["stable_top_level_fields"])
             self.assertIn("cache_friendliness", data)
             self.assertEqual(data["cache_friendliness"]["status"], "partial")
+            self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.1")
+
+    def test_transcript_audit_cache_friendliness_marks_low_record_evidence_partial_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            prompt = "\n".join(f"non overlapping segment {idx}" for idx in range(12))
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    cache_friendliness = data["cache_friendliness"]
+                    self.assertEqual(cache_friendliness["status"], "partial")
+                    self.assertEqual(cache_friendliness["confidence"], "partial")
+                    self.assertEqual(cache_friendliness["analyzed_prompt_records"], 1)
+                    self.assertEqual(cache_friendliness["non_overlapping_prompt_records"], 1)
+                    self.assertEqual(cache_friendliness["overlapping_prompt_records"], 0)
+
+    def test_transcript_audit_cache_friendliness_marks_overlapping_windows_partial_confidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    f"volatile short prompt evidence {idx}",
+                    "Stable reusable instruction",
+                    "Stable reusable policy",
+                    "Stable reusable tail",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            cache_friendliness = data["cache_friendliness"]
+            self.assertEqual(cache_friendliness["status"], "partial")
+            self.assertEqual(cache_friendliness["confidence"], "partial")
+            self.assertEqual(cache_friendliness["non_overlapping_prompt_records"], 0)
+            self.assertEqual(cache_friendliness["overlapping_prompt_records"], 3)
+            self.assertTrue(cache_friendliness["prefix_tail_windows_overlap"])
+            self.assertTrue(any("overlap" in caveat.lower() for caveat in cache_friendliness["caveats"]))
+            finding = cache_friendliness["findings"][0]
+            self.assertEqual(finding["confidence"], "partial")
+            self.assertEqual(finding["evidence"]["confidence"], "partial")
+            self.assertEqual(finding["evidence"]["non_overlapping_prompt_records"], 0)
+            recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
+            self.assertEqual(recs_by_id["move-volatile-context-after-stable-prefix"]["confidence"], "partial")
+            self.assertEqual(
+                recs_by_id["move-volatile-context-after-stable-prefix"]["evidence"]["confidence"],
+                "partial",
+            )
+            self.assertNotIn("volatile short prompt evidence", proc.stdout)
 
     def test_transcript_audit_cache_friendliness_bounds_deep_prompt_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -7949,6 +8033,7 @@ for malformed in malformed_values:
             data = json.loads(proc.stdout)
             self.assertGreaterEqual(data["skipped_records"], 1)
             self.assertEqual(data["cache_friendliness"]["status"], "partial")
+            self.assertEqual(data["cache_friendliness"]["confidence"], "partial")
             self.assertTrue(data["cache_friendliness"]["skipped_evidence"])
 
     def test_transcript_audit_feasibility_distinguishes_missing_and_zero_cache_fields(self):
@@ -8028,6 +8113,24 @@ for malformed in malformed_values:
             self.assertEqual(data["metric_availability"]["input"]["status"], "partial")
             self.assertEqual(data["metric_availability"]["cache"]["status"], "partial")
             self.assertEqual(data["metric_availability"]["cost"]["status"], "partial")
+
+    def test_transcript_audit_summary_reuses_cache_friendliness_computation(self):
+        module = load_module_from_path(KIT_DIR / "claude_transcript_cost_audit.py", "_audit_cache_friendliness_memo")
+        summary = module.UsageSummary()
+        summary.tokens.update({"input": 100, "cache_creation": 20_000, "cache_read": 100})
+        calls = {"count": 0}
+        original = module.build_cache_friendliness
+
+        def counted_build(current_summary):
+            calls["count"] += 1
+            return original(current_summary)
+
+        with mock.patch.object(module, "build_cache_friendliness", side_effect=counted_build):
+            data = module.summary_json(summary, include_recommendations=True)
+
+        self.assertIn("cache_friendliness", data)
+        self.assertIn("recommendations", data)
+        self.assertEqual(calls["count"], 1)
 
     def test_transcript_audit_feasibility_runs_with_socket_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -8118,6 +8221,37 @@ for malformed in malformed_values:
             self.assertEqual(evidence["cache_creation"], 20_000)
             self.assertEqual(evidence["cache_read"], 100)
             self.assertLess(evidence["cache_amortization"], 0.5)
+
+    def test_transcript_audit_recommends_separating_cache_discounts_from_token_reduction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "output_tokens": 200,
+                            "cache_creation_input_tokens": 5_000,
+                            "cache_read_input_tokens": 20_000,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            recs_by_id = {rec["id"]: rec for rec in json.loads(proc.stdout)["recommendations"]}
+            rec = recs_by_id["separate-cache-discounts-from-token-reduction"]
+            self.assertEqual(rec["priority"], "P2")
+            self.assertIn("not token reduction", rec["title"].lower())
+            self.assertTrue(rec["evidence"]["provider_cache_telemetry_only"])
+            self.assertGreaterEqual(rec["evidence"]["cache_read"], 10_000)
+            self.assertEqual(rec["evidence"]["cache_creation"], 5_000)
+            self.assertNotIn("improve-prompt-cache-reuse", recs_by_id)
 
     def test_transcript_audit_does_not_recommend_cache_reuse_on_baseline_session(self):
         """신규/짧은 세션의 정상 동작에서는 improve-prompt-cache-reuse 권고가 발화하지 않아야 한다."""
@@ -9781,9 +9915,27 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "external_cost_measured",
             "total_cost_with_shift_usd",
         }
+        legacy_columns = {
+            "date",
+            "claude_version",
+            "task_id",
+            "variant",
+            "model",
+            "effort",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+            "cache_read",
+            "cache_creation",
+            "cost_usd",
+            "success",
+            "corrections",
+            "notes",
+        }
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_bench_runner_csv_schema_{index}")
+                self.assertEqual(set(module.CSV_COLUMNS) - shift_columns, legacy_columns)
                 with tempfile.TemporaryDirectory() as tmp:
                     csv_path = Path(tmp) / "results.csv"
                     old_columns = [column for column in module.CSV_COLUMNS if column not in shift_columns]
@@ -10459,6 +10611,62 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(comparison["paired_token_task_count"], 1)
         self.assertEqual(comparison["paired_wall_time_task_count"], 1)
         self.assertIn("diagnostic telemetry", sample["caveat"])
+        self.assertIn("provider-cache discounts", sample["caveat"].lower())
+        self.assertIn("report shape only", sample["caveat"].lower())
+
+    def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")
+        report = module.summarize_benchmark_rows(
+            [
+                {
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "total_tokens": "100",
+                    "primary_tokens_measured": "true",
+                    "success": "true",
+                    "corrections": "0",
+                    "provider_cached_tokens": "0",
+                    "provider_cached_tokens_measured": "true",
+                },
+                {
+                    "task_id": "t01",
+                    "variant": "cache_discount_only",
+                    "total_tokens": "100",
+                    "primary_tokens_measured": "true",
+                    "success": "true",
+                    "corrections": "0",
+                    "provider_cached_tokens": "900",
+                    "provider_cached_tokens_measured": "true",
+                },
+            ],
+            "baseline",
+        )
+        comparison = report["comparisons"][0]
+        self.assertEqual(report["claim_status"], "compare_variants")
+        self.assertEqual(comparison["token_savings_pct"], 0.0)
+        self.assertEqual(report["summary_by_variant"]["cache_discount_only"]["observed_telemetry"]["provider_cache"], "observed")
+        self.assertIn("provider-cache discounts", report["caveat"].lower())
+
+    def test_benchmark_report_marks_zero_wall_time_observed_and_missing_provider_cache_unavailable(self):
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_zero_wall_time_provider_cache")
+        report = module.summarize_benchmark_rows(
+            [
+                {
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "total_tokens": "100",
+                    "primary_tokens_measured": "true",
+                    "wall_time_seconds": "0.0",
+                    "success": "true",
+                    "corrections": "0",
+                },
+            ],
+            "baseline",
+        )
+        baseline = report["summary_by_variant"]["baseline"]
+        self.assertEqual(baseline["observed_telemetry"]["wall_time"], "observed")
+        self.assertEqual(baseline["wall_time_seconds_per_successful_task"], 0.0)
+        self.assertEqual(baseline["observed_telemetry"]["provider_cache"], "unavailable")
 
     def test_benchmark_report_marks_missing_wall_time_unavailable(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_wall_time_availability")
