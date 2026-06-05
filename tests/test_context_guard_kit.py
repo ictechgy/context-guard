@@ -739,14 +739,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
             rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertTrue(rows)
             module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_malformed_timestamp_test")
-            rows[0]["created_at_unix"] = "not-a-number"
-            coerced = module.latest_fingerprint_rows([rows[0]])
+            malformed_timestamp_row = dict(rows[0])
+            malformed_timestamp_row["created_at_unix"] = "not-a-number"
+            coerced = module.latest_fingerprint_rows([malformed_timestamp_row])
             self.assertTrue(coerced)
             self.assertEqual(next(iter(coerced.values()))["created_at_unix"], 0)
 
             valid_row = dict(rows[0])
             valid_row["created_at_unix"] = int(time.time())
-            ledger.write_text('{"kind":"observe","created_at_unix":NaN}\n' + "\n".join(json.dumps(row) for row in [rows[0], valid_row]) + "\n", encoding="utf-8")
+            ledger_lines = [
+                '{"kind":"observe","created_at_unix":NaN}',
+                json.dumps(malformed_timestamp_row),
+                json.dumps(valid_row),
+                "{malformed json line",
+            ]
+            ledger.write_text("\n".join(ledger_lines) + "\n", encoding="utf-8")
 
             preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(preflight.returncode, 0, preflight.stderr)
@@ -755,6 +762,228 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(payload["cache_risk"]["summary"]["predicted_hit"], 1)
             self.assertEqual(payload["cache_risk"]["summary"]["predicted_miss"], 0)
             self.assertGreaterEqual(payload["cache_risk"]["breakpoints"][0].get("age_seconds", 0), 0)
+
+    def test_cost_guard_rejects_invalid_hmac_key_deterministically(self):
+        request = cost_guard_request(cacheable_text="invalid key fixture prefix " + ("x" * 5000))
+        valid_key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+        invalid_text_cases = {
+            "plus": "+" + valid_key[1:],
+            "slash": "/" + valid_key[1:],
+            "leading_space": " " + valid_key,
+            "trailing_newline": valid_key + "\n",
+            "embedded_newline": valid_key[:10] + "\n" + valid_key[10:],
+            "missing_padding": valid_key[:-1],
+            "extra_padding": valid_key + "=",
+            "trailing_garbage": valid_key + "A",
+        }
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        final_data_index = alphabet.index(valid_key[-2])
+        invalid_pad_bit_char = alphabet[(final_data_index & ~0b11) | 0b01]
+        non_zero_pad_bits = valid_key[:-2] + invalid_pad_bit_char + "="
+        self.assertNotEqual(non_zero_pad_bits, valid_key)
+        self.assertEqual(
+            base64.b64decode(non_zero_pad_bits.encode("ascii"), altchars=b"-_", validate=True),
+            base64.b64decode(valid_key.encode("ascii"), altchars=b"-_", validate=True),
+        )
+        invalid_text_cases["non_zero_pad_bits"] = non_zero_pad_bits
+        for label, raw in invalid_text_cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                store = Path(tmp) / "ledger"
+                store.mkdir(parents=True)
+                (store / "hmac.key").write_text(raw, encoding="utf-8")
+                proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+                self.assertEqual(proc.returncode, 2)
+                combined = proc.stdout + proc.stderr
+                self.assertIn("invalid local HMAC key file", combined)
+                self.assertNotIn("Traceback", combined)
+                self.assertNotIn(raw, combined)
+                self.assertNotIn(str(store), combined)
+
+        for label, write_fixture in {
+            "directory": lambda path: path.mkdir(),
+            "invalid_utf8": lambda path: path.write_bytes(b"\xff\xfe\xfd"),
+        }.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                store = Path(tmp) / "ledger"
+                store.mkdir(parents=True)
+                write_fixture(store / "hmac.key")
+                proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+                self.assertEqual(proc.returncode, 2)
+                combined = proc.stdout + proc.stderr
+                self.assertNotIn("Traceback", combined)
+                self.assertNotIn(str(store), combined)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir(parents=True)
+            key_path = store / "hmac.key"
+            key_path.write_text(valid_key, encoding="utf-8")
+            os.chmod(key_path, 0o600)
+            proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_cost_guard_hmac_key_creation_fchmod_fallbacks(self):
+        for label, exc in (("attribute", AttributeError("missing fchmod")), ("oserror", OSError(errno.EPERM, "no fchmod"))):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                module = load_module_from_path(KIT_DIR / "cost_guard.py", f"cost_guard_fchmod_{label}")
+                original = getattr(module.os, "fchmod", None)
+
+                def fail_fchmod(_fd, _mode, err=exc):
+                    raise err
+
+                module.os.fchmod = fail_fchmod
+                try:
+                    key = module.load_or_create_hmac_key(Path(tmp) / "ledger")
+                finally:
+                    if original is None:
+                        delattr(module.os, "fchmod")
+                    else:
+                        module.os.fchmod = original
+                self.assertEqual(len(key), 32)
+                key_path = Path(tmp) / "ledger" / "hmac.key"
+                self.assertEqual(base64.b64decode(key_path.read_text(encoding="utf-8").encode("ascii"), altchars=b"-_", validate=True), key)
+                if os.name == "posix":
+                    self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+
+    def test_cost_guard_hmac_open_replace_and_parent_fsync_errors_are_deterministic(self):
+        for label in ("open", "replace"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                module = load_module_from_path(KIT_DIR / "cost_guard.py", f"cost_guard_write_error_{label}")
+                store = Path(tmp) / "ledger"
+                original_open = module.os.open
+                original_replace = module.os.replace
+                try:
+                    if label == "open":
+                        def fail_open(path, flags, mode=0o777, *args, **kwargs):
+                            if str(path).endswith(".tmp"):
+                                raise OSError(errno.EACCES, "permission denied", str(path))
+                            return original_open(path, flags, mode, *args, **kwargs)
+
+                        module.os.open = fail_open
+                    else:
+                        def fail_replace(src, dst):
+                            raise OSError(errno.EACCES, "permission denied", str(dst))
+
+                        module.os.replace = fail_replace
+                    with self.assertRaises(module.CostGuardError) as ctx:
+                        module.load_or_create_hmac_key(store)
+                finally:
+                    module.os.open = original_open
+                    module.os.replace = original_replace
+                message = str(ctx.exception)
+                self.assertIn("local HMAC key file", message)
+                self.assertNotIn(str(store), message)
+
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_parent_fsync_close_test")
+        original_open = module.os.open
+        original_fsync = module.os.fsync
+        original_close = module.os.close
+        try:
+            module.os.open = lambda *_args, **_kwargs: 987654321
+
+            def fail_oserror(*_args, **_kwargs):
+                raise OSError(errno.EIO, "simulated fsync/close failure")
+
+            module.os.fsync = fail_oserror
+            module.os.close = fail_oserror
+            module.fsync_parent_dir(Path("/tmp/context-guard-parent-fsync-fixture"))
+        finally:
+            module.os.open = original_open
+            module.os.fsync = original_fsync
+            module.os.close = original_close
+
+    def test_cost_guard_hmac_stale_lock_recovery_and_fresh_lock_privacy(self):
+        request = cost_guard_request(cacheable_text="stale lock recovery prefix " + ("x" * 5000))
+        old_created = time.time() - 120
+        stale_fixtures = {
+            "valid_old_metadata": {"pid": 999999, "created_at_unix": old_created, "nonce": "old"},
+            "future_metadata_uses_old_mtime": {"pid": 999999, "created_at_unix": time.time() + 3600, "nonce": "future"},
+            "huge_int_metadata_uses_old_mtime": {"pid": 999999, "created_at_unix": 10**1000, "nonce": "huge"},
+            "malformed_metadata": "{",
+            "no_metadata": None,
+        }
+        for label, metadata in stale_fixtures.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                store = Path(tmp) / "ledger"
+                lock = store / "hmac.key.lock"
+                lock.mkdir(parents=True)
+                if isinstance(metadata, dict):
+                    (lock / "owner.json").write_text(json.dumps(metadata), encoding="utf-8")
+                elif isinstance(metadata, str):
+                    (lock / "owner.json").write_text(metadata, encoding="utf-8")
+                old_mtime = time.time() - 120
+                os.utime(lock, (old_mtime, old_mtime))
+                proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertFalse(lock.exists())
+                self.assertTrue((store / "hmac.key").is_file())
+                self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_fresh_lock_privacy_test")
+            module.KEY_LOCK_WAIT_ATTEMPTS = 1
+            module.KEY_LOCK_POLL_SECONDS = 0
+            fresh_metadata_cases = {
+                "fresh_metadata_old_mtime": {"pid": os.getpid(), "created_at_unix": time.time(), "nonce": "fresh"},
+                "bool_false_metadata_fresh_mtime": {"pid": os.getpid(), "created_at_unix": False, "nonce": "bool-false"},
+                "bool_true_metadata_fresh_mtime": {"pid": os.getpid(), "created_at_unix": True, "nonce": "bool-true"},
+                "negative_metadata_fresh_mtime": {"pid": os.getpid(), "created_at_unix": -1, "nonce": "negative"},
+            }
+            for label, metadata in fresh_metadata_cases.items():
+                with self.subTest(label=label):
+                    store = Path(tmp) / label
+                    lock = store / "hmac.key.lock"
+                    lock.mkdir(parents=True)
+                    (lock / "owner.json").write_text(json.dumps(metadata), encoding="utf-8")
+                    if label == "fresh_metadata_old_mtime":
+                        old_mtime = time.time() - 120
+                        os.utime(lock, (old_mtime, old_mtime))
+                    with self.assertRaises(module.CostGuardError) as ctx:
+                        module.load_or_create_hmac_key(store)
+                    message = str(ctx.exception)
+                    self.assertIn("<store-dir>/hmac.key.lock", message)
+                    self.assertNotIn(str(store), message)
+                    self.assertTrue(lock.exists())
+
+    def test_cost_guard_hmac_lock_cleanup_requires_owner_nonce(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_lock_nonce_cleanup_test")
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            lock_dir = store / "hmac.key.lock"
+            key_path = store / "hmac.key"
+            lock = module.acquire_key_lock(lock_dir, key_path)
+            self.assertIsNotNone(lock)
+            self.assertTrue(module.key_lock_owner_matches(lock_dir, lock))
+
+            (lock_dir / "owner.json").write_text(
+                json.dumps({"pid": os.getpid(), "created_at_unix": time.time(), "nonce": "other-writer"}),
+                encoding="utf-8",
+            )
+            module.cleanup_key_lock(lock_dir, lock)
+            self.assertTrue(lock_dir.exists())
+
+            (lock_dir / "owner.json").write_text(
+                json.dumps({"pid": os.getpid(), "created_at_unix": time.time(), "nonce": lock.nonce}),
+                encoding="utf-8",
+            )
+            module.cleanup_key_lock(lock_dir, lock)
+            self.assertFalse(lock_dir.exists())
+
+    def test_cost_guard_hmac_lock_metadata_write_failure_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_lock_metadata_failure_test")
+            store = Path(tmp) / "ledger"
+            original = module.write_key_lock_metadata
+            module.write_key_lock_metadata = lambda _lock_dir: module.KeyLock(nonce="unowned", metadata_written=False)
+            try:
+                with self.assertRaises(module.CostGuardError) as ctx:
+                    module.load_or_create_hmac_key(store)
+            finally:
+                module.write_key_lock_metadata = original
+            self.assertIn("could not write local HMAC key lock metadata", str(ctx.exception))
+            self.assertFalse((store / "hmac.key").exists())
+            self.assertFalse((store / "hmac.key.lock").exists())
 
     def test_cost_guard_hmac_key_created_private_and_stable(self):
         request = cost_guard_request(cacheable_text="stable concurrent prefix " + ("x" * 5000))
@@ -771,19 +1000,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 for _ in range(4)
             ]
-            results = [proc.communicate(timeout=20) + (proc.returncode,) for proc in procs]
+            results: list[tuple[str, str, int]] = []
+            try:
+                for proc in procs:
+                    stdout, stderr = proc.communicate(timeout=20)
+                    results.append((stdout, stderr, proc.returncode))
+            except subprocess.TimeoutExpired:
+                for proc in procs:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.communicate()
+                self.fail("cost guard concurrent preflight timed out")
             for stdout, stderr, returncode in results:
                 self.assertEqual(returncode, 0, stderr)
-                json.loads(stdout)
+            payloads = [json.loads(stdout) for stdout, _stderr, _returncode in results]
+            fingerprints = [payload["cache_risk"]["aggregate_fingerprint"] for payload in payloads]
+            self.assertEqual(len(set(fingerprints)), 1)
             key_path = store / "hmac.key"
-            raw = key_path.read_text(encoding="utf-8").strip()
-            self.assertEqual(len(base64.urlsafe_b64decode(raw.encode("ascii"))), 32)
+            raw = key_path.read_text(encoding="utf-8")
+            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=$")
+            self.assertEqual(len(base64.b64decode(raw.encode("ascii"), altchars=b"-_", validate=True)), 32)
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
 
             second = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(key_path.read_text(encoding="utf-8").strip(), raw)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload["cache_risk"]["aggregate_fingerprint"], fingerprints[0])
+            self.assertEqual(key_path.read_text(encoding="utf-8"), raw)
 
     def test_cost_guard_hmac_key_creation_resists_restrictive_umask(self):
         request = cost_guard_request(cacheable_text="restrictive umask prefix " + ("x" * 5000))
@@ -815,8 +1059,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertNotIn("Traceback", proc.stderr + proc.stdout)
             key_path = store / "hmac.key"
-            raw = key_path.read_text(encoding="utf-8").strip()
-            self.assertEqual(len(base64.urlsafe_b64decode(raw.encode("ascii"))), 32)
+            raw = key_path.read_text(encoding="utf-8")
+            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=$")
+            self.assertEqual(len(base64.b64decode(raw.encode("ascii"), altchars=b"-_", validate=True)), 32)
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
 
@@ -849,6 +1094,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-cost"]["args"], ["--help"])
         self.assertIn({"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
+        self.assertEqual(smoke.npm_dispatcher_smoke_plan(), smoke.DISPATCHER_SMOKE_COMMANDS)
 
     def test_experimental_token_reduction_radar_claim_discipline(self):
         radar = ROOT / "research" / "experimental-token-reduction-radar.md"
