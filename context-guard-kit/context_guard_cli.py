@@ -30,6 +30,7 @@ HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "pack": ("context-guard-pack",),
     "tool-prune": ("context-guard-tool-prune",),
     "compress": ("context-guard-compress",),
+    "cost": ("context-guard-cost",),
     "bench": ("context-guard-bench",),
     "read-symbol": ("context-guard-read-symbol",),
     "rewrite-bash": ("context-guard-rewrite-bash",),

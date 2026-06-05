@@ -69,6 +69,7 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
 
 IMPLEMENTATION_PAIRS = (
     ("context_guard_cli.py", "context-guard"),
+    ("cost_guard.py", "context-guard-cost"),
     ("benchmark_runner.py", "context-guard-bench"),
     ("context_escrow.py", "context-guard-artifact"),
     ("context_compress.py", "context-guard-compress"),
@@ -116,6 +117,7 @@ REQUIRED_NPM_BINS = {
     "context-guard-pack",
     "context-guard-tool-prune",
     "context-guard-compress",
+    "context-guard-cost",
     "context-guard-bench",
     "context-guard-read-symbol",
 }
@@ -172,6 +174,7 @@ EXPECTED_NPM_PACK_FILES = {
     "context-guard-kit/context_escrow.py",
     "context-guard-kit/context_guard_cli.py",
     "context-guard-kit/context_guard_diet.py",
+    "context-guard-kit/cost_guard.py",
     "context-guard-kit/context_pack.py",
     "context-guard-kit/failed_attempt_nudge.py",
     "context-guard-kit/guard_large_read.py",
@@ -211,6 +214,7 @@ EXPECTED_NPM_PACK_FILES = {
     "plugins/context-guard/bin/context-guard-audit",
     "plugins/context-guard/bin/context-guard-bench",
     "plugins/context-guard/bin/context-guard-compress",
+    "plugins/context-guard/bin/context-guard-cost",
     "plugins/context-guard/bin/context-guard-diet",
     "plugins/context-guard/bin/context-guard-failed-nudge",
     "plugins/context-guard/bin/context-guard-guard-read",

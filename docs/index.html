@@ -349,6 +349,7 @@
         <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
         <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량과 절감 근거를 확인합니다.</p></article>
         <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 범위의 가림 처리된 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
+        <article class="card"><span class="icon">₩</span><h3>Anthropic 비용 가드</h3><p>호출 전 cache breakpoint별 위험과 낮음/중간/높음 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>안전한 텍스트 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
         <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 가림 처리된 schema는 로컬 요약 기록로 다시 조회합니다.</p></article>
@@ -361,7 +362,7 @@
         <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 그보다 앞단에서 불필요한 입력을 걸러내는 로컬 가드레일입니다.</p>
       </div>
       <div class="comparison-grid">
-        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕고, 감사로 volatile prefix 가능성을 알립니다.</p></article>
+        <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕고, 감사와 cost preflight로 cache write 가능성을 알립니다.</p></article>
         <article class="card"><span class="icon" title="Semantic response cache">S</span><h3>Semantic response cache</h3><p>같거나 비슷한 요청의 이전 답변을 재사용합니다. ContextGuard는 AI 답변 캐시를 제공하지 않습니다.</p></article>
         <article class="card"><span class="icon" title="Prompt compression">C</span><h3>Prompt compression</h3><p>이미 선택된 텍스트를 더 짧게 만듭니다. ContextGuard는 로컬 출력 축약과 요약을 제공하지만 무손실 의미 압축을 보장하지 않습니다.</p></article>
         <article class="card"><span class="icon" title="ContextGuard">G</span><h3>ContextGuard</h3><p>큰 파일, 긴 로그, 반복 실패, 과도한 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이도록 안내하고, 직접 측정할 수 있는 전후 비교 근거를 남깁니다.</p></article>
@@ -427,6 +428,10 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
 <span class="comment"># 예산 기반 컨텍스트 팩</span>
 ./plugins/context-guard/bin/context-guard-pack build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
 
+
+<span class="comment"># Anthropic API 호출 전 비용·cache 위험 확인</span>
+./plugins/context-guard/bin/context-guard cost preflight --request request.json --budget-krw 3000 --json
+
 <span class="comment"># tool/MCP catalog top-k 자문</span>
 ./plugins/context-guard/bin/context-guard-tool-prune select --catalog tools.json --query "review failing tests" --json</code></pre>
         </div>
@@ -436,7 +441,7 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
     <section id="trust" class="shell">
       <div class="section-head">
         <h2>과장하지 않는 도구</h2>
-        <p>ContextGuard는 “항상 몇 퍼센트 절감” 같은 약속 대신, 줄일 수 있는 컨텍스트 팽창을 먼저 줄이고 직접 측정할 수 있는 증거를 남깁니다.</p>
+        <p>ContextGuard는 “항상 몇 퍼센트 절감” 같은 약속 대신, 줄일 수 있는 컨텍스트 팽창을 먼저 줄이고 직접 측정할 수 있는 증거를 남깁니다. 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄일 수 있지만 Anthropic provider prompt cache를 대체하지 않습니다. 배포나 청구 설명 전에는 Anthropic prompt caching/pricing 문서를 다시 확인합니다.</p>
       </div>
       <div class="trust-grid">
         <article class="card"><span class="icon">✓</span><h3>측정 근거를 직접 남깁니다</h3><p>벤치마크·감사·상태표시줄 신호로 실제 전후 변화를 측정하고, 절감 효과가 없으면 그대로 보고합니다.</p></article>
