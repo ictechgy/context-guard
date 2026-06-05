@@ -209,6 +209,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("input_tokens_high", payload["token_estimate"])
                     self.assertEqual(payload["cache_risk"]["summary"]["predicted_miss"], 1)
                     self.assertEqual(payload["cache_risk"]["level"], "high")
+                    rows = [
+                        json.loads(line)
+                        for line in (Path(tmp) / "ledger" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    self.assertEqual(rows[-1]["kind"], "preflight")
+                    self.assertNotIn("fingerprints", rows[-1])
+                    self.assertFalse(rows[-1]["summary"]["cache_seeded"])
                     bp = payload["cache_risk"]["breakpoints"][0]
                     for key in ("id", "ttl", "fingerprint", "matched", "risk", "confidence", "projected_tokens", "cost_delta_if_miss", "expires_at_unix"):
                         self.assertIn(key, bp)
@@ -250,14 +258,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     for forbidden in (sentinel, secret, private_path, "Bearer abcdefghijklmnopqrstuvwxyz"):
                         self.assertNotIn(forbidden, ledger_text)
 
-    def test_cost_guard_ledger_reports_hit_miss_and_ttl_expiry(self):
+    def test_cost_guard_observe_seeds_ledger_hits_and_ttl_expiry(self):
         request = cost_guard_request()
         changed = cost_guard_request(cacheable_text="changed stable prefix " + ("y" * 800))
         script = KIT_DIR / "cost_guard.py"
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
             first = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(first.returncode, 0, first.stderr)
+            first_payload = json.loads(first.stdout)
+            self.assertEqual(first_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+
+            observed = run_cost_guard(
+                script,
+                ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
+                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100}},
+            )
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            observed_payload = json.loads(observed.stdout)
+            self.assertTrue(observed_payload["ledger"]["updated"])
+
             second = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(second.returncode, 0, second.stderr)
             second_payload = json.loads(second.stdout)
@@ -278,6 +300,24 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(expired.returncode, 0, expired.stderr)
             expired_payload = json.loads(expired.stdout)
             self.assertEqual(expired_payload["cache_risk"]["breakpoints"][0]["predicted_cache_state"], "expired")
+
+    def test_cost_guard_passive_preflight_does_not_seed_cache_hit(self):
+        request = cost_guard_request()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            first = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            second = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertEqual(second_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+            rows = [json.loads(line) for line in (store / "ledger.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual([row["kind"] for row in rows], ["preflight", "preflight"])
+            self.assertTrue(all("fingerprints" not in row for row in rows))
+            self.assertTrue(all(row["summary"]["cache_seeded"] is False for row in rows))
 
     def test_cost_guard_prices_cache_breakpoint_prefix_not_only_section(self):
         request = {
@@ -301,18 +341,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "messages": [{"role": "user", "content": "short question"}],
         }
         pricing = json.dumps(cost_guard_pricing())
-        proc = run_cost_guard(
-            KIT_DIR / "cost_guard.py",
-            [
-                "preflight",
-                "--pricing-profile",
-                pricing,
-                "--budget-krw",
-                "1",
-                "--json",
-            ],
-            request,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                [
+                    "preflight",
+                    "--store-dir",
+                    str(Path(tmp) / "ledger"),
+                    "--pricing-profile",
+                    pricing,
+                    "--budget-krw",
+                    "1",
+                    "--json",
+                ],
+                request,
+            )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         bp = payload["cache_risk"]["breakpoints"][0]
@@ -375,8 +418,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
         other_model["model"] = "claude-haiku-4-5"
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(base), encoding="utf-8")
             first = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], base)
             self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(json.loads(first.stdout)["cache_risk"]["summary"]["predicted_miss"], 1)
+
+            observed = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
+                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100}},
+            )
+            self.assertEqual(observed.returncode, 0, observed.stderr)
 
             same = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], base)
             self.assertEqual(same.returncode, 0, same.stderr)
@@ -396,7 +449,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_cost_guard_redacted_cacheable_material_downgrades_confidence(self):
         request = cost_guard_request(secret="sk-ant-confidence-downgrade-abcdefghijklmnopqrstuvwxyz")
-        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--json"], request)
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(Path(tmp) / "ledger"), "--json"], request)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertNotEqual(payload["confidence"]["level"], "high")
@@ -413,9 +467,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "cache_read_input_tokens": 900,
             },
         }
+        with tempfile.TemporaryDirectory() as tmp:
+            observe_args = ["observe", "--store-dir", str(Path(tmp) / "ledger"), "--pricing-profile", json.dumps(cost_guard_pricing()), "--json"]
         proc = run_cost_guard(
             KIT_DIR / "cost_guard.py",
-            ["observe", "--pricing-profile", json.dumps(cost_guard_pricing()), "--json"],
+            observe_args,
             usage,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)

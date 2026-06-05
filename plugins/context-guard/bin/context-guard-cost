@@ -3,8 +3,8 @@
 
 This helper is intentionally advisory. It never calls Anthropic, never claims a
 provider cache hit as billing authority, and never stores raw request text. The
-local ledger stores keyed HMAC fingerprints over canonical cacheable prefixes so
-future preflights can warn about likely cache misses without leaking prompts.
+local ledger stores keyed HMAC fingerprints over confirmed provider observations
+so future preflights can warn about likely cache misses without leaking prompts.
 """
 from __future__ import annotations
 
@@ -358,7 +358,7 @@ def append_ledger(store_dir: Path, entry: dict[str, Any]) -> None:
 def latest_fingerprint_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        if row.get("kind") == "preflight_blocked":
+        if row.get("kind") != "observe":
             continue
         model = str(row.get("model") or "unknown")
         created = int(row.get("created_at_unix") or 0)
@@ -885,31 +885,9 @@ def preflight_command(args: argparse.Namespace) -> int:
                 "breakpoints": len(fingerprints_private),
                 "secret_like_values_detected": redactions,
                 "raw_prompt_stored": False,
-                "cache_seeded": not block,
+                "cache_seeded": False,
             },
         }
-        if not block:
-            entry["fingerprints"] = [
-                {
-                    k: v
-                    for k, v in fp.items()
-                    if k
-                    in {
-                        "breakpoint_id",
-                        "kind",
-                        "ttl",
-                        "hmac",
-                        "prefix_bytes",
-                        "prefix_delta_bytes",
-                        "section_bytes",
-                        "tokens_estimated",
-                        "prefix_delta_tokens_estimated",
-                        "section_tokens_estimated",
-                        "redactions_detected",
-                    }
-                }
-                for fp in fingerprints_private
-            ]
         append_ledger(store_dir, entry)
 
     emit(report, json_mode=args.json)
