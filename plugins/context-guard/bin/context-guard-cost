@@ -465,12 +465,19 @@ def float_field(data: dict[str, Any], key: str, default: float) -> float:
 def rates_for_model(profile: dict[str, Any], model: str) -> tuple[float, float, str]:
     model_l = model.lower()
     model_norm = re.sub(r"[^a-z0-9]+", "-", model_l).strip("-")
+    model_tokens = set(tok for tok in model_norm.split("-") if tok)
     models = profile.get("models") if isinstance(profile.get("models"), dict) else {}
     if isinstance(models, dict):
-        for key, raw in models.items():
+        def match_specificity(item: tuple[Any, Any]) -> tuple[int, int]:
+            key_norm = re.sub(r"[^a-z0-9]+", "-", str(item[0]).lower()).strip("-")
+            return (len([tok for tok in key_norm.split("-") if tok]), len(key_norm))
+
+        for key, raw in sorted(models.items(), key=match_specificity, reverse=True):
             key_l = str(key).lower()
             key_norm = re.sub(r"[^a-z0-9]+", "-", key_l).strip("-")
-            if isinstance(raw, dict) and (key_l in model_l or key_norm in model_norm):
+            key_tokens = [tok for tok in key_norm.split("-") if tok]
+            token_subset_match = bool(key_tokens) and all(tok in model_tokens for tok in key_tokens)
+            if isinstance(raw, dict) and (key_l in model_l or key_norm in model_norm or token_subset_match):
                 return (
                     float_field(raw, "input_usd_per_mtok", float_field(profile, "default_input_usd_per_mtok", 3.0)),
                     float_field(raw, "output_usd_per_mtok", float_field(profile, "default_output_usd_per_mtok", 15.0)),
@@ -903,6 +910,20 @@ def usage_int(data: dict[str, Any], key: str) -> int:
     return max(0, number)
 
 
+def cache_creation_buckets(usage: dict[str, Any]) -> tuple[int, int]:
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, dict):
+        return (
+            usage_int(cache_creation, "ephemeral_5m_input_tokens"),
+            usage_int(cache_creation, "ephemeral_1h_input_tokens"),
+        )
+    flat_5m = usage_int(usage, "cache_creation_input_tokens_5m")
+    flat_1h = usage_int(usage, "cache_creation_input_tokens_1h")
+    if flat_5m or flat_1h:
+        return flat_5m, flat_1h
+    return usage_int(usage, "cache_creation_input_tokens"), 0
+
+
 def observe_command(args: argparse.Namespace) -> int:
     usage_raw, _truncated = load_json_input(args.usage, max_bytes=args.max_bytes)
     if isinstance(usage_raw, dict) and isinstance(usage_raw.get("usage"), dict):
@@ -921,8 +942,7 @@ def observe_command(args: argparse.Namespace) -> int:
 
     input_tokens = usage_int(usage, "input_tokens")
     output_tokens = usage_int(usage, "output_tokens")
-    cache_creation_5m = usage_int(usage, "cache_creation_input_tokens") + usage_int(usage, "cache_creation_input_tokens_5m")
-    cache_creation_1h = usage_int(usage, "cache_creation_input_tokens_1h")
+    cache_creation_5m, cache_creation_1h = cache_creation_buckets(usage)
     cache_read = usage_int(usage, "cache_read_input_tokens")
     cost_usd_mid = (
         money(input_tokens, input_rate)
@@ -960,7 +980,8 @@ def observe_command(args: argparse.Namespace) -> int:
         },
         "privacy": {"raw_request_stored": False, "raw_usage_stored": False, "path_omitted": True},
     }
-    if args.request:
+    confirmed_cache_tokens = cache_creation_5m + cache_creation_1h + cache_read
+    if args.request and confirmed_cache_tokens > 0:
         request, _ = load_json_input(args.request, max_bytes=args.max_bytes)
         store_dir = Path(args.store_dir)
         key = load_or_create_hmac_key(store_dir)
@@ -982,6 +1003,14 @@ def observe_command(args: argparse.Namespace) -> int:
             },
         )
         report["ledger"] = {"updated": True, "uses_keyed_hmac": True, "raw_prompt_stored": False, "path_omitted": True}
+    elif args.request:
+        report["ledger"] = {
+            "updated": False,
+            "reason": "no_provider_cache_tokens",
+            "uses_keyed_hmac": True,
+            "raw_prompt_stored": False,
+            "path_omitted": True,
+        }
     emit(report, json_mode=args.json)
     return 0
 

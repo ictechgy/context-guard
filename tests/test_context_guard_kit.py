@@ -485,6 +485,77 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn("ContextGuard-caused savings", proc.stdout)
             self.assertNotIn("guaranteed", proc.stdout.lower())
 
+    def test_cost_guard_observe_normalizes_cache_creation_breakdown(self):
+        profile = json.dumps(cost_guard_pricing())
+        nested_usage = {
+            "model": "claude-sonnet-4-5",
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 300,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 100,
+                    "ephemeral_1h_input_tokens": 200,
+                },
+            },
+        }
+        flat_split_usage = {
+            "model": "claude-sonnet-4-5",
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 300,
+                "cache_creation_input_tokens_5m": 100,
+                "cache_creation_input_tokens_1h": 200,
+            },
+        }
+        for usage in (nested_usage, flat_split_usage):
+            with self.subTest(shape=sorted(usage["usage"].keys())):
+                proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["observe", "--pricing-profile", profile, "--json"], usage)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["usage"]["cache_creation_input_tokens_5m"], 100)
+                self.assertEqual(payload["usage"]["cache_creation_input_tokens_1h"], 200)
+                self.assertAlmostEqual(payload["cost_estimate"]["mid"], 52.5)
+
+    def test_cost_guard_observe_zero_cache_usage_does_not_seed_hit(self):
+        request = cost_guard_request()
+        usage = {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            observed = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
+                usage,
+            )
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            observed_payload = json.loads(observed.stdout)
+            self.assertFalse(observed_payload["ledger"]["updated"])
+            self.assertEqual(observed_payload["ledger"]["reason"], "no_provider_cache_tokens")
+
+            preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            preflight_payload = json.loads(preflight.stdout)
+            self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+    def test_cost_guard_model_pricing_prefers_specific_matches(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_rate_resolution_test")
+        profile = {
+            "default_input_usd_per_mtok": 99,
+            "default_output_usd_per_mtok": 99,
+            "models": {
+                "opus": {"input_usd_per_mtok": 5, "output_usd_per_mtok": 25},
+                "opus 4.1": {"input_usd_per_mtok": 15, "output_usd_per_mtok": 75},
+                "haiku": {"input_usd_per_mtok": 1, "output_usd_per_mtok": 5},
+                "haiku 3.5": {"input_usd_per_mtok": 0.8, "output_usd_per_mtok": 4},
+            },
+        }
+        self.assertEqual(module.rates_for_model(profile, "claude-opus-4-1-20260101")[2], "opus 4.1")
+        self.assertEqual(module.rates_for_model(profile, "claude-3-5-haiku-latest")[2], "haiku 3.5")
+
     def test_cost_guard_compile_orders_cache_blocks_and_omits_content(self):
         sentinel = "UNIQUE_COMPILE_CONTENT_SENTINEL"
         manifest = {
