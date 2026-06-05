@@ -469,21 +469,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             observe_args = ["observe", "--store-dir", str(Path(tmp) / "ledger"), "--pricing-profile", json.dumps(cost_guard_pricing()), "--json"]
-        proc = run_cost_guard(
-            KIT_DIR / "cost_guard.py",
-            observe_args,
-            usage,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        payload = json.loads(proc.stdout)
-        self.assertEqual(payload["mode"], "observe")
-        self.assertEqual(payload["measurement"], "from_usage")
-        self.assertEqual(payload["usage_source"], "provider_usage_fields")
-        self.assertEqual(payload["usage"]["cache_creation_input_tokens_5m"], 300)
-        self.assertEqual(payload["usage"]["cache_read_input_tokens"], 900)
-        self.assertTrue(payload["cache_effect"]["provider_measured"])
-        self.assertNotIn("ContextGuard-caused savings", proc.stdout)
-        self.assertNotIn("guaranteed", proc.stdout.lower())
+            proc = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                observe_args,
+                usage,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["mode"], "observe")
+            self.assertEqual(payload["measurement"], "from_usage")
+            self.assertEqual(payload["usage_source"], "provider_usage_fields")
+            self.assertEqual(payload["usage"]["cache_creation_input_tokens_5m"], 300)
+            self.assertEqual(payload["usage"]["cache_read_input_tokens"], 900)
+            self.assertTrue(payload["cache_effect"]["provider_measured"])
+            self.assertNotIn("ContextGuard-caused savings", proc.stdout)
+            self.assertNotIn("guaranteed", proc.stdout.lower())
 
     def test_cost_guard_compile_orders_cache_blocks_and_omits_content(self):
         sentinel = "UNIQUE_COMPILE_CONTENT_SENTINEL"
