@@ -987,6 +987,21 @@ def observe_command(args: argparse.Namespace) -> int:
         key = load_or_create_hmac_key(store_dir)
         breakpoints, _meta = extract_cache_breakpoints(request)
         fingerprints_private, redactions = build_fingerprints(breakpoints, key)
+        confirmed_fingerprints = [
+            fp
+            for fp in fingerprints_private
+            if int(fp.get("tokens_estimated") or 0) <= confirmed_cache_tokens
+        ]
+        if not confirmed_fingerprints:
+            report["ledger"] = {
+                "updated": False,
+                "reason": "insufficient_provider_cache_tokens",
+                "uses_keyed_hmac": True,
+                "raw_prompt_stored": False,
+                "path_omitted": True,
+            }
+            emit(report, json_mode=args.json)
+            return 0
         append_ledger(
             store_dir,
             {
@@ -996,13 +1011,13 @@ def observe_command(args: argparse.Namespace) -> int:
                 "model": model,
                 "fingerprints": [
                     {k: v for k, v in fp.items() if k in {"breakpoint_id", "kind", "ttl", "hmac", "prefix_bytes", "section_bytes", "tokens_estimated", "section_tokens_estimated", "redactions_detected"}}
-                    for fp in fingerprints_private
+                    for fp in confirmed_fingerprints
                 ],
                 "usage": report["usage"],
-                "summary": {"breakpoints": len(fingerprints_private), "secret_like_values_detected": redactions, "raw_prompt_stored": False},
+                "summary": {"breakpoints": len(confirmed_fingerprints), "secret_like_values_detected": redactions, "raw_prompt_stored": False},
             },
         )
-        report["ledger"] = {"updated": True, "uses_keyed_hmac": True, "raw_prompt_stored": False, "path_omitted": True}
+        report["ledger"] = {"updated": True, "confirmed_fingerprints": len(confirmed_fingerprints), "uses_keyed_hmac": True, "raw_prompt_stored": False, "path_omitted": True}
     elif args.request:
         report["ledger"] = {
             "updated": False,

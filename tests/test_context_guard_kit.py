@@ -274,7 +274,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             observed = run_cost_guard(
                 script,
                 ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
-                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100}},
+                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 10000}},
             )
             self.assertEqual(observed.returncode, 0, observed.stderr)
             observed_payload = json.loads(observed.stdout)
@@ -427,7 +427,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             observed = run_cost_guard(
                 KIT_DIR / "cost_guard.py",
                 ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
-                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 100}},
+                {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "cache_creation_input_tokens": 10000}},
             )
             self.assertEqual(observed.returncode, 0, observed.stderr)
 
@@ -534,6 +534,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
             observed_payload = json.loads(observed.stdout)
             self.assertFalse(observed_payload["ledger"]["updated"])
             self.assertEqual(observed_payload["ledger"]["reason"], "no_provider_cache_tokens")
+
+            preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            preflight_payload = json.loads(preflight.stdout)
+            self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+    def test_cost_guard_observe_requires_provider_tokens_to_cover_breakpoint(self):
+        request = cost_guard_request(cacheable_text="stable observed prefix " + ("x" * 5000))
+        usage = {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 0, "cache_creation_input_tokens": 1, "cache_read_input_tokens": 0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            observed = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"],
+                usage,
+            )
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            observed_payload = json.loads(observed.stdout)
+            self.assertFalse(observed_payload["ledger"]["updated"])
+            self.assertEqual(observed_payload["ledger"]["reason"], "insufficient_provider_cache_tokens")
 
             preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(preflight.returncode, 0, preflight.stderr)
