@@ -65,6 +65,8 @@ context-guard-diet scan . --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
 context-guard-compress --json < large-output.txt
+context-guard cost preflight --request request.json --budget-krw 3000 --json
+context-guard cost observe --usage usage.json --json
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
@@ -86,6 +88,7 @@ context-guard-statusline-merged
 - **Budgeted context packer** assembles prioritized local file evidence into a rendered byte-budgeted Markdown pack with included/partial/omitted source metadata, bounded `.context-guard/packs` receipts, exact sanitized `slice` commands when safe, and `retrieval_omitted_reason` when a path/root should not be echoed. Token counts are estimated `chars_div_4` proxies, not measured provider-token savings.
 - **Tool/MCP schema pruner** ranks local tool catalogs into bounded top-k advisory reports while preserving full sanitized schema fallback through compact receipts and payload integrity checks.
 - **Conservative compressor** classifies sanitized stdin as JSON, diff, log, search output, code, or prose and shrinks it with observed byte evidence plus estimated token proxies.
+- **Anthropic cost guard** provides `context-guard cost preflight/observe/ledger/compile` for passive pre-call estimates, provider-usage reconciliation, keyed-HMAC cache-risk history, and stable-prefix layout advice. It stores no raw prompt text and does not replace Anthropic prompt caching.
 - **Output trimmer** preserves the wrapped command exit code, trims long logs, and can emit `--digest markdown` or `--digest json` summaries with runner failure facts, sanitized failure signatures, duplicate-line groups, and suggested next queries.
 - **Sanitizer** redacts common credential patterns, private key blocks, auth headers, credential URLs, and sensitive-looking paths from search, diff, and log output.
 - **Statusline** displays compact model/context/cost signals and, when transcript data is available, cache-read and cache-reuse signals.
@@ -103,7 +106,7 @@ Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brie
 
 These helpers reduce common sources of context bloat, but they do not guarantee a fixed percentage savings. Use `context-guard-bench --ledger-jsonl ... --report-json ...` when you need measured before/after evidence for your own tasks; token-savings claims require `primary_tokens_measured` on both matched sides, and wall-time/provider-cache fields are diagnostic telemetry, not standalone savings proof. Audit `cache_friendliness` findings are heuristic layout signals, not billing authority. Benchmark CSV schemas are strict, so start a new CSV or migrate the header after helper upgrades.
 
-ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally.
+ContextGuard also does not send work to external AI providers to save model tokens. All helper commands run locally. Local RAM/disk receipts can reduce what you choose to send, but they do not replace a provider prompt cache. Before release or billing claims for Anthropic, recheck the official prompt-caching and pricing docs: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
 
 Future learned, multimodal, and self-hosted optimization ideas are tracked only in [`../../research/experimental-token-reduction-radar.md`](../../research/experimental-token-reduction-radar.md). That radar is not a shipped runtime feature and does not claim hosted API savings without provider-measured matched-task evidence.
 

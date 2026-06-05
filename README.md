@@ -61,6 +61,7 @@ ContextGuard does not make the model cheaper by itself. It reduces avoidable con
 | Repeated failing commands | Warn after repeated Bash failures so the agent changes strategy before more stale logs enter context. |
 | Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
 | Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
+| Anthropic API requests that may miss prompt cache | `context-guard cost preflight` estimates input size, breakpoint-level cache risk, and low/mid/high cost ranges before a call; default mode warns only. |
 | Volatile context before stable prompt prefixes | Audit bounded redacted prompt-segment hashes and flag likely cache-unfriendly prompt layouts without exposing raw prompt text. |
 | Large tool/MCP catalogs for one narrow task | Rank a local tool catalog into a bounded top-k schema report while keeping full sanitized schemas retrievable from local receipts. |
 
@@ -70,7 +71,7 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 
 | Tool category | Saves by | ContextGuard relationship |
 | --- | --- | --- |
-| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, and `context-guard-audit` can flag likely volatile prefix layouts. |
+| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
 | Experimental learned/multimodal/self-hosted techniques | Compressing prompts, reducing visual evidence, or optimizing self-hosted inference internals. | Tracked only in the experimental radar until matched benchmarks prove quality-preserving value; not a hosted API savings claim. |
@@ -98,6 +99,7 @@ When you need a savings claim, measure it on your own tasks:
 - raw logs versus digest output or artifact receipts
 - transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
+- `context-guard cost preflight` estimates for Anthropic request JSON, followed by `context-guard cost observe` using provider usage fields (`cache_creation_input_tokens`, `cache_read_input_tokens`) after the call
 - matched successful baseline/variant runs from `context-guard-bench`
 - large tool/MCP catalogs versus `context-guard-tool-prune` top-k reports plus receipt retrieval
 - optional experimental lanes in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md), measured with the same matched-task benchmark gates before any savings claim
@@ -108,6 +110,7 @@ When you need a savings claim, measure it on your own tasks:
 - It does not send work to external AI providers to save model tokens.
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
+- Local RAM/disk receipts can reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
 - It does not ship learned compression, multimodal OCR/crop pruning, or self-hosted KV/latent inference optimization as runtime features; those remain gated experiments in the research radar.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
@@ -123,6 +126,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
+| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
 | Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack with omission reasons and exact slice commands when safe. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |

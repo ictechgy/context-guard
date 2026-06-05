@@ -32,6 +32,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"),
     (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
     (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
+    (KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"),
     (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
     (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
@@ -60,6 +61,7 @@ ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-a
 COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
 TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
+COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"]
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -118,6 +120,42 @@ def write_private_config(path: Path, data: dict) -> None:
     os.chmod(path, 0o600)
 
 
+def cost_guard_request(*, cacheable_text: str | None = None, ttl: str = "5m", secret: str = "") -> dict:
+    stable = cacheable_text if cacheable_text is not None else "stable system rules " + ("x" * 800)
+    if secret:
+        stable = f"{stable}\n{secret}"
+    return {
+        "model": "claude-sonnet-4-5",
+        "system": [
+            {
+                "type": "text",
+                "text": stable,
+                "cache_control": {"type": "ephemeral", "ttl": ttl},
+            }
+        ],
+        "messages": [{"role": "user", "content": "short question"}],
+    }
+
+
+def cost_guard_pricing() -> dict:
+    return {
+        "name": "unit-test-pricing",
+        "usd_to_krw": 1,
+        "default_input_usd_per_mtok": 100000,
+        "default_output_usd_per_mtok": 1,
+        "models": {"sonnet": {"input_usd_per_mtok": 100000, "output_usd_per_mtok": 1}},
+    }
+
+
+def run_cost_guard(script: Path, args: list[str], input_obj: dict | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(script), *args],
+        input=json.dumps(input_obj) if input_obj is not None else None,
+        text=True,
+        capture_output=True,
+    )
+
+
 class ClaudeTokenKitTests(unittest.TestCase):
     def test_plugin_bin_matches_kit_implementations_and_is_executable(self):
         for kit, plugin in IMPLEMENTATION_PAIRS:
@@ -135,6 +173,303 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse((KIT_DIR / "aux_ai_delegate.py").exists())
         self.assertFalse((PLUGIN_BIN / "context-guard-delegate").exists())
         self.assertFalse((PLUGIN_DIR / "skills" / "delegate").exists())
+
+    def test_cost_guard_preflight_warns_passively_and_enforce_blocks(self):
+        request = cost_guard_request()
+        pricing = json.dumps(cost_guard_pricing())
+        for script in COST_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    common = [
+                        "preflight",
+                        "--store-dir",
+                        str(Path(tmp) / "ledger"),
+                        "--pricing-profile",
+                        pricing,
+                        "--budget-krw",
+                        "35",
+                        "--json",
+                    ]
+                    passive = run_cost_guard(script, common, request)
+                    self.assertEqual(passive.returncode, 0, passive.stderr)
+                    payload = json.loads(passive.stdout)
+                    self.assertEqual(payload["schema_version"], "contextguard.cost.v1")
+                    self.assertEqual(payload["tool"], "context-guard-cost")
+                    self.assertEqual(payload["mode"], "preflight")
+                    self.assertEqual(payload["decision"], "warn")
+                    self.assertEqual(payload["enforcement"], "passive")
+                    self.assertEqual(payload["model"], "claude-sonnet-4-5")
+                    self.assertIn("privacy", payload)
+                    self.assertIn("recommendations", payload)
+                    self.assertTrue(payload["budget"]["near_threshold"])
+                    self.assertTrue(payload["token_estimate"]["near_threshold"])
+                    self.assertIn("low", payload["token_estimate"])
+                    self.assertIn("mid", payload["token_estimate"])
+                    self.assertIn("high", payload["token_estimate"])
+                    self.assertIn("input_tokens_high", payload["token_estimate"])
+                    self.assertEqual(payload["cache_risk"]["summary"]["predicted_miss"], 1)
+                    self.assertEqual(payload["cache_risk"]["level"], "high")
+                    bp = payload["cache_risk"]["breakpoints"][0]
+                    for key in ("id", "ttl", "fingerprint", "matched", "risk", "confidence", "projected_tokens", "cost_delta_if_miss", "expires_at_unix"):
+                        self.assertIn(key, bp)
+
+                    enforced_common = [
+                        item if item != str(Path(tmp) / "ledger") else str(Path(tmp) / "enforce-ledger")
+                        for item in common
+                    ]
+                    enforced = run_cost_guard(script, [*enforced_common, "--enforce"], request)
+                    self.assertNotEqual(enforced.returncode, 0)
+                    enforced_payload = json.loads(enforced.stdout)
+                    self.assertEqual(enforced_payload["decision"], "block_if_enforced")
+                    self.assertEqual(enforced_payload["enforcement"], "enforced")
+                    self.assertNotIn("Traceback", enforced.stderr)
+
+    def test_cost_guard_privacy_omits_raw_prompt_secret_path_and_hmac_key(self):
+        sentinel = "UNIQUE_RAW_PROMPT_SENTINEL_9c7b1"
+        secret = "sk-ant-unit-test-secret-abcdefghijklmnopqrstuvwxyz"
+        private_path = "/Users/example/private/project/token.txt"
+        request = cost_guard_request(cacheable_text=f"{sentinel}\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz\n{private_path}", secret=secret)
+        for script in COST_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    store = Path(tmp) / "ledger"
+                    proc = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    combined = proc.stdout + proc.stderr
+                    for forbidden in (sentinel, secret, private_path, "Bearer abcdefghijklmnopqrstuvwxyz"):
+                        self.assertNotIn(forbidden, combined)
+                    payload = json.loads(proc.stdout)
+                    self.assertFalse(payload["cache_risk"]["ledger"]["raw_prompt_stored"])
+                    self.assertTrue(payload["cache_risk"]["ledger"]["uses_keyed_hmac"])
+                    self.assertEqual(payload["cache_risk"]["ledger"]["append_mode"], "o_append_single_write_fsync")
+                    self.assertFalse(payload["privacy"]["raw_prompt_emitted"])
+                    self.assertGreaterEqual(payload["privacy"]["redacted_values"], 1)
+                    display_hmac = payload["cache_risk"]["breakpoints"][0]["display_hmac"]
+                    self.assertRegex(display_hmac, r"^hmac-sha256:[0-9a-f]{16}$")
+                    ledger_text = "\n".join(path.read_text(encoding="utf-8") for path in store.iterdir() if path.is_file())
+                    for forbidden in (sentinel, secret, private_path, "Bearer abcdefghijklmnopqrstuvwxyz"):
+                        self.assertNotIn(forbidden, ledger_text)
+
+    def test_cost_guard_ledger_reports_hit_miss_and_ttl_expiry(self):
+        request = cost_guard_request()
+        changed = cost_guard_request(cacheable_text="changed stable prefix " + ("y" * 800))
+        script = KIT_DIR / "cost_guard.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            first = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            second = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_payload = json.loads(second.stdout)
+            self.assertEqual(second_payload["cache_risk"]["summary"]["predicted_hit"], 1)
+            self.assertEqual(second_payload["cache_risk"]["breakpoints"][0]["predicted_cache_state"], "hit")
+
+            changed_proc = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], changed)
+            self.assertEqual(changed_proc.returncode, 0, changed_proc.stderr)
+            changed_payload = json.loads(changed_proc.stdout)
+            self.assertEqual(changed_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+
+            ledger_path = store / "ledger.jsonl"
+            rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            for row in rows:
+                row["created_at_unix"] = 1
+            ledger_path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+            expired = run_cost_guard(script, ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(expired.returncode, 0, expired.stderr)
+            expired_payload = json.loads(expired.stdout)
+            self.assertEqual(expired_payload["cache_risk"]["breakpoints"][0]["predicted_cache_state"], "expired")
+
+    def test_cost_guard_prices_cache_breakpoint_prefix_not_only_section(self):
+        request = {
+            "model": "claude-sonnet-4-5",
+            "tools": [
+                {
+                    "name": "large_tool_schema",
+                    "input_schema": {
+                        "type": "object",
+                        "description": "tool schema prefix material " + ("x" * 5000),
+                    },
+                }
+            ],
+            "system": [
+                {
+                    "type": "text",
+                    "text": "small cache-control block",
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
+                }
+            ],
+            "messages": [{"role": "user", "content": "short question"}],
+        }
+        pricing = json.dumps(cost_guard_pricing())
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            [
+                "preflight",
+                "--pricing-profile",
+                pricing,
+                "--budget-krw",
+                "1",
+                "--json",
+            ],
+            request,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        bp = payload["cache_risk"]["breakpoints"][0]
+        self.assertGreater(bp["projected_tokens"], bp["section_tokens_estimated"])
+        self.assertEqual(bp["projected_tokens"], bp["prefix_delta_tokens_estimated"])
+        self.assertGreater(bp["cost_delta_if_miss"], 100)
+        self.assertGreater(payload["cost_estimate"]["if_all_cache_miss_usd_mid"], 100)
+        self.assertGreater(payload["token_estimate"]["cacheable_tokens_mid"], bp["section_tokens_estimated"])
+
+    def test_cost_guard_blocked_preflight_does_not_seed_cache_hit(self):
+        request = cost_guard_request()
+        pricing = json.dumps(cost_guard_pricing())
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            blocked = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                [
+                    "preflight",
+                    "--store-dir",
+                    str(store),
+                    "--pricing-profile",
+                    pricing,
+                    "--budget-krw",
+                    "1",
+                    "--enforce",
+                    "--json",
+                ],
+                request,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            blocked_payload = json.loads(blocked.stdout)
+            self.assertEqual(blocked_payload["decision"], "block_if_enforced")
+
+            retry = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                [
+                    "preflight",
+                    "--store-dir",
+                    str(store),
+                    "--pricing-profile",
+                    pricing,
+                    "--json",
+                ],
+                request,
+            )
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            retry_payload = json.loads(retry.stdout)
+            self.assertEqual(retry_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertEqual(retry_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+            rows = [json.loads(line) for line in (store / "ledger.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(rows[0]["kind"], "preflight_blocked")
+            self.assertNotIn("fingerprints", rows[0])
+            self.assertFalse(rows[0]["summary"]["cache_seeded"])
+
+    def test_cost_guard_ledger_scopes_hits_by_model_and_prior_ttl(self):
+        base = cost_guard_request(ttl="5m")
+        one_hour = cost_guard_request(ttl="1h")
+        other_model = dict(base)
+        other_model["model"] = "claude-haiku-4-5"
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            first = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], base)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            same = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], base)
+            self.assertEqual(same.returncode, 0, same.stderr)
+            self.assertEqual(json.loads(same.stdout)["cache_risk"]["summary"]["predicted_hit"], 1)
+
+            model_changed = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], other_model)
+            self.assertEqual(model_changed.returncode, 0, model_changed.stderr)
+            model_payload = json.loads(model_changed.stdout)
+            self.assertEqual(model_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertEqual(model_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+            ttl_changed = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], one_hour)
+            self.assertEqual(ttl_changed.returncode, 0, ttl_changed.stderr)
+            ttl_payload = json.loads(ttl_changed.stdout)
+            self.assertEqual(ttl_payload["cache_risk"]["summary"]["predicted_miss"], 1)
+            self.assertIn("ttl_mismatch", ttl_payload["cache_risk"]["reasons"])
+
+    def test_cost_guard_redacted_cacheable_material_downgrades_confidence(self):
+        request = cost_guard_request(secret="sk-ant-confidence-downgrade-abcdefghijklmnopqrstuvwxyz")
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--json"], request)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertNotEqual(payload["confidence"]["level"], "high")
+        self.assertIn("redaction_changed_cacheable_material", payload["confidence"]["reasons"])
+        self.assertIn("redaction_changed_cacheable_material", payload["cache_risk"]["reasons"])
+
+    def test_cost_guard_observe_reconciles_usage_without_savings_claim(self):
+        usage = {
+            "model": "claude-sonnet-4-5",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_creation_input_tokens": 300,
+                "cache_read_input_tokens": 900,
+            },
+        }
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["observe", "--pricing-profile", json.dumps(cost_guard_pricing()), "--json"],
+            usage,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["mode"], "observe")
+        self.assertEqual(payload["measurement"], "from_usage")
+        self.assertEqual(payload["usage_source"], "provider_usage_fields")
+        self.assertEqual(payload["usage"]["cache_creation_input_tokens_5m"], 300)
+        self.assertEqual(payload["usage"]["cache_read_input_tokens"], 900)
+        self.assertTrue(payload["cache_effect"]["provider_measured"])
+        self.assertNotIn("ContextGuard-caused savings", proc.stdout)
+        self.assertNotIn("guaranteed", proc.stdout.lower())
+
+    def test_cost_guard_compile_orders_cache_blocks_and_omits_content(self):
+        sentinel = "UNIQUE_COMPILE_CONTENT_SENTINEL"
+        manifest = {
+            "sections": [
+                {"id": "volatile-tail", "ttl": "5m", "volatile": True, "bytes": 100, "content": sentinel, "path": "/tmp/private-token.txt"},
+                {"id": "stable-hour", "ttl": "1h", "volatile": False, "bytes": 200},
+                {"id": "stable-five", "ttl": "5m", "volatile": False, "bytes": 300},
+                {"id": "large-local", "ttl": "1h", "volatile": False, "bytes": 70000},
+                {"id": "extra", "ttl": "5m", "volatile": False, "bytes": 10},
+            ]
+        }
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["compile", "--json"], manifest)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        order = payload["recommended_order"]
+        self.assertEqual(order[0]["ttl"], "1h")
+        self.assertTrue(order[-1]["volatile"])
+        codes = {finding["code"] for finding in payload["findings"]}
+        self.assertIn("ttl_order_violation", codes)
+        self.assertIn("volatile_prefix_before_stable_context", codes)
+        self.assertIn("too_many_cache_breakpoints", codes)
+        self.assertIn("use_local_artifact_retrieval", codes)
+        self.assertFalse(payload["local_artifact_retrieval"]["replaces_provider_prompt_cache"])
+        self.assertNotIn(sentinel, proc.stdout)
+        self.assertNotIn("/tmp/private-token.txt", proc.stdout)
+
+    def test_cost_guard_release_gate_parity_surfaces_include_cost_helper(self):
+        cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_cost_test")
+        self.assertEqual(cli.HELPER_SUBCOMMANDS["cost"], ("context-guard-cost",))
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["bin"]["context-guard-cost"], "plugins/context-guard/bin/context-guard-cost")
+
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_cost_test")
+        self.assertIn(("cost_guard.py", "context-guard-cost"), prepublish.IMPLEMENTATION_PAIRS)
+        self.assertIn("context-guard-cost", prepublish.REQUIRED_NPM_BINS)
+        self.assertIn("context-guard-kit/cost_guard.py", prepublish.EXPECTED_NPM_PACK_FILES)
+        self.assertIn("plugins/context-guard/bin/context-guard-cost", prepublish.EXPECTED_NPM_PACK_FILES)
+
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
+        self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-cost"]["args"], ["--help"])
 
     def test_experimental_token_reduction_radar_claim_discipline(self):
         radar = ROOT / "research" / "experimental-token-reduction-radar.md"
