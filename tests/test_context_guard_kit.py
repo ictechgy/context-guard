@@ -746,7 +746,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
             valid_row = dict(rows[0])
             valid_row["created_at_unix"] = int(time.time())
-            ledger.write_text("\n".join(json.dumps(row) for row in [rows[0], valid_row]) + "\n", encoding="utf-8")
+            ledger.write_text('{"kind":"observe","created_at_unix":NaN}\n' + "\n".join(json.dumps(row) for row in [rows[0], valid_row]) + "\n", encoding="utf-8")
 
             preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(preflight.returncode, 0, preflight.stderr)

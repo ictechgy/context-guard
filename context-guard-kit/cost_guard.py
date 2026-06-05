@@ -67,7 +67,7 @@ def fail(message: str) -> NoReturn:
 
 
 def reject_json_constant(value: str) -> NoReturn:
-    fail(f"invalid JSON constant: {value}")
+    raise ValueError(f"invalid JSON constant: {value}")
 
 
 def json_bytes(data: Any) -> str:
@@ -162,6 +162,8 @@ def load_json_input(path: str, *, max_bytes: int = DEFAULT_MAX_BYTES) -> tuple[A
         data = json.loads(text, parse_constant=reject_json_constant)
     except json.JSONDecodeError as exc:
         fail(f"invalid JSON input at line {exc.lineno}: {exc.msg}")
+    except ValueError as exc:
+        fail(f"invalid JSON input: {exc}")
     return data, truncated
 
 
@@ -554,7 +556,7 @@ def load_pricing_profile(raw: str | None) -> dict[str, Any]:
             override = json.loads(raw, parse_constant=reject_json_constant)
         else:
             override = json.loads(Path(raw).read_text(encoding="utf-8"), parse_constant=reject_json_constant)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         fail(f"could not load pricing profile: {exc}")
     if not isinstance(override, dict):
         fail("pricing profile must be a JSON object")
