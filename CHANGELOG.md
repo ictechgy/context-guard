@@ -2,6 +2,10 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.4.1] - 2026-06-05
+
+- Publish the cross-agent distribution release under a fresh npm version because `0.4.0` is unavailable on the registry while still returning a public 404.
+
 ## [0.4.0] - 2026-06-04
 
 - Added budgeted context packs with prioritized local evidence, bounded receipts, safe slice retrieval hints, and explicit proxy-token labeling.
