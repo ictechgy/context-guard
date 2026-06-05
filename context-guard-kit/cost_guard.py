@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -18,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import sys
 import time
@@ -29,6 +31,12 @@ SCHEMA_VERSION = "contextguard.cost.v1"
 DEFAULT_STORE_DIR = ".context-guard/cost-ledger"
 LEDGER_NAME = "ledger.jsonl"
 KEY_NAME = "hmac.key"
+LOCK_OWNER_NAME = "owner.json"
+HMAC_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}=$")
+KEY_LOCK_WAIT_ATTEMPTS = 100
+KEY_LOCK_POLL_SECONDS = 0.05
+KEY_LOCK_STALE_SECONDS = 60.0
+KEY_LOCK_METADATA_CLOCK_SKEW_SECONDS = 5.0
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
@@ -336,18 +344,55 @@ def ensure_private_dir(path: Path) -> None:
         pass
 
 
-def read_hmac_key(key_path: Path) -> bytes:
-    raw = key_path.read_text(encoding="utf-8").strip()
-    try:
-        key = base64.urlsafe_b64decode(raw.encode("ascii"))
-    except Exception as exc:
-        fail(f"invalid local HMAC key file: {exc}")
-    if len(key) != 32:
-        fail("invalid local HMAC key file: expected 32 decoded bytes")
+def os_error_detail(exc: OSError) -> str:
+    detail = exc.strerror or exc.__class__.__name__
+    if exc.errno is not None:
+        return f"{detail} (errno {exc.errno})"
+    return detail
+
+
+def lock_guidance() -> str:
+    return f"<store-dir>/{KEY_NAME}.lock"
+
+
+def ensure_hmac_key_private_mode(key_path: Path) -> None:
     try:
         os.chmod(key_path, 0o600)
-    except OSError:
-        pass
+    except OSError as exc:
+        if os.name == "posix":
+            fail(f"could not secure local HMAC key file: {os_error_detail(exc)}")
+        return
+    if os.name == "posix":
+        try:
+            mode = stat.S_IMODE(key_path.stat().st_mode)
+        except OSError as exc:
+            fail(f"could not verify local HMAC key file privacy: {os_error_detail(exc)}")
+        if mode != 0o600:
+            fail("could not verify local HMAC key file privacy: expected mode 0600")
+
+
+def read_hmac_key(key_path: Path) -> bytes:
+    try:
+        raw = key_path.read_text(encoding="utf-8")
+    except UnicodeError:
+        fail("invalid local HMAC key file: expected UTF-8 canonical URL-safe base64 text")
+    except OSError as exc:
+        fail(f"could not read local HMAC key file: {os_error_detail(exc)}")
+    try:
+        raw_ascii = raw.encode("ascii")
+    except UnicodeEncodeError:
+        fail("invalid local HMAC key file: expected ASCII canonical URL-safe base64 text")
+    if not HMAC_KEY_RE.fullmatch(raw):
+        fail("invalid local HMAC key file: expected canonical URL-safe 32-byte key")
+    try:
+        key = base64.b64decode(raw_ascii, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError):
+        fail("invalid local HMAC key file: invalid canonical URL-safe base64")
+    if base64.urlsafe_b64encode(key).decode("ascii") != raw:
+        fail("invalid local HMAC key file: expected canonical URL-safe 32-byte key")
+    if len(key) != 32:
+        fail("invalid local HMAC key file: expected 32 decoded bytes")
+    ensure_hmac_key_private_mode(key_path)
     return key
 
 
@@ -363,7 +408,10 @@ def fsync_parent_dir(path: Path) -> None:
     except OSError:
         pass
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -376,18 +424,119 @@ def write_all(fd: int, data: bytes) -> None:
         total += written
 
 
-def acquire_key_lock(lock_dir: Path, key_path: Path) -> bool:
-    for _ in range(100):
+@dataclass(frozen=True)
+class KeyLock:
+    nonce: str
+    metadata_written: bool
+
+
+def write_key_lock_metadata(lock_dir: Path) -> KeyLock:
+    nonce = secrets.token_hex(8)
+    metadata = {
+        "pid": os.getpid(),
+        "created_at_unix": time.time(),
+        "nonce": nonce,
+    }
+    path = lock_dir / LOCK_OWNER_NAME
+    try:
+        path.write_text(json_bytes(metadata), encoding="utf-8")
+        os.chmod(path, 0o600)
+        fsync_parent_dir(path)
+        return KeyLock(nonce=nonce, metadata_written=True)
+    except OSError:
+        return KeyLock(nonce=nonce, metadata_written=False)
+
+
+def key_lock_age_seconds(lock_dir: Path, now: float | None = None) -> float:
+    current = time.time() if now is None else now
+    metadata_path = lock_dir / LOCK_OWNER_NAME
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if isinstance(metadata, dict):
+            created = metadata.get("created_at_unix")
+            if type(created) in (int, float) and math.isfinite(float(created)):
+                created_float = float(created)
+                if 0 <= created_float <= current + KEY_LOCK_METADATA_CLOCK_SKEW_SECONDS:
+                    return max(0.0, current - created_float)
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError):
+        pass
+    try:
+        return max(0.0, current - lock_dir.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def reclaim_stale_key_lock(lock_dir: Path, key_path: Path) -> bool:
+    if key_path.exists():
+        return False
+    if key_lock_age_seconds(lock_dir) < KEY_LOCK_STALE_SECONDS:
+        return False
+    if key_path.exists():
+        return False
+    stale_dir = lock_dir.with_name(f"{lock_dir.name}.stale.{os.getpid()}.{secrets.token_hex(8)}")
+    try:
+        os.rename(lock_dir, stale_dir)
+    except OSError:
+        return False
+    try:
+        shutil.rmtree(stale_dir)
+    except OSError:
+        pass
+    return True
+
+
+def key_lock_owner_matches(lock_dir: Path, lock: KeyLock) -> bool:
+    if not lock.metadata_written:
+        return False
+    try:
+        metadata = json.loads((lock_dir / LOCK_OWNER_NAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("nonce") == lock.nonce
+        and metadata.get("pid") == os.getpid()
+    )
+
+
+def cleanup_key_lock(lock_dir: Path, lock: KeyLock) -> None:
+    if not key_lock_owner_matches(lock_dir, lock):
+        return
+    try:
+        shutil.rmtree(lock_dir)
+    except OSError:
+        pass
+
+
+def acquire_key_lock(lock_dir: Path, key_path: Path) -> KeyLock | None:
+    for _ in range(KEY_LOCK_WAIT_ATTEMPTS):
         try:
             os.mkdir(lock_dir, 0o700)
-            return True
+            try:
+                os.chmod(lock_dir, 0o700)
+            except OSError:
+                pass
+            lock = write_key_lock_metadata(lock_dir)
+            if not lock.metadata_written:
+                try:
+                    shutil.rmtree(lock_dir)
+                except OSError:
+                    pass
+                fail("could not write local HMAC key lock metadata; retry")
+            return lock
         except FileExistsError:
             if key_path.exists():
-                return False
-            time.sleep(0.05)
+                return None
+            if reclaim_stale_key_lock(lock_dir, key_path):
+                continue
+            if key_path.exists():
+                return None
+            time.sleep(KEY_LOCK_POLL_SECONDS)
         except OSError as exc:
-            fail(f"could not create local HMAC key lock: {exc}")
-    fail("timed out waiting for local HMAC key lock")
+            fail(f"could not create local HMAC key lock at {lock_guidance()}: {os_error_detail(exc)}")
+    if key_path.exists():
+        return None
+    fail(f"timed out waiting for local HMAC key lock; remove stale {lock_guidance()}")
 
 
 def load_or_create_hmac_key(store_dir: Path) -> bytes:
@@ -398,7 +547,7 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
 
     lock_dir = store_dir / f"{KEY_NAME}.lock"
     locked = acquire_key_lock(lock_dir, key_path)
-    if not locked:
+    if locked is None:
         return read_hmac_key(key_path)
 
     tmp_path: Path | None = None
@@ -408,16 +557,36 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
         key = secrets.token_bytes(32)
         encoded = base64.urlsafe_b64encode(key)
         tmp_path = store_dir / f"{KEY_NAME}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError as exc:
+            fail(f"could not create local HMAC key file: {os_error_detail(exc)}")
+        close_error: OSError | None = None
+        try:
+            try:
+                os.fchmod(fd, 0o600)
+            except (AttributeError, OSError):
+                pass
             write_all(fd, encoded)
             os.fsync(fd)
         except OSError as exc:
-            fail(f"could not write local HMAC key file: {exc}")
+            fail(f"could not write local HMAC key file: {os_error_detail(exc)}")
         finally:
-            os.close(fd)
-        os.replace(tmp_path, key_path)
+            try:
+                os.close(fd)
+            except OSError as exc:
+                close_error = exc
+        if close_error is not None:
+            fail(f"could not write local HMAC key file: {os_error_detail(close_error)}")
+        ensure_hmac_key_private_mode(tmp_path)
+        if locked.metadata_written and not key_lock_owner_matches(lock_dir, locked):
+            if key_path.exists():
+                return read_hmac_key(key_path)
+            fail("lost local HMAC key lock; retry")
+        try:
+            os.replace(tmp_path, key_path)
+        except OSError as exc:
+            fail(f"could not persist local HMAC key file: {os_error_detail(exc)}")
         tmp_path = None
         fsync_parent_dir(key_path)
         # Re-read the persisted file so callers always use the same bytes future
@@ -430,10 +599,7 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
                 tmp_path.unlink()
             except OSError:
                 pass
-        try:
-            lock_dir.rmdir()
-        except OSError:
-            pass
+        cleanup_key_lock(lock_dir, locked)
 
 
 def keyed_hmac(key: bytes, text: str) -> str:

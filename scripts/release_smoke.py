@@ -607,6 +607,29 @@ def run_npm_package_smoke(timeout: float) -> None:
                 check_json_field(load_json(proc.stdout, "npm exec context-guard setup"), "applied", False, "npm exec context-guard setup")
             ),
         )
+        for plan in npm_dispatcher_smoke_plan():
+            entrypoint = str(plan["entrypoint"])
+            mode = str(plan["mode"])
+            args = [str(arg) for arg in plan["args"]]
+            command_label = " ".join(["npm exec", entrypoint, *args])
+            run_command(
+                [
+                    npm,
+                    "exec",
+                    "--ignore-scripts",
+                    "--yes",
+                    "--package",
+                    str(tarball),
+                    "--",
+                    entrypoint,
+                    *args,
+                ],
+                cwd=project,
+                env=env,
+                timeout=timeout,
+                input_text=launch_stdin(mode),
+                expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
+            )
         npx = shutil.which("npx")
         if npx is not None:
             run_command(
@@ -616,6 +639,10 @@ def run_npm_package_smoke(timeout: float) -> None:
                 timeout=timeout,
                 expect=lambda proc: None if proc.stdout.strip() else fail("npx context-guard --version emitted no output"),
             )
+
+
+def npm_dispatcher_smoke_plan() -> tuple[dict[str, Any], ...]:
+    return DISPATCHER_SMOKE_COMMANDS
 
 
 def launch_stdin(mode: str) -> str | None:
