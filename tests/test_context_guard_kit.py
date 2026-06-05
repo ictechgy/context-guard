@@ -1,4 +1,5 @@
 import argparse
+import base64
 import csv
 import contextlib
 import errno
@@ -151,6 +152,15 @@ def run_cost_guard(script: Path, args: list[str], input_obj: dict | None = None)
     return subprocess.run(
         [sys.executable, str(script), *args],
         input=json.dumps(input_obj) if input_obj is not None else None,
+        text=True,
+        capture_output=True,
+    )
+
+
+def run_cost_guard_text(script: Path, args: list[str], input_text: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(script), *args],
+        input=input_text,
         text=True,
         capture_output=True,
     )
@@ -634,6 +644,195 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn(sentinel, proc.stdout)
         self.assertNotIn("/tmp/private-token.txt", proc.stdout)
 
+
+    def test_cost_guard_preflight_rejects_non_object_request(self):
+        for raw in ("[]", "null", '"hello"'):
+            with self.subTest(raw=raw):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = run_cost_guard_text(
+                        KIT_DIR / "cost_guard.py",
+                        ["preflight", "--store-dir", str(Path(tmp) / "ledger"), "--json"],
+                        raw,
+                    )
+                self.assertEqual(proc.returncode, 2)
+                combined = proc.stdout + proc.stderr
+                self.assertIn("request must be a JSON object", combined)
+                self.assertNotIn("Traceback", combined)
+
+    def test_cost_guard_rejects_non_finite_numeric_inputs(self):
+        request = {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "hi"}]}
+        cases = [
+            (["--usd-to-krw", "NaN"], "--usd-to-krw must be finite"),
+            (["--usd-to-krw", "Infinity"], "--usd-to-krw must be finite"),
+            (["--usd-to-krw", "0"], "--usd-to-krw must be > 0"),
+            (["--budget-usd", "NaN"], "--budget-usd must be finite"),
+            (["--budget-usd", "-1"], "--budget-usd must be >= 0"),
+            (["--budget-krw", "NaN"], "--budget-krw must be finite"),
+            (["--budget-krw", "-1"], "--budget-krw must be >= 0"),
+            (["--pricing-profile", '{"usd_to_krw": NaN}'], "invalid JSON constant: NaN"),
+            (["--pricing-profile", '{"usd_to_krw": 0}', "--budget-krw", "1"], "pricing profile usd_to_krw must be > 0"),
+        ]
+        for extra_args, expected in cases:
+            with self.subTest(extra_args=extra_args):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = run_cost_guard(
+                        KIT_DIR / "cost_guard.py",
+                        ["preflight", "--store-dir", str(Path(tmp) / "ledger"), "--json", *extra_args],
+                        request,
+                    )
+                self.assertEqual(proc.returncode, 2)
+                combined = proc.stdout + proc.stderr
+                self.assertIn(expected, combined)
+                self.assertNotIn("Traceback", combined)
+
+        observe = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["observe", "--usd-to-krw", "NaN", "--json"],
+            {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        )
+        self.assertEqual(observe.returncode, 2)
+        self.assertIn("--usd-to-krw must be finite", observe.stderr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ok = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                ["preflight", "--store-dir", str(Path(tmp) / "ledger"), "--usd-to-krw", "1350", "--budget-krw", "1", "--json"],
+                request,
+            )
+        self.assertIn(ok.returncode, (0, 3), ok.stderr)
+        self.assertNotIn("NaN", ok.stdout)
+        self.assertNotIn("Infinity", ok.stdout)
+        json.loads(ok.stdout)
+
+    def test_cost_guard_ledger_limit_zero_and_negative_semantics(self):
+        request = {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "hi"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            for _ in range(2):
+                proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            zero = run_cost_guard(KIT_DIR / "cost_guard.py", ["ledger", "--store-dir", str(store), "--limit", "0", "--json"])
+            self.assertEqual(zero.returncode, 0, zero.stderr)
+            zero_payload = json.loads(zero.stdout)
+            self.assertEqual(zero_payload["entries"], [])
+            self.assertGreaterEqual(zero_payload["summary"]["entries"], 2)
+
+            one = run_cost_guard(KIT_DIR / "cost_guard.py", ["ledger", "--store-dir", str(store), "--limit", "1", "--json"])
+            self.assertEqual(one.returncode, 0, one.stderr)
+            self.assertEqual(len(json.loads(one.stdout)["entries"]), 1)
+
+            negative = run_cost_guard(KIT_DIR / "cost_guard.py", ["ledger", "--store-dir", str(store), "--limit", "-1", "--json"])
+            self.assertEqual(negative.returncode, 2)
+            self.assertIn("must be >= 0", negative.stderr)
+
+    def test_cost_guard_tolerates_malformed_ledger_timestamp(self):
+        request = cost_guard_request(cacheable_text="stable observed prefix " + ("x" * 5000))
+        usage = {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 0, "cache_creation_input_tokens": 10000}}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            observed = run_cost_guard(KIT_DIR / "cost_guard.py", ["observe", "--store-dir", str(store), "--request", str(request_path), "--json"], usage)
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            ledger = store / "ledger.jsonl"
+            rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertTrue(rows)
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_malformed_timestamp_test")
+            rows[0]["created_at_unix"] = "not-a-number"
+            coerced = module.latest_fingerprint_rows([rows[0]])
+            self.assertTrue(coerced)
+            self.assertEqual(next(iter(coerced.values()))["created_at_unix"], 0)
+
+            valid_row = dict(rows[0])
+            valid_row["created_at_unix"] = int(time.time())
+            ledger.write_text('{"kind":"observe","created_at_unix":NaN}\n' + "\n".join(json.dumps(row) for row in [rows[0], valid_row]) + "\n", encoding="utf-8")
+
+            preflight = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            self.assertNotIn("Traceback", preflight.stderr + preflight.stdout)
+            payload = json.loads(preflight.stdout)
+            self.assertEqual(payload["cache_risk"]["summary"]["predicted_hit"], 1)
+            self.assertEqual(payload["cache_risk"]["summary"]["predicted_miss"], 0)
+            self.assertGreaterEqual(payload["cache_risk"]["breakpoints"][0].get("age_seconds", 0), 0)
+
+    def test_cost_guard_hmac_key_created_private_and_stable(self):
+        request = cost_guard_request(cacheable_text="stable concurrent prefix " + ("x" * 5000))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            procs = [
+                subprocess.Popen(
+                    [sys.executable, str(KIT_DIR / "cost_guard.py"), "preflight", "--request", str(request_path), "--store-dir", str(store), "--json"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(4)
+            ]
+            results = [proc.communicate(timeout=20) + (proc.returncode,) for proc in procs]
+            for stdout, stderr, returncode in results:
+                self.assertEqual(returncode, 0, stderr)
+                json.loads(stdout)
+            key_path = store / "hmac.key"
+            raw = key_path.read_text(encoding="utf-8").strip()
+            self.assertEqual(len(base64.urlsafe_b64decode(raw.encode("ascii"))), 32)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+
+            second = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(key_path.read_text(encoding="utf-8").strip(), raw)
+
+    def test_cost_guard_hmac_key_creation_resists_restrictive_umask(self):
+        request = cost_guard_request(cacheable_text="restrictive umask prefix " + ("x" * 5000))
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(json.dumps(request), encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "\n".join(
+                        [
+                            "import os, subprocess, sys",
+                            "os.umask(0o777)",
+                            "proc = subprocess.run([sys.executable, sys.argv[1], 'preflight', '--request', sys.argv[2], '--store-dir', sys.argv[3], '--json'], text=True, capture_output=True)",
+                            "sys.stdout.write(proc.stdout)",
+                            "sys.stderr.write(proc.stderr)",
+                            "raise SystemExit(proc.returncode)",
+                        ]
+                    ),
+                    str(KIT_DIR / "cost_guard.py"),
+                    str(request_path),
+                    str(store),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+            key_path = store / "hmac.key"
+            raw = key_path.read_text(encoding="utf-8").strip()
+            self.assertEqual(len(base64.urlsafe_b64decode(raw.encode("ascii"))), 32)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+
+    def test_cost_guard_compile_omits_raw_manifest_paths(self):
+        private_path = "/Users/example/private/sk-ant-compile-secret-abcdefghijklmnopqrstuvwxyz/manifest.txt"
+        manifest = {"sections": [{"id": "secret-path", "ttl": "1h", "bytes": 10, "path": private_path}]}
+        json_proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["compile", "--json"], manifest)
+        self.assertEqual(json_proc.returncode, 0, json_proc.stderr)
+        self.assertNotIn(private_path, json_proc.stdout + json_proc.stderr)
+        payload = json.loads(json_proc.stdout)
+        self.assertTrue(payload["recommended_order"][0]["path_omitted"])
+
+        text_proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["compile"], manifest)
+        self.assertEqual(text_proc.returncode, 0, text_proc.stderr)
+        self.assertNotIn(private_path, text_proc.stdout + text_proc.stderr)
+
     def test_cost_guard_release_gate_parity_surfaces_include_cost_helper(self):
         cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_cost_test")
         self.assertEqual(cli.HELPER_SUBCOMMANDS["cost"], ("context-guard-cost",))
@@ -649,6 +848,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-cost"]["args"], ["--help"])
+        self.assertIn({"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
 
     def test_experimental_token_reduction_radar_claim_discipline(self):
         radar = ROOT / "research" / "experimental-token-reduction-radar.md"

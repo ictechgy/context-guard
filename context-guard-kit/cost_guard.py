@@ -66,8 +66,53 @@ def fail(message: str) -> NoReturn:
     raise CostGuardError(message)
 
 
+def reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
 def json_bytes(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        fail(f"JSON value contained a non-finite number: {exc}")
+
+
+def require_json_object(data: Any, label: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        fail(f"{label} must be a JSON object")
+    return data
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def finite_float_arg(value: Any, label: str, *, minimum: float = 0.0, allow_zero: bool = True) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        fail(f"{label} must be numeric")
+    if not math.isfinite(number):
+        fail(f"{label} must be finite")
+    if allow_zero:
+        if number < minimum:
+            fail(f"{label} must be >= {minimum:g}")
+    elif number <= minimum:
+        fail(f"{label} must be > {minimum:g}")
+    return number
+
+
+def non_negative_int_arg(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
 
 
 def byte_len_text(text: str) -> int:
@@ -114,9 +159,11 @@ def load_json_input(path: str, *, max_bytes: int = DEFAULT_MAX_BYTES) -> tuple[A
     if truncated:
         fail("JSON input exceeded max bytes")
     try:
-        data = json.loads(text)
+        data = json.loads(text, parse_constant=reject_json_constant)
     except json.JSONDecodeError as exc:
         fail(f"invalid JSON input at line {exc.lineno}: {exc.msg}")
+    except ValueError as exc:
+        fail(f"invalid JSON input: {exc}")
     return data, truncated
 
 
@@ -289,24 +336,104 @@ def ensure_private_dir(path: Path) -> None:
         pass
 
 
+def read_hmac_key(key_path: Path) -> bytes:
+    raw = key_path.read_text(encoding="utf-8").strip()
+    try:
+        key = base64.urlsafe_b64decode(raw.encode("ascii"))
+    except Exception as exc:
+        fail(f"invalid local HMAC key file: {exc}")
+    if len(key) != 32:
+        fail("invalid local HMAC key file: expected 32 decoded bytes")
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return key
+
+
+def fsync_parent_dir(path: Path) -> None:
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    total = 0
+    while total < len(data):
+        written = os.write(fd, view[total:])
+        if written <= 0:
+            raise OSError("short write to local HMAC key file")
+        total += written
+
+
+def acquire_key_lock(lock_dir: Path, key_path: Path) -> bool:
+    for _ in range(100):
+        try:
+            os.mkdir(lock_dir, 0o700)
+            return True
+        except FileExistsError:
+            if key_path.exists():
+                return False
+            time.sleep(0.05)
+        except OSError as exc:
+            fail(f"could not create local HMAC key lock: {exc}")
+    fail("timed out waiting for local HMAC key lock")
+
+
 def load_or_create_hmac_key(store_dir: Path) -> bytes:
     ensure_private_dir(store_dir)
     key_path = store_dir / KEY_NAME
     if key_path.exists():
-        raw = key_path.read_text(encoding="utf-8").strip()
-        try:
-            return base64.urlsafe_b64decode(raw.encode("ascii"))
-        except Exception as exc:
-            fail(f"invalid local HMAC key file: {exc}")
-    key = secrets.token_bytes(32)
-    tmp_path = key_path.with_suffix(".tmp")
-    tmp_path.write_text(base64.urlsafe_b64encode(key).decode("ascii"), encoding="utf-8")
+        return read_hmac_key(key_path)
+
+    lock_dir = store_dir / f"{KEY_NAME}.lock"
+    locked = acquire_key_lock(lock_dir, key_path)
+    if not locked:
+        return read_hmac_key(key_path)
+
+    tmp_path: Path | None = None
     try:
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp_path, key_path)
-    return key
+        if key_path.exists():
+            return read_hmac_key(key_path)
+        key = secrets.token_bytes(32)
+        encoded = base64.urlsafe_b64encode(key)
+        tmp_path = store_dir / f"{KEY_NAME}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            write_all(fd, encoded)
+            os.fsync(fd)
+        except OSError as exc:
+            fail(f"could not write local HMAC key file: {exc}")
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, key_path)
+        tmp_path = None
+        fsync_parent_dir(key_path)
+        # Re-read the persisted file so callers always use the same bytes future
+        # ledger lookups will use. The lock prevents first-use races without
+        # relying on hard links or replacing another process's winner key.
+        return read_hmac_key(key_path)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        try:
+            lock_dir.rmdir()
+        except OSError:
+            pass
 
 
 def keyed_hmac(key: bytes, text: str) -> str:
@@ -328,8 +455,8 @@ def load_ledger(store_dir: Path) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
+                row = json.loads(line, parse_constant=reject_json_constant)
+            except (json.JSONDecodeError, ValueError):
                 continue
             if isinstance(row, dict):
                 rows.append(row)
@@ -361,7 +488,7 @@ def latest_fingerprint_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str],
         if row.get("kind") != "observe":
             continue
         model = str(row.get("model") or "unknown")
-        created = int(row.get("created_at_unix") or 0)
+        created = safe_int(row.get("created_at_unix") or 0, 0)
         for fp in row.get("fingerprints", []) if isinstance(row.get("fingerprints"), list) else []:
             if not isinstance(fp, dict):
                 continue
@@ -370,7 +497,7 @@ def latest_fingerprint_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str],
                 continue
             key = (model, digest)
             old = latest.get(key)
-            if old is None or created >= int(old.get("created_at_unix") or 0):
+            if old is None or created >= safe_int(old.get("created_at_unix") or 0, 0):
                 merged = dict(fp)
                 merged["created_at_unix"] = created
                 merged["model"] = model
@@ -426,10 +553,10 @@ def load_pricing_profile(raw: str | None) -> dict[str, Any]:
         return profile
     try:
         if raw.lstrip().startswith("{"):
-            override = json.loads(raw)
+            override = json.loads(raw, parse_constant=reject_json_constant)
         else:
-            override = json.loads(Path(raw).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+            override = json.loads(Path(raw).read_text(encoding="utf-8"), parse_constant=reject_json_constant)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         fail(f"could not load pricing profile: {exc}")
     if not isinstance(override, dict):
         fail("pricing profile must be a JSON object")
@@ -507,8 +634,11 @@ def pricing_multipliers(profile: dict[str, Any]) -> tuple[dict[str, float], floa
 
 def usd_to_krw(profile: dict[str, Any], override: float | None = None) -> float:
     if override is not None:
-        return override
-    return float_field(profile, "usd_to_krw", DEFAULT_USD_TO_KRW)
+        return finite_float_arg(override, "--usd-to-krw", minimum=0.0, allow_zero=False)
+    rate = float_field(profile, "usd_to_krw", DEFAULT_USD_TO_KRW)
+    if rate <= 0:
+        fail("pricing profile usd_to_krw must be > 0")
+    return rate
 
 
 def money(tokens: int, usd_per_mtok: float, multiplier: float = 1.0) -> float:
@@ -536,10 +666,12 @@ def cost_range(mid_usd: float, safety_factor: float) -> dict[str, float]:
 def budget_state(cost_usd_range: dict[str, float], args: argparse.Namespace, profile: dict[str, Any]) -> dict[str, Any]:
     budgets: list[tuple[str, float, float]] = []
     if getattr(args, "budget_usd", None) is not None:
-        budgets.append(("USD", float(args.budget_usd), float(args.budget_usd)))
+        budget_usd = finite_float_arg(args.budget_usd, "--budget-usd", minimum=0.0, allow_zero=True)
+        budgets.append(("USD", budget_usd, budget_usd))
     if getattr(args, "budget_krw", None) is not None:
+        budget_krw = finite_float_arg(args.budget_krw, "--budget-krw", minimum=0.0, allow_zero=True)
         rate = usd_to_krw(profile, getattr(args, "usd_to_krw", None))
-        budgets.append(("KRW", float(args.budget_krw), float(args.budget_krw) / rate if rate else math.inf))
+        budgets.append(("KRW", budget_krw, budget_krw / rate))
     if not budgets:
         return {"configured": False, "near_threshold": False, "over_budget": False}
     high = float(cost_usd_range.get("high", 0.0))
@@ -675,10 +807,15 @@ def annotate_cache_state(
 
 
 def preflight_command(args: argparse.Namespace) -> int:
-    request, _truncated = load_json_input(args.request, max_bytes=args.max_bytes)
+    request_raw, _truncated = load_json_input(args.request, max_bytes=args.max_bytes)
+    request = require_json_object(request_raw, "request")
     profile = load_pricing_profile(args.pricing_profile)
     if args.usd_to_krw is not None:
-        profile["usd_to_krw"] = args.usd_to_krw
+        profile["usd_to_krw"] = usd_to_krw(profile, args.usd_to_krw)
+    if args.budget_usd is not None:
+        args.budget_usd = finite_float_arg(args.budget_usd, "--budget-usd", minimum=0.0, allow_zero=True)
+    if args.budget_krw is not None:
+        args.budget_krw = finite_float_arg(args.budget_krw, "--budget-krw", minimum=0.0, allow_zero=True)
     safety = float(args.safety_factor)
     if not math.isfinite(safety) or safety < 1.0:
         fail("--safety-factor must be >= 1.0")
@@ -941,7 +1078,7 @@ def observe_command(args: argparse.Namespace) -> int:
         fail("usage must be a JSON object or an object containing a usage object")
     profile = load_pricing_profile(args.pricing_profile)
     if args.usd_to_krw is not None:
-        profile["usd_to_krw"] = args.usd_to_krw
+        profile["usd_to_krw"] = usd_to_krw(profile, args.usd_to_krw)
     model = str(args.model or (usage_raw.get("model") if isinstance(usage_raw, dict) else "") or "unknown")
     input_rate, output_rate, model_rate_key = rates_for_model(profile, model)
     write_mult, read_mult = pricing_multipliers(profile)
@@ -989,7 +1126,8 @@ def observe_command(args: argparse.Namespace) -> int:
     }
     confirmed_cache_tokens = cache_creation_5m + cache_creation_1h + cache_read
     if args.request and confirmed_cache_tokens > 0:
-        request, _ = load_json_input(args.request, max_bytes=args.max_bytes)
+        request_raw, _ = load_json_input(args.request, max_bytes=args.max_bytes)
+        request = require_json_object(request_raw, "request")
         store_dir = Path(args.store_dir)
         key = load_or_create_hmac_key(store_dir)
         breakpoints, _meta = extract_cache_breakpoints(request)
@@ -1045,7 +1183,9 @@ def ledger_command(args: argparse.Namespace) -> int:
         kind = str(row.get("kind") or "unknown")
         counts[kind] = counts.get(kind, 0) + 1
     visible_rows = []
-    for row in rows[-int(args.limit) :]:
+    limit = int(args.limit)
+    recent_rows = [] if limit == 0 else rows[-limit:]
+    for row in recent_rows:
         visible_rows.append(
             {
                 "kind": row.get("kind"),
@@ -1189,7 +1329,10 @@ def recommendations_for_findings(
 
 def emit(data: dict[str, Any], *, json_mode: bool) -> None:
     if json_mode:
-        print(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2))
+        try:
+            print(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False))
+        except ValueError as exc:
+            fail(f"JSON output contained a non-finite number: {exc}")
         return
     mode = data.get("mode")
     if mode == "preflight":
@@ -1246,7 +1389,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ledger = sub.add_parser("ledger", help="summarize the local HMAC ledger without revealing prompts")
     ledger.add_argument("--store-dir", default=DEFAULT_STORE_DIR, help="local HMAC ledger directory")
-    ledger.add_argument("--limit", type=int, default=20, help="maximum recent entries to include")
+    ledger.add_argument("--limit", type=non_negative_int_arg, default=20, help="maximum recent entries to include")
     ledger.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     ledger.set_defaults(func=ledger_command)
 

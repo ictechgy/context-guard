@@ -69,6 +69,10 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "claude-token-statusline-merged": {"args": [], "mode": "statusline"},
     "claude-trim-output": {"args": ["--help"], "mode": "text"},
 }
+
+DISPATCHER_SMOKE_COMMANDS: tuple[dict[str, Any], ...] = (
+    {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
+)
 HOOK_STDIN = "{}"
 STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})
 STATUSLINE_MAX_CHARS = 1_000
@@ -510,6 +514,19 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 timeout=timeout,
                 input_text=launch_stdin(mode),
                 expect=lambda proc, command=name, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
+            )
+        for plan in DISPATCHER_SMOKE_COMMANDS:
+            entrypoint = str(plan["entrypoint"])
+            mode = str(plan["mode"])
+            args = [str(arg) for arg in plan["args"]]
+            command_label = " ".join([entrypoint, *args])
+            run_command(
+                [str(command_path(plugin_bin, entrypoint)), *args],
+                cwd=project,
+                env=env,
+                timeout=timeout,
+                input_text=launch_stdin(mode),
+                expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
             )
 
 
