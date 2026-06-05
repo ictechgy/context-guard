@@ -707,7 +707,9 @@ def preflight_command(args: argparse.Namespace) -> int:
     full_prompt_tokens_mid = token_proxy_obj(strip_cache_control(request))
     cacheable_tokens_mid = max((int(fp.get("tokens_estimated") or 0) for fp in fingerprints_private), default=0)
     noncacheable_tokens_mid = max(0, full_prompt_tokens_mid - cacheable_tokens_mid)
-    predicted_mid_usd = money(noncacheable_tokens_mid, input_rate)
+    output_tokens_max = usage_int(request, "max_tokens")
+    output_usd_mid = money(output_tokens_max, output_rate)
+    predicted_mid_usd = money(noncacheable_tokens_mid, input_rate) + output_usd_mid
     all_miss_mid_usd = predicted_mid_usd
     all_hit_mid_usd = predicted_mid_usd
     for public, private in zip(cache_breakdowns, fingerprints_private):
@@ -801,6 +803,7 @@ def preflight_command(args: argparse.Namespace) -> int:
             "input_tokens_high": token_estimate["high"],
             "cacheable_tokens_mid": cacheable_tokens_mid,
             "volatile_tokens_mid": noncacheable_tokens_mid,
+            "output_tokens_max": output_tokens_max,
             **token_estimate,
         },
         "pricing": {
@@ -821,6 +824,7 @@ def preflight_command(args: argparse.Namespace) -> int:
             "if_cache_hit": cost_range(all_hit_mid_usd, safety),
             "if_cache_miss_5m_write": cost_range(
                 money(noncacheable_tokens_mid, input_rate)
+                + output_usd_mid
                 + sum(
                     money(int(fp.get("prefix_delta_tokens_estimated") or 0), input_rate, write_mult["5m"])
                     for fp in fingerprints_private
@@ -829,6 +833,7 @@ def preflight_command(args: argparse.Namespace) -> int:
             ),
             "if_cache_miss_1h_write": cost_range(
                 money(noncacheable_tokens_mid, input_rate)
+                + output_usd_mid
                 + sum(
                     money(int(fp.get("prefix_delta_tokens_estimated") or 0), input_rate, write_mult["1h"])
                     for fp in fingerprints_private
@@ -840,6 +845,8 @@ def preflight_command(args: argparse.Namespace) -> int:
             "if_all_cache_miss_usd_mid": round(all_miss_mid_usd, 8),
             "if_all_cache_hit_usd_mid": round(all_hit_mid_usd, 8),
             "estimated_cache_delta_usd_mid": round(max(0.0, all_miss_mid_usd - all_hit_mid_usd), 8),
+            "output_usd_mid": round(output_usd_mid, 8),
+            "includes_output_token_budget": output_tokens_max > 0,
         },
         "budget": budget,
         "cache_risk": {

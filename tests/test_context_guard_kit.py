@@ -319,6 +319,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertTrue(all("fingerprints" not in row for row in rows))
             self.assertTrue(all(row["summary"]["cache_seeded"] is False for row in rows))
 
+    def test_cost_guard_preflight_includes_output_budget(self):
+        request = cost_guard_request(cacheable_text="small stable prefix")
+        request["max_tokens"] = 2000
+        pricing = cost_guard_pricing()
+        pricing["default_output_usd_per_mtok"] = 100000
+        pricing["models"]["sonnet"]["output_usd_per_mtok"] = 100000
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = run_cost_guard(
+                KIT_DIR / "cost_guard.py",
+                [
+                    "preflight",
+                    "--store-dir",
+                    str(Path(tmp) / "ledger"),
+                    "--pricing-profile",
+                    json.dumps(pricing),
+                    "--budget-usd",
+                    "1",
+                    "--enforce",
+                    "--json",
+                ],
+                request,
+            )
+        self.assertNotEqual(proc.returncode, 0)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["token_estimate"]["output_tokens_max"], 2000)
+        self.assertTrue(payload["cost_estimate"]["includes_output_token_budget"])
+        self.assertGreater(payload["cost_estimate"]["output_usd_mid"], 1)
+        self.assertTrue(payload["budget"]["over_budget"])
+
     def test_cost_guard_prices_cache_breakpoint_prefix_not_only_section(self):
         request = {
             "model": "claude-sonnet-4-5",
