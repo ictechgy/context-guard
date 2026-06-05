@@ -26,6 +26,7 @@ PLUGIN_BIN = PLUGIN_DIR / "bin"
 PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
+NPM_PACKAGE = ROOT / "package.json"
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
@@ -61,8 +62,13 @@ SENSITIVE_LABEL_RE = re.compile(
     r")"
 )
 PATH_LABEL_MAX_CHARS = 160
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 IMPLEMENTATION_PAIRS = (
+    ("context_guard_cli.py", "context-guard"),
     ("benchmark_runner.py", "context-guard-bench"),
     ("context_escrow.py", "context-guard-artifact"),
     ("context_compress.py", "context-guard-compress"),
@@ -98,6 +104,133 @@ FORBIDDEN_PACKAGE_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+}
+REQUIRED_NPM_BINS = {
+    "context-guard",
+    "context-guard-setup",
+    "context-guard-diet",
+    "context-guard-audit",
+    "context-guard-trim-output",
+    "context-guard-sanitize-output",
+    "context-guard-artifact",
+    "context-guard-pack",
+    "context-guard-tool-prune",
+    "context-guard-compress",
+    "context-guard-bench",
+    "context-guard-read-symbol",
+}
+FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
+    "dependencies",
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepack",
+    "postpack",
+    "prepublish",
+    "prepublishOnly",
+    "publish",
+    "postpublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+    "preversion",
+    "version",
+    "postversion",
+}
+FORBIDDEN_NPM_PACK_PREFIXES = (
+    ".git/",
+    ".omx/",
+    ".context-guard/",
+    ".claude-token-optimizer/",
+    ".serena/",
+    ".remember/",
+)
+FORBIDDEN_KOREAN_TERMS = (
+    "컨텍스트 위생",
+    "영수증",
+    "적용 가능한 표면",
+    "권고형",
+    "아티팩트",
+    "트랜스크립트",
+    "정제",
+)
+KOREAN_DOCS = (
+    ROOT / "README.ko.md",
+    PLUGIN_DIR / "README.ko.md",
+    ROOT / "docs" / "index.html",
+)
+EXPECTED_NPM_PACK_FILES = {
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.ko.md",
+    "README.md",
+    "context-guard-kit/README.md",
+    "context-guard-kit/benchmark_runner.py",
+    "context-guard-kit/claude_transcript_cost_audit.py",
+    "context-guard-kit/context_compress.py",
+    "context-guard-kit/context_escrow.py",
+    "context-guard-kit/context_guard_cli.py",
+    "context-guard-kit/context_guard_diet.py",
+    "context-guard-kit/context_pack.py",
+    "context-guard-kit/failed_attempt_nudge.py",
+    "context-guard-kit/guard_large_read.py",
+    "context-guard-kit/hook_secret_patterns.py",
+    "context-guard-kit/read_symbol.py",
+    "context-guard-kit/rewrite_bash_for_token_budget.py",
+    "context-guard-kit/sanitize_output.py",
+    "context-guard-kit/settings.example.json",
+    "context-guard-kit/setup_wizard.py",
+    "context-guard-kit/statusline.sh",
+    "context-guard-kit/statusline_merged.sh",
+    "context-guard-kit/tool_schema_pruner.py",
+    "context-guard-kit/trim_command_output.py",
+    "docs/distribution.md",
+    "package.json",
+    "packaging/homebrew/context-guard.rb.template",
+    "plugins/context-guard/.claude-plugin/plugin.json",
+    "plugins/context-guard/LICENSE",
+    "plugins/context-guard/NOTICE",
+    "plugins/context-guard/README.ko.md",
+    "plugins/context-guard/README.md",
+    "plugins/context-guard/bin/claude-read-symbol",
+    "plugins/context-guard/bin/claude-sanitize-output",
+    "plugins/context-guard/bin/claude-token-artifact",
+    "plugins/context-guard/bin/claude-token-audit",
+    "plugins/context-guard/bin/claude-token-bench",
+    "plugins/context-guard/bin/claude-token-diet",
+    "plugins/context-guard/bin/claude-token-failed-nudge",
+    "plugins/context-guard/bin/claude-token-guard-read",
+    "plugins/context-guard/bin/claude-token-rewrite-bash",
+    "plugins/context-guard/bin/claude-token-setup",
+    "plugins/context-guard/bin/claude-token-statusline",
+    "plugins/context-guard/bin/claude-token-statusline-merged",
+    "plugins/context-guard/bin/claude-trim-output",
+    "plugins/context-guard/bin/context-guard",
+    "plugins/context-guard/bin/context-guard-artifact",
+    "plugins/context-guard/bin/context-guard-audit",
+    "plugins/context-guard/bin/context-guard-bench",
+    "plugins/context-guard/bin/context-guard-compress",
+    "plugins/context-guard/bin/context-guard-diet",
+    "plugins/context-guard/bin/context-guard-failed-nudge",
+    "plugins/context-guard/bin/context-guard-guard-read",
+    "plugins/context-guard/bin/context-guard-pack",
+    "plugins/context-guard/bin/context-guard-read-symbol",
+    "plugins/context-guard/bin/context-guard-rewrite-bash",
+    "plugins/context-guard/bin/context-guard-sanitize-output",
+    "plugins/context-guard/bin/context-guard-setup",
+    "plugins/context-guard/bin/context-guard-statusline",
+    "plugins/context-guard/bin/context-guard-statusline-merged",
+    "plugins/context-guard/bin/context-guard-tool-prune",
+    "plugins/context-guard/bin/context-guard-trim-output",
+    "plugins/context-guard/brief/README.md",
+    "plugins/context-guard/brief/brief-mode.lite.md",
+    "plugins/context-guard/brief/brief-mode.standard.md",
+    "plugins/context-guard/brief/brief-mode.ultra.md",
+    "plugins/context-guard/lib/hook_secret_patterns.py",
+    "plugins/context-guard/skills/audit/SKILL.md",
+    "plugins/context-guard/skills/optimize/SKILL.md",
+    "plugins/context-guard/skills/setup/SKILL.md",
 }
 
 
@@ -188,6 +321,13 @@ def lexical_absolute(path: Path) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
 def first_symlink_component(path: Path) -> Path | None:
     """Return the first symlink component in a path without following symlinks."""
     current = Path(path.anchor) if path.is_absolute() else Path()
@@ -205,7 +345,16 @@ def first_symlink_component(path: Path) -> Path | None:
                 "could not inspect release path component: "
                 f"{safe_path_label(current)}: {compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
             )
-        if stat.S_ISLNK(st.st_mode) and not (path.is_absolute() and depth == 0):
+        if stat.S_ISLNK(st.st_mode):
+            if path.is_absolute() and depth == 0:
+                expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(current.name)
+                if expected is not None:
+                    try:
+                        if normalized_link_target(Path(path.anchor), os.readlink(current)) == expected:
+                            depth += 1
+                            continue
+                    except OSError:
+                        pass
             return current
         depth += 1
     return None
@@ -309,6 +458,103 @@ def check_release_notes(version: str) -> None:
         fail(f"release notes entry is empty: {safe_path_label(CHANGELOG)}: {version}")
 
 
+def check_npm_package_metadata(version: str) -> None:
+    package = load_json(NPM_PACKAGE)
+    if package.get("name") != "@ictechgy/context-guard":
+        fail(f"unexpected npm package name: {package.get('name')!r}")
+    if package.get("version") != version:
+        fail(f"npm/plugin version mismatch: {package.get('version')} != {version}")
+    if package.get("license") != "Apache-2.0":
+        fail(f"unexpected npm package license: {package.get('license')!r}")
+    scripts = package.get("scripts", {})
+    if isinstance(scripts, dict):
+        forbidden = sorted(FORBIDDEN_NPM_LIFECYCLE_SCRIPTS & set(scripts))
+        if forbidden:
+            fail(f"npm package must not define install-time lifecycle scripts: {', '.join(forbidden)}")
+    elif scripts is not None:
+        fail("npm package scripts must be an object when present")
+    bins = package.get("bin")
+    if not isinstance(bins, dict):
+        fail("npm package bin must be an object")
+    missing = sorted(REQUIRED_NPM_BINS - set(bins))
+    if missing:
+        fail(f"npm package bin missing required commands: {', '.join(missing)}")
+    for command, rel in bins.items():
+        if not isinstance(command, str) or not isinstance(rel, str):
+            fail("npm package bin entries must be string:string")
+        target = ROOT / rel
+        if not target.is_file():
+            fail(f"npm package bin target missing: {command}: {safe_path_label(target)}")
+        mode = stat.S_IMODE(target.stat().st_mode)
+        if mode & stat.S_IXUSR == 0:
+            fail(f"npm package bin target is not owner-executable: {command}: mode={oct(mode)}")
+    files = package.get("files")
+    if not isinstance(files, list) or not files:
+        fail("npm package files allowlist must be a non-empty list")
+    for item in files:
+        if not isinstance(item, str) or not item.strip():
+            fail("npm package files allowlist contains a non-string/empty entry")
+        if item.startswith((".git", ".omx", ".context-guard", ".claude-token-optimizer", ".serena")):
+            fail(f"npm package files allowlist includes forbidden path: {item}")
+
+
+def check_npm_pack_file_list() -> None:
+    npm = shutil.which("npm")
+    if npm is None:
+        print("npm package check: skipped (npm not found)")
+        return
+    with tempfile.TemporaryDirectory(prefix="context-guard-npm-pack-") as td:
+        try:
+            proc = subprocess.run(
+                [npm, "pack", "--json", "--dry-run", "--ignore-scripts", "--pack-destination", td],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            fail("npm pack --dry-run timed out")
+    if proc.returncode != 0:
+        fail(f"npm pack --dry-run failed: {compact_label_text((proc.stderr or proc.stdout).strip(), 200)}")
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        fail(f"npm pack --dry-run did not emit JSON: line {exc.lineno}: {compact_label_text(exc.msg, 80)}")
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        fail("npm pack --dry-run JSON must contain one package object")
+    files = payload[0].get("files")
+    if not isinstance(files, list):
+        fail("npm pack --dry-run JSON missing files list")
+    paths = []
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            fail("npm pack file entries must contain string path")
+        path = item["path"]
+        paths.append(path)
+        if path.startswith(FORBIDDEN_NPM_PACK_PREFIXES):
+            fail(f"npm pack includes forbidden operational path: {path}")
+        if "/__pycache__/" in f"/{path}/" or path.endswith((".pyc", ".pyo", ".log", ".tmp")):
+            fail(f"npm pack includes generated/cache artifact: {path}")
+    packed = set(paths)
+    missing = sorted(EXPECTED_NPM_PACK_FILES - packed)
+    if missing:
+        fail(f"npm pack missing required files: {', '.join(missing)}")
+    unexpected = sorted(packed - EXPECTED_NPM_PACK_FILES)
+    if unexpected:
+        fail(f"npm pack includes unexpected files: {', '.join(unexpected[:20])}")
+
+
+def check_korean_copy_terms() -> None:
+    for path in KOREAN_DOCS:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            fail(f"could not read Korean doc: {safe_path_label(path)}: {compact_label_text(str(exc), 120)}")
+        for term in FORBIDDEN_KOREAN_TERMS:
+            if term in text:
+                fail(f"awkward Korean term still present in {safe_path_label(path)}: {term}")
+
+
 def check_skill_allowed_tool_commands() -> None:
     if not SKILLS_DIR.is_dir():
         fail(f"missing plugin skills directory: {safe_path_label(SKILLS_DIR)}")
@@ -377,11 +623,49 @@ def check_bin_copies() -> None:
             fail(f"plugin helper must not be executable: {safe_path_label(plugin_helper)} mode={oct(mode)}")
 
 
+def package_symlink_scan_roots() -> tuple[Path, ...]:
+    return (
+        ROOT / "CHANGELOG.md",
+        ROOT / "LICENSE",
+        ROOT / "NOTICE",
+        ROOT / "README.md",
+        ROOT / "README.ko.md",
+        KIT_DIR,
+        PLUGIN_DIR,
+        ROOT / "docs" / "distribution.md",
+        ROOT / "packaging" / "homebrew",
+        NPM_PACKAGE,
+    )
+
+
+def check_package_path_symlinks(path: Path, *, base: Path = ROOT) -> None:
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        fail(
+            "could not inspect package path: "
+            f"{safe_path_label(path, base=base)}: {compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
+        )
+    if stat.S_ISLNK(st.st_mode):
+        fail(f"forbidden package symlink: {safe_path_label(path, base=base)}")
+    if not stat.S_ISDIR(st.st_mode):
+        return
+    try:
+        entries = list(os.scandir(path))
+    except OSError as exc:
+        fail(
+            "could not scan package directory: "
+            f"{safe_path_label(path, base=base)}: {compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
+        )
+    for entry in entries:
+        check_package_path_symlinks(Path(entry.path), base=base)
+
+
 def check_package_symlinks() -> None:
-    for path in PLUGIN_DIR.rglob("*"):
-        rel = path.relative_to(PLUGIN_DIR)
-        if path.is_symlink():
-            fail(f"forbidden package symlink: {safe_path_label(rel)}")
+    for path in package_symlink_scan_roots():
+        check_package_path_symlinks(path)
 
 
 def check_package_clean() -> None:
@@ -485,10 +769,13 @@ def main() -> int:
     check_package_symlinks()
     plugin = check_manifest()
     check_release_notes(plugin["version"])
+    check_npm_package_metadata(plugin["version"])
     check_bin_copies()
     check_skill_allowed_tool_commands()
     remove_generated_plugin_bin_python_caches()
     check_package_clean()
+    check_npm_pack_file_list()
+    check_korean_copy_terms()
     check_python_compiles()
     check_shell_syntax()
     if not args.skip_tests:

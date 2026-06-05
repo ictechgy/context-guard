@@ -36,6 +36,7 @@ REQUIRED_COMMANDS = (
     "context-guard-audit",
 )
 ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
+    "context-guard": {"args": ["--version"], "mode": "text"},
     "context-guard-read-symbol": {"args": ["--help"], "mode": "text"},
     "context-guard-sanitize-output": {"args": ["--help"], "mode": "text"},
     "context-guard-artifact": {"args": ["--help"], "mode": "text"},
@@ -84,6 +85,25 @@ PRESERVED_ENV_KEYS = (
     "LC_ALL",
     "LC_CTYPE",
 )
+NPM_PACKAGE_JSON = ROOT / "package.json"
+FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
+    "dependencies",
+    "preinstall",
+    "install",
+    "postinstall",
+    "prepack",
+    "postpack",
+    "prepublish",
+    "prepublishOnly",
+    "publish",
+    "postpublish",
+    "preprepare",
+    "prepare",
+    "postprepare",
+    "preversion",
+    "version",
+    "postversion",
+}
 
 
 def fail(message: str) -> NoReturn:
@@ -145,6 +165,23 @@ def load_json(stdout: str, command: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         fail(f"{command} JSON output must be an object")
     return data
+
+
+def check_npm_package_lifecycle_scripts(package_json: Path) -> None:
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(f"package.json did not emit valid JSON: line {exc.lineno}: {exc.msg}")
+    if not isinstance(data, dict):
+        fail("package.json JSON output must be an object")
+    scripts = data.get("scripts", {})
+    if scripts is None:
+        scripts = {}
+    if not isinstance(scripts, dict):
+        fail("package.json scripts must be an object when present")
+    forbidden = sorted(FORBIDDEN_NPM_LIFECYCLE_SCRIPTS & set(scripts))
+    if forbidden:
+        fail(f"package.json contains npm lifecycle scripts that release smoke must not run: {', '.join(forbidden)}")
 
 
 def command_path(plugin_bin: Path, name: str) -> Path:
@@ -475,6 +512,94 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             )
 
 
+def run_npm_package_smoke(timeout: float) -> None:
+    npm = shutil.which("npm")
+    if npm is None or not NPM_PACKAGE_JSON.is_file():
+        print("npm package smoke: skipped")
+        return
+    check_npm_package_lifecycle_scripts(NPM_PACKAGE_JSON)
+    with tempfile.TemporaryDirectory(prefix="context-guard-npm-smoke-") as td:
+        root = Path(td)
+        pack_dir = root / "pack"
+        project = root / "project"
+        home = root / "home"
+        tmp = root / "tmp"
+        pack_dir.mkdir()
+        project.mkdir()
+        home.mkdir()
+        tmp.mkdir()
+        env = smoke_environment(home, tmp)
+        pack = run_bounded_command(
+            [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", str(pack_dir)],
+            cwd=ROOT,
+            env=env,
+            timeout=timeout,
+        )
+        if pack.timed_out:
+            fail(f"npm pack timed out after {timeout:g}s")
+        if pack.output_truncated:
+            fail("npm pack output exceeded smoke bounds")
+        if pack.proc.returncode != 0:
+            fail(f"npm pack exited {pack.proc.returncode}: {(pack.proc.stderr or pack.proc.stdout).strip()[:500]}")
+        try:
+            parsed = json.loads(pack.proc.stdout)
+        except json.JSONDecodeError as exc:
+            fail(f"npm pack did not emit valid JSON: line {exc.lineno}: {exc.msg}")
+        if not isinstance(parsed, list) or not parsed or not isinstance(parsed[0], dict):
+            fail("npm pack JSON must contain one package object")
+        filename = parsed[0].get("filename")
+        if not isinstance(filename, str) or not filename:
+            fail("npm pack JSON missing filename")
+        tarball = pack_dir / filename
+        if not tarball.is_file():
+            fail(f"npm pack tarball missing: {tarball}")
+        run_command(
+            [npm, "exec", "--ignore-scripts", "--yes", "--package", str(tarball), "--", "context-guard", "--version"],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: None if proc.stdout.strip() else fail("npm exec context-guard --version emitted no output"),
+        )
+        run_command(
+            [
+                npm,
+                "exec",
+                "--ignore-scripts",
+                "--yes",
+                "--package",
+                str(tarball),
+                "--",
+                "context-guard",
+                "setup",
+                "--root",
+                str(project),
+                "--agent",
+                "codex",
+                "--scope",
+                "project",
+                "--with-init",
+                "--with-skill",
+                "--plan",
+                "--json",
+            ],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                check_json_field(load_json(proc.stdout, "npm exec context-guard setup"), "applied", False, "npm exec context-guard setup")
+            ),
+        )
+        npx = shutil.which("npx")
+        if npx is not None:
+            run_command(
+                [npx, "--ignore-scripts", "--yes", "--package", str(tarball), "context-guard", "--version"],
+                cwd=project,
+                env=env,
+                timeout=timeout,
+                expect=lambda proc: None if proc.stdout.strip() else fail("npx context-guard --version emitted no output"),
+            )
+
+
 def launch_stdin(mode: str) -> str | None:
     if mode == "hook-json":
         return HOOK_STDIN
@@ -517,6 +642,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="context-guard-package-smoke-") as td:
             staged = copy_plugin_package_for_smoke(args.plugin_dir, Path(td) / "context-guard")
             run_smoke(staged / "bin", args.timeout)
+        run_npm_package_smoke(args.timeout)
     print("release smoke: OK")
     return 0
 
