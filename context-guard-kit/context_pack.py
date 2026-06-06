@@ -965,8 +965,8 @@ def run_git_diff(root: Path, diff_ref: str) -> str:
     else:
         command.append(ref)
     try:
-        proc = subprocess.run(command, text=True, capture_output=True, timeout=10, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        proc = subprocess.run(command, text=True, errors="replace", capture_output=True, timeout=10, check=False)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise PackError(f"could not read diff: {exc.__class__.__name__}") from exc
     if proc.returncode != 0:
         detail = sanitize_text(proc.stderr or proc.stdout or "git diff failed")[0].strip().splitlines()
@@ -995,7 +995,8 @@ def collect_diff_candidates(root: Path, diff_ref: str, query_terms: set[str], co
             start = int(hunk.group(1))
             count = int(hunk.group(2) or "1")
             end_line = max(start, start + max(1, count) - 1)
-            window = LineRange(max(1, start - context_lines), end_line + context_lines)
+            start_line = max(1, start - context_lines)
+            window = LineRange(start_line, max(start_line, end_line + context_lines))
             score = 7_000 + suggest_score_path(current_path, query_terms)
             add_suggest_candidate(
                 candidates,
@@ -1419,6 +1420,7 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
             break
 
     manifest = build_suggest_manifest(manifest_seed)
+    estimated_pack_bytes = current_bytes if selected else 0
     manifest_path: str | None = None
     if args.manifest_out:
         manifest_path = write_manifest_under_root(root, args.manifest_out, manifest)
@@ -1431,11 +1433,11 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
         "root": display_root(root),
         "query": query,
         "budget_bytes": budget,
-        "estimated_pack_bytes": current_bytes if selected else 0,
+        "estimated_pack_bytes": estimated_pack_bytes,
         "token_proxy": {
             "measurement": "estimated",
             "method": f"chars_div_{TOKEN_PROXY_CHARS_PER_TOKEN}",
-            "estimated_pack": token_proxy("x" * max(0, current_bytes)),
+            "estimated_pack": estimated_pack_bytes // TOKEN_PROXY_CHARS_PER_TOKEN,
         },
         "sources": selected,
         "omitted_sources": sorted(omitted, key=lambda item: (str(item.get("path", "")), str(item.get("reason", "")), int(item.get("priority", 0) or 0))),

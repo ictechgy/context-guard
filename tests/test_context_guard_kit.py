@@ -3655,6 +3655,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "--json",
                     )
                     self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(secret, proc.stderr)
                     data = json.loads(proc.stdout)
                     paths = [item["path"] for item in data["sources"]]
                     self.assertIn("src/app.py", paths)
@@ -3689,6 +3690,55 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.stdout, "")
                     self.assertIn("could not read diff", proc.stderr)
 
+    def test_context_pack_suggest_diff_tolerates_non_utf8_diff_output(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._init_pack_git_repo(root)
+                    (root / "latin.txt").write_bytes(b"alpha\n")
+                    subprocess.run(["git", "add", "latin.txt"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+                    (root / "latin.txt").write_bytes(b"alpha\ncaf\xe9\n")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--diff",
+                        "HEAD",
+                        "--json",
+                    )
+
+                    data = json.loads(proc.stdout)
+                    self.assertIn("latin.txt", [item["path"] for item in data["sources"]])
+
+    def test_context_pack_suggest_output_tolerates_non_utf8_input(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+                    (root / "output.bin").write_bytes(b"FAILED src/app.py:1 caf\xe9\n")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--output",
+                            "output.bin",
+                            "--json",
+                        ).stdout
+                    )
+
+                    self.assertIn("src/app.py", [item["path"] for item in data["sources"]])
+
     def test_context_pack_suggest_diff_disables_textconv_helpers(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -3705,7 +3755,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "print(Path(sys.argv[1]).read_text(encoding='utf-8'))\n",
                         encoding="utf-8",
                     )
-                    subprocess.run(["git", "config", "diff.leaky.textconv", f"{sys.executable} {textconv}"], cwd=root, check=True)
+                    subprocess.run(["git", "config", "diff.leaky.textconv", f'"{sys.executable}" "{textconv}"'], cwd=root, check=True)
                     subprocess.run(["git", "add", ".gitattributes", "watched.txt"], cwd=root, check=True)
                     subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
                     (root / "watched.txt").write_text("after\n", encoding="utf-8")
