@@ -3739,6 +3739,58 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                     self.assertIn("src/app.py", [item["path"] for item in data["sources"]])
 
+    def test_context_pack_suggest_sort_handles_whole_file_and_line_range_ties(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("one\ntwo\n", encoding="utf-8")
+                    (root / "output.txt").write_text("FAILED src/app.py\n", encoding="utf-8")
+                    (root / "test-output.txt").write_text("FAILED src/app.py:1\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--output",
+                            "output.txt",
+                            "--test-output",
+                            "test-output.txt",
+                            "--json",
+                        ).stdout
+                    )
+
+                    self.assertIn("src/app.py", [item["path"] for item in data["sources"]])
+                    self.assertIn("duplicate_source", {item["reason"] for item in data["omitted_sources"]})
+
+    def test_context_pack_suggest_redacts_secret_like_paths_from_labels(self):
+        secret_component = "ghp_" + ("F" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "output.txt").write_text(f"FAILED {secret_component}/app.py:1\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--output",
+                        "output.txt",
+                        "--json",
+                        check=False,
+                    )
+
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertNotIn(secret_component, proc.stdout)
+                    self.assertNotIn(secret_component, proc.stderr)
+
     def test_context_pack_suggest_diff_disables_textconv_helpers(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):

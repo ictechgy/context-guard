@@ -1004,7 +1004,7 @@ def collect_diff_candidates(root: Path, diff_ref: str, query_terms: set[str], co
                 score=score,
                 reason="changed diff hunk",
                 lines=window,
-                label=f"diff:{current_path}",
+                label=f"diff:{safe_raw_path_label(current_path)}",
             )
     return candidates
 
@@ -1031,7 +1031,7 @@ def read_text_input_under_root(root: Path, raw_path: str) -> tuple[str | None, d
     try:
         with handle:
             text = handle.read(MAX_SUGGEST_INPUT_BYTES + 1)
-    except OSError:
+    except (OSError, UnicodeError):
         return None, {"path": display, "status": "omitted", "reason": "unsafe_path"}
     if len(text.encode("utf-8", errors="replace")) > MAX_SUGGEST_INPUT_BYTES:
         text = text[:MAX_SUGGEST_INPUT_BYTES]
@@ -1078,7 +1078,7 @@ def collect_output_candidates(
                 score=score,
                 reason=f"{origin} referenced path",
                 lines=lines,
-                label=f"{origin}:{path}",
+                label=f"{origin}:{safe_raw_path_label(path)}",
             )
     return candidates, omitted
 
@@ -1342,7 +1342,7 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     if not candidates:
         raise PackError("provide --query, --files, --diff, --output, or --test-output")
 
-    candidates.sort(key=lambda item: (-item.score, item.input_index, item.path, item.lines.identity() if item.lines else "all"))
+    candidates.sort(key=lambda item: (-item.score, item.input_index, item.path, item.lines.identity() if item.lines else "0:0"))
     seen: set[tuple[str, str]] = set()
     final_seen: set[tuple[str, str]] = set()
     selected: list[dict[str, Any]] = []
