@@ -51,6 +51,8 @@
     "plugins/context-guard/lib/**",
     "plugins/context-guard/skills/**",
     "docs/distribution.md",
+    "docs/benchmark-workflows/*.example.json",
+    "docs/benchmark-workflow-examples.md",
     "packaging/homebrew/context-guard.rb.template"
   ],
   "engines": {

@@ -1,0 +1,56 @@
+{
+  "schema": "context-guard-bench-report-v1",
+  "baseline_variant": "baseline",
+  "row_count": 2,
+  "claim_status": "compare_variants",
+  "summary_by_variant": {
+    "baseline": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 1200,
+      "primary_tokens_measured_successful": 1,
+      "provider_cached_tokens_successful": 0,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "unavailable",
+        "byte_savings": "unavailable",
+        "token_proxy": "unavailable",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    },
+    "cache_layout_check": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 1200,
+      "primary_tokens_measured_successful": 1,
+      "provider_cached_tokens_successful": 900,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "unavailable",
+        "byte_savings": "unavailable",
+        "token_proxy": "unavailable",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "variant": "cache_layout_check",
+      "baseline_variant": "baseline",
+      "quality_gate": "pass",
+      "matched_successful_task_count": 1,
+      "paired_token_task_count": 1,
+      "paired_cost_task_count": 0,
+      "paired_wall_time_task_count": 1,
+      "token_savings_pct": 0.0,
+      "cost_savings_pct_with_shift": null,
+      "wall_time_change_pct": 0.0,
+      "interpretation": "Provider-cache telemetry was observed, but cached-token fields are diagnostic, not proof of ContextGuard-caused token or cost savings, and remain separate from token-reduction claims."
+    }
+  ],
+  "caveat": "Workflow example only. Provider cached-token fields are diagnostic telemetry and do not prove ContextGuard caused token or cost savings. Token/cost savings claims require provider-measured primary token/cost fields on matched successful tasks and must keep provider-cache discounts separate. This example documents report shape only."
+}

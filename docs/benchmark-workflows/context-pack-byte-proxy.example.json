@@ -1,0 +1,58 @@
+{
+  "schema": "context-guard-bench-report-v1",
+  "baseline_variant": "baseline",
+  "row_count": 2,
+  "claim_status": "insufficient_paired_data",
+  "summary_by_variant": {
+    "baseline": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": null,
+      "primary_tokens_measured_successful": 0,
+      "byte_savings_successful": 0,
+      "token_proxy_savings_successful": 0,
+      "observed_telemetry": {
+        "tokens": "unavailable",
+        "primary_cost": "unavailable",
+        "external_tokens": "unavailable",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "unavailable"
+      }
+    },
+    "context_pack_auto": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": null,
+      "primary_tokens_measured_successful": 0,
+      "byte_savings_successful": 18000,
+      "token_proxy_savings_successful": 4500,
+      "observed_telemetry": {
+        "tokens": "unavailable",
+        "primary_cost": "unavailable",
+        "external_tokens": "unavailable",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "unavailable"
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "variant": "context_pack_auto",
+      "baseline_variant": "baseline",
+      "quality_gate": "pass",
+      "matched_successful_task_count": 1,
+      "paired_token_task_count": 0,
+      "paired_cost_task_count": 0,
+      "paired_wall_time_task_count": 1,
+      "token_savings_pct": null,
+      "cost_savings_pct_with_shift": null,
+      "wall_time_change_pct": -8.3,
+      "byte_savings": 18000,
+      "token_proxy_savings": 4500,
+      "interpretation": "The pack reduced local bytes selected for context, but no provider primary token fields were measured, so this fixture does not support a hosted API token-savings claim."
+    }
+  ],
+  "caveat": "Workflow example only. Proxy byte reductions are reported separately from matched-task token/cost metrics; token or cost savings require provider-measured primary token/cost fields on matched successful tasks. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused savings. This example documents report shape only; make real savings claims only from your own matched successful task runs."
+}

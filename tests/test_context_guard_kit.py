@@ -13071,6 +13071,66 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn("provider-cache discounts", sample["caveat"].lower())
         self.assertIn("report shape only", sample["caveat"].lower())
 
+    def test_benchmark_workflow_examples_are_full_report_shaped_and_claim_safe(self):
+        examples_dir = ROOT / "docs" / "benchmark-workflows"
+        examples = {path.name: json.loads(path.read_text(encoding="utf-8")) for path in sorted(examples_dir.glob("*.example.json"))}
+        self.assertEqual(
+            set(examples),
+            {
+                "context-pack-byte-proxy.example.json",
+                "measured-token-workflow.example.json",
+                "provider-cache-telemetry.example.json",
+            },
+        )
+        forbidden = ("guaranteed savings", "guarantees savings", "provider-cache proof", "pays off")
+        for name, sample in examples.items():
+            with self.subTest(example=name):
+                self.assertEqual(sample["schema"], "context-guard-bench-report-v1")
+                for key in ("baseline_variant", "row_count", "summary_by_variant", "comparisons", "claim_status", "caveat"):
+                    self.assertIn(key, sample)
+                self.assertTrue(sample["comparisons"], name)
+                for comparison in sample["comparisons"]:
+                    self.assertIn("quality_gate", comparison)
+                caveat = sample["caveat"].lower()
+                self.assertIn("matched successful", caveat)
+                self.assertIn("provider-measured", caveat)
+                self.assertIn("report shape only", caveat)
+                combined = json.dumps(sample, sort_keys=True).lower()
+                for phrase in forbidden:
+                    self.assertNotIn(phrase, combined)
+
+        context_pack = examples["context-pack-byte-proxy.example.json"]
+        self.assertEqual(context_pack["claim_status"], "insufficient_paired_data")
+        self.assertEqual(context_pack["comparisons"][0]["paired_token_task_count"], 0)
+        self.assertIsNone(context_pack["comparisons"][0]["token_savings_pct"])
+
+        provider_cache = examples["provider-cache-telemetry.example.json"]
+        self.assertEqual(provider_cache["summary_by_variant"]["cache_layout_check"]["observed_telemetry"]["provider_cache"], "observed")
+        self.assertEqual(provider_cache["comparisons"][0]["token_savings_pct"], 0.0)
+        self.assertIn("not proof", provider_cache["comparisons"][0]["interpretation"].lower())
+
+        measured = examples["measured-token-workflow.example.json"]
+        self.assertEqual(measured["comparisons"][0]["paired_token_task_count"], 1)
+        self.assertGreater(measured["comparisons"][0]["token_savings_pct"], 0)
+        self.assertIn("not a general savings promise", measured["comparisons"][0]["interpretation"].lower())
+
+        guide = (ROOT / "docs" / "benchmark-workflow-examples.md").read_text(encoding="utf-8")
+        self.assertIn("context-pack-byte-proxy.example.json", guide)
+        self.assertIn("provider-cache", guide.lower())
+        self.assertIn("provider-measured", guide)
+
+        for doc in (ROOT / "README.md", ROOT / "README.ko.md", PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
+            self.assertIn("benchmark-workflow-examples.md", doc.read_text(encoding="utf-8"), str(doc))
+        self.assertNotIn("workflow-specific before/after benchmark report examples", (ROOT / "README.md").read_text(encoding="utf-8"))
+        self.assertNotIn("작업 유형별 전후 비교 벤치마크 예시 모음", (ROOT / "README.ko.md").read_text(encoding="utf-8"))
+
+        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
+        self.assertIn("docs/benchmark-workflow-examples.md", package_files)
+        self.assertIn("docs/benchmark-workflows/*.example.json", package_files)
+        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
+        for filename in examples:
+            self.assertIn(f"docs/benchmark-workflows/{filename}", prepublish)
+
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")
         report = module.summarize_benchmark_rows(

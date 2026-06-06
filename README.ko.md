@@ -305,13 +305,12 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-보고서는 성공한 기준/변형 실행을 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교합니다. 바이트 감소는 간접 증거로만 기록하며, 그 자체를 절감 증명으로 보지 않습니다. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다. `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다. 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다. 절감 주장은 양쪽 모두 성공한 태스크 대응 기준이며, 실패율 가드레일이 악화되면 경고 수준으로 조정합니다. CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요. 최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을 참고하세요.
+보고서는 성공한 기준/변형 실행을 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교합니다. 바이트 감소는 간접 증거로만 기록하며, 그 자체를 절감 증명으로 보지 않습니다. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다. `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다. 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다. 절감 주장은 양쪽 모두 성공한 태스크 대응 기준이며, 실패율 가드레일이 악화되면 경고 수준으로 조정합니다. CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요. 최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을, 작업 유형별 합성 예시와 안전한 해석 경계는 [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md)을 참고하세요.
 
 ## 아직 제공하지 않는 기능
 
 아래는 프로젝트가 기록해 둔 방향이지 약속된 기능이 아닙니다. 저장소의 다른 문서에 명시되지 않는 한 아직 제공 기능이 아닙니다.
 
-- 최소 보고서 형태 fixture를 넘어서는 작업 유형별 전후 비교 벤치마크 예시 모음
 - learned prompt/context compression, multimodal crop/OCR 또는 visual-token pruning, self-hosted KV/latent inference optimization. [experimental token-reduction radar](research/experimental-token-reduction-radar.md)를 참고하세요. 이 lane들은 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence가 있어야 hosted API 절감 주장을 할 수 있습니다.
 
 ## 저장소 구조

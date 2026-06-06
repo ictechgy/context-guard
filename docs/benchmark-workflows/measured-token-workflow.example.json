@@ -1,0 +1,54 @@
+{
+  "schema": "context-guard-bench-report-v1",
+  "baseline_variant": "baseline",
+  "row_count": 2,
+  "claim_status": "token_savings_observed_cost_unmeasured",
+  "summary_by_variant": {
+    "baseline": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 1000,
+      "primary_tokens_measured_successful": 1,
+      "human_corrections_successful": 0,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    },
+    "brief_mode_standard": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 760,
+      "primary_tokens_measured_successful": 1,
+      "human_corrections_successful": 0,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "variant": "brief_mode_standard",
+      "baseline_variant": "baseline",
+      "quality_gate": "pass",
+      "matched_successful_task_count": 1,
+      "paired_token_task_count": 1,
+      "paired_cost_task_count": 0,
+      "paired_wall_time_task_count": 1,
+      "token_savings_pct": 24.0,
+      "cost_savings_pct_with_shift": null,
+      "wall_time_change_pct": -4.0,
+      "interpretation": "This synthetic report-shaped example shows where a token-savings percentage may appear when both matched tasks have primary token telemetry. It is not a general savings promise."
+    }
+  ],
+  "caveat": "Workflow example only. Token-savings percentages may be interpreted only for matched successful tasks with provider-measured primary token fields on both sides; shifted-cost savings remain unavailable without measured primary and external cost fields. This example documents report shape only; make real savings claims only from your own matched successful task runs."
+}

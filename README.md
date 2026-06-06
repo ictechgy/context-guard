@@ -305,13 +305,12 @@ The audit command skips oversized transcript files and JSONL records by default 
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. Token-savings claims require `primary_tokens_measured` on both sides of a matched task. `wall_time_seconds`, `provider_cached_tokens`, and `provider_cached_tokens_measured` are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress. CSV schemas are strict; after upgrading the benchmark helper, start a new `--csv` file or migrate the header named in the mismatch error. See [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json) for a minimal report-shape example.
+The report compares successful baseline/variant runs by real tokens and `cost_usd + external_cost_usd`. Byte reductions are recorded as proxy evidence, not treated as proof of savings. Token-savings claims require `primary_tokens_measured` on both sides of a matched task. `wall_time_seconds`, `provider_cached_tokens`, and `provider_cached_tokens_measured` are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings. Claims are paired by matched successful tasks and downgraded when failure-rate guardrails regress. CSV schemas are strict; after upgrading the benchmark helper, start a new `--csv` file or migrate the header named in the mismatch error. See [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json) for a minimal report-shape example and [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md) for workflow-specific synthetic examples that show safe interpretation boundaries.
 
 ## What is not yet shipped
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- workflow-specific before/after benchmark report examples beyond the minimal report-shape fixture.
 - learned prompt/context compression, multimodal crop/OCR or visual-token pruning, and self-hosted KV/latent inference optimizations. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md); these lanes require matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, and provider-measured token/cost evidence before any hosted API savings claim.
 
 ## Repository layout
