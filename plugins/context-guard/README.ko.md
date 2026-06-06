@@ -71,7 +71,8 @@ context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
 context-guard-sanitize-output -- git diff
-context-guard-pack build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
+context-guard-pack suggest --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --budget-bytes 12000 --json
+context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
 context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
 context-guard-tool-prune get <receipt_id> --tool read_file --json
@@ -85,7 +86,7 @@ context-guard-statusline-merged
 - **컨텍스트 관리 스캐너**는 누락된 `permissions.deny` 가드레일, Bash 출력 축약 훅, 상태표시줄 설정, 넓은 읽기 허용, 비용이 큰 기본 모델/추론 강도, 많은 MCP 서버, 크거나 민감해 보이는 에이전트 규칙 파일, bulky/sensitive 로컬 경로에 대한 자문형 context-exclusion 추천을 확인합니다.
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 에이전트를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
 - **로컬 로그 보관소**는 큰 명령 출력을 기본적으로 `.context-guard/artifacts`에 가림 처리해 저장하고, 줄 번호가 있는 top error, 중복 라인 그룹, 가림 처리된 bounded suggested query가 담긴 요약 기록이나 요청한 정확한 줄 범위만 반환합니다. `get`과 `list`는 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 요약 기록도 읽을 수 있습니다.
-- **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 요약 기록, 안전할 때만 정확한 가림 처리 `slice` 명령, 안전하지 않을 때의 `retrieval_omitted_reason`을 남깁니다. 토큰 수는 측정된 provider token 절감이 아니라 추정 `chars_div_4` proxy입니다.
+- **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 요약 기록, 안전할 때만 정확한 가림 처리 `slice` 명령, 안전하지 않을 때의 `retrieval_omitted_reason`을 남깁니다. 추가된 `suggest` 하위 명령은 로컬 query, diff, 명시 파일, 가림 처리된 output/test-output 신호를 `build`와 호환되는 manifest로 순위화하며 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. 토큰 수는 측정된 provider token 절감이 아니라 추정 `chars_div_4` proxy입니다.
 - **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다.
 - **보수적 압축기**는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
 - **Anthropic 비용 가드**는 `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. 원문 프롬프트를 저장하지 않으며 Anthropic prompt cache를 대체하지 않습니다.

@@ -127,7 +127,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
-| Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack with omission reasons and exact slice commands when safe. |
+| Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack, and can suggest a build-compatible manifest from local query, diff, file, and sanitized output signals. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
@@ -223,15 +223,20 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ### Build a budgeted context pack
 
 ```bash
+./plugins/context-guard/bin/context-guard-pack suggest \
+  --root . \
+  --query "review failing tests" \
+  --diff HEAD \
+  --manifest-out suggested-pack.json \
+  --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack build \
   --root . \
-  --source 'path=README.md,priority=100,lines=1:120' \
-  --source 'path=src/app.py,priority=50' \
+  --manifest suggested-pack.json \
   --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
-`context-guard-pack` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
+`context-guard-pack suggest` is an additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional `--output` / `--test-output` text files under `--root` after sanitizing those output signals, then writes a manifest that `build --manifest` can consume. It uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
 
 ### Prune a tool/MCP catalog for a task
 

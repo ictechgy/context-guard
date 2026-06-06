@@ -13,7 +13,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
 - `context_escrow.py` — 큰 command output을 sanitize 후 로컬 artifact로 저장하고 line/pattern query로 다시 조회
-- `context_pack.py` — 우선순위 local file evidence를 byte budget 안의 Markdown context pack으로 조립하고 omission/retrieval receipt를 기록
+- `context_pack.py` — 우선순위 local file evidence를 byte budget 안의 Markdown context pack으로 조립하고, local query/diff/output 신호에서 build manifest를 추천
 - `tool_schema_pruner.py` — 로컬 tool/MCP catalog를 top-k schema 자문 리포트로 줄이고 전체 정제 schema는 receipt/payload로 재조회
 - `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report 생성
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합
@@ -31,7 +31,8 @@ python3 context-guard-kit/context_guard_diet.py scan . --json
 python3 context-guard-kit/read_symbol.py path/to/file.py TargetSymbol
 long-command 2>&1 | python3 context-guard-kit/context_escrow.py store --command "long-command" --json
 python3 context-guard-kit/context_escrow.py get <artifact_id> --lines 1:80
-python3 context-guard-kit/context_pack.py build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
+python3 context-guard-kit/context_pack.py suggest --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --budget-bytes 12000 --json
+python3 context-guard-kit/context_pack.py build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 python3 context-guard-kit/context_pack.py slice --root . --path README.md --lines 1:40 --json
 python3 context-guard-kit/tool_schema_pruner.py select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
 python3 context-guard-kit/tool_schema_pruner.py get <receipt_id> --tool read_file --json
@@ -45,7 +46,7 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 `context_escrow.py`는 대용량 output을 Claude context에 그대로 넣지 않고 `.context-guard/artifacts` 아래 `0o600` 파일로 저장합니다. 저장 전에 sanitizer를 적용해 secret/path 노출을 줄이고, receipt에는 `artifact_id`, line/byte count, 줄 번호가 포함된 top-error receipt, 중복 라인 그룹, 대표 head/tail, 정제된 bounded `suggested_queries`와 `get --lines`/`get --pattern` query 예시만 출력합니다. suggested `--lines START:END` query에 `--max-lines`가 함께 있으면 이는 해당 line range의 반환 cap일 뿐 selector를 넓히는 옵션이 아닙니다. `get`과 `list`는 legacy 기본 위치인 `.claude-token-optimizer/artifacts`도 함께 읽어 리브랜딩 전 receipt를 계속 조회할 수 있습니다. 저장된 artifact는 sanitize된 사본이며, 필요할 때만 `get <artifact_id> --lines 10:40`처럼 정확한 범위를 조회하세요. 파이프라인 저장은 capture/query 용도이므로 producer 명령의 exit code가 필요한 release check에서는 shell `pipefail`/별도 `$?` 저장을 쓰거나 `trim_command_output.py -- ...`로 감싸세요.
 
 
-`context_pack.py`는 여러 로컬 파일 source를 우선순위와 줄 범위에 따라 정렬하고, 렌더링된 UTF-8 byte budget 안에서 Markdown context pack을 만듭니다. 포함·부분 포함·누락 source, 누락 사유, `.context-guard/packs` bounded receipt, 그리고 `slice --lines` 정확 재조회 명령을 JSON으로 남깁니다. pack 본문/영수증을 만들기 전에 sanitizer를 적용하며, token 값은 관측값이 아닌 추정 proxy로만 표시합니다.
+`context_pack.py suggest`는 `--query`, `--diff`, 반복 `--files`, 가림 처리한 `--output`, `--test-output`에서 build-compatible manifest 후보를 만듭니다. 모두 `--root` 아래 로컬 파일과 `git diff`만 읽고, 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. `context_pack.py build`는 여러 로컬 파일 source를 우선순위와 줄 범위에 따라 정렬하고, 렌더링된 UTF-8 byte budget 안에서 Markdown context pack을 만듭니다. 포함·부분 포함·누락 source, 누락 사유, `.context-guard/packs` bounded receipt, 그리고 `slice --lines` 정확 재조회 명령을 JSON으로 남깁니다. pack 본문과 receipt를 만들기 전에 sanitizer를 적용하며, token 값은 관측값이 아닌 추정 proxy로만 표시합니다.
 
 `tool_schema_pruner.py`는 provider-neutral tool/MCP catalog helper입니다. `select`는 task query와 lexical overlap으로 top-k tool을 고르고, inline schema는 `--budget-bytes` 안에만 넣으며, compact receipt와 별도 sanitized payload를 `.context-guard/tool-prune`에 기록합니다. `get`은 payload size/SHA-256을 검증한 뒤 전체 정제 schema를 반환합니다. 이 helper는 MCP 설정을 바꾸지 않으며, token 절감은 측정값이 아니라 추정 proxy로만 표현합니다.
 
@@ -58,7 +59,7 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 `context_guard_diet.py scan`은 항상 로컬에서만 읽는 read-only 스캐너입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--top`은 보고서의 context-like file 목록과 context-exclusion recommendation 목록에 공통으로 적용됩니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
 
-`context_pack.py build`의 retrieval command는 path/root를 안전하게 표시할 수 있을 때만 출력됩니다. 안전하지 않으면 pack 본문과 JSON source metadata에 `retrieval_omitted_reason`을 기록합니다. `token_proxy`는 렌더링된 pack 문자 수를 `chars_div_4`로 나눈 추정치이며, provider가 실제로 청구/소모한 token 측정값이 아닙니다.
+`context_pack.py suggest`가 쓰는 manifest는 그대로 `context_pack.py build --manifest suggested-pack.json`에 넣을 수 있습니다. `context_pack.py build`의 retrieval command는 path/root를 안전하게 표시할 수 있을 때만 출력됩니다. 안전하지 않으면 pack 본문과 JSON source metadata에 `retrieval_omitted_reason`을 기록합니다. `token_proxy`는 렌더링된 pack 문자 수를 `chars_div_4`로 나눈 추정치이며, provider가 실제로 청구/소모한 token 측정값이 아닙니다.
 
 `setup_wizard.py`는 설치 후 한 번 실행하는 설정 마법사입니다. 터미널에서 실행하면 deny rules, statusline, Bash trim/sanitize hook, large Read guard, 반복 실패 nudge, model/effort defaults를 project-local `.claude/settings.json`에 병합합니다. 비대화형 환경에서는 `--plan`으로 미리 보고 `--yes`로 추천값을 적용하세요. 설정을 적용하면 read-only `context_guard_diet.py scan` 요약을 자동으로 출력해 남은 gap을 확인할 수 있습니다. 반복 실패 nudge가 방해되는 프로젝트는 `--no-failed-attempt-nudge`로, post-setup scan이 불필요한 자동화는 `--no-diet-scan`으로 제외할 수 있습니다.
 

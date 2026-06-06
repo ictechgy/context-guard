@@ -72,6 +72,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
 
 DISPATCHER_SMOKE_COMMANDS: tuple[dict[str, Any], ...] = (
     {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
+    {"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"},
 )
 HOOK_STDIN = "{}"
 STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})

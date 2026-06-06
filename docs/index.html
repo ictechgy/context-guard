@@ -426,7 +426,8 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
 ./plugins/context-guard/bin/context-guard-trim-output -- npm test
 
 <span class="comment"># 예산 기반 컨텍스트 팩</span>
-./plugins/context-guard/bin/context-guard-pack build --root . --source 'path=README.md,priority=100,lines=1:80' --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-pack suggest --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 
 
 <span class="comment"># Anthropic API 호출 전 비용·cache 위험 확인</span>

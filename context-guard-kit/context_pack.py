@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import shlex
 import stat
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -35,6 +36,15 @@ MAX_MANIFEST_BYTES = 1_000_000
 MAX_LABEL_CHARS = 160
 MAX_REASON_CHARS = 120
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
+SUGGEST_SCHEMA_VERSION = "contextguard.pack-suggest.v1"
+DEFAULT_SUGGEST_TOP = 8
+MAX_SUGGEST_TOP = 50
+DEFAULT_SUGGEST_CONTEXT_LINES = 20
+MAX_SUGGEST_CONTEXT_LINES = 120
+SUGGEST_WHOLE_FILE_MAX_LINES = 120
+MAX_SUGGEST_INPUT_BYTES = 256_000
+MAX_QUERY_SCAN_FILES = 2_000
+MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 SECRET_CONTENT_RE = re.compile(
@@ -85,6 +95,16 @@ class ResolvedSource:
     selected_lines: list[str]
     total_lines: int
     redacted_lines: int
+
+
+@dataclass
+class SuggestCandidate:
+    path: str
+    score: int
+    reason: str
+    lines: LineRange | None = None
+    label: str | None = None
+    input_index: int = 0
 
 
 class PackError(ValueError):
@@ -866,6 +886,595 @@ def slice_source(root: Path, *, raw_path: str, lines: LineRange) -> tuple[dict[s
     return payload, 0
 
 
+def suggest_tokens(text: str) -> set[str]:
+    sanitized = SECRET_CONTENT_RE.sub(" ", text.lower())
+    return {part for part in re.findall(r"[a-z0-9_][a-z0-9_.-]{1,}", sanitized) if len(part) >= 2}
+
+
+def suggest_score_path(path: str, query_terms: set[str]) -> int:
+    lowered = path.lower()
+    score = 0
+    for term in query_terms:
+        if term in lowered:
+            score += 120
+    return score
+
+
+def suggest_reason(*parts: str) -> str:
+    return cap_label("; ".join(part for part in parts if part), default="local heuristic", limit=MAX_REASON_CHARS) or "local heuristic"
+
+
+def split_suggest_files(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for value in values or []:
+        for part in str(value).split(","):
+            text = part.strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def line_window(line_number: int, total_lines: int | None, context_lines: int) -> LineRange:
+    start = max(1, line_number - context_lines)
+    if total_lines is None:
+        end = max(start, line_number + context_lines)
+    else:
+        end = min(max(start, line_number + context_lines), max(1, total_lines))
+    return LineRange(start, end)
+
+
+def merge_line_window(existing: LineRange | None, line_number: int, context_lines: int) -> LineRange:
+    window = line_window(line_number, None, context_lines)
+    if existing is None:
+        return window
+    return LineRange(min(existing.start, window.start), max(existing.end, window.end))
+
+
+def add_suggest_candidate(
+    candidates: list[SuggestCandidate],
+    *,
+    path: str,
+    score: int,
+    reason: str,
+    lines: LineRange | None = None,
+    label: str | None = None,
+) -> None:
+    candidates.append(
+        SuggestCandidate(
+            path=path,
+            score=score,
+            reason=suggest_reason(reason),
+            lines=lines,
+            label=cap_label(label),
+            input_index=len(candidates),
+        )
+    )
+
+
+def run_git_diff(root: Path, diff_ref: str) -> str:
+    ref = diff_ref.strip()
+    if not ref:
+        raise PackError("empty --diff")
+    command = ["git", "-C", str(root), "diff", "--no-ext-diff", "--no-textconv", "--unified=3"]
+    if ref in {"staged", "--staged", "cached", "--cached"}:
+        command.extend(["--cached"])
+    elif ref in {"worktree", "unstaged", "working-tree"}:
+        pass
+    elif ref.startswith("-"):
+        raise PackError("invalid --diff: revision must not start with '-'")
+    else:
+        command.append(ref)
+    try:
+        proc = subprocess.run(command, text=True, errors="replace", capture_output=True, timeout=10, check=False)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        raise PackError(f"could not read diff: {exc.__class__.__name__}") from exc
+    if proc.returncode != 0:
+        detail = sanitize_text(proc.stderr or proc.stdout or "git diff failed")[0].strip().splitlines()
+        message = detail[0] if detail else "git diff failed"
+        raise PackError(f"could not read diff: {cap_label(message, default='git diff failed', limit=160)}")
+    return sanitize_text(proc.stdout[:MAX_SUGGEST_INPUT_BYTES])[0]
+
+
+def collect_diff_candidates(root: Path, diff_ref: str, query_terms: set[str], context_lines: int) -> list[SuggestCandidate]:
+    diff_text = run_git_diff(root, diff_ref)
+    candidates: list[SuggestCandidate] = []
+    current_path: str | None = None
+    hunk_re = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            match = re.match(r"^diff --git a/(.+?) b/(.+)$", line)
+            current_path = None
+            if match:
+                left, right = match.groups()
+                current_path = right if right != "/dev/null" else left
+            continue
+        if current_path is None:
+            continue
+        hunk = hunk_re.match(line)
+        if hunk:
+            start = int(hunk.group(1))
+            count = int(hunk.group(2) or "1")
+            end_line = max(start, start + max(1, count) - 1)
+            start_line = max(1, start - context_lines)
+            window = LineRange(start_line, max(start_line, end_line + context_lines))
+            score = 7_000 + suggest_score_path(current_path, query_terms)
+            add_suggest_candidate(
+                candidates,
+                path=current_path,
+                score=score,
+                reason="changed diff hunk",
+                lines=window,
+                label=f"diff:{safe_raw_path_label(current_path)}",
+            )
+    return candidates
+
+
+OUTPUT_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])"
+    r"(?P<path>(?:\.\/)?(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\."
+    r"(?:py|js|jsx|ts|tsx|mjs|cjs|md|json|yml|yaml|toml|sh|css|html|txt|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp))"
+    r"(?::(?P<line>\d+))?"
+)
+
+
+def read_text_input_under_root(root: Path, raw_path: str) -> tuple[str | None, dict[str, Any] | None]:
+    rel, reason = lexical_rel(raw_path)
+    display = safe_raw_path_label(raw_path)
+    if rel is None:
+        return None, {"path": display, "status": "omitted", "reason": reason}
+    display, redacted = display_rel_path(rel.as_posix())
+    if redacted:
+        return None, {"path": display, "status": "omitted", "reason": "redacted_path", "retrieval_omitted_reason": "redacted_path"}
+    handle, reason = open_regular_under_root(root, rel)
+    if handle is None:
+        return None, {"path": display, "status": "omitted", "reason": reason}
+    try:
+        with handle:
+            text = handle.read(MAX_SUGGEST_INPUT_BYTES + 1)
+    except (OSError, UnicodeError):
+        return None, {"path": display, "status": "omitted", "reason": "unsafe_path"}
+    if len(text.encode("utf-8", errors="replace")) > MAX_SUGGEST_INPUT_BYTES:
+        text = text[:MAX_SUGGEST_INPUT_BYTES]
+    sanitized, _redacted = sanitize_text(text)
+    return sanitized, None
+
+
+def collect_output_candidates(
+    root: Path,
+    raw_paths: list[str] | None,
+    query_terms: set[str],
+    context_lines: int,
+    *,
+    origin: str,
+) -> tuple[list[SuggestCandidate], list[dict[str, Any]]]:
+    candidates: list[SuggestCandidate] = []
+    omitted: list[dict[str, Any]] = []
+    for raw in raw_paths or []:
+        text, omission_item = read_text_input_under_root(root, raw)
+        if omission_item is not None:
+            omission_item["origin"] = origin
+            omitted.append(omission_item)
+            continue
+        assert text is not None
+        by_path: dict[str, LineRange | None] = {}
+        for match in OUTPUT_PATH_RE.finditer(text):
+            path = match.group("path")
+            if path.startswith("./"):
+                path = path[2:]
+            line_text = match.group("line")
+            if line_text:
+                try:
+                    line_number = int(line_text)
+                except ValueError:
+                    line_number = 1
+                by_path[path] = merge_line_window(by_path.get(path), line_number, context_lines)
+            else:
+                by_path.setdefault(path, None)
+        for path, lines in sorted(by_path.items()):
+            score = 5_000 + suggest_score_path(path, query_terms)
+            add_suggest_candidate(
+                candidates,
+                path=path,
+                score=score,
+                reason=f"{origin} referenced path",
+                lines=lines,
+                label=f"{origin}:{safe_raw_path_label(path)}",
+            )
+    return candidates, omitted
+
+
+def git_ls_files(root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            text=False,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        raw = proc.stdout[: MAX_QUERY_SCAN_FILES * 512]
+        return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part][:MAX_QUERY_SCAN_FILES]
+    out: list[str] = []
+    skip_dirs = {".git", ".omx", ".context-guard", "node_modules", "dist", "build", "__pycache__"}
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if name not in skip_dirs and not name.startswith(".pytest")]
+        current_path = Path(current)
+        for name in files:
+            rel = (current_path / name).relative_to(root).as_posix()
+            out.append(rel)
+            if len(out) >= MAX_QUERY_SCAN_FILES:
+                return out
+    return out
+
+
+def collect_query_candidates(root: Path, query_terms: set[str], context_lines: int) -> list[SuggestCandidate]:
+    if not query_terms:
+        return []
+    candidates: list[SuggestCandidate] = []
+    for rel_path in git_ls_files(root):
+        rel, reason = lexical_rel(rel_path)
+        if rel is None or reason:
+            continue
+        display, redacted = display_rel_path(rel.as_posix())
+        if redacted:
+            continue
+        path_score = suggest_score_path(display, query_terms)
+        handle, open_reason = open_regular_under_root(root, rel)
+        if handle is None:
+            continue
+        first_match_line: int | None = None
+        content_score = 0
+        try:
+            with handle:
+                scanned_bytes = 0
+                for index, raw_line in enumerate(handle, start=1):
+                    scanned_bytes += byte_len(raw_line)
+                    if scanned_bytes > MAX_QUERY_SCAN_BYTES_PER_FILE:
+                        break
+                    if index > SUGGEST_WHOLE_FILE_MAX_LINES and content_score == 0 and path_score == 0:
+                        break
+                    lowered = raw_line.lower()
+                    hits = sum(1 for term in query_terms if term in lowered)
+                    if hits:
+                        content_score += 250 * hits
+                        if first_match_line is None:
+                            first_match_line = index
+        except (OSError, UnicodeError):
+            _ = open_reason
+            continue
+        if path_score == 0 and content_score == 0:
+            continue
+        if first_match_line is not None:
+            lines = line_window(first_match_line, None, context_lines)
+            reason = "query matched file content"
+        else:
+            lines = None
+            reason = "query matched file path"
+        add_suggest_candidate(
+            candidates,
+            path=display,
+            score=3_000 + path_score + content_score,
+            reason=reason,
+            lines=lines,
+            label=f"query:{display}",
+        )
+    return candidates
+
+
+def source_selected_range(source: ResolvedSource) -> LineRange:
+    start = source.requested_lines.start if source.requested_lines else 1
+    return LineRange(start, start + max(len(source.selected_lines), 1) - 1)
+
+
+def resolved_block_bytes(source: ResolvedSource, *, root_arg: str) -> int:
+    included = source_selected_range(source)
+    return byte_len(render_block(source, source.selected_lines, root_arg=root_arg, status="included", included=included))
+
+
+def manifest_source_for_candidate(source: ResolvedSource, *, priority: int, label: str | None) -> dict[str, Any]:
+    item: dict[str, Any] = {"path": source.display_path, "priority": priority}
+    if label:
+        item["label"] = label
+    if source.requested_lines is not None:
+        item["lines"] = source_selected_range(source).as_dict()
+    return item
+
+
+def suggested_source_payload(source: ResolvedSource, candidate: SuggestCandidate, *, root_arg: str) -> dict[str, Any]:
+    included = source_selected_range(source)
+    payload: dict[str, Any] = {
+        "path": source.display_path,
+        "priority": candidate.score,
+        "score": candidate.score,
+        "reason": candidate.reason,
+        "lines": included.as_dict(),
+        "bytes": byte_len("".join(source.selected_lines)),
+    }
+    if candidate.label:
+        payload["label"] = candidate.label
+    retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
+    if retrieval:
+        payload["retrieval_cli"] = retrieval
+    elif retrieval_omitted_reason:
+        payload["retrieval_omitted_reason"] = retrieval_omitted_reason
+    return payload
+
+
+def normalize_suggest_source(root: Path, candidate: SuggestCandidate) -> tuple[ResolvedSource | None, dict[str, Any] | None]:
+    spec = SourceSpec(
+        path=candidate.path,
+        priority=candidate.score,
+        lines=candidate.lines,
+        label=candidate.label,
+        input_index=candidate.input_index,
+        origin="suggest",
+    )
+    source, omitted_item = resolve_source(root, spec)
+    if omitted_item is not None:
+        omitted_item["reason"] = omitted_item.get("reason") or candidate.reason
+        omitted_item["suggest_reason"] = candidate.reason
+        return None, omitted_item
+    assert source is not None
+    if source.redacted_path:
+        return None, omission(spec, "redacted_path", path=source.display_path, redacted_path=True)
+    if spec.lines is None and source.total_lines > SUGGEST_WHOLE_FILE_MAX_LINES:
+        capped = SourceSpec(
+            path=candidate.path,
+            priority=candidate.score,
+            lines=LineRange(1, min(SUGGEST_WHOLE_FILE_MAX_LINES, source.total_lines)),
+            label=candidate.label,
+            input_index=candidate.input_index,
+            origin="suggest",
+        )
+        source, omitted_item = resolve_source(root, capped)
+        if omitted_item is not None:
+            omitted_item["suggest_reason"] = candidate.reason
+            return None, omitted_item
+        assert source is not None
+    return source, None
+
+
+def write_manifest_under_root(root: Path, raw_path: str, manifest: dict[str, Any]) -> str:
+    rel, reason = lexical_rel(raw_path)
+    if rel is None:
+        raise PackError(f"invalid --manifest-out: {reason}")
+    display, redacted = display_rel_path(rel.as_posix())
+    if redacted:
+        raise PackError("invalid --manifest-out: redacted_path")
+    parent_parts = rel.parts[:-1]
+    filename = rel.parts[-1]
+    current_fd: int | None = None
+    file_fd = -1
+    try:
+        current_fd = open_dir_no_follow(root)
+        for part in parent_parts:
+            next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        file_fd = os.open(filename, flags, 0o600, dir_fd=current_fd)
+        st = os.fstat(file_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PackError("invalid --manifest-out: unsafe_path")
+        with os.fdopen(file_fd, "w", encoding="utf-8") as handle:
+            file_fd = -1
+            json.dump(manifest, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+    except PackError:
+        raise
+    except FileNotFoundError as exc:
+        raise PackError("invalid --manifest-out: missing") from exc
+    except OSError as exc:
+        raise PackError(f"invalid --manifest-out: {exc.strerror or exc.__class__.__name__}") from exc
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+    return display
+
+
+def build_suggest_manifest(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    manifest_sources: list[dict[str, Any]] = []
+    for item in sources:
+        source: dict[str, Any] = {"path": item["path"], "priority": item["priority"]}
+        if "label" in item:
+            source["label"] = item["label"]
+        if "lines" in item:
+            source["lines"] = item["lines"]
+        manifest_sources.append(source)
+    return {"version": VERSION, "sources": manifest_sources}
+
+
+def suggest_build_hint(root_arg: str, manifest_path: str | None, budget: int) -> tuple[str | None, str | None]:
+    safe_root = safe_root_arg_for_retrieval(root_arg)
+    if safe_root is None:
+        return None, "unsafe_root_path"
+    manifest_arg = manifest_path or "<manifest.json>"
+    command_parts = ["context-guard-pack", "build", "--root", ".", "--manifest", manifest_arg, "--budget-bytes", str(budget), "--json"]
+    command = " ".join(shlex.quote(part) for part in command_parts)
+    if safe_root in {".", ""}:
+        return command, None
+    return f"cd {shlex.quote(safe_root)} && {command}", None
+
+
+def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    query_text, _query_redactions = sanitize_text(args.query or "")
+    query = " ".join(query_text.split())
+    query_terms = suggest_tokens(query)
+    context_lines = bounded_int(args.context_lines, DEFAULT_SUGGEST_CONTEXT_LINES, 0, MAX_SUGGEST_CONTEXT_LINES)
+    top = bounded_int(args.top, DEFAULT_SUGGEST_TOP, 1, MAX_SUGGEST_TOP)
+    budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
+    candidates: list[SuggestCandidate] = []
+    omitted: list[dict[str, Any]] = []
+    file_inputs = split_suggest_files(args.files)
+    has_signal = bool(query or file_inputs or args.diff or args.output or args.test_output)
+    if not has_signal:
+        raise PackError("provide --query, --files, --diff, --output, or --test-output")
+
+    for raw_path in file_inputs:
+        add_suggest_candidate(
+            candidates,
+            path=raw_path,
+            score=9_000 + suggest_score_path(raw_path, query_terms),
+            reason="explicit file request",
+            label=f"file:{safe_raw_path_label(raw_path)}",
+        )
+    if args.diff:
+        candidates.extend(collect_diff_candidates(root, args.diff, query_terms, context_lines))
+    output_candidates, output_omitted = collect_output_candidates(root, args.output, query_terms, context_lines, origin="output")
+    test_candidates, test_omitted = collect_output_candidates(root, args.test_output, query_terms, context_lines, origin="test-output")
+    candidates.extend(output_candidates)
+    candidates.extend(test_candidates)
+    omitted.extend(output_omitted)
+    omitted.extend(test_omitted)
+    candidates.extend(collect_query_candidates(root, query_terms, context_lines))
+
+    candidates.sort(key=lambda item: (-item.score, item.input_index, item.path, item.lines.identity() if item.lines else "0:0"))
+    seen: set[tuple[str, str]] = set()
+    final_seen: set[tuple[str, str]] = set()
+    selected: list[dict[str, Any]] = []
+    manifest_seed: list[dict[str, Any]] = []
+    current_bytes = byte_len("# Context Pack\n\nGenerated by context-guard-pack. Token counts are estimated proxies; byte counts are observed.\n\n")
+    for candidate in candidates:
+        rel, reason = lexical_rel(candidate.path)
+        identity_path = rel.as_posix() if rel is not None else safe_raw_path_label(candidate.path)
+        identity_lines = candidate.lines.identity() if candidate.lines else "all"
+        identity = (identity_path, identity_lines)
+        if rel is not None and identity in seen:
+            display, redacted = display_rel_path(rel.as_posix())
+            duplicate_item = {
+                "path": display,
+                "status": "omitted",
+                "reason": "duplicate_source",
+                "suggest_reason": candidate.reason,
+                "priority": candidate.score,
+                "retrieval_omitted_reason": "redacted_path" if redacted else None,
+            }
+            omitted.append({key: value for key, value in duplicate_item.items() if value is not None})
+            continue
+        if rel is not None:
+            seen.add(identity)
+        source, omitted_item = normalize_suggest_source(root, candidate)
+        if omitted_item is not None:
+            omitted_item["priority"] = candidate.score
+            omitted_item["suggest_reason"] = candidate.reason
+            omitted.append({key: value for key, value in omitted_item.items() if value is not None})
+            continue
+        assert source is not None
+        final_identity = (source.display_path, source_selected_range(source).identity() if source.requested_lines is not None else "all")
+        if final_identity in final_seen:
+            omitted.append({
+                "path": source.display_path,
+                "status": "omitted",
+                "reason": "duplicate_source",
+                "suggest_reason": candidate.reason,
+                "priority": candidate.score,
+            })
+            continue
+        final_seen.add(final_identity)
+        source_bytes = resolved_block_bytes(source, root_arg=root_arg)
+        remaining = budget - current_bytes
+        if source_bytes > remaining:
+            if not selected and remaining > 0:
+                partial_lines, _partial_block, partial_range = fit_partial_lines(source, remaining, root_arg=root_arg)
+                if partial_range is not None and partial_lines:
+                    partial_spec = SourceSpec(
+                        path=candidate.path,
+                        priority=candidate.score,
+                        lines=partial_range,
+                        label=candidate.label,
+                        input_index=candidate.input_index,
+                        origin="suggest",
+                    )
+                    source, omitted_item = resolve_source(root, partial_spec)
+                    if omitted_item is not None:
+                        omitted_item["priority"] = candidate.score
+                        omitted_item["suggest_reason"] = candidate.reason
+                        omitted.append(omitted_item)
+                        continue
+                    assert source is not None
+                    source_bytes = resolved_block_bytes(source, root_arg=root_arg)
+                else:
+                    omitted.append({"path": source.display_path, "status": "omitted", "reason": "budget_exhausted", "priority": candidate.score})
+                    continue
+            else:
+                omitted.append({"path": source.display_path, "status": "omitted", "reason": "budget_exhausted", "priority": candidate.score})
+                continue
+        payload = suggested_source_payload(source, candidate, root_arg=root_arg)
+        selected.append(payload)
+        manifest_seed.append(manifest_source_for_candidate(source, priority=candidate.score, label=candidate.label))
+        current_bytes += source_bytes
+        if len(selected) >= top:
+            break
+
+    manifest = build_suggest_manifest(manifest_seed)
+    estimated_pack_bytes = current_bytes if selected else 0
+    manifest_path: str | None = None
+    if args.manifest_out:
+        manifest_path = write_manifest_under_root(root, args.manifest_out, manifest)
+    build_hint, build_hint_omitted_reason = suggest_build_hint(root_arg, manifest_path, budget)
+    payload: dict[str, Any] = {
+        "tool": TOOL_NAME,
+        "schema_version": SUGGEST_SCHEMA_VERSION,
+        "version": VERSION,
+        "mode": "suggest",
+        "root": display_root(root),
+        "query": query,
+        "budget_bytes": budget,
+        "estimated_pack_bytes": estimated_pack_bytes,
+        "token_proxy": {
+            "measurement": "estimated",
+            "method": f"chars_div_{TOKEN_PROXY_CHARS_PER_TOKEN}",
+            "estimated_pack": estimated_pack_bytes // TOKEN_PROXY_CHARS_PER_TOKEN,
+        },
+        "sources": selected,
+        "omitted_sources": sorted(omitted, key=lambda item: (str(item.get("path", "")), str(item.get("reason", "")), int(item.get("priority", 0) or 0))),
+        "manifest": manifest,
+        "manifest_path": manifest_path,
+        "build_hint": build_hint,
+        "caveats": [
+            "Deterministic local heuristics only; no model, network, embedding, or provider-cost estimate is used.",
+            "Byte and token values are pack-size proxies, not billing claims.",
+        ],
+    }
+    if build_hint_omitted_reason:
+        payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    return payload, 0
+
+
+def print_suggest_text(payload: dict[str, Any]) -> None:
+    print(
+        f"context-guard-pack suggest: {len(payload['sources'])} source(s), "
+        f"estimated {payload['estimated_pack_bytes']}/{payload['budget_bytes']} bytes"
+    )
+    for item in payload["sources"]:
+        lines = item.get("lines")
+        line_text = f":{lines['start']}:{lines['end']}" if isinstance(lines, dict) else ""
+        print(f"- {item['path']}{line_text} priority={item['priority']} reason={item['reason']}")
+    if payload.get("manifest_path"):
+        print(f"manifest: {payload['manifest_path']}")
+    if payload.get("build_hint"):
+        print(f"build: {payload['build_hint']}")
+    elif payload.get("build_hint_omitted_reason"):
+        print(f"build hint omitted: {payload['build_hint_omitted_reason']}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build budgeted local context packs with exact retrieval hints.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -881,6 +1490,18 @@ def build_parser() -> argparse.ArgumentParser:
     slice_cmd.add_argument("--path", required=True, help="relative file path under root")
     slice_cmd.add_argument("--lines", required=True, help="inclusive 1-indexed START:END")
     slice_cmd.add_argument("--json", action="store_true", help="emit JSON payload")
+    suggest = sub.add_parser("suggest", help="suggest a build-compatible context pack manifest from local signals")
+    suggest.add_argument("--root", default=".", help="project root; must not be a symlink")
+    suggest.add_argument("--query", default="", help="task or question to match against local files")
+    suggest.add_argument("--diff", help="git diff range, or staged/worktree, to seed changed-file ranges")
+    suggest.add_argument("--files", "--file", dest="files", action="append", help="explicit relative file path(s), comma-separated or repeated")
+    suggest.add_argument("--output", action="append", help="relative path to sanitized command output text under root")
+    suggest.add_argument("--test-output", action="append", help="relative path to sanitized test output text under root")
+    suggest.add_argument("--budget-bytes", type=int, default=DEFAULT_BUDGET_BYTES)
+    suggest.add_argument("--top", type=int, default=DEFAULT_SUGGEST_TOP, help="maximum suggested sources")
+    suggest.add_argument("--context-lines", type=int, default=DEFAULT_SUGGEST_CONTEXT_LINES, help="line context around diff/output hits")
+    suggest.add_argument("--manifest-out", help="write the suggested build manifest to this relative path under root")
+    suggest.add_argument("--json", action="store_true", help="emit JSON payload")
     return parser
 
 
@@ -918,6 +1539,14 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stdout.write(str(payload.get("content", "")))
             else:
                 print(f"context-guard-pack: {payload.get('reason')}", file=sys.stderr)
+            return rc
+        if args.command == "suggest":
+            payload, rc = suggest_pack(root, args, root_arg=str(args.root))
+            if args.json:
+                json.dump(payload, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
+                sys.stdout.write("\n")
+            else:
+                print_suggest_text(payload)
             return rc
         raise PackError("unknown command")
     except PackError as exc:
