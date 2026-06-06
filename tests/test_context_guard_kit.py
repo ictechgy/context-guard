@@ -13092,12 +13092,63 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 for comparison in sample["comparisons"]:
                     self.assertIn("quality_gate", comparison)
                 caveat = sample["caveat"].lower()
-                self.assertIn("matched successful", caveat)
-                self.assertIn("provider-measured", caveat)
-                self.assertIn("report shape only", caveat)
+                self.assertIn("matched-task", caveat)
+                self.assertIn("measured primary", caveat)
+                self.assertNotIn("report shape only", caveat)
                 combined = json.dumps(sample, sort_keys=True).lower()
                 for phrase in forbidden:
                     self.assertNotIn(phrase, combined)
+
+        module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_workflow_example_contract")
+        canonical = module.summarize_benchmark_rows(
+            [
+                {
+                    "task_id": "contract",
+                    "variant": "baseline",
+                    "success": "true",
+                    "corrections": "0",
+                    "total_tokens": "1000",
+                    "primary_tokens_measured": "true",
+                    "cost_usd": "0.01",
+                    "external_tokens": "0",
+                    "external_cost_usd": "0",
+                    "bytes_before": "12000",
+                    "bytes_after": "12000",
+                    "provider_cached_tokens": "0",
+                    "provider_cached_tokens_measured": "true",
+                    "wall_time_seconds": "10.0",
+                },
+                {
+                    "task_id": "contract",
+                    "variant": "optimized",
+                    "success": "true",
+                    "corrections": "0",
+                    "total_tokens": "760",
+                    "primary_tokens_measured": "true",
+                    "cost_usd": "0.008",
+                    "external_tokens": "0",
+                    "external_cost_usd": "0",
+                    "bytes_before": "12000",
+                    "bytes_after": "9000",
+                    "provider_cached_tokens": "120",
+                    "provider_cached_tokens_measured": "true",
+                    "wall_time_seconds": "9.6",
+                },
+            ],
+            "baseline",
+        )
+        canonical_top = set(canonical)
+        canonical_summary = {key for summary in canonical["summary_by_variant"].values() for key in summary}
+        canonical_comparison = {key for comparison in canonical["comparisons"] for key in comparison}
+        for name, sample in examples.items():
+            with self.subTest(canonical_shape=name):
+                self.assertLessEqual(set(sample), canonical_top)
+                for summary in sample["summary_by_variant"].values():
+                    self.assertLessEqual(set(summary), canonical_summary)
+                    self.assertNotIn("human_corrections_successful", summary)
+                for comparison in sample["comparisons"]:
+                    self.assertLessEqual(set(comparison), canonical_comparison)
+                    self.assertNotIn("interpretation", comparison)
 
         context_pack = examples["context-pack-byte-proxy.example.json"]
         self.assertEqual(context_pack["claim_status"], "insufficient_paired_data")
@@ -13106,23 +13157,23 @@ class BenchmarkRunnerTests(unittest.TestCase):
         optimized_context_pack = context_pack["summary_by_variant"]["context_pack_auto"]
         self.assertEqual(optimized_context_pack["bytes_saved_successful"], 18000)
         self.assertEqual(optimized_context_pack["token_proxy_saved_successful"], 4500)
-        self.assertNotIn("byte_savings", context_pack["comparisons"][0])
-        self.assertNotIn("token_proxy_savings", context_pack["comparisons"][0])
 
         provider_cache = examples["provider-cache-telemetry.example.json"]
         self.assertEqual(provider_cache["summary_by_variant"]["cache_layout_check"]["observed_telemetry"]["provider_cache"], "observed")
         self.assertEqual(provider_cache["comparisons"][0]["token_savings_pct"], 0.0)
-        self.assertIn("not proof", provider_cache["comparisons"][0]["interpretation"].lower())
 
         measured = examples["measured-token-workflow.example.json"]
         self.assertEqual(measured["comparisons"][0]["paired_token_task_count"], 1)
         self.assertGreater(measured["comparisons"][0]["token_savings_pct"], 0)
-        self.assertIn("not a general savings promise", measured["comparisons"][0]["interpretation"].lower())
+        self.assertIn("corrections_successful", measured["summary_by_variant"]["brief_mode_standard"])
 
         guide = (ROOT / "docs" / "benchmark-workflow-examples.md").read_text(encoding="utf-8")
         self.assertIn("context-pack-byte-proxy.example.json", guide)
         self.assertIn("provider-cache", guide.lower())
         self.assertIn("provider-measured", guide)
+        self.assertIn("matched successful", guide)
+        self.assertIn("not independent savings proof", guide.lower())
+        self.assertIn("not a general savings promise", guide.lower())
 
         for doc in (ROOT / "README.md", ROOT / "README.ko.md", PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
             self.assertIn("benchmark-workflow-examples.md", doc.read_text(encoding="utf-8"), str(doc))

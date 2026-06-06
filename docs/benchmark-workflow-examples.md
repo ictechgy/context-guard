@@ -16,14 +16,14 @@ Use them to decide what evidence a workflow has and what it does **not** prove:
 | --- | --- | --- |
 | [`benchmark-workflows/context-pack-byte-proxy.example.json`](benchmark-workflows/context-pack-byte-proxy.example.json) | `context-guard-pack auto` can reduce selected local bytes and inferred token proxies. | No hosted API token-savings claim because primary provider token fields are unavailable. |
 | [`benchmark-workflows/provider-cache-telemetry.example.json`](benchmark-workflows/provider-cache-telemetry.example.json) | Cache-layout diagnostics can coincide with observed provider cached-token telemetry. | Provider-cache telemetry is not proof that ContextGuard reduced prompt tokens or cost. |
-| [`benchmark-workflows/measured-token-workflow.example.json`](benchmark-workflows/measured-token-workflow.example.json) | A matched successful task pair with measured primary tokens may expose `token_savings_pct`. | The percentage is sample report data only; real claims require your own matched successful task runs and quality gates. |
+| [`benchmark-workflows/measured-token-workflow.example.json`](benchmark-workflows/measured-token-workflow.example.json) | A matched successful task pair with measured primary tokens may expose `token_savings_pct`. | The percentage is sample report data only, not a general savings promise; real claims require your own matched successful task runs and quality gates. |
 
 ## How to use the examples
 
 1. Run your own benchmark with `context-guard-bench --tasks ... --variants ... --csv ... --report-json ...`.
 2. Compare your report's `claim_status`, `summary_by_variant`, and `comparisons[].quality_gate` to the examples.
 3. Treat `comparisons[].quality_gate != "pass"` as a warning to inspect failures, correction burden, and unmatched tasks before discussing savings.
-4. Keep byte-proxy, provider-cache, wall-time, and shifted-cost evidence in separate language from provider-measured token/cost claims.
+4. Keep byte-proxy, provider-cache, wall-time, and shifted-cost evidence in separate language from provider-measured token/cost claims. Provider-cache telemetry is not independent savings proof.
 
 ## Safe wording
 
