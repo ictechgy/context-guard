@@ -37,6 +37,7 @@ MAX_LABEL_CHARS = 160
 MAX_REASON_CHARS = 120
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
 SUGGEST_SCHEMA_VERSION = "contextguard.pack-suggest.v1"
+AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -1238,12 +1239,94 @@ def normalize_suggest_source(root: Path, candidate: SuggestCandidate) -> tuple[R
 
 
 def write_manifest_under_root(root: Path, raw_path: str, manifest: dict[str, Any]) -> str:
+    content = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return write_text_under_root(root, raw_path, content, "--manifest-out")
+
+
+def validate_output_path_under_root(root: Path, raw_path: str, option_name: str) -> str:
     rel, reason = lexical_rel(raw_path)
     if rel is None:
-        raise PackError(f"invalid --manifest-out: {reason}")
+        raise PackError(f"invalid {option_name}: {reason}")
     display, redacted = display_rel_path(rel.as_posix())
     if redacted:
-        raise PackError("invalid --manifest-out: redacted_path")
+        raise PackError(f"invalid {option_name}: redacted_path")
+    parent_parts = rel.parts[:-1]
+    filename = rel.parts[-1]
+    current_fd: int | None = None
+    file_fd = -1
+    try:
+        current_fd = open_dir_no_follow(root)
+        for part in parent_parts:
+            next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        flags = os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        try:
+            file_fd = os.open(filename, flags, dir_fd=current_fd)
+            st = os.fstat(file_fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise PackError(f"invalid {option_name}: unsafe_path")
+        except FileNotFoundError:
+            temp_fd = -1
+            temp_name = f".context-guard-pack-preflight-{os.getpid()}-{hashlib.sha256(raw_path.encode('utf-8', 'replace')).hexdigest()[:10]}"
+            try:
+                create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                if hasattr(os, "O_NOFOLLOW"):
+                    create_flags |= os.O_NOFOLLOW
+                if hasattr(os, "O_CLOEXEC"):
+                    create_flags |= os.O_CLOEXEC
+                if hasattr(os, "O_NONBLOCK"):
+                    create_flags |= os.O_NONBLOCK
+                temp_fd = os.open(temp_name, create_flags, 0o600, dir_fd=current_fd)
+            except OSError as exc:
+                raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
+            finally:
+                if temp_fd >= 0:
+                    try:
+                        os.close(temp_fd)
+                    except OSError:
+                        pass
+                    try:
+                        os.unlink(temp_name, dir_fd=current_fd)
+                    except OSError:
+                        pass
+        except IsADirectoryError as exc:
+            raise PackError(f"invalid {option_name}: unsafe_path") from exc
+        except OSError as exc:
+            raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
+    except PackError:
+        raise
+    except FileNotFoundError as exc:
+        raise PackError(f"invalid {option_name}: missing") from exc
+    except OSError as exc:
+        raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+    return display
+
+
+def write_text_under_root(root: Path, raw_path: str, content: str, option_name: str) -> str:
+    rel, reason = lexical_rel(raw_path)
+    if rel is None:
+        raise PackError(f"invalid {option_name}: {reason}")
+    display, redacted = display_rel_path(rel.as_posix())
+    if redacted:
+        raise PackError(f"invalid {option_name}: redacted_path")
     parent_parts = rel.parts[:-1]
     filename = rel.parts[-1]
     current_fd: int | None = None
@@ -1264,17 +1347,16 @@ def write_manifest_under_root(root: Path, raw_path: str, manifest: dict[str, Any
         file_fd = os.open(filename, flags, 0o600, dir_fd=current_fd)
         st = os.fstat(file_fd)
         if not stat.S_ISREG(st.st_mode):
-            raise PackError("invalid --manifest-out: unsafe_path")
+            raise PackError(f"invalid {option_name}: unsafe_path")
         with os.fdopen(file_fd, "w", encoding="utf-8") as handle:
             file_fd = -1
-            json.dump(manifest, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
+            handle.write(content)
     except PackError:
         raise
     except FileNotFoundError as exc:
-        raise PackError("invalid --manifest-out: missing") from exc
+        raise PackError(f"invalid {option_name}: missing") from exc
     except OSError as exc:
-        raise PackError(f"invalid --manifest-out: {exc.strerror or exc.__class__.__name__}") from exc
+        raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
     finally:
         if file_fd >= 0:
             try:
@@ -1287,6 +1369,34 @@ def write_manifest_under_root(root: Path, raw_path: str, manifest: dict[str, Any
             except OSError:
                 pass
     return display
+
+
+def manifest_to_source_specs(manifest: dict[str, Any]) -> list[SourceSpec]:
+    version = manifest.get("version", VERSION)
+    if version != VERSION:
+        raise PackError(f"unsupported manifest version: {version}")
+    sources = manifest.get("sources")
+    if not isinstance(sources, list):
+        raise PackError("manifest sources must be a list")
+    specs: list[SourceSpec] = []
+    for index, item in enumerate(sources):
+        if not isinstance(item, dict):
+            raise PackError("manifest sources must be objects")
+        if "path" not in item:
+            raise PackError("manifest source missing path")
+        try:
+            lines = parse_line_range(item.get("lines"))
+        except PackError:
+            lines = LineRange(-1, -1)
+        specs.append(SourceSpec(
+            path=str(item.get("path", "")),
+            priority=bounded_int(item.get("priority"), 0, -1_000_000, 1_000_000),
+            lines=lines,
+            label=cap_label(item.get("label")),
+            input_index=index,
+            origin="auto",
+        ))
+    return specs
 
 
 def build_suggest_manifest(sources: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1458,6 +1568,63 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     return payload, 0
 
 
+def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    if args.manifest_out:
+        validate_output_path_under_root(root, args.manifest_out, "--manifest-out")
+    if args.pack_out:
+        validate_output_path_under_root(root, args.pack_out, "--pack-out")
+    suggest_args = copy.copy(args)
+    suggest_args.manifest_out = None
+    suggest_payload, rc = suggest_pack(root, suggest_args, root_arg=root_arg)
+    manifest = suggest_payload["manifest"]
+    specs = manifest_to_source_specs(manifest)
+    budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
+    build_payload = build_pack(root, specs, budget_bytes=budget, root_arg=root_arg, store_artifact=False)
+    manifest_path: str | None = None
+    pack_path: str | None = None
+    if args.pack_out:
+        pack_path = write_text_under_root(root, args.pack_out, str(build_payload["pack"]), "--pack-out")
+    if args.manifest_out:
+        manifest_path = write_manifest_under_root(root, args.manifest_out, manifest)
+    if not args.no_artifact:
+        build_payload["artifact"] = store_receipt(root, build_payload)
+    build_hint, build_hint_omitted_reason = suggest_build_hint(root_arg, manifest_path, budget)
+    suggest_payload["manifest_path"] = manifest_path
+    suggest_payload["build_hint"] = build_hint
+    suggest_payload.pop("build_hint_omitted_reason", None)
+    if build_hint_omitted_reason:
+        suggest_payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    payload: dict[str, Any] = {
+        "tool": TOOL_NAME,
+        "schema_version": AUTO_SCHEMA_VERSION,
+        "version": VERSION,
+        "mode": "auto",
+        "root": display_root(root),
+        "query": suggest_payload.get("query", ""),
+        "budget_bytes": budget,
+        "manifest": manifest,
+        "manifest_path": manifest_path,
+        "pack_path": pack_path,
+        "suggest": suggest_payload,
+        "build": build_payload,
+        "sources": {
+            "suggested": len(suggest_payload.get("sources", [])),
+            "included": build_payload.get("sources", {}).get("included", 0),
+            "partial": build_payload.get("sources", {}).get("partial", 0),
+            "omitted": build_payload.get("sources", {}).get("omitted", 0),
+        },
+        "pack_bytes": build_payload.get("pack_bytes", 0),
+        "token_proxy": build_payload.get("token_proxy", {}),
+        "caveats": [
+            "Deterministic local heuristics only; no model, network, embedding, or provider-cost estimate is used.",
+            "Byte and token values are pack-size proxies, not billing claims.",
+        ],
+    }
+    if build_hint_omitted_reason:
+        payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    return payload, rc
+
+
 def print_suggest_text(payload: dict[str, Any]) -> None:
     print(
         f"context-guard-pack suggest: {len(payload['sources'])} source(s), "
@@ -1473,6 +1640,20 @@ def print_suggest_text(payload: dict[str, Any]) -> None:
         print(f"build: {payload['build_hint']}")
     elif payload.get("build_hint_omitted_reason"):
         print(f"build hint omitted: {payload['build_hint_omitted_reason']}")
+
+
+def print_auto_text(payload: dict[str, Any]) -> None:
+    print(
+        f"context-guard-pack auto: {payload['sources']['suggested']} suggested source(s), "
+        f"pack {payload['pack_bytes']}/{payload['budget_bytes']} bytes"
+    )
+    if payload.get("manifest_path"):
+        print(f"manifest: {payload['manifest_path']}")
+    if payload.get("pack_path"):
+        print(f"pack: {payload['pack_path']}")
+    else:
+        print()
+        sys.stdout.write(str(payload["build"]["pack"]))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1502,6 +1683,20 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--context-lines", type=int, default=DEFAULT_SUGGEST_CONTEXT_LINES, help="line context around diff/output hits")
     suggest.add_argument("--manifest-out", help="write the suggested build manifest to this relative path under root")
     suggest.add_argument("--json", action="store_true", help="emit JSON payload")
+    auto = sub.add_parser("auto", help="suggest a context pack manifest and build the budgeted pack in one local step")
+    auto.add_argument("--root", default=".", help="project root; must not be a symlink")
+    auto.add_argument("--query", default="", help="task or question to match against local files")
+    auto.add_argument("--diff", help="git diff range, or staged/worktree, to seed changed-file ranges")
+    auto.add_argument("--files", "--file", dest="files", action="append", help="explicit relative file path(s), comma-separated or repeated")
+    auto.add_argument("--output", action="append", help="relative path to sanitized command output text under root")
+    auto.add_argument("--test-output", action="append", help="relative path to sanitized test output text under root")
+    auto.add_argument("--budget-bytes", type=int, default=DEFAULT_BUDGET_BYTES)
+    auto.add_argument("--top", type=int, default=DEFAULT_SUGGEST_TOP, help="maximum suggested sources")
+    auto.add_argument("--context-lines", type=int, default=DEFAULT_SUGGEST_CONTEXT_LINES, help="line context around diff/output hits")
+    auto.add_argument("--manifest-out", help="write the suggested build manifest to this relative path under root")
+    auto.add_argument("--pack-out", help="write the built Markdown pack to this relative path under root")
+    auto.add_argument("--json", action="store_true", help="emit JSON payload")
+    auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
     return parser
 
 
@@ -1547,6 +1742,14 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stdout.write("\n")
             else:
                 print_suggest_text(payload)
+            return rc
+        if args.command == "auto":
+            payload, rc = auto_pack(root, args, root_arg=str(args.root))
+            if args.json:
+                json.dump(payload, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
+                sys.stdout.write("\n")
+            else:
+                print_auto_text(payload)
             return rc
         raise PackError("unknown command")
     except PackError as exc:

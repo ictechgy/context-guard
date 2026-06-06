@@ -3648,6 +3648,223 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(data["estimated_pack_bytes"], 0)
                     self.assertEqual(data["token_proxy"]["estimated_pack"], 0)
 
+    def test_context_pack_auto_builds_pack_and_manifest_from_explicit_files(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("def app():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "README.md").write_text("pack autopilot overview\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/app.py,README.md",
+                            "--manifest-out",
+                            "auto-manifest.json",
+                            "--pack-out",
+                            "auto-pack.md",
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                        ).stdout
+                    )
+
+                    self.assertEqual(data["schema_version"], "contextguard.pack-auto.v1")
+                    self.assertEqual(data["mode"], "auto")
+                    self.assertEqual(data["manifest_path"], "auto-manifest.json")
+                    self.assertEqual(data["pack_path"], "auto-pack.md")
+                    manifest = json.loads((root / "auto-manifest.json").read_text(encoding="utf-8"))
+                    self.assertEqual(manifest, data["manifest"])
+                    self.assertNotIn("schema_version", manifest)
+                    pack_text = (root / "auto-pack.md").read_text(encoding="utf-8")
+                    self.assertEqual(pack_text, data["build"]["pack"])
+                    self.assertIn("src/app.py", pack_text)
+                    self.assertIn("README.md", pack_text)
+
+                    built = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            "auto-manifest.json",
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    self.assertIn("src/app.py", built["pack"])
+                    self.assertIn("README.md", built["pack"])
+
+    def test_context_pack_auto_uses_output_redacts_and_can_skip_artifact(self):
+        secret = "ghp_" + ("A" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+                    (root / "output.txt").write_text(f"FAILED src/app.py:2 token={secret}\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--output",
+                        "output.txt",
+                        "--budget-bytes",
+                        "3000",
+                        "--json",
+                        "--no-artifact",
+                    )
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(secret, proc.stderr)
+                    data = json.loads(proc.stdout)
+                    self.assertFalse(data["build"]["artifact"]["stored"])
+                    self.assertIn("src/app.py", data["build"]["pack"])
+                    self.assertIn("src/app.py", [item["path"] for item in data["suggest"]["sources"]])
+
+    def test_context_pack_auto_invalid_diff_and_unsafe_pack_out_do_not_emit_partial_outputs(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._init_pack_git_repo(root)
+                    (root / "README.md").write_text("readme\n", encoding="utf-8")
+                    subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+
+                    invalid_diff = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--diff",
+                        "definitely-not-a-ref",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(invalid_diff.returncode, 2)
+                    self.assertEqual(invalid_diff.stdout, "")
+                    self.assertIn("could not read diff", invalid_diff.stderr)
+
+                    unsafe_output = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "README.md",
+                        "--manifest-out",
+                        "auto-manifest.json",
+                        "--pack-out",
+                        "../auto-pack.md",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(unsafe_output.returncode, 2)
+                    self.assertEqual(unsafe_output.stdout, "")
+                    self.assertIn("invalid --pack-out", unsafe_output.stderr)
+                    self.assertFalse((root / "auto-manifest.json").exists())
+                    self.assertFalse((Path(tmp) / "auto-pack.md").exists())
+
+                    readonly_pack = root / "readonly-pack.md"
+                    readonly_pack.write_text("existing\n", encoding="utf-8")
+                    readonly_pack.chmod(0o400)
+                    try:
+                        readonly_output = self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "README.md",
+                            "--manifest-out",
+                            "readonly-manifest.json",
+                            "--pack-out",
+                            "readonly-pack.md",
+                            "--json",
+                            check=False,
+                        )
+                    finally:
+                        readonly_pack.chmod(0o600)
+                    self.assertEqual(readonly_output.returncode, 2)
+                    self.assertEqual(readonly_output.stdout, "")
+                    self.assertIn("invalid --pack-out", readonly_output.stderr)
+                    self.assertFalse((root / "readonly-manifest.json").exists())
+                    self.assertFalse((root / ".context-guard" / "packs").exists())
+
+                    if hasattr(os, "mkfifo"):
+                        fifo_pack = root / "fifo-pack.md"
+                        os.mkfifo(fifo_pack)
+                        fifo_output = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "auto",
+                                "--root",
+                                ".",
+                                "--files",
+                                "README.md",
+                                "--manifest-out",
+                                "fifo-manifest.json",
+                                "--pack-out",
+                                "fifo-pack.md",
+                                "--json",
+                            ],
+                            cwd=root,
+                            text=True,
+                            capture_output=True,
+                            timeout=5,
+                            check=False,
+                        )
+                        self.assertEqual(fifo_output.returncode, 2)
+                        self.assertEqual(fifo_output.stdout, "")
+                        self.assertIn("invalid --pack-out", fifo_output.stderr)
+                        self.assertFalse((root / "fifo-manifest.json").exists())
+                        self.assertFalse((root / ".context-guard" / "packs").exists())
+
+    def test_context_pack_auto_query_with_no_matches_returns_empty_pack(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "README.md").write_text("context pack overview\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--query",
+                            "no matching terms here",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+
+                    self.assertEqual(data["suggest"]["sources"], [])
+                    self.assertEqual(data["manifest"], {"version": 1, "sources": []})
+                    self.assertEqual(data["build"]["sources"]["included"], 0)
+                    self.assertLessEqual(data["build"]["pack_bytes"], data["budget_bytes"])
+
     def test_context_pack_suggest_redacts_outputs_and_omits_duplicate_and_unsafe_paths(self):
         secret = "ghp_" + ("D" * 36)
         for script in PACK_SCRIPTS:
