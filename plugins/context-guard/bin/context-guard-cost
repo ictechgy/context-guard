@@ -578,6 +578,14 @@ def key_lock_age_seconds(lock_dir: Path, now: float | None = None) -> float:
         return 0.0
 
 
+def path_mtime_age_seconds(path: Path, now: float | None = None) -> float:
+    current = time.time() if now is None else now
+    try:
+        return max(0.0, current - path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
 def reclaim_stale_key_lock(lock_dir: Path, key_path: Path) -> bool:
     if key_path.exists():
         return False
@@ -613,12 +621,16 @@ def key_lock_owner_matches(lock_dir: Path, lock: KeyLock) -> bool:
 
 def cleanup_orphaned_stale_key_locks(store_dir: Path) -> None:
     stale_prefix = f"{KEY_NAME}.lock.stale."
+    cleanup_prefix = f"{KEY_NAME}.lock.cleanup."
     try:
         candidates = list(store_dir.iterdir())
     except OSError:
         return
     for candidate in candidates:
-        if not candidate.name.startswith(stale_prefix):
+        should_remove = candidate.name.startswith(stale_prefix)
+        if candidate.name.startswith(cleanup_prefix):
+            should_remove = path_mtime_age_seconds(candidate) >= KEY_LOCK_STALE_SECONDS
+        if not should_remove:
             continue
         try:
             if candidate.is_dir():

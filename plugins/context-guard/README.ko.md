@@ -96,6 +96,8 @@ context-guard-statusline-merged
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
 - **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리로 기록합니다.
 
+비용 가드의 로컬 HMAC 키는 기본적으로 `.context-guard/cost-ledger/hmac.key`에 자동 생성됩니다. 관리자가 직접 주입하는 경우 파일에는 필수 padding을 포함한 canonical URL-safe base64 32바이트 키만 정확히 들어 있어야 하며, trailing newline이나 공백은 허용하지 않습니다. 리포트는 키와 원문 프롬프트를 출력하지 않고, 로컬 ledger는 Anthropic/provider prompt cache를 대체하지 않습니다.
+
 ## brief 모드 (권고)
 
 brief 모드는 코딩 에이전트가 군더더기를 줄이되 증거(파일 경로, 명령, 명령 출력과 오류, 코드 블록, 검증 상태, 변경 파일, 남은 과제, 주의사항)는 유지하도록 요청하는 에이전트 중립·안내용 규칙 스니펫을 제공합니다. 강제가 아니라 최선 노력 안내이며, 토큰·비용 절감을 **보장하지 않습니다.**
