@@ -9640,6 +9640,68 @@ for malformed in malformed_values:
                     self.assertIn("cache_hit_rate", text.stdout)
                     self.assertIn("cache_amortization", text.stdout)
 
+    def test_transcript_audit_cache_diagnostics_additive_json_and_feasibility_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "timestamp": "2026-06-06T00:00:00Z",
+                    "message": {
+                        "model": "claude-sonnet-test",
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable prefix\nStable policy\nvolatile tail 1"}],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 200,
+                        },
+                    },
+                    "total_cost_usd": 0.1234,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    for key in ("files", "records", "tokens", "cache_metrics", "cache_friendliness"):
+                        self.assertIn(key, data)
+                    diagnostics = data["cache_diagnostics"]
+                    for key in ("schema_version", "status", "confidence", "evidence", "heuristic", "caveats"):
+                        self.assertIn(key, diagnostics)
+                    self.assertEqual(diagnostics["schema_version"], "contextguard.cache-diagnostics.v1")
+                    self.assertEqual(data["cache_metrics"]["cache_read_tokens"], 800)
+                    self.assertEqual(data["cache_metrics"]["cache_creation_tokens"], 200)
+                    self.assertEqual(data["cache_metrics"]["input_tokens"], 100)
+                    self.assertAlmostEqual(data["cache_metrics"]["cache_amortization"], 4.0, places=3)
+                    headroom = diagnostics["headroom_diagnostics"]
+                    self.assertEqual(headroom["status"], "missing")
+                    self.assertEqual(headroom["evidence"], "unavailable")
+                    self.assertEqual(headroom["observable_via"], "live_statusline_snapshot")
+                    self.assertTrue(headroom["historical_total_tokens_are_not_headroom"])
+                    self.assertNotIn("remaining_tokens", json.dumps(headroom))
+
+                    feasible = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    feasible_data = json.loads(feasible.stdout)
+                    self.assertEqual(feasible_data["schema_version"], "contextguard.metric-feasibility.v1.2")
+                    self.assertIn("summary", feasible_data)
+                    self.assertIn("cache_diagnostics", feasible_data["consumer_contract"]["stable_top_level_fields"])
+                    self.assertIn("cache_diagnostics", feasible_data)
+                    self.assertEqual(feasible_data["summary"]["cache_diagnostics"]["schema_version"], "contextguard.cache-diagnostics.v1")
+                    self.assertNotIn(str(root), feasible.stdout)
+
     def test_transcript_audit_feasibility_json_exposes_gui_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -9670,7 +9732,7 @@ for malformed in malformed_values:
                         check=True,
                     )
                     data = json.loads(proc.stdout)
-                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.1")
+                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.2")
                     self.assertEqual(data["producer"], "context-guard-audit")
                     self.assertIn("summary", data["consumer_contract"]["diagnostic_fields"])
                     self.assertIn("metric_availability", data["consumer_contract"]["stable_top_level_fields"])
@@ -9773,6 +9835,93 @@ for malformed in malformed_values:
                     self.assertNotIn("volatile branch diff", proc.stdout)
                     self.assertNotIn("Stable instruction tail", proc.stdout)
 
+    def test_transcript_audit_cache_diagnostics_prefix_candidates_and_breakers_are_private(self):
+        fixtures: list[tuple[str, list[str], str | None]] = []
+        stable_records = []
+        for idx in range(3):
+            prompt = "\n".join([
+                "Stable system instructions",
+                "Stable project rules",
+                "Stable workflow contract",
+                f"volatile evidence chunk {idx}",
+                f"volatile diff line {idx}",
+                f"volatile command output {idx}",
+            ])
+            stable_records.append(json.dumps({
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}],
+                    "usage": {
+                        "input_tokens": 1000,
+                        "cache_creation_input_tokens": 2000,
+                        "cache_read_input_tokens": 1200,
+                    },
+                },
+            }))
+        fixtures.append(("stable", stable_records, None))
+
+        secret = "ghp_" + ("V" * 36)
+        volatile_records = []
+        for idx in range(3):
+            prompt = "\n".join([
+                f"volatile branch diff {idx} {secret}",
+                f"volatile command output {idx}",
+                f"volatile timestamp {idx}",
+                "Stable instruction tail",
+                "Stable project tail",
+                "Stable verification tail",
+            ])
+            volatile_records.append(json.dumps({
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}],
+                    "usage": {
+                        "input_tokens": 1500,
+                        "cache_creation_input_tokens": 20_000,
+                        "cache_read_input_tokens": 500,
+                    },
+                },
+            }))
+        fixtures.append(("volatile", volatile_records, secret))
+
+        for label, records, fixture_secret in fixtures:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "session.jsonl"
+                    sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    diagnostics = data["cache_diagnostics"]
+                    if label == "stable":
+                        candidate = diagnostics["stable_prefix_candidates"][0]
+                        self.assertEqual(candidate["position"], 0)
+                        self.assertGreaterEqual(candidate["stability"], 0.99)
+                        self.assertEqual(candidate["sample_count"], 3)
+                        self.assertEqual(candidate["evidence"], "inferred")
+                        self.assertIn("stable", candidate["action"].lower())
+                        self.assertEqual(diagnostics["dynamic_prefix_breakers"], [])
+                        self.assertNotIn("volatile evidence chunk", proc.stdout)
+                        self.assertNotIn("Stable system instructions", proc.stdout)
+                    else:
+                        breaker = diagnostics["dynamic_prefix_breakers"][0]
+                        self.assertIn(breaker["trigger"], {"prefix_window_average", "early_prefix_position", "prefix_position"})
+                        self.assertGreaterEqual(breaker["volatile_share"], 0.66)
+                        self.assertTrue(breaker["heuristic"])
+                        self.assertLessEqual(
+                            0 if breaker["confidence"] == "partial" else 1,
+                            1 if data["cache_friendliness"]["confidence"] == "observed" else 0,
+                        )
+                        rec_ids = {rec["id"] for rec in data["recommendations"]}
+                        self.assertIn("move-volatile-context-after-stable-prefix", rec_ids)
+                        self.assertNotIn(fixture_secret, proc.stdout)
+                        self.assertNotIn("volatile branch diff", proc.stdout)
+                        self.assertNotIn("Stable instruction tail", proc.stdout)
+
     def test_transcript_audit_cache_friendliness_flags_single_early_volatile_segment(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -9864,7 +10013,7 @@ for malformed in malformed_values:
             self.assertIn("cache_friendliness", data["consumer_contract"]["stable_top_level_fields"])
             self.assertIn("cache_friendliness", data)
             self.assertEqual(data["cache_friendliness"]["status"], "partial")
-            self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.1")
+            self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.2")
 
     def test_transcript_audit_cache_friendliness_marks_low_record_evidence_partial_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -10077,6 +10226,67 @@ for malformed in malformed_values:
                     cache = json.loads(proc.stdout)["metric_availability"]["cache"]
                     self.assertEqual(cache["status"], expected_status)
                     self.assertEqual(cache["zero_values_observed"], expected_zeroes)
+
+    def test_transcript_audit_cache_diagnostics_distinguishes_missing_zero_and_undefined_ratios(self):
+        scenarios = [
+            (
+                "missing_cache",
+                {"input_tokens": 100, "output_tokens": 20},
+                "missing",
+                {"cache_read": False, "cache_creation": False},
+                "cache-fields-missing",
+                None,
+            ),
+            (
+                "zero_cache",
+                {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "available",
+                {"cache_read": True, "cache_creation": True},
+                None,
+                None,
+            ),
+            (
+                "read_without_writes",
+                {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 0,
+                },
+                "available",
+                {"cache_read": False, "cache_creation": True},
+                None,
+                None,
+            ),
+        ]
+        for label, usage, expected_status, expected_zeroes, expected_top_hypothesis, expected_ratio in scenarios:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "session.jsonl"
+                    sample.write_text(json.dumps({"usage": usage}) + "\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    diagnostics = json.loads(proc.stdout)["cache_diagnostics"]
+                    cache_fields = diagnostics["observations"]["cache_fields"]
+                    self.assertEqual(cache_fields["status"], expected_status)
+                    self.assertEqual(cache_fields["zero_values_observed"], expected_zeroes)
+                    if expected_top_hypothesis:
+                        self.assertEqual(diagnostics["cache_miss_hypotheses"][0]["id"], expected_top_hypothesis)
+                        self.assertEqual(diagnostics["cache_miss_hypotheses"][0]["evidence"], "unavailable")
+                    else:
+                        self.assertNotIn("cache-fields-missing", {h["id"] for h in diagnostics["cache_miss_hypotheses"]})
+                    self.assertEqual(
+                        diagnostics["derived_ratios"]["cache_reuse_ratio"]["value"],
+                        expected_ratio,
+                    )
 
     def test_transcript_audit_feasibility_marks_metrics_partial_when_records_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -10297,6 +10507,170 @@ for malformed in malformed_values:
             recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
             self.assertIn("evaluate-1h-ttl-cache", recs_by_id)
             self.assertNotIn("improve-prompt-cache-reuse", recs_by_id)
+            rec = recs_by_id["evaluate-1h-ttl-cache"]
+            self.assertEqual(rec["title"], "Cache writes are large; validate TTL evidence before longer TTL")
+            self.assertEqual(rec["evidence"]["ttl_status"], "unavailable")
+            self.assertEqual(rec["evidence"]["ttl_evidence"], "unavailable")
+            self.assertIn("historical token totals alone are not TTL evidence", rec["action"])
+            self.assertNotIn("pays off", json.dumps(rec).lower())
+
+    def test_transcript_audit_cache_diagnostics_ttl_unavailable_and_timestamp_hypothesis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 2000,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 150_000,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            ttl = data["cache_diagnostics"]["ttl_diagnostics"]
+            self.assertEqual(ttl["status"], "unavailable")
+            self.assertEqual(ttl["evidence"], "unavailable")
+            self.assertIsNone(ttl["timestamped_cache_record_span_seconds"])
+            self.assertEqual(ttl["timestamped_cache_record_count"], 0)
+            self.assertEqual(ttl["interval_basis"], "timestamped_cache_records")
+            self.assertIn("TTL reuse intervals cannot be inferred", ttl["reason"])
+            rec = {rec["id"]: rec for rec in data["recommendations"]}["evaluate-1h-ttl-cache"]
+            self.assertTrue(rec["evidence"]["heuristic"])
+            self.assertEqual(rec["evidence"]["ttl_status"], "unavailable")
+            self.assertEqual(rec["evidence"]["ttl_evidence"], "unavailable")
+            self.assertIn("timestamped cache read/write evidence", rec["action"])
+            self.assertNotIn("pays off", json.dumps(rec).lower())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = [
+                {
+                    "timestamp": "2026-06-06T00:00:00Z",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 2000,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 0,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-06-06T00:07:30Z",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 2000,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 150_000,
+                        },
+                    },
+                },
+            ]
+            sample.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            ttl = json.loads(proc.stdout)["cache_diagnostics"]["ttl_diagnostics"]
+            self.assertEqual(ttl["status"], "hypothesis")
+            self.assertEqual(ttl["evidence"], "inferred")
+            self.assertEqual(ttl["confidence"], "hypothesis")
+            self.assertEqual(ttl["timestamped_cache_record_count"], 2)
+            self.assertEqual(ttl["timestamped_cache_record_span_seconds"], 450)
+            self.assertEqual(ttl["candidate"], "between-5m-and-1h")
+            self.assertNotIn("savings", json.dumps(ttl).lower())
+            self.assertIn("hypothesis", json.dumps(ttl).lower())
+
+    def test_transcript_audit_cache_diagnostics_ttl_ignores_unrelated_timestamps(self):
+        scenarios = [
+            (
+                "no_cache_fields_with_timestamps",
+                [
+                    {"timestamp": "2026-06-06T00:00:00Z", "usage": {"input_tokens": 100}},
+                    {"timestamp": "2026-06-06T00:10:00Z", "usage": {"input_tokens": 100}},
+                ],
+                0,
+            ),
+            (
+                "untimestamped_cache_fields_with_unrelated_timestamp",
+                [
+                    {"timestamp": "2026-06-06T00:00:00Z", "usage": {"input_tokens": 100}},
+                    {"usage": {"input_tokens": 100, "cache_creation_input_tokens": 60_000}},
+                    {"timestamp": "2026-06-06T00:10:00Z", "usage": {"input_tokens": 100}},
+                ],
+                0,
+            ),
+        ]
+        for label, records, expected_count in scenarios:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "session.jsonl"
+                    sample.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    ttl = json.loads(proc.stdout)["cache_diagnostics"]["ttl_diagnostics"]
+                    self.assertEqual(ttl["status"], "unavailable")
+                    self.assertEqual(ttl["evidence"], "unavailable")
+                    self.assertEqual(ttl["timestamped_cache_record_count"], expected_count)
+                    self.assertIsNone(ttl["timestamped_cache_record_span_seconds"])
+                    self.assertIsNone(ttl["candidate"])
+
+    def test_transcript_audit_cache_diagnostics_text_output_is_compact_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "session.jsonl"
+            secret = "sk-ant-" + ("A" * 24)
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    f"volatile branch diff {idx} {secret}",
+                    f"volatile command output {idx}",
+                    f"volatile timestamp {idx}",
+                    "Stable instruction tail",
+                    "Stable project tail",
+                    "Stable verification tail",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 500,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("Cache diagnostics", proc.stdout)
+            self.assertIn("top_hypothesis", proc.stdout)
+            self.assertIn("ttl_status", proc.stdout)
+            self.assertIn("headroom_status", proc.stdout)
+            self.assertLess(proc.stdout.count("{"), 5)
+            self.assertNotIn(secret, proc.stdout)
+            self.assertNotIn("volatile branch diff", proc.stdout)
+            self.assertNotIn("Stable instruction tail", proc.stdout)
+            self.assertNotIn(str(root), proc.stdout)
 
     def test_statusline_renders_cache_hit_rate_from_transcript_tail(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:

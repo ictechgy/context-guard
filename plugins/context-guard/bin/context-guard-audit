@@ -45,8 +45,10 @@ TOKEN_TYPE_ALIASES = {
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MODEL_KEYS = ("model", "model_id", "modelId")
 QUERY_SOURCE_KEYS = ("query_source", "querySource")
-FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.1"
+TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt", "time", "ts")
+FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.2"
 FEASIBILITY_PRODUCER = "context-guard-audit"
+CACHE_DIAGNOSTICS_SCHEMA_VERSION = "contextguard.cache-diagnostics.v1"
 MAX_ERROR_EXAMPLES = 20
 JSON_PARSE_RECURSION_LIMIT = 10_000
 READ_CHUNK_BYTES = 64 * 1024
@@ -177,8 +179,10 @@ class UsageSummary:
     by_tool: Counter[str] = field(default_factory=Counter)
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
+    cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
     cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    cache_diagnostics_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def total_tokens(self) -> int:
@@ -292,6 +296,48 @@ def finite_nonnegative_number(value: Any, *, clamp_negative: bool) -> int | floa
         if not math.isfinite(value) or (value < 0 and not clamp_negative):
             return None
         return min(max(value, 0.0), float(MAX_METRIC_VALUE))
+    return None
+
+
+def parse_timestamp_value(value: Any) -> _dt.datetime | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = _dt.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        return parsed.astimezone(_dt.timezone.utc)
+    metric = finite_nonnegative_number(value, clamp_negative=False)
+    if metric is None:
+        return None
+    seconds = float(metric) / 1000.0 if float(metric) > 10_000_000_000 else float(metric)
+    try:
+        return _dt.datetime.fromtimestamp(seconds, tz=_dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def record_timestamp(root: Any) -> _dt.datetime | None:
+    candidates: list[Any] = []
+    if isinstance(root, dict):
+        for key in TIMESTAMP_KEYS:
+            if key in root:
+                candidates.append(root.get(key))
+        message = root.get("message")
+        if isinstance(message, dict):
+            for key in TIMESTAMP_KEYS:
+                if key in message:
+                    candidates.append(message.get(key))
+    for candidate in candidates:
+        parsed = parse_timestamp_value(candidate)
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -667,11 +713,14 @@ def add_usage(
 ) -> RecordUsage:
     root_model = None
     root_query_source = None
+    parsed_timestamp = None
     if isinstance(root, dict):
         root_model = first_string(root, MODEL_KEYS)
         root_query_source = first_string(root, QUERY_SOURCE_KEYS)
+        parsed_timestamp = record_timestamp(root)
 
     record = RecordUsage()
+    cache_telemetry_present = False
     summary.prompt_cache_audit.observe(root)
     for d in walk(root):
         local_tokens: Counter[str] = Counter()
@@ -695,6 +744,8 @@ def add_usage(
 
         for bucket in present_buckets:
             summary.token_field_presence[bucket] += 1
+        if "cache_read" in present_buckets or "cache_creation" in present_buckets:
+            cache_telemetry_present = True
 
         if local_tokens:
             summary.tokens.update(local_tokens)
@@ -713,6 +764,8 @@ def add_usage(
                 record.cost_usd += cost
                 summary.cost_field_count += 1
                 break
+    if parsed_timestamp is not None and cache_telemetry_present:
+        summary.cache_record_timestamps.append(parsed_timestamp)
     commands, tools = collect_record_hints(root, show_commands=show_commands)
     record.commands = commands
     record.tools = tools
@@ -980,6 +1033,7 @@ def segment_position_stats(samples: list[PromptSegmentSample], attr: str, window
             "stability": stability,
             "volatile_share": 1.0 - stability,
             "unique_hashes": len(counts),
+            "sample_count": len(values),
         })
     return stats
 
@@ -1143,6 +1197,198 @@ def cache_friendliness_for_summary(summary: UsageSummary) -> dict[str, Any]:
     return summary.cache_friendliness_cache
 
 
+def _cache_diagnostic_confidence(*, skipped: bool, samples: bool, has_cache: bool) -> str:
+    if skipped:
+        return "partial"
+    if samples or has_cache:
+        return "hypothesis"
+    return "unavailable"
+
+
+def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped: bool) -> dict[str, Any]:
+    timestamps = sorted(summary.cache_record_timestamps)
+    caveats = [
+        "Timestamped cache telemetry records do not prove exact provider cache-prefix identity or provider cache TTL state.",
+        "5-minute versus 1-hour TTL guidance is a local hypothesis unless corroborated with provider telemetry and repeated stable prefixes.",
+    ]
+    if len(timestamps) < 2:
+        return {
+            "status": "unavailable",
+            "evidence": EVIDENCE_UNAVAILABLE,
+            "confidence": "unavailable" if not skipped else "partial",
+            "timestamped_cache_record_count": len(timestamps),
+            "timestamped_cache_record_span_seconds": None,
+            "candidate": None,
+            "reason": (
+                "Fewer than two timestamped cache telemetry records were observed, so TTL reuse intervals cannot be inferred."
+            ),
+            "interval_basis": "timestamped_cache_records",
+            "caveats": caveats,
+        }
+    interval = max(0, int((timestamps[-1] - timestamps[0]).total_seconds()))
+    candidate = "within-5m" if interval <= 5 * 60 else ("between-5m-and-1h" if interval <= 60 * 60 else "beyond-1h")
+    return {
+        "status": "hypothesis" if has_cache_any else "unavailable",
+        "evidence": EVIDENCE_INFERRED if has_cache_any else EVIDENCE_UNAVAILABLE,
+        "confidence": "partial" if skipped else "hypothesis",
+        "timestamped_cache_record_count": len(timestamps),
+        "timestamped_cache_record_span_seconds": interval,
+        "candidate": candidate,
+        "reason": (
+            "Timestamped cache telemetry records bound the local cache-observation span, but exact provider cache TTL reuse remains a hypothesis."
+        ),
+        "interval_basis": "timestamped_cache_records",
+        "caveats": caveats,
+    }
+
+
+def build_cache_diagnostics(summary: UsageSummary) -> dict[str, Any]:
+    if summary.cache_diagnostics_cache is not None:
+        return summary.cache_diagnostics_cache
+
+    availability = build_metric_availability(summary)
+    cache_availability = availability["cache"]
+    cache_friendliness = cache_friendliness_for_summary(summary)
+    skipped = bool(
+        summary.skipped_files
+        or summary.skipped_records
+        or summary.parse_errors
+        or cache_friendliness.get("skipped_evidence")
+    )
+    has_cache_read = summary.token_field_presence.get("cache_read", 0) > 0
+    has_cache_creation = summary.token_field_presence.get("cache_creation", 0) > 0
+    has_cache_any = has_cache_read or has_cache_creation
+    cache_read = summary.tokens.get("cache_read", 0)
+    cache_creation = summary.tokens.get("cache_creation", 0)
+    samples = summary.prompt_cache_audit.samples
+    prefix_stats = segment_position_stats(samples, "prefix_hashes", PROMPT_AUDIT_PREFIX_SEGMENTS) if samples else []
+    confidence = _cache_diagnostic_confidence(skipped=skipped, samples=bool(samples), has_cache=has_cache_any)
+
+    stable_prefix_candidates: list[dict[str, Any]] = []
+    for stat_item in sorted(prefix_stats, key=lambda item: (-item["stability"], item["position"]))[:PROMPT_AUDIT_PREFIX_SEGMENTS]:
+        if stat_item["stability"] < 0.66:
+            continue
+        stable_prefix_candidates.append({
+            "position": stat_item["position"],
+            "stability": round(float(stat_item["stability"]), 4),
+            "volatile_share": round(float(stat_item["volatile_share"]), 4),
+            "unique_hashes": stat_item["unique_hashes"],
+            "sample_count": stat_item["sample_count"],
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": "partial" if cache_friendliness.get("confidence") == "partial" else "hypothesis",
+            "action": "Keep stable instructions, policies, and reusable context before run-specific evidence.",
+        })
+
+    dynamic_prefix_breakers: list[dict[str, Any]] = []
+    breaker_trigger = "prefix_position"
+    for finding in cache_friendliness.get("findings", []):
+        if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
+            evidence = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else {}
+            breaker_trigger = str(evidence.get("trigger") or breaker_trigger)
+            break
+    for stat_item in sorted(prefix_stats, key=lambda item: (-item["volatile_share"], item["position"])):
+        if stat_item["volatile_share"] < 0.34:
+            continue
+        dynamic_prefix_breakers.append({
+            "position": stat_item["position"],
+            "trigger": breaker_trigger,
+            "volatile_share": round(float(stat_item["volatile_share"]), 4),
+            "stability": round(float(stat_item["stability"]), 4),
+            "unique_hashes": stat_item["unique_hashes"],
+            "sample_count": stat_item["sample_count"],
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": "partial" if cache_friendliness.get("confidence") == "partial" else "hypothesis",
+            "heuristic": True,
+            "action": "Move diffs, logs, timestamps, and command output after stable reusable prompt prefixes.",
+        })
+    dynamic_prefix_breakers = dynamic_prefix_breakers[:PROMPT_AUDIT_MAX_FINDINGS]
+
+    hypotheses: list[dict[str, Any]] = []
+    if not has_cache_any:
+        hypotheses.append({
+            "id": "cache-fields-missing",
+            "evidence": EVIDENCE_UNAVAILABLE,
+            "confidence": "unavailable" if not skipped else "partial",
+            "reason": "No cache_read/cache_creation transcript fields were observed.",
+            "action": "Hide cache-read UI or label cache telemetry as missing for this scan.",
+        })
+    if has_cache_creation and cache_creation > 0 and (not has_cache_read or cache_read == 0):
+        hypotheses.append({
+            "id": "cache-cold-or-prefix-changed",
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": "hypothesis",
+            "reason": "Cache creation tokens were observed without corresponding cache read tokens.",
+            "action": "Check whether stable instructions changed or whether the session was cache-cold.",
+        })
+    if has_cache_creation and cache_creation >= 10_000 and cache_read > 0 and summary.cache_amortization < 0.5:
+        hypotheses.append({
+            "id": "cache-read-low-vs-write",
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": "hypothesis",
+            "reason": "Cache reads are small relative to observed cache writes.",
+            "action": "Keep reusable prompt prefixes stable across turns before changing large context blocks.",
+        })
+    if dynamic_prefix_breakers:
+        hypotheses.append({
+            "id": "volatile-prefix-breakers",
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": dynamic_prefix_breakers[0]["confidence"],
+            "reason": "Redacted prompt segment hashes show volatile content near the prefix window.",
+            "action": dynamic_prefix_breakers[0]["action"],
+        })
+    if skipped:
+        hypotheses.append({
+            "id": "partial-transcript-scan",
+            "evidence": EVIDENCE_INFERRED,
+            "confidence": "partial",
+            "reason": "Some transcript files, records, or prompt structures were skipped/capped.",
+            "action": "Rerun against narrower transcript paths or higher safe scan limits before making decisions.",
+        })
+
+    ttl = build_ttl_diagnostics(summary, has_cache_any=has_cache_any, skipped=skipped)
+    headroom = build_headroom_availability(summary)
+    headroom_diagnostics = {
+        **headroom,
+        "historical_total_tokens_are_not_headroom": True,
+        "required_observation": "live_statusline_snapshot",
+    }
+    status = "missing"
+    if has_cache_any or samples:
+        status = "partial" if skipped or cache_friendliness.get("status") == "partial" else "available"
+    elif skipped:
+        status = "partial"
+
+    diagnostics = {
+        "schema_version": CACHE_DIAGNOSTICS_SCHEMA_VERSION,
+        "status": status,
+        "confidence": confidence,
+        "evidence": EVIDENCE_INFERRED if (has_cache_any or samples) else EVIDENCE_UNAVAILABLE,
+        "heuristic": True,
+        "observations": {
+            "cache_fields": cache_availability,
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": cache_creation,
+        },
+        "derived_ratios": cache_availability["derived"],
+        "stable_prefix_candidates": stable_prefix_candidates,
+        "dynamic_prefix_breakers": dynamic_prefix_breakers,
+        "cache_miss_hypotheses": hypotheses[:PROMPT_AUDIT_MAX_FINDINGS],
+        "ttl_diagnostics": ttl,
+        "headroom_diagnostics": headroom_diagnostics,
+        "caveats": [
+            "Cache diagnostics are local transcript heuristics and do not prove exact provider cache-prefix state.",
+            "Provider cache read/write fields are diagnostic telemetry and do not prove ContextGuard-caused token reduction.",
+            "Stable-prefix and breaker positions come from bounded redacted segment hashes, not raw prompt text.",
+        ],
+    }
+    summary.cache_diagnostics_cache = diagnostics
+    return diagnostics
+
+
+def cache_diagnostics_for_summary(summary: UsageSummary) -> dict[str, Any]:
+    return build_cache_diagnostics(summary)
+
+
 def build_metric_caveats(summary: UsageSummary) -> list[str]:
     caveats = [
         "Values are observed from local Claude Code transcript JSON/JSONL fields and are not official billing records.",
@@ -1177,6 +1423,7 @@ def feasibility_json(
     stable_tokens = stable_token_counter(summary.tokens)
     stable_total_tokens = sum(stable_tokens.values())
     cache_friendliness = cache_friendliness_for_summary(summary)
+    cache_diagnostics = cache_diagnostics_for_summary(summary)
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -1195,6 +1442,7 @@ def feasibility_json(
                 "context_availability",
                 "headroom_availability",
                 "cache_friendliness",
+                "cache_diagnostics",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
@@ -1222,6 +1470,7 @@ def feasibility_json(
         "context_availability": availability["context"],
         "headroom_availability": availability["headroom"],
         "cache_friendliness": cache_friendliness,
+        "cache_diagnostics": cache_diagnostics,
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,
@@ -1272,6 +1521,7 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     output_ratio = output_tokens / total
     input_ratio = input_tokens / total
     cache_friendliness = cache_friendliness_for_summary(summary)
+    cache_diagnostics = cache_diagnostics_for_summary(summary)
     for finding in cache_friendliness.get("findings", []):
         if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
             evidence = dict(finding.get("evidence") or {})
@@ -1331,25 +1581,56 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             },
         ))
     if cache_creation >= 50_000 and 1.0 <= summary.cache_amortization < 5.0:
+        ttl = cache_diagnostics.get("ttl_diagnostics") or {}
+        ttl_status = str(ttl.get("status") or "unavailable")
+        ttl_confidence = str(ttl.get("confidence") or "unavailable")
+        ttl_candidate = ttl.get("candidate")
+        ttl_span = ttl.get("timestamped_cache_record_span_seconds")
+        if ttl_status == "hypothesis" and ttl_candidate in {"between-5m-and-1h", "beyond-1h"}:
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens; timestamped cache telemetry spans {ttl_span} seconds "
+                f"({ttl_candidate})."
+            )
+            ttl_action = (
+                "Evaluate a longer provider prompt-cache TTL only after confirming the same stable prefix "
+                "pattern in representative sessions and rechecking current provider TTL/pricing documentation."
+            )
+        elif ttl_status == "hypothesis":
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens, but timestamped cache telemetry currently points to {ttl_candidate}."
+            )
+            ttl_action = (
+                "Keep collecting timestamped cache read/write evidence; do not enable a longer TTL solely from this scan."
+            )
+        else:
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens, but TTL diagnostics are {ttl_status} because this scan lacks "
+                "at least two timestamped cache telemetry records."
+            )
+            ttl_action = (
+                "Collect or inspect timestamped cache read/write evidence before evaluating a longer provider "
+                "prompt-cache TTL; historical token totals alone are not TTL evidence."
+            )
         recs.append(recommendation(
             "evaluate-1h-ttl-cache",
-            "Cache writes are large; evaluate the 1h TTL cache beta",
-            (
-                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
-                f"{cache_creation} write tokens; absolute write cost is high and reuse is moderate. "
-                "This metric does not inspect timestamps, so confirm reuse spans >5min in a sample "
-                "session before enabling 1h TTL."
-            ),
-            (
-                "If sessions reuse the same prefix beyond the 5-minute default TTL, evaluate the 1h prompt cache "
-                "beta (write 2x, read 0.1x). It pays off when reuse spans the gap between two 5-min cache writes."
-            ),
+            "Cache writes are large; validate TTL evidence before longer TTL",
+            ttl_reason,
+            ttl_action,
             "P2",
             {
                 "cache_creation": cache_creation,
                 "cache_read": cache_read,
                 "cache_amortization": round(summary.cache_amortization, 4),
                 "cache_hit_rate": round(summary.cache_hit_rate, 4),
+                "ttl_status": ttl_status,
+                "ttl_evidence": ttl.get("evidence") or EVIDENCE_UNAVAILABLE,
+                "ttl_confidence": ttl_confidence,
+                "ttl_candidate": ttl_candidate,
+                "timestamped_cache_record_count": ttl.get("timestamped_cache_record_count"),
+                "timestamped_cache_record_span_seconds": ttl_span,
                 "heuristic": True,
             },
         ))
@@ -1462,6 +1743,7 @@ def summary_json(
         "top_commands": counter_json(summary.by_command, top),
         "top_tools": counter_json(summary.by_tool, top),
         "cache_friendliness": cache_friendliness_for_summary(summary),
+        "cache_diagnostics": cache_diagnostics_for_summary(summary),
     }
     if include_recommendations:
         data["recommendations"] = build_recommendations(summary, top)
@@ -1573,6 +1855,27 @@ def main() -> int:
         for finding in cache_friendliness.get("findings", []):
             if isinstance(finding, dict):
                 print(f"  finding                 [{finding.get('severity')}] {finding.get('id')}: {finding.get('title')}")
+
+    cache_diagnostics = cache_diagnostics_for_summary(summary)
+    print("\nCache diagnostics")
+    print(f"  status                  {cache_diagnostics.get('status')}")
+    print(f"  confidence              {cache_diagnostics.get('confidence')}")
+    hypotheses = cache_diagnostics.get("cache_miss_hypotheses") or []
+    if hypotheses:
+        first = hypotheses[0]
+        print(f"  top_hypothesis          {first.get('id')} ({first.get('confidence')})")
+    stable_candidates = cache_diagnostics.get("stable_prefix_candidates") or []
+    if stable_candidates:
+        first = stable_candidates[0]
+        print(f"  stable_prefix_candidate position={first.get('position')} stability={first.get('stability')}")
+    breakers = cache_diagnostics.get("dynamic_prefix_breakers") or []
+    if breakers:
+        first = breakers[0]
+        print(f"  dynamic_prefix_breaker  position={first.get('position')} volatile_share={first.get('volatile_share')}")
+    ttl = cache_diagnostics.get("ttl_diagnostics") or {}
+    print(f"  ttl_status              {ttl.get('status')} ({ttl.get('confidence')})")
+    headroom = cache_diagnostics.get("headroom_diagnostics") or {}
+    print(f"  headroom_status         {headroom.get('status')} ({headroom.get('evidence')})")
 
     model_totals = Counter({model: sum(tokens.values()) for model, tokens in summary.by_model.items()})
     print_counter("By model", model_totals, args.top)
