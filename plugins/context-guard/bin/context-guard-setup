@@ -528,9 +528,8 @@ def plan_or_write_rule_file_blocks(
     with_init: bool,
     brief_mode: str | None,
     applied: bool,
-    no_backup: bool,
 ) -> dict[str, Any]:
-    """Plan or apply managed rule-file blocks with one original backup per write."""
+    """Plan or apply managed rule-file blocks with one original backup per changed existing write."""
     result: dict[str, Any] = {
         "status": None,
         "planned_actions": [],
@@ -551,6 +550,9 @@ def plan_or_write_rule_file_blocks(
     existing_text = str(existing or "")
     result["brief_mode_existing_levels"] = _brief_mode_levels_in_text(existing_text)
     rule_present = existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing_text
+    planned_meta: dict[str, Any] | None = None
+    if brief_mode:
+        _, planned_meta = compose_rule_file_text(existing, with_init=with_init, brief_mode=brief_mode)
 
     if with_init:
         if rule_present:
@@ -564,8 +566,9 @@ def plan_or_write_rule_file_blocks(
         result["planned_actions"].append("run with --with-init to add advisory ContextGuard rules")
 
     if brief_mode:
+        brief_changed = bool(planned_meta and planned_meta.get("brief_changed"))
         if brief_mode == BRIEF_MODE_OFF:
-            if result["brief_mode_existing_levels"]:
+            if brief_changed:
                 result["brief_mode_status"] = "planned" if not applied else None
                 if not applied:
                     result["planned_actions"].append("would remove advisory brief-mode rules")
@@ -574,12 +577,12 @@ def plan_or_write_rule_file_blocks(
                 result["planned_actions"].append("advisory brief-mode rules already absent")
         else:
             levels = result["brief_mode_existing_levels"]
-            if levels == [brief_mode]:
+            if not brief_changed:
                 result["brief_mode_status"] = "exists"
                 result["planned_actions"].append(f"advisory brief-mode {brief_mode} rules already present")
             elif not applied:
                 result["brief_mode_status"] = "planned"
-                action = "replace" if levels else "add"
+                action = "refresh" if levels == [brief_mode] else ("replace" if levels else "add")
                 result["planned_actions"].append(f"would {action} advisory brief-mode {brief_mode} rules")
 
     if not applied:
@@ -596,7 +599,7 @@ def plan_or_write_rule_file_blocks(
         return result
 
     backup_path = None
-    if existing is not None and not no_backup:
+    if existing is not None:
         try:
             backup_path = backup_existing(path)
         except OSError as exc:
@@ -636,7 +639,12 @@ def plan_or_write_rule_file_blocks(
                 result["planned_actions"].append("advisory brief-mode rules already absent")
         else:
             before = meta.get("brief_levels_removed") or []
-            result["brief_mode_status"] = "replaced" if before and before != [brief_mode] else "applied"
+            if before and before != [brief_mode]:
+                result["brief_mode_status"] = "replaced"
+            elif before == [brief_mode]:
+                result["brief_mode_status"] = "updated"
+            else:
+                result["brief_mode_status"] = "applied"
             result["applied_actions"].append(f"wrote advisory brief-mode {brief_mode} rules")
     result["planned_actions"].extend(result["applied_actions"])
     return result
@@ -656,8 +664,38 @@ def _read_rule_file_text(path: Path) -> str | None:
         return None
 
 
+def _existing_rule_parent_issue(path: Path) -> str | None:
+    """Return a reason when an existing parent component is unsafe to traverse.
+
+    Missing parent directories are intentionally allowed: atomic writes create them
+    with explicit modes. Existing symlink/non-directory parents are not allowed,
+    because plan/apply must agree and must never follow an attacker-swapped rule
+    directory outside the project.
+    """
+    parts = path.parts[1:-1] if path.is_absolute() else path.parts[:-1]
+    if not parts:
+        return None
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    for part in parts:
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return f"could not inspect rule parent {current}: {exc.__class__.__name__}"
+        if stat.S_ISLNK(st.st_mode):
+            return f"refused to traverse symlinked rule parent: {current}"
+        if not stat.S_ISDIR(st.st_mode):
+            return f"refused non-directory rule parent: {current}"
+    return None
+
+
 def _rule_file_state(path: Path) -> dict[str, Any]:
     """Return a non-throwing state for project rule/skill files."""
+    parent_issue = _existing_rule_parent_issue(path)
+    if parent_issue:
+        return {"status": "unsafe", "text": None, "reason": parent_issue}
     try:
         st = os.lstat(path)
     except FileNotFoundError:
@@ -776,13 +814,13 @@ def build_adapter_plan(
     with_skill: bool,
     applied: bool,
     brief_mode: str | None = None,
-    no_backup: bool = False,
 ) -> list[dict[str, Any]]:
     """Render a per-adapter plan, performing safe repo-rule writes when applied.
 
-    Only repo-rule adapters write, and only when both ``with_init`` and ``applied``
-    are set. Native-plugin entries mirror the Claude settings result; native-skill
-    and report-only entries are advisory and never write.
+    Repo-rule adapters write when ``applied`` is set and either ``with_init`` or
+    project-scope ``brief_mode`` requested a managed rule-file block. Native-plugin
+    entries mirror the Claude settings result; native-skill and report-only entries
+    are advisory and never write.
     """
     detected = set(detect_agents(root))
     plan: list[dict[str, Any]] = []
@@ -845,7 +883,6 @@ def build_adapter_plan(
                         with_init=False,
                         brief_mode=brief_mode,
                         applied=applied,
-                        no_backup=no_backup,
                     )
                     entry["brief_mode_status"] = result["brief_mode_status"]
                     entry["brief_mode_existing_levels"] = result["brief_mode_existing_levels"]
@@ -872,7 +909,6 @@ def build_adapter_plan(
                     with_init=with_init,
                     brief_mode=brief_mode,
                     applied=applied,
-                    no_backup=no_backup,
                 )
                 entry["status"] = result["status"]
                 entry["brief_mode_status"] = result["brief_mode_status"]
@@ -1794,6 +1830,8 @@ def render_text(result: SetupResult) -> str:
             lines.append(f"- {entry['key']} [{entry['capability']}] status={entry['status']}")
             for action in entry.get("planned_actions", []):
                 lines.append(f"  - {action}")
+            if entry.get("brief_mode_backup_path"):
+                lines.append(f"  - backup={entry['brief_mode_backup_path']}")
     if result.apply_requested and not result.applied:
         lines.append("No supported writes were applied.")
     elif not result.applied:
@@ -1902,8 +1940,8 @@ def run(args: argparse.Namespace) -> SetupResult:
         finally:
             release_settings_lock(lock_fd)
 
-    # Build the per-adapter plan; repo-rule writes happen here only when both
-    # --with-init and an applying run (--yes) are in effect.
+    # Build the per-adapter plan; repo-rule writes happen here when an applying
+    # run (--yes) requested --with-init or project-scope --brief-mode.
     adapter_plan = build_adapter_plan(
         root,
         targets,
@@ -1915,7 +1953,6 @@ def run(args: argparse.Namespace) -> SetupResult:
         with_skill=bool(getattr(args, "with_skill", False)),
         applied=apply_requested,
         brief_mode=getattr(args, "brief_mode", None),
-        no_backup=bool(getattr(args, "no_backup", False)),
     )
     # Surface any repo-rule writes in the top-level actions for visibility. Claude
     # actions are already in ``actions``; only adapter-side writes are appended.
