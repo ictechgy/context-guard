@@ -3556,6 +3556,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.email", "context-guard@example.test"], cwd=root, check=True)
         subprocess.run(["git", "config", "user.name", "Context Guard"], cwd=root, check=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
+        subprocess.run(["git", "config", "core.hooksPath", os.devnull], cwd=root, check=True)
 
     def test_context_pack_suggest_json_manifest_round_trips_into_build(self):
         for script in PACK_SCRIPTS:
@@ -3620,6 +3622,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertLessEqual(build["pack_bytes"], 3000)
                     self.assertIn("src/app.py", build["pack"])
                     self.assertIn("README.md", build["pack"])
+
+    def test_context_pack_suggest_query_with_no_matches_returns_empty_payload(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "README.md").write_text("context pack overview\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--query",
+                            "no matching terms here",
+                            "--json",
+                        ).stdout
+                    )
+
+                    self.assertEqual(data["sources"], [])
+                    self.assertEqual(data["manifest"], {"version": 1, "sources": []})
+                    self.assertEqual(data["estimated_pack_bytes"], 0)
+                    self.assertEqual(data["token_proxy"]["estimated_pack"], 0)
 
     def test_context_pack_suggest_redacts_outputs_and_omits_duplicate_and_unsafe_paths(self):
         secret = "ghp_" + ("D" * 36)
@@ -3784,12 +3811,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "--output",
                         "output.txt",
                         "--json",
-                        check=False,
                     )
 
-                    self.assertEqual(proc.returncode, 2)
                     self.assertNotIn(secret_component, proc.stdout)
                     self.assertNotIn(secret_component, proc.stderr)
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["sources"], [])
 
     def test_context_pack_suggest_diff_disables_textconv_helpers(self):
         for script in PACK_SCRIPTS:

@@ -1166,7 +1166,7 @@ def collect_query_candidates(root: Path, query_terms: set[str], context_lines: i
 
 def source_selected_range(source: ResolvedSource) -> LineRange:
     start = source.requested_lines.start if source.requested_lines else 1
-    return LineRange(start, start + len(source.selected_lines) - 1)
+    return LineRange(start, start + max(len(source.selected_lines), 1) - 1)
 
 
 def resolved_block_bytes(source: ResolvedSource, *, root_arg: str) -> int:
@@ -1259,6 +1259,8 @@ def write_manifest_under_root(root: Path, raw_path: str, manifest: dict[str, Any
             flags |= os.O_NOFOLLOW
         if hasattr(os, "O_CLOEXEC"):
             flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
         file_fd = os.open(filename, flags, 0o600, dir_fd=current_fd)
         st = os.fstat(file_fd)
         if not stat.S_ISREG(st.st_mode):
@@ -1320,8 +1322,12 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
     candidates: list[SuggestCandidate] = []
     omitted: list[dict[str, Any]] = []
+    file_inputs = split_suggest_files(args.files)
+    has_signal = bool(query or file_inputs or args.diff or args.output or args.test_output)
+    if not has_signal:
+        raise PackError("provide --query, --files, --diff, --output, or --test-output")
 
-    for raw_path in split_suggest_files(args.files):
+    for raw_path in file_inputs:
         add_suggest_candidate(
             candidates,
             path=raw_path,
@@ -1339,9 +1345,6 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     omitted.extend(test_omitted)
     candidates.extend(collect_query_candidates(root, query_terms, context_lines))
 
-    if not candidates:
-        raise PackError("provide --query, --files, --diff, --output, or --test-output")
-
     candidates.sort(key=lambda item: (-item.score, item.input_index, item.path, item.lines.identity() if item.lines else "0:0"))
     seen: set[tuple[str, str]] = set()
     final_seen: set[tuple[str, str]] = set()
@@ -1355,14 +1358,15 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
         identity = (identity_path, identity_lines)
         if rel is not None and identity in seen:
             display, redacted = display_rel_path(rel.as_posix())
-            omitted.append({
+            duplicate_item = {
                 "path": display,
                 "status": "omitted",
                 "reason": "duplicate_source",
                 "suggest_reason": candidate.reason,
                 "priority": candidate.score,
                 "retrieval_omitted_reason": "redacted_path" if redacted else None,
-            })
+            }
+            omitted.append({key: value for key, value in duplicate_item.items() if value is not None})
             continue
         if rel is not None:
             seen.add(identity)
