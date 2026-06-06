@@ -607,6 +607,7 @@ def plan_or_write_rule_file_blocks(
             result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
             result["planned_actions"] = [reason]
             return result
+    durability_warning = None
     try:
         atomic_write(
             path,
@@ -614,6 +615,8 @@ def plan_or_write_rule_file_blocks(
             existing_mode_or_default(path, 0o644) if existing is not None else 0o644,
             dir_mode=0o755,
         )
+    except AtomicWriteDurabilityError as exc:
+        durability_warning = str(exc)
     except OSError as exc:
         reason = f"could not write repo rule file {path.name}: {exc.__class__.__name__}"
         result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
@@ -622,8 +625,12 @@ def plan_or_write_rule_file_blocks(
 
     if backup_path:
         result["brief_mode_backup_path"] = str(backup_path)
+    if durability_warning:
+        result["status"] = "applied-durability-uncertain"
+        result["reason"] = durability_warning
     if with_init:
-        result["status"] = "applied" if meta["init_changed"] else "exists"
+        if not durability_warning:
+            result["status"] = "applied" if meta["init_changed"] else "exists"
         if meta["init_changed"]:
             result["applied_actions"].append("wrote advisory ContextGuard rules")
         else:
@@ -646,6 +653,8 @@ def plan_or_write_rule_file_blocks(
             else:
                 result["brief_mode_status"] = "applied"
             result["applied_actions"].append(f"wrote advisory brief-mode {brief_mode} rules")
+    if durability_warning:
+        result["planned_actions"].append(durability_warning)
     result["planned_actions"].extend(result["applied_actions"])
     return result
 
@@ -748,11 +757,21 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
             backup_path = backup_existing(path)
         except OSError as exc:
             return {"status": "skipped", "reason": f"could not back up repo rule file {path.name}: {exc.__class__.__name__}"}
+    durability_warning = None
     try:
         atomic_write(path, new_text, mode, dir_mode=0o755)
+    except AtomicWriteDurabilityError as exc:
+        durability_warning = str(exc)
     except OSError as exc:
-        return {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
-    return {"status": "applied", "backup_path": str(backup_path) if backup_path else None}
+        result = {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
+        if backup_path:
+            result["backup_path"] = str(backup_path)
+        return result
+    result = {"status": "applied", "backup_path": str(backup_path) if backup_path else None}
+    if durability_warning:
+        result["status"] = "applied-durability-uncertain"
+        result["reason"] = durability_warning
+    return result
 
 
 def codex_skill_status(path: Path) -> str:
@@ -899,7 +918,13 @@ def build_adapter_plan(
                     for action in result.get("applied_actions", []):
                         entry["applied_actions"].append(f"{action} in {entry['rule_file']}")
                     if result.get("applied_actions"):
-                        entry["status"] = "applied"
+                        entry["status"] = (
+                            result["status"]
+                            if result.get("status") == "applied-durability-uncertain"
+                            else "applied"
+                        )
+                    if result.get("reason"):
+                        entry["brief_mode_reason"] = result.get("reason")
         elif adapter.capability == CapabilityClass.REPO_RULE:
             entry["writable"] = True
             rule_path = adapter_rule_path(root, adapter)
@@ -924,7 +949,11 @@ def build_adapter_plan(
                 entry["planned_actions"] = [f"{action} in {entry['rule_file']}" for action in result.get("planned_actions", [])]
                 entry["applied_actions"] = [f"{action} in {entry['rule_file']}" for action in result.get("applied_actions", [])]
                 if result.get("applied_actions"):
-                    entry["status"] = "applied"
+                    entry["status"] = (
+                        result["status"]
+                        if result.get("status") == "applied-durability-uncertain"
+                        else "applied"
+                    )
             else:
                 if rule_path is not None and repo_rule_block_present(rule_path):
                     entry["status"] = "exists"
@@ -938,9 +967,12 @@ def build_adapter_plan(
                 elif rule_path is not None:
                     result = write_repo_rule_init(rule_path)
                     entry["status"] = result["status"]
-                    if result["status"] == "applied":
+                    if result["status"] in {"applied", "applied-durability-uncertain"}:
                         entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {entry['rule_file']}"]
                         entry["planned_actions"] = list(entry["applied_actions"])
+                        if result.get("reason"):
+                            entry["planned_actions"].append(result["reason"])
+                            entry["reason"] = result["reason"]
                         if result.get("backup_path"):
                             entry["rule_backup_path"] = result["backup_path"]
                     elif result["status"] == "exists":

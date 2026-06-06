@@ -13874,6 +13874,48 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
                     self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
 
+    def test_with_init_uncertain_atomic_write_still_reports_backup_path(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"setup_uncertain_rule_init_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve()
+                    agents = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents.write_text(original, encoding="utf-8")
+                    real_atomic_write = setup.atomic_write
+
+                    def uncertain_target_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = setup.PRIVATE_DIR_MODE) -> None:
+                        real_atomic_write(path, text, mode, dir_mode=dir_mode)
+                        if Path(path) == agents:
+                            raise setup.AtomicWriteDurabilityError(
+                                f"write committed but parent directory durability is uncertain: {path}"
+                            )
+
+                    setup.atomic_write = uncertain_target_write
+                    try:
+                        plan = setup.build_adapter_plan(
+                            root,
+                            [setup.adapter_registry()["codex"]],
+                            scope="project",
+                            claude_actions=[],
+                            claude_changed=False,
+                            claude_applied=False,
+                            with_init=True,
+                            with_skill=False,
+                            applied=True,
+                        )
+                    finally:
+                        setup.atomic_write = real_atomic_write
+
+                    entry = plan[0]
+                    backup_path = Path(entry["rule_backup_path"])
+                    self.assertEqual(entry["status"], "applied-durability-uncertain")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertIn("durability is uncertain", "\n".join(entry["planned_actions"]))
+                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+
     def test_agent_alias_and_project_scope_keep_setup_project_local(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
@@ -14417,6 +14459,43 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     )
                     self.assertIn("backup=", proc.stdout)
                     self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
+
+    def test_brief_mode_uncertain_atomic_write_still_reports_backup_path(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"setup_uncertain_brief_mode_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve()
+                    agents_md = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents_md.write_text(original, encoding="utf-8")
+                    real_atomic_write = setup.atomic_write
+
+                    def uncertain_target_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = setup.PRIVATE_DIR_MODE) -> None:
+                        real_atomic_write(path, text, mode, dir_mode=dir_mode)
+                        if Path(path) == agents_md:
+                            raise setup.AtomicWriteDurabilityError(
+                                f"write committed but parent directory durability is uncertain: {path}"
+                            )
+
+                    setup.atomic_write = uncertain_target_write
+                    try:
+                        result = setup.plan_or_write_rule_file_blocks(
+                            agents_md,
+                            with_init=False,
+                            brief_mode="lite",
+                            applied=True,
+                        )
+                    finally:
+                        setup.atomic_write = real_atomic_write
+
+                    backup_path = Path(result["brief_mode_backup_path"])
+                    self.assertEqual(result["status"], "applied-durability-uncertain")
+                    self.assertEqual(result["brief_mode_status"], "applied")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertIn("durability is uncertain", "\n".join(result["planned_actions"]))
+                    self.assertIn("level=lite", agents_md.read_text(encoding="utf-8"))
 
     def test_claude_project_brief_mode_targets_claude_md(self):
         for script in SETUP_SCRIPTS:
