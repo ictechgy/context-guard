@@ -463,6 +463,23 @@ def check_json_field(data: dict[str, Any], key: str, expected: Any, command: str
         fail(f"{command} JSON field {key!r} was {data.get(key)!r}, expected {expected!r}")
 
 
+def check_brief_mode_apply_smoke(proc: subprocess.CompletedProcess[str], project: Path, command: str) -> None:
+    data = load_json(proc.stdout, command)
+    check_json_field(data, "applied", True, command)
+    rule_file = project / "AGENTS.md"
+    if not rule_file.is_file():
+        fail(f"{command} did not write AGENTS.md")
+    text = rule_file.read_text(encoding="utf-8")
+    if "<!-- BEGIN context-guard:brief-mode level=lite version=1 -->" not in text:
+        fail(f"{command} did not write the lite brief-mode block")
+    adapter_plan = data.get("adapter_plan")
+    if not isinstance(adapter_plan, list) or not adapter_plan:
+        fail(f"{command} JSON missing adapter_plan")
+    status = adapter_plan[0].get("brief_mode_status")
+    if status not in {"applied", "updated", "exists"}:
+        fail(f"{command} unexpected brief_mode_status: {status!r}")
+
+
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
@@ -487,6 +504,49 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             timeout=timeout,
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "context-guard-setup"), "applied", False, "context-guard-setup")
+            ),
+        )
+        run_command(
+            [
+                str(commands["context-guard-setup"]),
+                "--root",
+                str(project),
+                "--agent",
+                "codex",
+                "--brief-mode",
+                "lite",
+                "--plan",
+                "--json",
+            ],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                check_json_field(load_json(proc.stdout, "context-guard-setup brief-mode"), "applied", False, "context-guard-setup brief-mode")
+            ),
+        )
+        brief_apply_project = Path(td) / "brief-apply-project"
+        brief_apply_project.mkdir()
+        run_command(
+            [
+                str(commands["context-guard-setup"]),
+                "--root",
+                str(brief_apply_project),
+                "--agent",
+                "codex",
+                "--brief-mode",
+                "lite",
+                "--yes",
+                "--no-diet-scan",
+                "--json",
+            ],
+            cwd=brief_apply_project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_brief_mode_apply_smoke(
+                proc,
+                brief_apply_project,
+                "context-guard-setup brief-mode apply",
             ),
         )
         run_command(
@@ -607,6 +667,38 @@ def run_npm_package_smoke(timeout: float) -> None:
             timeout=timeout,
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "npm exec context-guard setup"), "applied", False, "npm exec context-guard setup")
+            ),
+        )
+        run_command(
+            [
+                npm,
+                "exec",
+                "--ignore-scripts",
+                "--yes",
+                "--package",
+                str(tarball),
+                "--",
+                "context-guard",
+                "setup",
+                "--root",
+                str(project),
+                "--agent",
+                "codex",
+                "--scope",
+                "project",
+                "--brief-mode",
+                "lite",
+                "--yes",
+                "--no-diet-scan",
+                "--json",
+            ],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_brief_mode_apply_smoke(
+                proc,
+                project,
+                "npm exec context-guard setup brief-mode apply",
             ),
         )
         for plan in npm_dispatcher_smoke_plan():

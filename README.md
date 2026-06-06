@@ -89,7 +89,7 @@ Related patterns that informed the design:
 
 Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving the evidence a reviewer needs: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
 
-Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block you install into an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions) and remove by deleting the block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
+Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block for an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Manage it through setup with `context-guard setup --agent codex --scope project --brief-mode standard --plan`, rerun with `--yes` to apply, and use `--brief-mode off` to remove the managed block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
 
 ## What to measure
 
@@ -168,12 +168,14 @@ The npm package exposes a canonical `context-guard` command plus the backwards-c
 npm install -g @ictechgy/context-guard
 context-guard --version
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --brief-mode standard --plan
 ```
 
 For a one-off run without global installation:
 
 ```bash
 npx @ictechgy/context-guard setup --agent codex --scope project --with-init --with-skill --plan
+npx @ictechgy/context-guard setup --agent codex --scope project --brief-mode standard --plan
 npm exec @ictechgy/context-guard -- --version
 ```
 
@@ -339,6 +341,7 @@ Plugin helper binaries are not added to `PATH` by default. For local testing, in
 
 ```bash
 ./plugins/context-guard/bin/context-guard-setup --plan
+./plugins/context-guard/bin/context-guard-setup --agent codex --brief-mode standard --plan
 ./plugins/context-guard/bin/context-guard-setup --yes
 ```
 

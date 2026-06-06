@@ -48,9 +48,16 @@ A brief-mode response must still include, whenever relevant:
 Brief mode is installed by copying the marker-delimited block from a level file into the
 target agent's rule/instruction file (for example a repo `AGENTS.md`, `CLAUDE.md`,
 `.cursorrules`, or `.github/copilot-instructions.md`). The cross-agent setup planner is the
-intended automation for this; per the project safety rules it stays dry-run first, writes
-only local files, backs up before changing anything, and applies only with explicit
-approval.
+intended automation for this:
+
+```bash
+context-guard setup --agent codex --scope project --brief-mode standard --plan
+context-guard setup --agent codex --scope project --brief-mode standard --yes
+context-guard setup --agent codex --scope project --brief-mode off --yes
+```
+
+Per the project safety rules it stays dry-run first, writes only local files, backs up
+existing rule files before changing anything, and applies only with explicit approval.
 
 Each block is wrapped in stable markers:
 

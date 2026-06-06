@@ -13852,6 +13852,70 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(data["adapter_plan"][0]["status"], "planned")
                     self.assertFalse((root / "AGENTS.md").exists())
 
+    def test_with_init_existing_rule_backs_up_even_with_no_backup(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents.write_text(original, encoding="utf-8")
+                    data = self._run(
+                        script,
+                        root,
+                        ["--only", "codex", "--with-init", "--yes", "--no-backup", "--no-diet-scan"],
+                    )
+                    entry = data["adapter_plan"][0]
+                    backup_path = Path(entry["rule_backup_path"])
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
+                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+
+    def test_with_init_uncertain_atomic_write_still_reports_backup_path(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"setup_uncertain_rule_init_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve()
+                    agents = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents.write_text(original, encoding="utf-8")
+                    real_atomic_write = setup.atomic_write
+
+                    def uncertain_target_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = setup.PRIVATE_DIR_MODE) -> None:
+                        real_atomic_write(path, text, mode, dir_mode=dir_mode)
+                        if Path(path) == agents:
+                            raise setup.AtomicWriteDurabilityError(
+                                f"write committed but parent directory durability is uncertain: {path}"
+                            )
+
+                    setup.atomic_write = uncertain_target_write
+                    try:
+                        plan = setup.build_adapter_plan(
+                            root,
+                            [setup.adapter_registry()["codex"]],
+                            scope="project",
+                            claude_actions=[],
+                            claude_changed=False,
+                            claude_applied=False,
+                            with_init=True,
+                            with_skill=False,
+                            applied=True,
+                        )
+                    finally:
+                        setup.atomic_write = real_atomic_write
+
+                    entry = plan[0]
+                    backup_path = Path(entry["rule_backup_path"])
+                    self.assertEqual(entry["status"], "applied-durability-uncertain")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertIn("durability is uncertain", "\n".join(entry["planned_actions"]))
+                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+
     def test_agent_alias_and_project_scope_keep_setup_project_local(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
@@ -14194,6 +14258,358 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(data["actions"], [])
                     self.assertFalse((root / ".claude").exists())
                     self.assertEqual(list(root.iterdir()), [])  # nothing written
+
+    def test_brief_mode_plan_is_read_only_and_apply_is_idempotent(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    planned = self._run(script, root, ["--agent", "codex", "--brief-mode", "standard", "--plan"])
+                    entry = planned["adapter_plan"][0]
+                    self.assertFalse(planned["applied"])
+                    self.assertEqual(entry["brief_mode_status"], "planned")
+                    self.assertEqual(entry["brief_mode_level"], "standard")
+                    self.assertIn("would add advisory brief-mode standard", "\n".join(entry["planned_actions"]))
+                    self.assertFalse((root / "AGENTS.md").exists())
+
+                    applied = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--brief-mode", "standard", "--yes", "--no-diet-scan"],
+                    )
+                    entry = applied["adapter_plan"][0]
+                    self.assertTrue(applied["applied"])
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertEqual(entry["brief_mode_status"], "applied")
+                    agents_md = root / "AGENTS.md"
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(text.count("<!-- BEGIN context-guard:brief-mode level=standard version=1 -->"), 1)
+                    self.assertIn("does not promise", text)
+                    self.assertIn("Always preserve this evidence", text)
+                    self.assertFalse((root / ".claude").exists())
+
+                    again = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--brief-mode", "standard", "--yes", "--no-diet-scan"],
+                    )
+                    again_entry = again["adapter_plan"][0]
+                    self.assertFalse(again["applied"])
+                    self.assertEqual(again_entry["brief_mode_status"], "exists")
+                    self.assertEqual(again["actions"], [])
+                    self.assertEqual(agents_md.read_text(encoding="utf-8").count("<!-- BEGIN context-guard:brief-mode"), 1)
+
+    def test_brief_mode_replaces_and_removes_without_stacking(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents_md = root / "AGENTS.md"
+                    agents_md.write_text("User rules.\n", encoding="utf-8")
+                    self._run(script, root, ["--agent", "codex", "--brief-mode", "standard", "--yes", "--no-diet-scan"])
+                    replaced = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--brief-mode", "ultra", "--yes", "--no-diet-scan"],
+                    )
+                    entry = replaced["adapter_plan"][0]
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(entry["brief_mode_status"], "replaced")
+                    self.assertTrue(entry["brief_mode_backup_path"])
+                    self.assertEqual(text.count("<!-- BEGIN context-guard:brief-mode"), 1)
+                    self.assertIn("level=ultra", text)
+                    self.assertNotIn("level=standard", text)
+                    self.assertIn("User rules.", text)
+
+                    removed = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--brief-mode", "off", "--yes", "--no-diet-scan"],
+                    )
+                    removed_entry = removed["adapter_plan"][0]
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertEqual(removed_entry["brief_mode_status"], "removed")
+                    self.assertNotIn("<!-- BEGIN context-guard:brief-mode", text)
+                    self.assertIn("User rules.", text)
+
+    def test_brief_mode_combines_with_init_skill_and_backs_up_original_once(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents_md = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents_md.write_text(original, encoding="utf-8")
+                    data = self._run(
+                        script,
+                        root,
+                        [
+                            "--agent",
+                            "codex",
+                            "--with-init",
+                            "--with-skill",
+                            "--brief-mode",
+                            "lite",
+                            "--yes",
+                            "--no-diet-scan",
+                        ],
+                    )
+                    entry = data["adapter_plan"][0]
+                    text = agents_md.read_text(encoding="utf-8")
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertEqual(text.count("<!-- BEGIN context-guard:brief-mode level=lite version=1 -->"), 1)
+                    self.assertEqual(entry["project_skill_status"], "applied")
+                    backup_path = Path(entry["brief_mode_backup_path"])
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    backups = list(root.glob("AGENTS.md.bak-*"))
+                    self.assertEqual(len(backups), 1)
+
+    def test_brief_mode_repo_rule_backup_ignores_no_backup_for_original_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents_md = root / "AGENTS.md"
+                    original = "Original Codex rules must be restorable.\n"
+                    agents_md.write_text(original, encoding="utf-8")
+
+                    data = self._run(
+                        script,
+                        root,
+                        [
+                            "--agent",
+                            "codex",
+                            "--with-init",
+                            "--brief-mode",
+                            "lite",
+                            "--yes",
+                            "--no-backup",
+                            "--no-diet-scan",
+                        ],
+                    )
+
+                    entry = data["adapter_plan"][0]
+                    backup_path = Path(entry["brief_mode_backup_path"])
+                    self.assertTrue(data["applied"])
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
+
+    def test_brief_mode_plan_reports_same_level_custom_block_refresh(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents_md = root / "AGENTS.md"
+                    custom = "\n".join(
+                        [
+                            "User rules.",
+                            "<!-- BEGIN context-guard:brief-mode level=standard version=1 -->",
+                            "CUSTOM SAME-LEVEL CONTENT",
+                            "<!-- END context-guard:brief-mode -->",
+                            "",
+                        ]
+                    )
+                    agents_md.write_text(custom, encoding="utf-8")
+
+                    planned = self._run(script, root, ["--agent", "codex", "--brief-mode", "standard", "--plan"])
+                    plan_entry = planned["adapter_plan"][0]
+                    self.assertFalse(planned["applied"])
+                    self.assertEqual(plan_entry["brief_mode_status"], "planned")
+                    self.assertIn("would refresh advisory brief-mode standard", "\n".join(plan_entry["planned_actions"]))
+                    self.assertEqual(agents_md.read_text(encoding="utf-8"), custom)
+
+                    applied = self._run(
+                        script,
+                        root,
+                        ["--agent", "codex", "--brief-mode", "standard", "--yes", "--no-diet-scan"],
+                    )
+                    apply_entry = applied["adapter_plan"][0]
+                    rewritten = agents_md.read_text(encoding="utf-8")
+                    self.assertTrue(applied["applied"])
+                    self.assertEqual(apply_entry["brief_mode_status"], "updated")
+                    self.assertTrue(Path(apply_entry["brief_mode_backup_path"]).is_file())
+                    self.assertNotIn("CUSTOM SAME-LEVEL CONTENT", rewritten)
+                    self.assertIn("does not promise", rewritten)
+
+    def test_brief_mode_text_output_surfaces_rule_backup_path(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "AGENTS.md").write_text("Existing rules.\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--root",
+                            str(root),
+                            "--agent",
+                            "codex",
+                            "--brief-mode",
+                            "lite",
+                            "--yes",
+                            "--no-diet-scan",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("backup=", proc.stdout)
+                    self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
+
+    def test_brief_mode_uncertain_atomic_write_still_reports_backup_path(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                setup = load_python_script_module(script, f"setup_uncertain_brief_mode_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve()
+                    agents_md = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents_md.write_text(original, encoding="utf-8")
+                    real_atomic_write = setup.atomic_write
+
+                    def uncertain_target_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = setup.PRIVATE_DIR_MODE) -> None:
+                        real_atomic_write(path, text, mode, dir_mode=dir_mode)
+                        if Path(path) == agents_md:
+                            raise setup.AtomicWriteDurabilityError(
+                                f"write committed but parent directory durability is uncertain: {path}"
+                            )
+
+                    setup.atomic_write = uncertain_target_write
+                    try:
+                        result = setup.plan_or_write_rule_file_blocks(
+                            agents_md,
+                            with_init=False,
+                            brief_mode="lite",
+                            applied=True,
+                        )
+                    finally:
+                        setup.atomic_write = real_atomic_write
+
+                    backup_path = Path(result["brief_mode_backup_path"])
+                    self.assertEqual(result["status"], "applied-durability-uncertain")
+                    self.assertEqual(result["brief_mode_status"], "applied")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertIn("durability is uncertain", "\n".join(result["planned_actions"]))
+                    self.assertIn("level=lite", agents_md.read_text(encoding="utf-8"))
+
+    def test_claude_project_brief_mode_targets_claude_md(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    planned = self._run(script, root, ["--agent", "claude", "--brief-mode", "lite", "--plan"])
+                    entry = planned["adapter_plan"][0]
+                    self.assertEqual(entry["key"], "claude")
+                    self.assertEqual(entry["brief_mode_file"], "CLAUDE.md")
+                    self.assertEqual(entry["brief_mode_status"], "planned")
+                    self.assertFalse((root / "CLAUDE.md").exists())
+
+                    applied = self._run(
+                        script,
+                        root,
+                        [
+                            "--agent",
+                            "claude",
+                            "--brief-mode",
+                            "lite",
+                            "--yes",
+                            "--no-diet-scan",
+                            "--no-denies",
+                            "--no-statusline",
+                            "--no-bash-hook",
+                            "--no-read-guard",
+                            "--no-model-defaults",
+                            "--no-failed-attempt-nudge",
+                        ],
+                    )
+                    entry = applied["adapter_plan"][0]
+                    self.assertTrue(applied["applied"])
+                    self.assertEqual(entry["brief_mode_status"], "applied")
+                    self.assertIn("level=lite", (root / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_brief_mode_user_scope_and_report_only_adapters_never_write(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp) / "home"
+                    home.mkdir()
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--scope",
+                            "user",
+                            "--agent",
+                            "codex",
+                            "--brief-mode",
+                            "standard",
+                            "--yes",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    entry = data["adapter_plan"][0]
+                    self.assertFalse(data["applied"])
+                    self.assertEqual(entry["brief_mode_status"], "unsupported")
+                    self.assertFalse((home / "AGENTS.md").exists())
+                    self.assertFalse((home / ".claude").exists())
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    data = self._run(
+                        script,
+                        root,
+                        ["--only", "opencode,forgecode,generic", "--brief-mode", "standard", "--yes", "--no-diet-scan"],
+                    )
+                    self.assertFalse(data["applied"])
+                    for entry in data["adapter_plan"]:
+                        self.assertEqual(entry["brief_mode_status"], "unsupported")
+                    self.assertEqual(list(root.iterdir()), [])
+
+    def test_brief_mode_skips_symlinked_rule_file(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    try:
+                        (root / "AGENTS.md").symlink_to(root / "outside.md")
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink creation unsupported on this filesystem")
+                    data = self._run(script, root, ["--agent", "codex", "--brief-mode", "standard", "--yes", "--no-diet-scan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertFalse(data["applied"])
+                    self.assertEqual(entry["brief_mode_status"], "skipped")
+                    self.assertTrue((root / "AGENTS.md").is_symlink())
+                    self.assertFalse((root / "outside.md").exists())
+
+    def test_brief_mode_plan_skips_symlinked_rule_parent(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    outside = root / "outside-windsurf"
+                    outside.mkdir()
+                    try:
+                        (root / ".windsurf").symlink_to(outside, target_is_directory=True)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink creation unsupported on this filesystem")
+                    data = self._run(script, root, ["--only", "windsurf", "--brief-mode", "standard", "--plan"])
+                    entry = data["adapter_plan"][0]
+                    self.assertFalse(data["applied"])
+                    self.assertEqual(entry["brief_mode_status"], "skipped")
+                    self.assertIn("symlink", entry["brief_mode_reason"])
+                    self.assertFalse((outside / "rules" / "contextguard.md").exists())
 
     def test_unknown_adapter_key_is_rejected(self):
         for script in SETUP_SCRIPTS:
