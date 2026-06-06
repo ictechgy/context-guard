@@ -21,11 +21,13 @@ Common commands:
 ```bash
 npm install -g @ictechgy/context-guard
 npx @ictechgy/context-guard --version
+context-guard doctor --root . --json              # read-only health check; no changes made
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent claude --scope user --verify --json  # read-only user-scope check
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups/rollback metadata, and never runs during package installation.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups/rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; doctor only reports next commands and makes no changes.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure real before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
@@ -167,6 +169,7 @@ The npm package exposes a canonical `context-guard` command plus the backwards-c
 ```bash
 npm install -g @ictechgy/context-guard
 context-guard --version
+context-guard doctor --root . --json
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
 context-guard setup --agent codex --scope project --brief-mode standard --plan
 ```

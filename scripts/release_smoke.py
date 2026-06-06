@@ -480,6 +480,17 @@ def check_brief_mode_apply_smoke(proc: subprocess.CompletedProcess[str], project
         fail(f"{command} unexpected brief_mode_status: {status!r}")
 
 
+def check_doctor_smoke(proc: subprocess.CompletedProcess[str], command: str) -> None:
+    data = load_json(proc.stdout, command)
+    check_json_field(data, "schema_version", "contextguard.doctor.v1", command)
+    check_json_field(data, "read_only", True, command)
+    if data.get("status") not in {"ok", "warning", "error"}:
+        fail(f"{command} unexpected doctor status: {data.get('status')!r}")
+    checks = data.get("checks")
+    if not isinstance(checks, list) or not checks:
+        fail(f"{command} JSON missing checks")
+
+
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
@@ -505,6 +516,20 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "context-guard-setup"), "applied", False, "context-guard-setup")
             ),
+        )
+        run_command(
+            [str(commands["context-guard-setup"]), "--root", str(project), "--verify", "--json"],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_doctor_smoke(proc, "context-guard-setup --verify"),
+        )
+        run_command(
+            [str(command_path(plugin_bin, "context-guard")), "doctor", "--root", str(project), "--json"],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_doctor_smoke(proc, "context-guard doctor"),
         )
         run_command(
             [

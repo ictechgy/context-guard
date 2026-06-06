@@ -10,9 +10,10 @@ Goal: help the user configure this plugin without memorizing helper commands.
 
 Default flow:
 
-1. Run a read-only plan first:
+1. Run a read-only health check and plan first:
 
 ```bash
+context-guard-setup --verify
 context-guard-setup --plan
 ```
 
@@ -37,4 +38,5 @@ Safety:
 
 - Do not modify global `~/.claude/settings.json`.
 - Prefer project-local `.claude/settings.json`.
+- `context-guard-setup --verify` is a local read-only health check and never applies settings.
 - Setup's post-apply scan is local, read-only, and prints a summary only; it does not mutate settings.

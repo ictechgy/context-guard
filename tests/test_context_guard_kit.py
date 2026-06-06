@@ -5662,6 +5662,178 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIsNone(data["diet_scan"])
                     self.assertTrue((root / ".claude" / "settings.json").exists())
 
+    def test_context_guard_doctor_verify_is_read_only_and_dispatcher_alias_matches(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root) for path in root.rglob("*"))
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--verify", "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.doctor.v1")
+                    self.assertEqual(data["status"], "warning")
+                    self.assertTrue(data["read_only"])
+                    self.assertEqual(data["scope"], "project")
+                    self.assertIn("checks", data)
+                    self.assertIn("setup_plan", data)
+                    self.assertIn("diet_scan", data)
+                    self.assertIn("recommended_commands", data)
+                    self.assertIn("context-guard setup", "\n".join(data["recommended_commands"]))
+                    check_ids = {check["id"] for check in data["checks"]}
+                    self.assertIn("setup-plan", check_ids)
+                    self.assertIn("diet-scan", check_ids)
+                    after = sorted(path.relative_to(root) for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+                    self.assertFalse((root / ".claude" / "settings.json").exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            setup = subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--verify", "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            doctor = subprocess.run(
+                [sys.executable, str(PLUGIN_BIN / "context-guard"), "doctor", "--root", str(root), "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            setup_data = json.loads(setup.stdout)
+            doctor_data = json.loads(doctor.stdout)
+            for key in ("schema_version", "status", "scope", "read_only"):
+                self.assertEqual(doctor_data[key], setup_data[key])
+            self.assertEqual({check["id"] for check in doctor_data["checks"]}, {check["id"] for check in setup_data["checks"]})
+            help_proc = subprocess.run(
+                [sys.executable, str(PLUGIN_BIN / "context-guard"), "--help"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn("doctor", help_proc.stdout)
+
+    def test_context_guard_doctor_verify_rejects_apply_flags_before_writing(self):
+        scenarios = [
+            [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--verify", "--yes", "--json"],
+            [sys.executable, str(PLUGIN_BIN / "context-guard"), "doctor", "--yes", "--json"],
+        ]
+        for argv in scenarios:
+            with self.subTest(argv=argv):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    proc = subprocess.run(
+                        [*argv, "--root", str(root)],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("read-only", proc.stderr)
+                    self.assertFalse((root / ".claude" / "settings.json").exists())
+                    self.assertFalse((root / ".context-guard").exists())
+
+    def test_context_guard_doctor_reports_applied_setup_without_rewriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--yes", "--no-backup", "--no-diet-scan", "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            settings_path = root / ".claude" / "settings.json"
+            before_text = settings_path.read_text(encoding="utf-8")
+            before_files = sorted(path.relative_to(root) for path in root.rglob("*"))
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "setup_wizard.py"), "--root", str(root), "--verify", "--json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["status"], "ok")
+            self.assertFalse(data["setup_plan"]["changed"])
+            self.assertEqual(settings_path.read_text(encoding="utf-8"), before_text)
+            after_files = sorted(path.relative_to(root) for path in root.rglob("*"))
+            self.assertEqual(after_files, before_files)
+            self.assertFalse(any(".bak-" in str(path) for path in after_files))
+
+    def test_context_guard_doctor_verify_user_scope_is_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--scope",
+                    "user",
+                    "--agent",
+                    "claude",
+                    "--verify",
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["schema_version"], "contextguard.doctor.v1")
+            self.assertEqual(data["scope"], "user")
+            self.assertTrue(data["read_only"])
+            self.assertEqual(data["settings_path"], str(home.resolve() / ".claude" / "settings.json"))
+            self.assertFalse((home / ".claude" / "settings.json").exists())
+            self.assertFalse((home / ".context-guard").exists())
+            self.assertEqual(list(home.rglob("*")), [])
+
+    def test_context_guard_doctor_docs_and_smoke_surface_are_listed(self):
+        docs = [
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "docs" / "distribution.md",
+            PLUGIN_DIR / "skills" / "setup" / "SKILL.md",
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                self.assertTrue(
+                    "context-guard doctor" in text or "--verify" in text,
+                    f"{doc} should mention doctor or setup --verify",
+                )
+                self.assertRegex(text.lower(), r"read-only|읽기 전용")
+        help_proc = subprocess.run(
+            [sys.executable, str(PLUGIN_BIN / "context-guard"), "--help"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertIn("doctor", help_proc.stdout)
+        smoke = (ROOT / "scripts" / "release_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("--verify", smoke)
+        self.assertIn("context-guard doctor", smoke)
+
+    def test_context_guard_doctor_verify_does_not_prompt_even_on_tty(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_doctor_no_prompt")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = setup.build_parser().parse_args(["--root", str(root), "--verify", "--json"])
+            with mock.patch.object(setup.sys.stdin, "isatty", return_value=True), \
+                 mock.patch.object(setup, "interactive_choices", side_effect=AssertionError("verify must not prompt")):
+                report = setup.run_doctor(args)
+            self.assertEqual(report["schema_version"], "contextguard.doctor.v1")
+            self.assertTrue(report["read_only"])
+            self.assertFalse((root / ".claude" / "settings.json").exists())
+
     def test_setup_wizard_helper_argv_uses_resolved_path_for_direct_runs(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_argv_path")
         with tempfile.TemporaryDirectory() as tmp:

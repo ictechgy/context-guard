@@ -18,12 +18,14 @@ ContextGuard separates **install** from **activation**.
 ## Activation examples
 
 ```bash
+context-guard doctor --root . --json
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
 context-guard setup --agent codex --scope project --with-init --with-skill --yes
+context-guard setup --agent claude --scope user --verify --json
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User scope is opt-in and requires an explicit agent for writes. Supported user-scope writes record backups and rollback metadata under `.context-guard/rollback` in the user home directory.
+Project scope is the default. `context-guard doctor` and `context-guard setup --verify` are read-only health checks. User scope is opt-in and requires an explicit agent for writes. Supported user-scope writes record backups and rollback metadata under `.context-guard/rollback` in the user home directory.
 
 ## Runtime requirements
 
