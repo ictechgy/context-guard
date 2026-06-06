@@ -165,6 +165,21 @@ ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
 CODEX_SKILL_REL = ".agents/skills/context-guard/SKILL.md"
 CODEX_SKILL_MARKER_BEGIN = "<!-- contextguard:codex-skill:begin -->"
 CODEX_SKILL_MARKER_END = "<!-- contextguard:codex-skill:end -->"
+BRIEF_MODE_LEVELS = ("lite", "standard", "ultra")
+BRIEF_MODE_OFF = "off"
+BRIEF_MODE_CHOICES = (*BRIEF_MODE_LEVELS, BRIEF_MODE_OFF)
+BRIEF_MODE_BLOCK_END = "<!-- END context-guard:brief-mode -->"
+BRIEF_MODE_BEGIN_RE = re.compile(
+    r"<!-- BEGIN context-guard:brief-mode level=(?P<level>[a-z]+) version=1 -->"
+)
+BRIEF_MODE_BLOCK_RE = re.compile(
+    r"(?:\n{0,2})?"
+    r"<!-- BEGIN context-guard:brief-mode level=(?P<level>[a-z]+) version=1 -->"
+    r".*?"
+    r"<!-- END context-guard:brief-mode -->"
+    r"(?:\n{0,2})?",
+    re.DOTALL,
+)
 
 
 class CapabilityClass:
@@ -385,6 +400,248 @@ def render_codex_skill() -> str:
     ])
 
 
+def _brief_mode_source_candidates(level: str) -> list[Path]:
+    """Return deterministic source candidates for packaged/repo brief snippets."""
+    filename = f"brief-mode.{level}.md"
+    here = Path(__file__).resolve()
+    return [
+        here.parent / "brief" / filename,
+        here.parent.parent / "brief" / filename,
+        here.parent.parent / "plugins" / "context-guard" / "brief" / filename,
+        here.parent / "plugins" / "context-guard" / "brief" / filename,
+    ]
+
+
+def _extract_brief_mode_block(level: str, text: str) -> str | None:
+    """Extract the single marker-delimited block for ``level`` from a snippet file."""
+    matches = list(BRIEF_MODE_BLOCK_RE.finditer(text))
+    level_matches = [match for match in matches if match.group("level") == level]
+    if len(level_matches) != 1:
+        return None
+    block = level_matches[0].group(0).strip()
+    if BRIEF_MODE_BLOCK_END not in block or not BRIEF_MODE_BEGIN_RE.search(block):
+        return None
+    return block
+
+
+def render_fallback_brief_mode_block(level: str) -> str:
+    """Render a resilient advisory brief-mode block when packaged files are absent."""
+    descriptions = {
+        "lite": "Keep replies focused. Trim pleasantries and repeated context, but keep helpful explanations.",
+        "standard": "Lead with the result, prefer bullets, and keep only one short rationale when it matters.",
+        "ultra": "Use terse result-first bullets or tables with no preamble or self-narration.",
+    }
+    if level not in BRIEF_MODE_LEVELS:
+        raise ValueError(f"unknown brief mode level: {level}")
+    return "\n".join([
+        f"<!-- BEGIN context-guard:brief-mode level={level} version=1 -->",
+        f"## Response style: brief mode ({level}) — advisory",
+        "",
+        descriptions[level],
+        "This is best-effort guidance, not a hard rule.",
+        "",
+        "Always preserve this evidence, even when trimming wording:",
+        "",
+        "- Exact file paths, with line numbers where useful (e.g. `src/app.py:42`).",
+        "- The exact commands you ran.",
+        "- Relevant command output, error messages, stack traces, and exit codes — never hide a failure.",
+        "- Code in fenced blocks whenever code is needed for correctness.",
+        "- Verification status: what you ran and whether it passed or failed.",
+        "- The list of changed files.",
+        "- Known gaps, TODOs, and assumptions.",
+        "- Caveats and anything I should double-check.",
+        "",
+        "This guidance does not promise reduced tokens or cost; measure real results before claiming savings.",
+        BRIEF_MODE_BLOCK_END,
+    ])
+
+
+def render_brief_mode_block(level: str) -> str:
+    """Render the marker-delimited advisory snippet for a brief-mode level."""
+    if level not in BRIEF_MODE_LEVELS:
+        raise ValueError(f"unknown brief mode level: {level}")
+    for candidate in _brief_mode_source_candidates(level):
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        block = _extract_brief_mode_block(level, text)
+        if block:
+            return block
+    return render_fallback_brief_mode_block(level)
+
+
+def _brief_mode_levels_in_text(text: str) -> list[str]:
+    return [match.group("level") for match in BRIEF_MODE_BLOCK_RE.finditer(text)]
+
+
+def _remove_brief_mode_blocks(text: str) -> tuple[str, list[str]]:
+    """Remove all ContextGuard-managed brief-mode blocks while preserving user text."""
+    levels = _brief_mode_levels_in_text(text)
+    stripped = BRIEF_MODE_BLOCK_RE.sub("\n\n", text)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip("\n")
+    return ((stripped + "\n") if stripped else "", levels)
+
+
+def _append_managed_block(existing: str, block: str) -> str:
+    if existing.strip():
+        return existing.rstrip("\n") + "\n\n" + block + "\n"
+    return block + "\n"
+
+
+def compose_rule_file_text(
+    existing: str | None,
+    *,
+    with_init: bool,
+    brief_mode: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Compose final repo rule text for combined init and brief-mode mutations."""
+    text = existing or ""
+    original_text = text
+    existing_brief_levels = _brief_mode_levels_in_text(text)
+    meta: dict[str, Any] = {
+        "init_changed": False,
+        "init_present_before": ADAPTER_RULE_BLOCK_BEGIN in text,
+        "brief_levels_before": existing_brief_levels,
+        "brief_changed": False,
+    }
+    if with_init and ADAPTER_RULE_BLOCK_BEGIN not in text:
+        text = _append_managed_block(text, render_repo_rule_block())
+        meta["init_changed"] = True
+    if brief_mode:
+        stripped, removed_levels = _remove_brief_mode_blocks(text)
+        if brief_mode == BRIEF_MODE_OFF:
+            text = stripped
+            meta["brief_changed"] = bool(removed_levels)
+        else:
+            block = render_brief_mode_block(brief_mode)
+            text = _append_managed_block(stripped, block)
+            meta["brief_changed"] = removed_levels != [brief_mode] or text != original_text
+        meta["brief_levels_removed"] = removed_levels
+    meta["changed"] = text != original_text
+    return text, meta
+
+
+def plan_or_write_rule_file_blocks(
+    path: Path,
+    *,
+    with_init: bool,
+    brief_mode: str | None,
+    applied: bool,
+    no_backup: bool,
+) -> dict[str, Any]:
+    """Plan or apply managed rule-file blocks with one original backup per write."""
+    result: dict[str, Any] = {
+        "status": None,
+        "planned_actions": [],
+        "applied_actions": [],
+        "brief_mode_status": None,
+        "brief_mode_existing_levels": [],
+        "brief_mode_backup_path": None,
+        "reason": None,
+    }
+    state = _rule_file_state(path)
+    if state["status"] not in {"missing", "file"}:
+        reason = state.get("reason") or f"refused unsafe rule target: {path.name}"
+        result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
+        result["planned_actions"].append(reason)
+        return result
+
+    existing = state.get("text")
+    existing_text = str(existing or "")
+    result["brief_mode_existing_levels"] = _brief_mode_levels_in_text(existing_text)
+    rule_present = existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing_text
+
+    if with_init:
+        if rule_present:
+            result["status"] = "exists"
+            result["planned_actions"].append("advisory ContextGuard rules already present")
+        elif not applied:
+            result["status"] = "planned"
+            result["planned_actions"].append("would add advisory ContextGuard rules")
+    elif not brief_mode:
+        result["status"] = "planned"
+        result["planned_actions"].append("run with --with-init to add advisory ContextGuard rules")
+
+    if brief_mode:
+        if brief_mode == BRIEF_MODE_OFF:
+            if result["brief_mode_existing_levels"]:
+                result["brief_mode_status"] = "planned" if not applied else None
+                if not applied:
+                    result["planned_actions"].append("would remove advisory brief-mode rules")
+            else:
+                result["brief_mode_status"] = "absent"
+                result["planned_actions"].append("advisory brief-mode rules already absent")
+        else:
+            levels = result["brief_mode_existing_levels"]
+            if levels == [brief_mode]:
+                result["brief_mode_status"] = "exists"
+                result["planned_actions"].append(f"advisory brief-mode {brief_mode} rules already present")
+            elif not applied:
+                result["brief_mode_status"] = "planned"
+                action = "replace" if levels else "add"
+                result["planned_actions"].append(f"would {action} advisory brief-mode {brief_mode} rules")
+
+    if not applied:
+        if result["status"] is None:
+            result["status"] = "planned" if result["planned_actions"] else "unchanged"
+        return result
+
+    final_text, meta = compose_rule_file_text(existing, with_init=with_init, brief_mode=brief_mode)
+    if not meta["changed"]:
+        if result["status"] is None:
+            result["status"] = "exists" if rule_present else "unchanged"
+        if result["brief_mode_status"] is None and brief_mode:
+            result["brief_mode_status"] = "absent" if brief_mode == BRIEF_MODE_OFF else "exists"
+        return result
+
+    backup_path = None
+    if existing is not None and not no_backup:
+        try:
+            backup_path = backup_existing(path)
+        except OSError as exc:
+            reason = f"could not back up repo rule file {path.name}: {exc.__class__.__name__}"
+            result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
+            result["planned_actions"] = [reason]
+            return result
+    try:
+        atomic_write(
+            path,
+            final_text,
+            existing_mode_or_default(path, 0o644) if existing is not None else 0o644,
+            dir_mode=0o755,
+        )
+    except OSError as exc:
+        reason = f"could not write repo rule file {path.name}: {exc.__class__.__name__}"
+        result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
+        result["planned_actions"] = [reason]
+        return result
+
+    if backup_path:
+        result["brief_mode_backup_path"] = str(backup_path)
+    if with_init:
+        result["status"] = "applied" if meta["init_changed"] else "exists"
+        if meta["init_changed"]:
+            result["applied_actions"].append("wrote advisory ContextGuard rules")
+        else:
+            result["planned_actions"].append("advisory ContextGuard rules already present")
+    elif result["status"] is None:
+        result["status"] = "unchanged"
+    if brief_mode:
+        if brief_mode == BRIEF_MODE_OFF:
+            result["brief_mode_status"] = "removed" if meta["brief_changed"] else "absent"
+            if meta["brief_changed"]:
+                result["applied_actions"].append("removed advisory brief-mode rules")
+            else:
+                result["planned_actions"].append("advisory brief-mode rules already absent")
+        else:
+            before = meta.get("brief_levels_removed") or []
+            result["brief_mode_status"] = "replaced" if before and before != [brief_mode] else "applied"
+            result["applied_actions"].append(f"wrote advisory brief-mode {brief_mode} rules")
+    result["planned_actions"].extend(result["applied_actions"])
+    return result
+
+
 def _read_rule_file_text(path: Path) -> str | None:
     """Best-effort no-follow read; only a missing file is treated as absent.
 
@@ -518,6 +775,8 @@ def build_adapter_plan(
     with_init: bool,
     with_skill: bool,
     applied: bool,
+    brief_mode: str | None = None,
+    no_backup: bool = False,
 ) -> list[dict[str, Any]]:
     """Render a per-adapter plan, performing safe repo-rule writes when applied.
 
@@ -541,6 +800,14 @@ def build_adapter_plan(
             "applied_actions": [],
             "unsupported_reason": None,
         }
+        if brief_mode:
+            entry["brief_mode"] = brief_mode
+            entry["brief_mode_status"] = "unsupported"
+            entry["brief_mode_level"] = None if brief_mode == BRIEF_MODE_OFF else brief_mode
+            entry["brief_mode_file"] = None
+            entry["brief_mode_existing_levels"] = []
+            entry["brief_mode_backup_path"] = None
+            entry["brief_mode_reason"] = None
         if scope == "user" and adapter.key != "claude":
             entry["status"] = "unsupported"
             entry["writable"] = False
@@ -549,6 +816,8 @@ def build_adapter_plan(
                 "use --scope project or run the helper commands manually."
             )
             entry["planned_actions"] = [entry["unsupported_reason"]]
+            if brief_mode:
+                entry["brief_mode_reason"] = entry["unsupported_reason"]
             plan.append(entry)
             continue
         if adapter.capability == CapabilityClass.NATIVE_PLUGIN:
@@ -562,29 +831,78 @@ def build_adapter_plan(
                 entry["status"] = "planned"
             else:
                 entry["status"] = "unchanged"
+            if brief_mode:
+                rule_path = adapter_rule_path(root, adapter)
+                entry["rule_file"] = str(rule_path.relative_to(root)) if rule_path and scope == "project" else adapter.rule_file
+                entry["brief_mode_file"] = entry.get("rule_file")
+                if scope != "project" or rule_path is None:
+                    entry["brief_mode_status"] = "unsupported"
+                    entry["brief_mode_reason"] = "brief-mode rule-file writes are project-scope only"
+                    entry["planned_actions"].append(entry["brief_mode_reason"])
+                else:
+                    result = plan_or_write_rule_file_blocks(
+                        rule_path,
+                        with_init=False,
+                        brief_mode=brief_mode,
+                        applied=applied,
+                        no_backup=no_backup,
+                    )
+                    entry["brief_mode_status"] = result["brief_mode_status"]
+                    entry["brief_mode_existing_levels"] = result["brief_mode_existing_levels"]
+                    entry["brief_mode_backup_path"] = result["brief_mode_backup_path"]
+                    entry["brief_mode_reason"] = result.get("reason")
+                    for action in result.get("planned_actions", []):
+                        entry["planned_actions"].append(f"{action} in {entry['rule_file']}")
+                    for action in result.get("applied_actions", []):
+                        entry["applied_actions"].append(f"{action} in {entry['rule_file']}")
+                    if result.get("applied_actions"):
+                        entry["status"] = "applied"
         elif adapter.capability == CapabilityClass.REPO_RULE:
             entry["writable"] = True
             rule_path = adapter_rule_path(root, adapter)
             entry["rule_file"] = str(rule_path.relative_to(root)) if rule_path else adapter.rule_file
-            if rule_path is not None and repo_rule_block_present(rule_path):
-                entry["status"] = "exists"
-                entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
-            elif not with_init:
-                entry["status"] = "planned"
-                entry["planned_actions"] = [f"run with --with-init to add advisory ContextGuard rules to {entry['rule_file']}"]
-            elif not applied:
-                entry["status"] = "planned"
-                entry["planned_actions"] = [f"would add advisory ContextGuard rules to {entry['rule_file']}"]
-            elif rule_path is not None:
-                result = write_repo_rule_init(rule_path)
+            if brief_mode and scope != "project":
+                entry["brief_mode_status"] = "unsupported"
+                entry["brief_mode_reason"] = "brief-mode rule-file writes are project-scope only"
+                entry["planned_actions"].append(entry["brief_mode_reason"])
+            elif brief_mode and rule_path is not None:
+                entry["brief_mode_file"] = entry["rule_file"]
+                result = plan_or_write_rule_file_blocks(
+                    rule_path,
+                    with_init=with_init,
+                    brief_mode=brief_mode,
+                    applied=applied,
+                    no_backup=no_backup,
+                )
                 entry["status"] = result["status"]
-                if result["status"] == "applied":
-                    entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {entry['rule_file']}"]
-                    entry["planned_actions"] = list(entry["applied_actions"])
-                elif result["status"] == "exists":
+                entry["brief_mode_status"] = result["brief_mode_status"]
+                entry["brief_mode_existing_levels"] = result["brief_mode_existing_levels"]
+                entry["brief_mode_backup_path"] = result["brief_mode_backup_path"]
+                entry["brief_mode_reason"] = result.get("reason")
+                entry["planned_actions"] = [f"{action} in {entry['rule_file']}" for action in result.get("planned_actions", [])]
+                entry["applied_actions"] = [f"{action} in {entry['rule_file']}" for action in result.get("applied_actions", [])]
+                if result.get("applied_actions"):
+                    entry["status"] = "applied"
+            else:
+                if rule_path is not None and repo_rule_block_present(rule_path):
+                    entry["status"] = "exists"
                     entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
-                else:
-                    entry["planned_actions"] = [result.get("reason", "skipped")]
+                elif not with_init:
+                    entry["status"] = "planned"
+                    entry["planned_actions"] = [f"run with --with-init to add advisory ContextGuard rules to {entry['rule_file']}"]
+                elif not applied:
+                    entry["status"] = "planned"
+                    entry["planned_actions"] = [f"would add advisory ContextGuard rules to {entry['rule_file']}"]
+                elif rule_path is not None:
+                    result = write_repo_rule_init(rule_path)
+                    entry["status"] = result["status"]
+                    if result["status"] == "applied":
+                        entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {entry['rule_file']}"]
+                        entry["planned_actions"] = list(entry["applied_actions"])
+                    elif result["status"] == "exists":
+                        entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
+                    else:
+                        entry["planned_actions"] = [result.get("reason", "skipped")]
             if adapter.key == "codex" and adapter.project_skill_rel:
                 skill_path = root / adapter.project_skill_rel
                 entry["project_skill_file"] = adapter.project_skill_rel
@@ -623,8 +941,16 @@ def build_adapter_plan(
                         entry["planned_actions"].append(skill_result.get("reason", "skipped"))
         elif adapter.capability == CapabilityClass.NATIVE_SKILL:
             entry["planned_actions"] = [adapter.summary]
+            if brief_mode:
+                entry["brief_mode_status"] = "unsupported"
+                entry["brief_mode_reason"] = "adapter has no managed rule-file target"
+                entry["planned_actions"].append(entry["brief_mode_reason"])
         else:  # REPORT_ONLY
             entry["planned_actions"] = [adapter.summary]
+            if brief_mode:
+                entry["brief_mode_status"] = "unsupported"
+                entry["brief_mode_reason"] = "adapter has no managed rule-file target"
+                entry["planned_actions"].append(entry["brief_mode_reason"])
         plan.append(entry)
     return plan
 
@@ -1461,7 +1787,8 @@ def render_text(result: SetupResult) -> str:
     # Only surface the cross-agent section when a non-Claude adapter is engaged,
     # keeping the default Claude-only text output unchanged.
     extra_adapters = [entry for entry in (result.adapter_plan or []) if entry.get("key") != "claude"]
-    if extra_adapters:
+    brief_adapters = [entry for entry in (result.adapter_plan or []) if entry.get("brief_mode")]
+    if extra_adapters or brief_adapters:
         lines.append("cross-agent adapters:")
         for entry in result.adapter_plan or []:
             lines.append(f"- {entry['key']} [{entry['capability']}] status={entry['status']}")
@@ -1587,6 +1914,8 @@ def run(args: argparse.Namespace) -> SetupResult:
         with_init=bool(getattr(args, "with_init", False)),
         with_skill=bool(getattr(args, "with_skill", False)),
         applied=apply_requested,
+        brief_mode=getattr(args, "brief_mode", None),
+        no_backup=bool(getattr(args, "no_backup", False)),
     )
     # Surface any repo-rule writes in the top-level actions for visibility. Claude
     # actions are already in ``actions``; only adapter-side writes are appended.
@@ -1669,6 +1998,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="with_skill",
         action="store_true",
         help="also generate optional project-local skill files where supported, currently Codex .agents/skills/context-guard/SKILL.md.",
+    )
+    parser.add_argument(
+        "--brief-mode",
+        choices=BRIEF_MODE_CHOICES,
+        default=None,
+        help="plan/apply advisory brief-mode snippets in project rule files; choose lite, standard, ultra, or off to remove.",
     )
     parser.add_argument(
         "--list-adapters",

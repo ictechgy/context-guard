@@ -317,7 +317,8 @@
 
 <span class="comment"># Codex / 터미널 에이전트</span>
 <span class="prompt">npm install -g</span> @ictechgy/context-guard
-<span class="prompt">context-guard setup</span> --agent codex --scope project --with-init --with-skill --plan</code></pre>
+<span class="prompt">context-guard setup</span> --agent codex --scope project --with-init --with-skill --plan
+<span class="prompt">context-guard setup</span> --agent codex --scope project --brief-mode standard --plan</code></pre>
         </div>
       </div>
     </header>
@@ -401,7 +402,7 @@
       </div>
       <div class="steps">
         <article class="card step"><h3>Claude Code</h3><p><code>/plugin marketplace add ictechgy/context-guard</code><br><code>/plugin install context-guard@context-guard</code><br><code>/context-guard:setup</code></p></article>
-        <article class="card step"><h3>Codex / npm</h3><p><code>npm install -g @ictechgy/context-guard</code><br><code>context-guard setup --agent codex --scope project --with-init --with-skill --plan</code></p></article>
+        <article class="card step"><h3>Codex / npm</h3><p><code>npm install -g @ictechgy/context-guard</code><br><code>context-guard setup --agent codex --scope project --with-init --with-skill --plan</code><br><code>context-guard setup --agent codex --scope project --brief-mode standard --plan</code></p></article>
         <article class="card step"><h3>macOS / Homebrew</h3><p><code>brew tap ictechgy/contextguard</code><br><code>brew install context-guard</code><br>formula 공개 전에는 npm/npx를 사용합니다.</p></article>
       </div>
       <p class="setup-note">기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 <code>--scope user</code>와 명시적인 <code>--agent</code>가 필요하며, 지원되는 쓰기는 백업과 되돌리기 기록을 남깁니다.</p>

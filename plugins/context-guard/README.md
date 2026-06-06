@@ -39,6 +39,7 @@ For Codex or other terminal-first agents, install the npm package or run it one-
 ```bash
 npm install -g @ictechgy/context-guard
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
+context-guard setup --agent codex --scope project --brief-mode standard --plan
 npx @ictechgy/context-guard --version
 ```
 
@@ -103,7 +104,7 @@ Cost guard creates its local HMAC key automatically at `.context-guard/cost-ledg
 
 Brief mode ships agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
 
-Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brief/`](brief/). Each is a single marker-delimited block you install into an agent's rule/instruction file (such as `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions) and remove by deleting the block. See [`brief/README.md`](brief/README.md).
+Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brief/`](brief/). Each is a single marker-delimited block for an agent's rule/instruction file (such as `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Use `context-guard setup --agent codex --scope project --brief-mode standard --plan`, apply with `--yes`, and remove with `--brief-mode off`. See [`brief/README.md`](brief/README.md).
 
 ## Conservative claims
 

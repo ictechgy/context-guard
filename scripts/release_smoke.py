@@ -490,6 +490,25 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             ),
         )
         run_command(
+            [
+                str(commands["context-guard-setup"]),
+                "--root",
+                str(project),
+                "--agent",
+                "codex",
+                "--brief-mode",
+                "lite",
+                "--plan",
+                "--json",
+            ],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                check_json_field(load_json(proc.stdout, "context-guard-setup brief-mode"), "applied", False, "context-guard-setup brief-mode")
+            ),
+        )
+        run_command(
             [str(commands["context-guard-diet"]), "scan", str(project), "--json"],
             cwd=project,
             env=env,
