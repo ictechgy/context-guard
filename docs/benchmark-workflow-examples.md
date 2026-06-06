@@ -22,7 +22,7 @@ Use them to decide what evidence a workflow has and what it does **not** prove:
 
 1. Run your own benchmark with `context-guard-bench --tasks ... --variants ... --csv ... --report-json ...`.
 2. Compare your report's `claim_status`, `summary_by_variant`, and `comparisons[].quality_gate` to the examples.
-3. Treat `quality_gate != "pass"` as a warning to inspect failures, correction burden, and unmatched tasks before discussing savings.
+3. Treat `comparisons[].quality_gate != "pass"` as a warning to inspect failures, correction burden, and unmatched tasks before discussing savings.
 4. Keep byte-proxy, provider-cache, wall-time, and shifted-cost evidence in separate language from provider-measured token/cost claims.
 
 ## Safe wording

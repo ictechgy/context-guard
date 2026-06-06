@@ -13103,6 +13103,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(context_pack["claim_status"], "insufficient_paired_data")
         self.assertEqual(context_pack["comparisons"][0]["paired_token_task_count"], 0)
         self.assertIsNone(context_pack["comparisons"][0]["token_savings_pct"])
+        optimized_context_pack = context_pack["summary_by_variant"]["context_pack_auto"]
+        self.assertEqual(optimized_context_pack["bytes_saved_successful"], 18000)
+        self.assertEqual(optimized_context_pack["token_proxy_saved_successful"], 4500)
+        self.assertNotIn("byte_savings", context_pack["comparisons"][0])
+        self.assertNotIn("token_proxy_savings", context_pack["comparisons"][0])
 
         provider_cache = examples["provider-cache-telemetry.example.json"]
         self.assertEqual(provider_cache["summary_by_variant"]["cache_layout_check"]["observed_telemetry"]["provider_cache"], "observed")
@@ -13130,6 +13135,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
         prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
         for filename in examples:
             self.assertIn(f"docs/benchmark-workflows/{filename}", prepublish)
+        self.assertIn('ROOT / "docs" / "benchmark-workflow-examples.md"', prepublish)
+        self.assertIn('ROOT / "docs" / "benchmark-workflows"', prepublish)
 
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")

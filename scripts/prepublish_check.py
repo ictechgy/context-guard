@@ -641,6 +641,8 @@ def package_symlink_scan_roots() -> tuple[Path, ...]:
         KIT_DIR,
         PLUGIN_DIR,
         ROOT / "docs" / "distribution.md",
+        ROOT / "docs" / "benchmark-workflow-examples.md",
+        ROOT / "docs" / "benchmark-workflows",
         ROOT / "packaging" / "homebrew",
         NPM_PACKAGE,
     )
