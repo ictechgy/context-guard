@@ -71,7 +71,7 @@ context-guard-trim-output --max-lines 120 -- npm test
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
 context-guard-sanitize-output -- git diff
-context-guard-pack suggest --root . --query "review failing tests" --diff HEAD --manifest-out suggested-pack.json --json
+context-guard-pack suggest --root . --query "review failing tests" --diff HEAD --manifest-out suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
 context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
