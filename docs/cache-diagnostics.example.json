@@ -1,0 +1,116 @@
+{
+  "cache_miss_hypotheses": [
+    {
+      "action": "Move diffs, logs, timestamps, and command output after stable reusable prompt prefixes.",
+      "confidence": "partial",
+      "evidence": "inferred",
+      "id": "volatile-prefix-breakers",
+      "reason": "Redacted prompt segment hashes show volatile content near the prefix window."
+    }
+  ],
+  "caveats": [
+    "Cache diagnostics are local transcript heuristics and do not prove exact provider cache-prefix state.",
+    "Provider cache read/write fields are diagnostic telemetry and do not prove ContextGuard-caused token reduction.",
+    "Stable-prefix and breaker positions come from bounded redacted segment hashes, not raw prompt text."
+  ],
+  "confidence": "hypothesis",
+  "derived_ratios": {
+    "cache_read_share": {
+      "evidence": "inferred",
+      "value": 0.7009345794392523
+    },
+    "cache_reuse_ratio": {
+      "evidence": "inferred",
+      "value": 2.5
+    }
+  },
+  "dynamic_prefix_breakers": [
+    {
+      "action": "Move diffs, logs, timestamps, and command output after stable reusable prompt prefixes.",
+      "confidence": "partial",
+      "evidence": "inferred",
+      "heuristic": true,
+      "position": 2,
+      "sample_count": 2,
+      "stability": 0.5,
+      "trigger": "prefix_position",
+      "unique_hashes": 2,
+      "volatile_share": 0.5
+    }
+  ],
+  "evidence": "inferred",
+  "headroom_diagnostics": {
+    "evidence": "unavailable",
+    "historical_total_tokens_are_not_headroom": true,
+    "observable_via": "live_statusline_snapshot",
+    "reason": "Transcript scans do not carry live context-window or remaining-token data, so context headroom cannot be observed or conservatively inferred from history alone.",
+    "required_observation": "live_statusline_snapshot",
+    "status": "missing"
+  },
+  "heuristic": true,
+  "observations": {
+    "cache_creation_tokens": 60000,
+    "cache_fields": {
+      "derived": {
+        "cache_read_share": {
+          "evidence": "inferred",
+          "value": 0.7009345794392523
+        },
+        "cache_reuse_ratio": {
+          "evidence": "inferred",
+          "value": 2.5
+        }
+      },
+      "evidence": "observed",
+      "present_fields": {
+        "cache_creation": 2,
+        "cache_read": 2
+      },
+      "status": "available",
+      "zero_values_observed": {
+        "cache_creation": false,
+        "cache_read": false
+      }
+    },
+    "cache_read_tokens": 150000
+  },
+  "schema_version": "contextguard.cache-diagnostics.v1",
+  "stable_prefix_candidates": [
+    {
+      "action": "Keep stable instructions, policies, and reusable context before run-specific evidence.",
+      "confidence": "partial",
+      "evidence": "inferred",
+      "position": 0,
+      "sample_count": 2,
+      "stability": 1.0,
+      "unique_hashes": 1,
+      "volatile_share": 0.0
+    },
+    {
+      "action": "Keep stable instructions, policies, and reusable context before run-specific evidence.",
+      "confidence": "partial",
+      "evidence": "inferred",
+      "position": 1,
+      "sample_count": 2,
+      "stability": 1.0,
+      "unique_hashes": 1,
+      "volatile_share": 0.0
+    }
+  ],
+  "status": "partial",
+  "ttl_diagnostics": {
+    "candidate": "between-5m-and-1h",
+    "caveats": [
+      "Timestamped cache telemetry records do not prove exact provider cache-prefix identity or provider cache TTL state.",
+      "5-minute versus 1-hour TTL guidance is a local hypothesis unless corroborated with provider telemetry and repeated stable prefixes."
+    ],
+    "confidence": "hypothesis",
+    "evidence": "inferred",
+    "interval_basis": "positive_timestamped_cache_records",
+    "positive_timestamped_cache_record_count": 2,
+    "reason": "Positive timestamped cache telemetry records bound the local cache-observation span, but exact provider cache TTL reuse remains a hypothesis.",
+    "status": "hypothesis",
+    "timestamped_cache_record_count": 2,
+    "timestamped_cache_record_span_seconds": 450
+  }
+}

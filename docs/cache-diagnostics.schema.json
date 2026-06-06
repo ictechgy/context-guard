@@ -1,0 +1,460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ictechgy/context-guard/docs/cache-diagnostics.schema.json",
+  "title": "ContextGuard cache_diagnostics object",
+  "description": "Schema reference for the nested cache_diagnostics object emitted by context-guard-audit --json and --feasibility-json. It is not the full CLI response envelope.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "status",
+    "confidence",
+    "evidence",
+    "heuristic",
+    "observations",
+    "derived_ratios",
+    "stable_prefix_candidates",
+    "dynamic_prefix_breakers",
+    "cache_miss_hypotheses",
+    "ttl_diagnostics",
+    "headroom_diagnostics",
+    "caveats"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "contextguard.cache-diagnostics.v1"
+    },
+    "status": {
+      "enum": [
+        "available",
+        "partial",
+        "missing"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "observed",
+        "partial",
+        "hypothesis",
+        "unavailable"
+      ]
+    },
+    "evidence": {
+      "enum": [
+        "observed",
+        "inferred",
+        "unavailable"
+      ]
+    },
+    "heuristic": {
+      "type": "boolean",
+      "const": true
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "cache_fields",
+        "cache_read_tokens",
+        "cache_creation_tokens"
+      ],
+      "properties": {
+        "cache_read_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cache_creation_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cache_fields": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "status",
+            "evidence",
+            "present_fields",
+            "zero_values_observed",
+            "derived"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "available",
+                "partial",
+                "missing"
+              ]
+            },
+            "evidence": {
+              "enum": [
+                "observed",
+                "inferred",
+                "unavailable"
+              ]
+            },
+            "present_fields": {
+              "type": "object",
+              "required": [
+                "cache_read",
+                "cache_creation"
+              ],
+              "properties": {
+                "cache_read": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cache_creation": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": true
+            },
+            "zero_values_observed": {
+              "type": "object",
+              "required": [
+                "cache_read",
+                "cache_creation"
+              ],
+              "properties": {
+                "cache_read": {
+                  "type": "boolean"
+                },
+                "cache_creation": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": true
+            },
+            "derived": {
+              "$ref": "#/$defs/derivedRatios"
+            }
+          }
+        }
+      }
+    },
+    "derived_ratios": {
+      "$ref": "#/$defs/derivedRatios"
+    },
+    "stable_prefix_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prefixCandidate"
+      }
+    },
+    "dynamic_prefix_breakers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/prefixBreaker"
+      }
+    },
+    "cache_miss_hypotheses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/hypothesis"
+      }
+    },
+    "ttl_diagnostics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "evidence",
+        "confidence",
+        "timestamped_cache_record_count",
+        "positive_timestamped_cache_record_count",
+        "timestamped_cache_record_span_seconds",
+        "candidate",
+        "reason",
+        "interval_basis",
+        "caveats"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "hypothesis",
+            "unavailable"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            "inferred",
+            "unavailable"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "partial",
+            "hypothesis",
+            "unavailable"
+          ]
+        },
+        "timestamped_cache_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "positive_timestamped_cache_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamped_cache_record_span_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "candidate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "within-5m",
+            "between-5m-and-1h",
+            "beyond-1h",
+            null
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "interval_basis": {
+          "const": "positive_timestamped_cache_records"
+        },
+        "caveats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "headroom_diagnostics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "evidence",
+        "observable_via",
+        "reason",
+        "historical_total_tokens_are_not_headroom",
+        "required_observation"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "missing",
+            "unavailable"
+          ]
+        },
+        "evidence": {
+          "const": "unavailable"
+        },
+        "observable_via": {
+          "const": "live_statusline_snapshot"
+        },
+        "required_observation": {
+          "const": "live_statusline_snapshot"
+        },
+        "historical_total_tokens_are_not_headroom": {
+          "type": "boolean",
+          "const": true
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "caveats": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "derivedRatios": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "cache_read_share",
+        "cache_reuse_ratio"
+      ],
+      "properties": {
+        "cache_read_share": {
+          "$ref": "#/$defs/ratio"
+        },
+        "cache_reuse_ratio": {
+          "$ref": "#/$defs/ratio"
+        }
+      }
+    },
+    "ratio": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "value",
+        "evidence"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "evidence": {
+          "enum": [
+            "inferred",
+            "unavailable"
+          ]
+        }
+      }
+    },
+    "prefixCandidate": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "position",
+        "stability",
+        "volatile_share",
+        "unique_hashes",
+        "sample_count",
+        "evidence",
+        "confidence",
+        "action"
+      ],
+      "properties": {
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "volatile_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unique_hashes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence": {
+          "const": "inferred"
+        },
+        "confidence": {
+          "enum": [
+            "partial",
+            "hypothesis"
+          ]
+        },
+        "action": {
+          "type": "string"
+        }
+      }
+    },
+    "prefixBreaker": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "position",
+        "trigger",
+        "volatile_share",
+        "stability",
+        "unique_hashes",
+        "sample_count",
+        "evidence",
+        "confidence",
+        "heuristic",
+        "action"
+      ],
+      "properties": {
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "volatile_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unique_hashes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence": {
+          "const": "inferred"
+        },
+        "confidence": {
+          "enum": [
+            "partial",
+            "hypothesis"
+          ]
+        },
+        "heuristic": {
+          "type": "boolean",
+          "const": true
+        },
+        "action": {
+          "type": "string"
+        }
+      }
+    },
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "evidence",
+        "confidence",
+        "reason",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "evidence": {
+          "enum": [
+            "inferred",
+            "unavailable"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "partial",
+            "hypothesis",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
