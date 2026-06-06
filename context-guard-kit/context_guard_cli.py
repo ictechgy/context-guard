@@ -19,6 +19,7 @@ PACKAGE_NAME = "@ictechgy/context-guard"
 
 HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "setup": ("context-guard-setup",),
+    "doctor": ("context-guard-setup", "--verify"),
     "audit": ("context-guard-audit",),
     "diet": ("context-guard-diet",),
     "scan": ("context-guard-diet", "scan"),

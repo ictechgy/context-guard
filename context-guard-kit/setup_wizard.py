@@ -1620,6 +1620,317 @@ def run_post_setup_diet_scan(root: Path) -> dict[str, Any]:
         return {"status": "failed", "reason": "invalid-report"}
 
 
+def doctor_check(
+    ident: str,
+    status: str,
+    severity: str,
+    message: str,
+    *,
+    detail: Any | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    check = {
+        "id": ident,
+        "status": status,
+        "severity": severity,
+        "message": message,
+    }
+    if detail is not None:
+        check["detail"] = detail
+    if next_action:
+        check["next_action"] = next_action
+    return check
+
+
+def _setup_command(args: argparse.Namespace, *, apply: bool, root: Path | None = None) -> str:
+    parts = ["context-guard", "setup", "--scope", normalize_scope(getattr(args, "scope", "project"))]
+    if root is not None and normalize_scope(getattr(args, "scope", "project")) == "project":
+        parts.extend(["--root", str(root)])
+    selected = explicit_agent_selection(args)
+    if selected:
+        parts.extend(["--agent", ",".join(selected)])
+    elif normalize_scope(getattr(args, "scope", "project")) == "user":
+        parts.extend(["--agent", "claude"])
+    if getattr(args, "with_init", False):
+        parts.append("--with-init")
+    if getattr(args, "with_skill", False):
+        parts.append("--with-skill")
+    brief_mode = getattr(args, "brief_mode", None)
+    if brief_mode:
+        parts.extend(["--brief-mode", str(brief_mode)])
+    for attr, flag in (
+        ("no_denies", "--no-denies"),
+        ("no_statusline", "--no-statusline"),
+        ("no_bash_hook", "--no-bash-hook"),
+        ("no_read_guard", "--no-read-guard"),
+        ("no_model_defaults", "--no-model-defaults"),
+        ("no_diet_scan", "--no-diet-scan"),
+    ):
+        if getattr(args, attr, False):
+            parts.append(flag)
+    if getattr(args, "failed_attempt_nudge", None) is False:
+        parts.append("--no-failed-attempt-nudge")
+    elif getattr(args, "failed_attempt_nudge", None) is True:
+        parts.append("--failed-attempt-nudge")
+    parts.append("--yes" if apply else "--plan")
+    return shlex.join(parts)
+
+
+def _doctor_status(checks: list[dict[str, Any]]) -> str:
+    if any(check.get("status") == "error" or check.get("severity") == "error" for check in checks):
+        return "error"
+    if any(check.get("status") == "warning" or check.get("severity") in {"high", "medium"} for check in checks):
+        return "warning"
+    return "ok"
+
+
+def _helper_availability_check() -> dict[str, Any]:
+    helpers = {
+        HELPER_STATUSLINE: "statusline_merged.sh",
+        HELPER_REWRITE_BASH: "rewrite_bash_for_token_budget.py",
+        HELPER_GUARD_READ: "guard_large_read.py",
+        HELPER_FAILED_NUDGE: "failed_attempt_nudge.py",
+        HELPER_DIET: "context_guard_diet.py",
+    }
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for helper, kit_script in helpers.items():
+        try:
+            resolved[helper] = shlex.join(helper_argv(helper, kit_script, shell=("bash" if kit_script.endswith(".sh") else None)))
+        except SystemExit:
+            missing.append(helper)
+    if missing:
+        return doctor_check(
+            "helper-availability",
+            "error",
+            "error",
+            "Some ContextGuard helper commands could not be resolved.",
+            detail={"missing": missing, "resolved": resolved},
+            next_action="Reinstall ContextGuard or run from a complete checkout.",
+        )
+    return doctor_check(
+        "helper-availability",
+        "ok",
+        "low",
+        "Required ContextGuard helper commands are resolvable.",
+        detail={"resolved": resolved},
+    )
+
+
+def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
+    """Return a read-only setup health report.
+
+    This intentionally mirrors setup planning while never prompting, backing up,
+    writing settings, writing rule files, or creating rollback records.
+    """
+    require_no_follow_file_ops_supported()
+    scope = normalize_scope(getattr(args, "scope", "project"))
+    root = resolve_scope_root(args.root, scope)
+    settings_path = root / SETTINGS_REL
+    helper_check = _helper_availability_check()
+    checks: list[dict[str, Any]] = [helper_check]
+    warnings: list[str] = []
+    if scope == "user":
+        warnings.append("user-scope verify is read-only; applying user-scope setup still requires --yes and an explicit agent")
+
+    selected_agents = explicit_agent_selection(args)
+    targets = resolve_target_adapters(root, selected_agents)
+    claude_targeted = any(adapter.key == "claude" for adapter in targets)
+
+    original_text = None
+    original: dict[str, Any] = {}
+    settings: dict[str, Any] = {}
+    if claude_targeted:
+        validate_settings_target(root, settings_path, allow_home_settings=(args.allow_home_settings or scope == "user"))
+        original_text = _read_optional_text_no_follow(settings_path)
+        original = _parse_json_object_text(original_text, settings_path)
+        settings = json.loads(json.dumps(original))
+        checks.append(doctor_check(
+            "settings-target",
+            "ok",
+            "low",
+            "Claude settings target is readable without following symlinks.",
+            detail={
+                "exists": original_text is not None,
+                "path": str(settings_path),
+            },
+        ))
+    else:
+        checks.append(doctor_check(
+            "settings-target",
+            "ok",
+            "low",
+            "Claude settings target was not requested for selected adapters.",
+            detail={"path": str(settings_path)},
+        ))
+
+    if helper_check.get("status") == "error":
+        diet_scan = {"status": "skipped", "reason": "helper-unavailable"}
+        return {
+            "schema_version": "contextguard.doctor.v1",
+            "status": "error",
+            "root": str(root),
+            "scope": scope,
+            "settings_path": str(settings_path),
+            "read_only": True,
+            "warnings": warnings,
+            "checks": checks,
+            "setup_plan": {
+                "changed": False,
+                "actions": [],
+                "adapter_plan": [],
+            },
+            "diet_scan": diet_scan,
+            "recommended_commands": [],
+        }
+
+    choices = choices_from_args(args)
+    actions = apply_choices(settings, choices) if claude_targeted else []
+    changed = (settings != original) if claude_targeted else False
+    if changed:
+        checks.append(doctor_check(
+            "setup-plan",
+            "warning",
+            "medium",
+            "ContextGuard setup is not fully applied for the requested selections.",
+            detail={"planned_action_count": len(actions), "planned_actions": actions},
+            next_action=_setup_command(args, apply=False, root=root),
+        ))
+    else:
+        checks.append(doctor_check(
+            "setup-plan",
+            "ok",
+            "low",
+            "Requested setup settings are already satisfied.",
+            detail={"planned_action_count": 0},
+        ))
+
+    adapter_plan = build_adapter_plan(
+        root,
+        targets,
+        scope=scope,
+        claude_actions=actions,
+        claude_changed=changed,
+        claude_applied=False,
+        with_init=bool(getattr(args, "with_init", False)),
+        with_skill=bool(getattr(args, "with_skill", False)),
+        applied=False,
+        brief_mode=getattr(args, "brief_mode", None),
+    )
+    adapter_warnings = [
+        {
+            "key": entry.get("key"),
+            "status": entry.get("status"),
+            "planned_actions": entry.get("planned_actions", []),
+            "unsupported_reason": entry.get("unsupported_reason"),
+        }
+        for entry in adapter_plan
+        if entry.get("status") in {"planned", "unsupported", "skipped"}
+    ]
+    if adapter_warnings:
+        checks.append(doctor_check(
+            "adapter-plan",
+            "warning",
+            "medium",
+            "Some requested adapters still have planned or unsupported setup actions.",
+            detail={"adapters": adapter_warnings},
+            next_action=_setup_command(args, apply=False, root=root),
+        ))
+    else:
+        checks.append(doctor_check(
+            "adapter-plan",
+            "ok",
+            "low",
+            "Requested adapter setup plan has no pending supported writes.",
+            detail={"adapter_count": len(adapter_plan)},
+        ))
+
+    diet_scan = None
+    if getattr(args, "no_diet_scan", False):
+        diet_scan = {"status": "skipped", "reason": "disabled-by-flag"}
+        checks.append(doctor_check(
+            "diet-scan",
+            "ok",
+            "low",
+            "Context hygiene scan was skipped by flag.",
+            detail=diet_scan,
+        ))
+    else:
+        diet_scan = run_post_setup_diet_scan(root)
+        if diet_scan.get("status") != "completed":
+            checks.append(doctor_check(
+                "diet-scan",
+                "warning",
+                "medium",
+                "Context hygiene scan could not complete.",
+                detail=diet_scan,
+                next_action="context-guard diet scan . --json",
+            ))
+        else:
+            counts = diet_scan.get("severity_counts", {})
+            high_medium = int(counts.get("high", 0) or 0) + int(counts.get("medium", 0) or 0)
+            if high_medium:
+                checks.append(doctor_check(
+                    "diet-scan",
+                    "warning",
+                    "medium",
+                    "Context hygiene scan found high/medium findings.",
+                    detail=diet_scan,
+                    next_action="context-guard diet scan . --json",
+                ))
+            else:
+                checks.append(doctor_check(
+                    "diet-scan",
+                    "ok",
+                    "low",
+                    "Context hygiene scan has no high/medium findings.",
+                    detail=diet_scan,
+                ))
+
+    recommended = [_setup_command(args, apply=False, root=root)]
+    if changed or adapter_warnings:
+        recommended.append(_setup_command(args, apply=True, root=root))
+    return {
+        "schema_version": "contextguard.doctor.v1",
+        "status": _doctor_status(checks),
+        "root": str(root),
+        "scope": scope,
+        "settings_path": str(settings_path),
+        "read_only": True,
+        "warnings": warnings,
+        "checks": checks,
+        "setup_plan": {
+            "changed": changed,
+            "actions": actions,
+            "adapter_plan": adapter_plan,
+        },
+        "diet_scan": diet_scan,
+        "recommended_commands": recommended,
+    }
+
+
+def render_doctor_text(report: dict[str, Any]) -> str:
+    lines = [
+        f"ContextGuard doctor ({report.get('status', 'unknown')})",
+        "read-only health check; no changes made",
+        f"scope={report.get('scope')}",
+        f"root={report.get('root')}",
+        f"settings={report.get('settings_path')}",
+        "checks:",
+    ]
+    for check in report.get("checks", []):
+        lines.append(
+            f"- [{str(check.get('status', '')).upper()}] {check.get('id')}: {check.get('message')}"
+        )
+        if check.get("next_action"):
+            lines.append(f"  next: {check['next_action']}")
+    commands = report.get("recommended_commands") or []
+    if commands:
+        lines.append("recommended next commands:")
+        lines.extend(f"- {command}" for command in commands)
+    return "\n".join(lines) + "\n"
+
+
 def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
     actions: list[str] = []
     if choices.model_defaults:
@@ -2042,6 +2353,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yes", action="store_true", help="apply the recommended/selected setup without prompts")
     parser.add_argument("--plan", action="store_true", help="show the setup plan without writing files")
     parser.add_argument("--dry-run", action="store_true", help="alias for --plan")
+    parser.add_argument("--verify", action="store_true", help="run a read-only setup health check; never writes or prompts")
     parser.add_argument("--json", action="store_true", help="print machine-readable result")
     parser.add_argument("--no-backup", action="store_true", help="do not create .bak-* before modifying existing settings")
     parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
@@ -2113,6 +2425,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.dry_run:
         args.plan = True
+    if args.verify and args.yes:
+        parser.error("--verify is read-only and cannot be combined with --yes")
     if getattr(args, "list_adapters", False):
         payload = adapter_registry_payload()
         if args.json:
@@ -2121,6 +2435,14 @@ def main() -> int:
             print("ContextGuard cross-agent adapters:")
             for item in payload:
                 print(f"- {item['key']} [{item['capability']}] {item['display_name']}: {item['summary']}")
+        return 0
+    if args.verify:
+        args.plan = True
+        result = run_doctor(args)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(render_doctor_text(result))
         return 0
     # Safety default for non-interactive Claude Code Bash calls: do not write
     # unless --yes is explicit.

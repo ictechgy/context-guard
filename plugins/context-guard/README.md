@@ -38,6 +38,7 @@ For Codex or other terminal-first agents, install the npm package or run it one-
 
 ```bash
 npm install -g @ictechgy/context-guard
+context-guard doctor --root . --json  # read-only health check; no changes made
 context-guard setup --agent codex --scope project --with-init --with-skill --plan
 context-guard setup --agent codex --scope project --brief-mode standard --plan
 npx @ictechgy/context-guard --version
@@ -83,7 +84,7 @@ context-guard-statusline-merged
 
 ## What the helpers do
 
-- **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `--no-diet-scan` when automation needs setup output without the post-apply scan.
+- **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; use `--no-diet-scan` when automation needs setup output without the post-apply scan.
 - **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, large or secret-like agent rule files, and advisory context-exclusion recommendations for bulky/sensitive local paths. Its `--top` cap applies to both context-like files and context-exclusion recommendations.
 - **Large-read guard and symbol reader** guide the agent from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Artifact store** saves large sanitized command output under `.context-guard/artifacts` by default and returns compact receipts or exact requested slices. JSON receipts include line-numbered top errors, duplicate-line groups, and sanitized bounded suggested queries. In suggested `--lines START:END` queries, `--max-lines` is only the returned-line cap for that selected range, not a wider selector. `get` and `list` can also read legacy `.claude-token-optimizer/artifacts` receipts.
