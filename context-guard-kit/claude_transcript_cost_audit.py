@@ -180,6 +180,7 @@ class UsageSummary:
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
+    positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
     cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
     cache_diagnostics_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -721,6 +722,7 @@ def add_usage(
 
     record = RecordUsage()
     cache_telemetry_present = False
+    positive_cache_telemetry_present = False
     summary.prompt_cache_audit.observe(root)
     for d in walk(root):
         local_tokens: Counter[str] = Counter()
@@ -746,6 +748,8 @@ def add_usage(
             summary.token_field_presence[bucket] += 1
         if "cache_read" in present_buckets or "cache_creation" in present_buckets:
             cache_telemetry_present = True
+            if local_tokens.get("cache_read", 0) > 0 or local_tokens.get("cache_creation", 0) > 0:
+                positive_cache_telemetry_present = True
 
         if local_tokens:
             summary.tokens.update(local_tokens)
@@ -766,6 +770,8 @@ def add_usage(
                 break
     if parsed_timestamp is not None and cache_telemetry_present:
         summary.cache_record_timestamps.append(parsed_timestamp)
+    if parsed_timestamp is not None and positive_cache_telemetry_present:
+        summary.positive_cache_record_timestamps.append(parsed_timestamp)
     commands, tools = collect_record_hints(root, show_commands=show_commands)
     record.commands = commands
     record.tools = tools
@@ -1206,7 +1212,8 @@ def _cache_diagnostic_confidence(*, skipped: bool, samples: bool, has_cache: boo
 
 
 def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped: bool) -> dict[str, Any]:
-    timestamps = sorted(summary.cache_record_timestamps)
+    timestamped_cache_record_count = len(summary.cache_record_timestamps)
+    timestamps = sorted(summary.positive_cache_record_timestamps)
     caveats = [
         "Timestamped cache telemetry records do not prove exact provider cache-prefix identity or provider cache TTL state.",
         "5-minute versus 1-hour TTL guidance is a local hypothesis unless corroborated with provider telemetry and repeated stable prefixes.",
@@ -1216,13 +1223,14 @@ def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped
             "status": "unavailable",
             "evidence": EVIDENCE_UNAVAILABLE,
             "confidence": "unavailable" if not skipped else "partial",
-            "timestamped_cache_record_count": len(timestamps),
+            "timestamped_cache_record_count": timestamped_cache_record_count,
+            "positive_timestamped_cache_record_count": len(timestamps),
             "timestamped_cache_record_span_seconds": None,
             "candidate": None,
             "reason": (
-                "Fewer than two timestamped cache telemetry records were observed, so TTL reuse intervals cannot be inferred."
+                "Fewer than two positive timestamped cache telemetry records were observed, so TTL reuse intervals cannot be inferred."
             ),
-            "interval_basis": "timestamped_cache_records",
+            "interval_basis": "positive_timestamped_cache_records",
             "caveats": caveats,
         }
     interval = max(0, int((timestamps[-1] - timestamps[0]).total_seconds()))
@@ -1231,13 +1239,14 @@ def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped
         "status": "hypothesis" if has_cache_any else "unavailable",
         "evidence": EVIDENCE_INFERRED if has_cache_any else EVIDENCE_UNAVAILABLE,
         "confidence": "partial" if skipped else "hypothesis",
-        "timestamped_cache_record_count": len(timestamps),
+        "timestamped_cache_record_count": timestamped_cache_record_count,
+        "positive_timestamped_cache_record_count": len(timestamps),
         "timestamped_cache_record_span_seconds": interval,
         "candidate": candidate,
         "reason": (
-            "Timestamped cache telemetry records bound the local cache-observation span, but exact provider cache TTL reuse remains a hypothesis."
+            "Positive timestamped cache telemetry records bound the local cache-observation span, but exact provider cache TTL reuse remains a hypothesis."
         ),
-        "interval_basis": "timestamped_cache_records",
+        "interval_basis": "positive_timestamped_cache_records",
         "caveats": caveats,
     }
 
@@ -1630,6 +1639,7 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 "ttl_confidence": ttl_confidence,
                 "ttl_candidate": ttl_candidate,
                 "timestamped_cache_record_count": ttl.get("timestamped_cache_record_count"),
+                "positive_timestamped_cache_record_count": ttl.get("positive_timestamped_cache_record_count"),
                 "timestamped_cache_record_span_seconds": ttl_span,
                 "heuristic": True,
             },
