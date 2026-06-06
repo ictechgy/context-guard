@@ -728,6 +728,7 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
 
     Returns a status dict: ``applied`` (block written), ``exists`` (already
     present), or ``skipped`` (refused, e.g. symlinked target) with a reason.
+    Existing user-owned rule files are backed up before any changed write.
     """
     state = _rule_file_state(path)
     if state["status"] not in {"missing", "file"}:
@@ -738,15 +739,20 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
     block = render_repo_rule_block()
     if existing:
         new_text = existing.rstrip("\n") + "\n\n" + block + "\n"
-        mode = existing_mode_or_default(path, 0o644)
     else:
         new_text = block + "\n"
-        mode = 0o644
+    mode = existing_mode_or_default(path, 0o644) if existing is not None else 0o644
+    backup_path = None
+    if existing is not None:
+        try:
+            backup_path = backup_existing(path)
+        except OSError as exc:
+            return {"status": "skipped", "reason": f"could not back up repo rule file {path.name}: {exc.__class__.__name__}"}
     try:
         atomic_write(path, new_text, mode, dir_mode=0o755)
     except OSError as exc:
         return {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
-    return {"status": "applied"}
+    return {"status": "applied", "backup_path": str(backup_path) if backup_path else None}
 
 
 def codex_skill_status(path: Path) -> str:
@@ -935,6 +941,8 @@ def build_adapter_plan(
                     if result["status"] == "applied":
                         entry["applied_actions"] = [f"wrote advisory ContextGuard rules to {entry['rule_file']}"]
                         entry["planned_actions"] = list(entry["applied_actions"])
+                        if result.get("backup_path"):
+                            entry["rule_backup_path"] = result["backup_path"]
                     elif result["status"] == "exists":
                         entry["planned_actions"] = [f"advisory ContextGuard rules already present in {entry['rule_file']}"]
                     else:
@@ -1832,6 +1840,8 @@ def render_text(result: SetupResult) -> str:
                 lines.append(f"  - {action}")
             if entry.get("brief_mode_backup_path"):
                 lines.append(f"  - backup={entry['brief_mode_backup_path']}")
+            if entry.get("rule_backup_path"):
+                lines.append(f"  - backup={entry['rule_backup_path']}")
     if result.apply_requested and not result.applied:
         lines.append("No supported writes were applied.")
     elif not result.applied:

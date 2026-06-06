@@ -13852,6 +13852,28 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(data["adapter_plan"][0]["status"], "planned")
                     self.assertFalse((root / "AGENTS.md").exists())
 
+    def test_with_init_existing_rule_backs_up_even_with_no_backup(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    agents = root / "AGENTS.md"
+                    original = "Existing Codex rules.\n"
+                    agents.write_text(original, encoding="utf-8")
+                    data = self._run(
+                        script,
+                        root,
+                        ["--only", "codex", "--with-init", "--yes", "--no-backup", "--no-diet-scan"],
+                    )
+                    entry = data["adapter_plan"][0]
+                    backup_path = Path(entry["rule_backup_path"])
+                    self.assertTrue(data["applied"])
+                    self.assertEqual(entry["status"], "applied")
+                    self.assertTrue(backup_path.is_file())
+                    self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
+                    self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
+                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+
     def test_agent_alias_and_project_scope_keep_setup_project_local(self):
         for script in SETUP_SCRIPTS:
             with self.subTest(script=script):
