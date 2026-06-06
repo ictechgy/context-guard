@@ -9706,6 +9706,147 @@ for malformed in malformed_values:
                     self.assertEqual(feasible_data["summary"]["cache_diagnostics"]["schema_version"], "contextguard.cache-diagnostics.v1")
                     self.assertNotIn(str(root), feasible.stdout)
 
+    def test_transcript_audit_cache_diagnostics_schema_docs_track_output(self):
+        schema_path = ROOT / "docs" / "cache-diagnostics.schema.json"
+        example_path = ROOT / "docs" / "cache-diagnostics.example.json"
+        guide_path = ROOT / "docs" / "cache-diagnostics-schema.md"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        example = json.loads(example_path.read_text(encoding="utf-8"))
+        required = set(schema["required"])
+        expected_required = {
+            "schema_version",
+            "status",
+            "confidence",
+            "evidence",
+            "heuristic",
+            "observations",
+            "derived_ratios",
+            "stable_prefix_candidates",
+            "dynamic_prefix_breakers",
+            "cache_miss_hypotheses",
+            "ttl_diagnostics",
+            "headroom_diagnostics",
+            "caveats",
+        }
+        self.assertEqual(required, expected_required)
+        self.assertEqual(schema["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertIn("nested cache_diagnostics object", schema["description"])
+        self.assertEqual(schema["properties"]["schema_version"]["const"], "contextguard.cache-diagnostics.v1")
+        self.assertEqual(set(example), required)
+        self.assertEqual(example["schema_version"], "contextguard.cache-diagnostics.v1")
+        self.assertEqual(example["ttl_diagnostics"]["positive_timestamped_cache_record_count"], 2)
+        self.assertEqual(example["ttl_diagnostics"]["timestamped_cache_record_count"], 2)
+        self.assertEqual(example["ttl_diagnostics"]["interval_basis"], "positive_timestamped_cache_records")
+        self.assertEqual(example["ttl_diagnostics"]["status"], "hypothesis")
+        self.assertEqual(example["ttl_diagnostics"]["evidence"], "inferred")
+        self.assertEqual(example["ttl_diagnostics"]["confidence"], "hypothesis")
+        self.assertEqual(example["headroom_diagnostics"]["observable_via"], "live_statusline_snapshot")
+        self.assertTrue(example["headroom_diagnostics"]["historical_total_tokens_are_not_headroom"])
+        self.assertNotIn("remaining_tokens", json.dumps(example["headroom_diagnostics"], sort_keys=True))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = [
+                {
+                    "timestamp": "2026-06-06T00:00:00Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable instruction block\nStable policy block\nRun-specific diff alpha"}],
+                        "usage": {
+                            "input_tokens": 2000,
+                            "output_tokens": 200,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 0,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-06-06T00:07:30Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable instruction block\nStable policy block\nRun-specific diff beta"}],
+                        "usage": {
+                            "input_tokens": 2000,
+                            "output_tokens": 220,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 150_000,
+                        },
+                    },
+                },
+            ]
+            sample.write_text("\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    diagnostics = json.loads(proc.stdout)["cache_diagnostics"]
+                    self.assertEqual(set(diagnostics), required)
+                    self.assertEqual(diagnostics["schema_version"], "contextguard.cache-diagnostics.v1")
+                    ttl = diagnostics["ttl_diagnostics"]
+                    self.assertEqual(ttl["positive_timestamped_cache_record_count"], 2)
+                    self.assertEqual(ttl["timestamped_cache_record_count"], 2)
+                    self.assertEqual(ttl["timestamped_cache_record_span_seconds"], 450)
+                    self.assertEqual(ttl["candidate"], "between-5m-and-1h")
+                    self.assertEqual(ttl["interval_basis"], "positive_timestamped_cache_records")
+                    self.assertEqual(ttl["status"], "hypothesis")
+                    self.assertEqual(ttl["evidence"], "inferred")
+                    self.assertNotIn("Stable instruction block", proc.stdout)
+                    self.assertNotIn("Run-specific diff", proc.stdout)
+
+                    feasible = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    feasible_data = json.loads(feasible.stdout)
+                    self.assertIn("cache_diagnostics", feasible_data)
+                    self.assertIn("cache_diagnostics", feasible_data["consumer_contract"]["stable_top_level_fields"])
+                    self.assertEqual(set(feasible_data["cache_diagnostics"]), required)
+                    self.assertEqual(set(feasible_data["summary"]["cache_diagnostics"]), required)
+
+        for doc in (ROOT / "README.md", ROOT / "README.ko.md"):
+            self.assertIn("docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
+        for doc in (PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
+            self.assertIn("../../docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
+
+        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
+        for packaged_doc in (
+            "docs/cache-diagnostics-schema.md",
+            "docs/cache-diagnostics.schema.json",
+            "docs/cache-diagnostics.example.json",
+        ):
+            self.assertIn(packaged_doc, package_files)
+        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
+        for expected in (
+            "docs/cache-diagnostics-schema.md",
+            "docs/cache-diagnostics.schema.json",
+            "docs/cache-diagnostics.example.json",
+            'ROOT / "docs" / "cache-diagnostics-schema.md"',
+            'ROOT / "docs" / "cache-diagnostics.schema.json"',
+            'ROOT / "docs" / "cache-diagnostics.example.json"',
+        ):
+            self.assertIn(expected, prepublish)
+
+        new_docs = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (guide_path, schema_path, example_path)
+        ).lower()
+        for forbidden in ("guaranteed savings", "guarantees savings", "provider-cache proof", "provider cache proof", "pays off"):
+            self.assertNotIn(forbidden, new_docs)
+        self.assertIn("does not guarantee savings", new_docs)
+        self.assertIn("does not prove provider cache hits", new_docs)
+        self.assertIn("not billing authority", new_docs)
+        self.assertIn("does not infer live headroom", new_docs)
+        self.assertNotIn("sk-ant-", new_docs)
+        self.assertNotIn(str(Path.home()).lower(), new_docs)
+        self.assertNotIn("stable instruction block", new_docs)
+        self.assertNotIn("run-specific diff", new_docs)
+
     def test_transcript_audit_feasibility_json_exposes_gui_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -51,6 +51,9 @@
     "plugins/context-guard/lib/**",
     "plugins/context-guard/skills/**",
     "docs/distribution.md",
+    "docs/cache-diagnostics-schema.md",
+    "docs/cache-diagnostics.schema.json",
+    "docs/cache-diagnostics.example.json",
     "docs/benchmark-workflows/*.example.json",
     "docs/benchmark-workflow-examples.md",
     "packaging/homebrew/context-guard.rb.template"
