@@ -179,12 +179,102 @@ def secret_count_in_text(text: str) -> int:
     return sum(1 for _ in SECRET_RE.finditer(text))
 
 
-def strip_cache_control(value: Any) -> Any:
+def is_provider_cache_control(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    raw_type = value.get("type")
+    raw_ttl = value.get("ttl")
+    if raw_type is not None:
+        return str(raw_type).strip().lower() == "ephemeral"
+    if raw_ttl is None:
+        return False
+    ttl = str(raw_ttl).strip().lower()
+    return ttl in {"5m", "1h", "60m", "hour"}
+
+
+def clone_jsonish(value: Any) -> Any:
     if isinstance(value, dict):
-        return {str(k): strip_cache_control(v) for k, v in value.items() if k != "cache_control"}
+        return {str(k): clone_jsonish(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [strip_cache_control(item) for item in value]
+        return [clone_jsonish(item) for item in value]
     return value
+
+
+def strip_cache_control(value: Any) -> Any:
+    """Strip a provider cache_control marker from this object only.
+
+    `cache_control` can also be legitimate user/application data nested inside
+    tool schemas. Keep nested values intact unless the caller explicitly selects
+    a recognized provider container.
+    """
+    if isinstance(value, dict):
+        return {
+            str(k): clone_jsonish(v)
+            for k, v in value.items()
+            if not (k == "cache_control" and is_provider_cache_control(v))
+        }
+    if isinstance(value, list):
+        return [clone_jsonish(item) for item in value]
+    return value
+
+
+def strip_cache_control_at_path(value: Any, path: tuple[str, ...]) -> Any:
+    if not path:
+        return strip_cache_control(value)
+    if isinstance(value, dict):
+        head, *tail = path
+        return {
+            str(k): strip_cache_control_at_path(v, tuple(tail)) if str(k) == head else clone_jsonish(v)
+            for k, v in value.items()
+        }
+    return clone_jsonish(value)
+
+
+def strip_known_cache_controls(request: Any) -> Any:
+    """Strip provider cache_control markers only from recognized request slots."""
+    if not isinstance(request, dict):
+        return clone_jsonish(request)
+    out = clone_jsonish(request)
+
+    explicit = out.get("cache_breakpoints")
+    if isinstance(explicit, list):
+        out["cache_breakpoints"] = [
+            strip_cache_control(item) if isinstance(item, dict) else clone_jsonish(item)
+            for item in explicit
+        ]
+
+    tools = out.get("tools")
+    if isinstance(tools, list):
+        out["tools"] = [strip_cache_control(tool) if isinstance(tool, dict) else clone_jsonish(tool) for tool in tools]
+
+    system = out.get("system")
+    if isinstance(system, list):
+        out["system"] = [
+            strip_cache_control(block) if isinstance(block, dict) else clone_jsonish(block)
+            for block in system
+        ]
+    system_cache = out.get("system_cache")
+    if isinstance(system_cache, dict):
+        out["system_cache"] = strip_cache_control(system_cache)
+
+    messages = out.get("messages")
+    if isinstance(messages, list):
+        stripped_messages = []
+        for message in messages:
+            if not isinstance(message, dict):
+                stripped_messages.append(clone_jsonish(message))
+                continue
+            stripped_message = strip_cache_control(message)
+            content = stripped_message.get("content")
+            if isinstance(content, list):
+                stripped_message["content"] = [
+                    strip_cache_control(block) if isinstance(block, dict) else clone_jsonish(block)
+                    for block in content
+                ]
+            stripped_messages.append(stripped_message)
+        out["messages"] = stripped_messages
+
+    return out
 
 
 def cache_ttl(cache_control: Any) -> str:
@@ -199,9 +289,17 @@ def cache_ttl(cache_control: Any) -> str:
 def find_cache_control(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         cc = value.get("cache_control")
-        if isinstance(cc, dict):
+        if is_provider_cache_control(cc):
             return cc
     return None
+
+
+def has_unsupported_cache_control(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and "cache_control" in value
+        and not is_provider_cache_control(value.get("cache_control"))
+    )
 
 
 @dataclass(frozen=True)
@@ -218,8 +316,8 @@ class CacheBreakpoint:
         return f"bp{self.index:03d}"
 
 
-def _prompt_unit(kind: str, value: Any, **meta: Any) -> dict[str, Any]:
-    out = {"kind": kind, "value": strip_cache_control(value)}
+def _prompt_unit(kind: str, value: Any, *, cache_control_path: tuple[str, ...] = (), **meta: Any) -> dict[str, Any]:
+    out = {"kind": kind, "value": strip_cache_control_at_path(value, cache_control_path)}
     for key, val in sorted(meta.items()):
         if val is not None:
             out[key] = val
@@ -233,9 +331,10 @@ def _append_unit(
     kind: str,
     value: Any,
     cc: Any,
+    cache_control_path: tuple[str, ...] = (),
     **meta: Any,
 ) -> None:
-    unit = _prompt_unit(kind, value, **meta)
+    unit = _prompt_unit(kind, value, cache_control_path=cache_control_path, **meta)
     units.append(unit)
     if isinstance(cc, dict):
         breakpoints.append(
@@ -271,13 +370,20 @@ def extract_cache_breakpoints(request: Any) -> tuple[list[CacheBreakpoint], dict
             if not isinstance(item, dict):
                 unsupported_cache_controls += 1
                 continue
-            cc = item.get("cache_control") if isinstance(item.get("cache_control"), dict) else {"type": "ephemeral", "ttl": item.get("ttl", "5m")}
+            if "cache_control" in item:
+                cc = find_cache_control(item)
+                if cc is None:
+                    unsupported_cache_controls += 1
+            else:
+                cc = {"type": "ephemeral", "ttl": item.get("ttl", "5m")}
             _append_unit(units, breakpoints, kind=str(item.get("kind") or "explicit"), value=item, cc=cc)
 
     tools = request.get("tools")
     if isinstance(tools, list):
         for i, tool in enumerate(tools):
             cc = find_cache_control(tool)
+            if has_unsupported_cache_control(tool):
+                unsupported_cache_controls += 1
             _append_unit(units, breakpoints, kind="tool", value=tool, cc=cc, index=i)
     elif tools is not None:
         units.append(_prompt_unit("tools", tools))
@@ -286,9 +392,14 @@ def extract_cache_breakpoints(request: Any) -> tuple[list[CacheBreakpoint], dict
     if isinstance(system, list):
         for i, block in enumerate(system):
             cc = find_cache_control(block)
+            if has_unsupported_cache_control(block):
+                unsupported_cache_controls += 1
             _append_unit(units, breakpoints, kind="system", value=block, cc=cc, index=i)
     elif system is not None:
-        cc = find_cache_control(request.get("system_cache") or {})
+        system_cache = request.get("system_cache") or {}
+        cc = find_cache_control(system_cache)
+        if has_unsupported_cache_control(system_cache):
+            unsupported_cache_controls += 1
         _append_unit(units, breakpoints, kind="system", value=system, cc=cc)
 
     messages = request.get("messages")
@@ -300,15 +411,20 @@ def extract_cache_breakpoints(request: Any) -> tuple[list[CacheBreakpoint], dict
             role = str(message.get("role") or "unknown")
             content = message.get("content")
             msg_cc = find_cache_control(message)
+            if has_unsupported_cache_control(message):
+                unsupported_cache_controls += 1
             if isinstance(content, list):
                 for ci, block in enumerate(content):
                     cc = find_cache_control(block)
+                    if has_unsupported_cache_control(block):
+                        unsupported_cache_controls += 1
                     _append_unit(
                         units,
                         breakpoints,
                         kind="message_content",
                         value={"role": role, "content": block},
                         cc=cc,
+                        cache_control_path=("content",),
                         message_index=mi,
                         content_index=ci,
                     )
@@ -323,10 +439,6 @@ def extract_cache_breakpoints(request: Any) -> tuple[list[CacheBreakpoint], dict
 
     raw = json_bytes(request)
     found_cc = raw.count('"cache_control"')
-    recognized = len(breakpoints)
-    if found_cc > recognized:
-        unsupported_cache_controls += found_cc - recognized
-
     metadata = {
         "request_shape": "anthropic_like",
         "prompt_units": len(units),
@@ -499,11 +611,41 @@ def key_lock_owner_matches(lock_dir: Path, lock: KeyLock) -> bool:
     )
 
 
+def cleanup_orphaned_stale_key_locks(store_dir: Path) -> None:
+    stale_prefix = f"{KEY_NAME}.lock.stale."
+    try:
+        candidates = list(store_dir.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if not candidate.name.startswith(stale_prefix):
+            continue
+        try:
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+        except OSError:
+            pass
+
+
 def cleanup_key_lock(lock_dir: Path, lock: KeyLock) -> None:
     if not key_lock_owner_matches(lock_dir, lock):
         return
+    cleanup_dir = lock_dir.with_name(f"{lock_dir.name}.cleanup.{os.getpid()}.{secrets.token_hex(8)}")
     try:
-        shutil.rmtree(lock_dir)
+        os.rename(lock_dir, cleanup_dir)
+    except OSError:
+        return
+    if not key_lock_owner_matches(cleanup_dir, lock):
+        try:
+            if not lock_dir.exists():
+                os.rename(cleanup_dir, lock_dir)
+        except OSError:
+            pass
+        return
+    try:
+        shutil.rmtree(cleanup_dir)
     except OSError:
         pass
 
@@ -541,6 +683,7 @@ def acquire_key_lock(lock_dir: Path, key_path: Path) -> KeyLock | None:
 
 def load_or_create_hmac_key(store_dir: Path) -> bytes:
     ensure_private_dir(store_dir)
+    cleanup_orphaned_stale_key_locks(store_dir)
     key_path = store_dir / KEY_NAME
     if key_path.exists():
         return read_hmac_key(key_path)
@@ -1007,7 +1150,7 @@ def preflight_command(args: argparse.Namespace) -> int:
         read_mult=read_mult,
         exchange_rate=exchange,
     )
-    full_prompt_tokens_mid = token_proxy_obj(strip_cache_control(request))
+    full_prompt_tokens_mid = token_proxy_obj(strip_known_cache_controls(request))
     cacheable_tokens_mid = max((int(fp.get("tokens_estimated") or 0) for fp in fingerprints_private), default=0)
     noncacheable_tokens_mid = max(0, full_prompt_tokens_mid - cacheable_tokens_mid)
     output_tokens_max = usage_int(request, "max_tokens")

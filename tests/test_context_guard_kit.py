@@ -645,6 +645,47 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("/tmp/private-token.txt", proc.stdout)
 
 
+    def test_cost_guard_scoped_cache_control_stripping_preserves_user_schema_fields(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_cache_control_scope_test")
+        provider_marker = {"type": "ephemeral", "ttl": "5m"}
+        user_schema_cache_control = {"type": "object", "description": "application data, not Anthropic cache metadata"}
+        application_payload = {"cache_control": {"type": "ephemeral", "owner": "application-data"}}
+        value = {
+            "type": "tool",
+            "cache_control": provider_marker,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cache_control": user_schema_cache_control,
+                    "payload": {"type": "object", "default": application_payload},
+                },
+            },
+        }
+
+        stripped = module.strip_cache_control(value)
+
+        self.assertNotIn("cache_control", stripped)
+        self.assertEqual(stripped["input_schema"]["properties"]["cache_control"], user_schema_cache_control)
+        self.assertEqual(stripped["input_schema"]["properties"]["payload"]["default"], application_payload)
+        self.assertEqual(module.strip_known_cache_controls({"tools": [value]})["tools"][0], stripped)
+        self.assertTrue(module.is_provider_cache_control(provider_marker))
+        self.assertTrue(module.is_provider_cache_control({"type": "ephemeral", "ttl": "unsupported"}))
+        self.assertFalse(module.is_provider_cache_control(user_schema_cache_control))
+
+        request = {
+            "model": "claude-sonnet-4-5",
+            "tools": [value],
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        breakpoints, meta = module.extract_cache_breakpoints(request)
+        self.assertEqual(len(breakpoints), 1)
+        self.assertEqual(meta["unsupported_cache_controls"], 0)
+        section_json = json.dumps(breakpoints[0].section, sort_keys=True)
+        self.assertIn("cache_control", section_json)
+        self.assertIn("application-data", section_json)
+        self.assertNotIn('"ttl": "5m"', section_json)
+
+
     def test_cost_guard_preflight_rejects_non_object_request(self):
         for raw in ("[]", "null", '"hello"'):
             with self.subTest(raw=raw):
@@ -826,19 +867,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for label, exc in (("attribute", AttributeError("missing fchmod")), ("oserror", OSError(errno.EPERM, "no fchmod"))):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 module = load_module_from_path(KIT_DIR / "cost_guard.py", f"cost_guard_fchmod_{label}")
-                original = getattr(module.os, "fchmod", None)
-
                 def fail_fchmod(_fd, _mode, err=exc):
                     raise err
 
-                module.os.fchmod = fail_fchmod
-                try:
+                with mock.patch.object(module.os, "fchmod", side_effect=fail_fchmod, create=True):
                     key = module.load_or_create_hmac_key(Path(tmp) / "ledger")
-                finally:
-                    if original is None:
-                        delattr(module.os, "fchmod")
-                    else:
-                        module.os.fchmod = original
                 self.assertEqual(len(key), 32)
                 key_path = Path(tmp) / "ledger" / "hmac.key"
                 self.assertEqual(base64.b64decode(key_path.read_text(encoding="utf-8").encode("ascii"), altchars=b"-_", validate=True), key)
@@ -850,47 +883,77 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
                 module = load_module_from_path(KIT_DIR / "cost_guard.py", f"cost_guard_write_error_{label}")
                 store = Path(tmp) / "ledger"
-                original_open = module.os.open
-                original_replace = module.os.replace
-                try:
-                    if label == "open":
-                        def fail_open(path, flags, mode=0o777, *args, **kwargs):
-                            if str(path).endswith(".tmp"):
-                                raise OSError(errno.EACCES, "permission denied", str(path))
-                            return original_open(path, flags, mode, *args, **kwargs)
+                if label == "open":
+                    original_open = module.os.open
 
-                        module.os.open = fail_open
-                    else:
-                        def fail_replace(src, dst):
-                            raise OSError(errno.EACCES, "permission denied", str(dst))
+                    def fail_open(path, flags, mode=0o777, *args, **kwargs):
+                        if str(path).endswith(".tmp"):
+                            raise OSError(errno.EACCES, "permission denied", str(path))
+                        return original_open(path, flags, mode, *args, **kwargs)
 
-                        module.os.replace = fail_replace
+                    patchers = [mock.patch.object(module.os, "open", side_effect=fail_open)]
+                else:
+                    def fail_replace(src, dst):
+                        raise OSError(errno.EACCES, "permission denied", str(dst))
+
+                    patchers = [mock.patch.object(module.os, "replace", side_effect=fail_replace)]
+                with contextlib.ExitStack() as stack:
+                    for patcher in patchers:
+                        stack.enter_context(patcher)
                     with self.assertRaises(module.CostGuardError) as ctx:
                         module.load_or_create_hmac_key(store)
-                finally:
-                    module.os.open = original_open
-                    module.os.replace = original_replace
                 message = str(ctx.exception)
                 self.assertIn("local HMAC key file", message)
                 self.assertNotIn(str(store), message)
 
         module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_parent_fsync_close_test")
-        original_open = module.os.open
-        original_fsync = module.os.fsync
-        original_close = module.os.close
-        try:
-            module.os.open = lambda *_args, **_kwargs: 987654321
 
-            def fail_oserror(*_args, **_kwargs):
-                raise OSError(errno.EIO, "simulated fsync/close failure")
+        def fail_oserror(*_args, **_kwargs):
+            raise OSError(errno.EIO, "simulated fsync/close failure")
 
-            module.os.fsync = fail_oserror
-            module.os.close = fail_oserror
-            module.fsync_parent_dir(Path("/tmp/context-guard-parent-fsync-fixture"))
-        finally:
-            module.os.open = original_open
-            module.os.fsync = original_fsync
-            module.os.close = original_close
+        with mock.patch.object(module.os, "open", return_value=987654321), mock.patch.object(
+            module.os, "fsync", side_effect=fail_oserror
+        ), mock.patch.object(module.os, "close", side_effect=fail_oserror):
+            self.assertIsNone(module.fsync_parent_dir(Path("/tmp/context-guard-parent-fsync-fixture")))
+
+    def test_cost_guard_lock_cleanup_preserves_lock_after_owner_mismatch_rename(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_cleanup_owner_mismatch_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            lock_dir = store / "hmac.key.lock"
+            lock_dir.mkdir(parents=True)
+            original_lock = module.KeyLock(nonce="original", metadata_written=True)
+            original_metadata = {"pid": os.getpid(), "created_at_unix": time.time(), "nonce": "original"}
+            (lock_dir / "owner.json").write_text(json.dumps(original_metadata), encoding="utf-8")
+            real_owner_matches = module.key_lock_owner_matches
+            checks = []
+
+            def racing_owner_matches(path, lock):
+                checks.append(Path(path).name)
+                if Path(path) == lock_dir and len(checks) == 1:
+                    return True
+                return False
+
+            with mock.patch.object(module, "key_lock_owner_matches", side_effect=racing_owner_matches):
+                module.cleanup_key_lock(lock_dir, original_lock)
+
+            self.assertTrue(lock_dir.exists())
+            self.assertEqual(real_owner_matches(lock_dir, original_lock), True)
+            self.assertFalse(list(store.glob("hmac.key.lock.cleanup.*")))
+
+    def test_cost_guard_sweeps_orphaned_stale_key_lock_dirs(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_stale_sweep_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            stale = store / "hmac.key.lock.stale.1234.fixture"
+            stale.mkdir(parents=True)
+            (stale / "owner.json").write_text("{}", encoding="utf-8")
+
+            key = module.load_or_create_hmac_key(store)
+
+            self.assertEqual(len(key), 32)
+            self.assertFalse(stale.exists())
+
 
     def test_cost_guard_hmac_stale_lock_recovery_and_fresh_lock_privacy(self):
         request = cost_guard_request(cacheable_text="stale lock recovery prefix " + ("x" * 5000))
@@ -1018,7 +1081,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(len(set(fingerprints)), 1)
             key_path = store / "hmac.key"
             raw = key_path.read_text(encoding="utf-8")
-            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=$")
+            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=\Z")
             self.assertEqual(len(base64.b64decode(raw.encode("ascii"), altchars=b"-_", validate=True)), 32)
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
@@ -1060,7 +1123,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn("Traceback", proc.stderr + proc.stdout)
             key_path = store / "hmac.key"
             raw = key_path.read_text(encoding="utf-8")
-            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=$")
+            self.assertRegex(raw, r"^[A-Za-z0-9_-]{43}=\Z")
             self.assertEqual(len(base64.b64decode(raw.encode("ascii"), altchars=b"-_", validate=True)), 32)
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
