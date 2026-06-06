@@ -223,20 +223,23 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ### Build a budgeted context pack
 
 ```bash
-./plugins/context-guard/bin/context-guard-pack suggest \
+./plugins/context-guard/bin/context-guard-pack auto \
   --root . \
   --query "review failing tests" \
   --diff HEAD \
   --manifest-out suggested-pack.json \
+  --pack-out context-pack.md \
   --budget-bytes 12000 --json
+# Or run the two explicit steps:
+./plugins/context-guard/bin/context-guard-pack suggest \
+  --root . --query "review failing tests" --diff HEAD \
+  --manifest-out suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack build \
-  --root . \
-  --manifest suggested-pack.json \
-  --budget-bytes 12000 --json
+  --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
-`context-guard-pack suggest` is an additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional `--output` / `--test-output` text files under `--root` after sanitizing those output signals, then writes a manifest that `build --manifest` can consume. It uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
+`context-guard-pack auto` is the one-command local-only path that runs the same suggestion step and immediately builds the budgeted Markdown pack; `--manifest-out` remains a build-compatible manifest, while `--pack-out` can save the rendered pack. `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional `--output` / `--test-output` text files under `--root` after sanitizing those output signals, then writes a manifest that `build --manifest` can consume. It uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
 
 ### Prune a tool/MCP catalog for a task
 
