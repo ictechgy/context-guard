@@ -3782,6 +3782,112 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertFalse((root / "auto-manifest.json").exists())
                     self.assertFalse((Path(tmp) / "auto-pack.md").exists())
 
+                    same_output = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "README.md",
+                        "--manifest-out",
+                        "same-output.json",
+                        "--pack-out",
+                        "./same-output.json",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(same_output.returncode, 2)
+                    self.assertEqual(same_output.stdout, "")
+                    self.assertIn("same_as_manifest_out", same_output.stderr)
+                    self.assertFalse((root / "same-output.json").exists())
+                    self.assertFalse((root / ".context-guard" / "packs").exists())
+
+                    case_output = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "README.md",
+                        "--manifest-out",
+                        "same-output-case.json",
+                        "--pack-out",
+                        "SAME-OUTPUT-CASE.JSON",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(case_output.returncode, 2)
+                    self.assertEqual(case_output.stdout, "")
+                    self.assertIn("same_as_manifest_out", case_output.stderr)
+                    self.assertFalse((root / "same-output-case.json").exists())
+                    self.assertFalse((root / "SAME-OUTPUT-CASE.JSON").exists())
+                    self.assertFalse((root / ".context-guard" / "packs").exists())
+
+                    if hasattr(os, "link"):
+                        manifest_link = root / "manifest-link.json"
+                        pack_link = root / "pack-link.md"
+                        manifest_link.write_text("existing\n", encoding="utf-8")
+                        try:
+                            os.link(manifest_link, pack_link)
+                        except OSError:
+                            pack_link = None
+                        if pack_link is not None:
+                            hardlink_output = self._run_pack(
+                                script,
+                                root,
+                                "auto",
+                                "--root",
+                                ".",
+                                "--files",
+                                "README.md",
+                                "--manifest-out",
+                                "manifest-link.json",
+                                "--pack-out",
+                                "pack-link.md",
+                                "--json",
+                                check=False,
+                            )
+                            self.assertEqual(hardlink_output.returncode, 2)
+                            self.assertEqual(hardlink_output.stdout, "")
+                            self.assertIn("same_as_manifest_out", hardlink_output.stderr)
+                            self.assertFalse((root / ".context-guard" / "packs").exists())
+
+                        writeonly_manifest_link = root / "manifest-writeonly-link.json"
+                        writeonly_pack_link = root / "pack-writeonly-link.md"
+                        writeonly_manifest_link.write_text("existing\n", encoding="utf-8")
+                        try:
+                            os.link(writeonly_manifest_link, writeonly_pack_link)
+                            writeonly_manifest_link.chmod(0o200)
+                            writeonly_pack_link.chmod(0o200)
+                        except OSError:
+                            writeonly_pack_link = None
+                        if writeonly_pack_link is not None:
+                            try:
+                                writeonly_hardlink_output = self._run_pack(
+                                    script,
+                                    root,
+                                    "auto",
+                                    "--root",
+                                    ".",
+                                    "--files",
+                                    "README.md",
+                                    "--manifest-out",
+                                    "manifest-writeonly-link.json",
+                                    "--pack-out",
+                                    "pack-writeonly-link.md",
+                                    "--json",
+                                    check=False,
+                                )
+                            finally:
+                                writeonly_manifest_link.chmod(0o600)
+                            self.assertEqual(writeonly_hardlink_output.returncode, 2)
+                            self.assertEqual(writeonly_hardlink_output.stdout, "")
+                            self.assertIn("same_as_manifest_out", writeonly_hardlink_output.stderr)
+                            self.assertEqual(writeonly_manifest_link.read_text(encoding="utf-8"), "existing\n")
+                            self.assertFalse((root / ".context-guard" / "packs").exists())
+
                     readonly_pack = root / "readonly-pack.md"
                     readonly_pack.write_text("existing\n", encoding="utf-8")
                     readonly_pack.chmod(0o400)
@@ -3838,6 +3944,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("invalid --pack-out", fifo_output.stderr)
                         self.assertFalse((root / "fifo-manifest.json").exists())
                         self.assertFalse((root / ".context-guard" / "packs").exists())
+
+                    dry_run = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "README.md",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    receipt_rel = Path(".context-guard") / "packs" / f"{dry_run['build']['pack_id']}.json"
+                    (root / ".context-guard" / "packs").mkdir(parents=True)
+                    receipt_collision = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "README.md",
+                        "--manifest-out",
+                        "receipt-manifest.json",
+                        "--pack-out",
+                        receipt_rel.as_posix(),
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(receipt_collision.returncode, 2)
+                    self.assertEqual(receipt_collision.stdout, "")
+                    self.assertIn("same_as_artifact_receipt", receipt_collision.stderr)
+                    self.assertFalse((root / "receipt-manifest.json").exists())
+                    self.assertFalse((root / receipt_rel).exists())
 
     def test_context_pack_auto_query_with_no_matches_returns_empty_pack(self):
         for script in PACK_SCRIPTS:
