@@ -686,6 +686,46 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn('"ttl": "5m"', section_json)
 
 
+    def test_cost_guard_message_content_cache_control_preserves_nested_application_data(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_message_cache_control_scope_test")
+        provider_marker = {"type": "ephemeral", "ttl": "5m"}
+        application_payload = {
+            "cache_control": {"type": "ephemeral", "owner": "application-data"},
+            "value": "keep nested application cache_control",
+        }
+        request = {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "stable message content prefix",
+                            "cache_control": provider_marker,
+                            "metadata": {"payload": application_payload},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        stripped = module.strip_known_cache_controls(request)
+        stripped_block = stripped["messages"][0]["content"][0]
+
+        self.assertNotIn("cache_control", stripped_block)
+        self.assertEqual(stripped_block["metadata"]["payload"], application_payload)
+
+        breakpoints, meta = module.extract_cache_breakpoints(request)
+        self.assertEqual(len(breakpoints), 1)
+        self.assertEqual(breakpoints[0].kind, "message_content")
+        self.assertEqual(meta["unsupported_cache_controls"], 0)
+        section_json = json.dumps(breakpoints[0].section, sort_keys=True)
+        self.assertIn("application-data", section_json)
+        self.assertIn("keep nested application cache_control", section_json)
+        self.assertNotIn('"ttl": "5m"', section_json)
+
+
     def test_cost_guard_preflight_rejects_non_object_request(self):
         for raw in ("[]", "null", '"hello"'):
             with self.subTest(raw=raw):
@@ -953,6 +993,46 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
             self.assertEqual(len(key), 32)
             self.assertFalse(stale.exists())
+
+
+    def test_cost_guard_sweeps_only_stale_orphaned_cleanup_key_lock_artifacts(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_cleanup_sweep_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            old_cleanup_dir = store / "hmac.key.lock.cleanup.1234.old-dir"
+            old_cleanup_dir.mkdir()
+            (old_cleanup_dir / "owner.json").write_text("{}", encoding="utf-8")
+            old_cleanup_file = store / "hmac.key.lock.cleanup.1234.old-file"
+            old_cleanup_file.write_text("leftover", encoding="utf-8")
+            old_mtime = time.time() - module.KEY_LOCK_STALE_SECONDS - 5
+            os.utime(old_cleanup_dir, (old_mtime, old_mtime))
+            os.utime(old_cleanup_file, (old_mtime, old_mtime))
+
+            fresh_cleanup_dir = store / "hmac.key.lock.cleanup.1234.fresh-dir"
+            fresh_cleanup_dir.mkdir()
+            fresh_cleanup_file = store / "hmac.key.lock.cleanup.1234.fresh-file"
+            fresh_cleanup_file.write_text("fresh", encoding="utf-8")
+            fresh_cleanup_old_owner = store / "hmac.key.lock.cleanup.1234.fresh-old-owner"
+            fresh_cleanup_old_owner.mkdir()
+            (fresh_cleanup_old_owner / "owner.json").write_text(
+                json.dumps({"pid": os.getpid(), "created_at_unix": time.time() - module.KEY_LOCK_STALE_SECONDS - 5, "nonce": "old"}),
+                encoding="utf-8",
+            )
+            active_lock = store / "hmac.key.lock"
+            active_lock.mkdir()
+            unrelated = store / "hmac.key.lock.cleanupish"
+            unrelated.mkdir()
+
+            module.cleanup_orphaned_stale_key_locks(store)
+
+            self.assertFalse(old_cleanup_dir.exists())
+            self.assertFalse(old_cleanup_file.exists())
+            self.assertTrue(fresh_cleanup_dir.exists())
+            self.assertTrue(fresh_cleanup_file.exists())
+            self.assertTrue(fresh_cleanup_old_owner.exists())
+            self.assertTrue(active_lock.exists())
+            self.assertTrue(unrelated.exists())
 
 
     def test_cost_guard_hmac_stale_lock_recovery_and_fresh_lock_privacy(self):
