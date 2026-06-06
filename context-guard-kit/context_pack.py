@@ -1332,38 +1332,40 @@ def output_rel_for_collision_check(raw_path: str, option_name: str) -> Path:
 
 def existing_output_identity_under_root(root: Path, rel: Path) -> tuple[int, int] | None:
     current_fd: int | None = None
-    file_fd = -1
     try:
         current_fd = open_dir_no_follow(root)
         for part in rel.parts[:-1]:
             next_fd = open_dir_no_follow(part, dir_fd=current_fd)
             os.close(current_fd)
             current_fd = next_fd
-        flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
-        if hasattr(os, "O_NONBLOCK"):
-            flags |= os.O_NONBLOCK
-        file_fd = os.open(rel.parts[-1], flags, dir_fd=current_fd)
-        st = os.fstat(file_fd)
+        st = os.stat(rel.parts[-1], dir_fd=current_fd, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode):
             return None
         return int(st.st_dev), int(st.st_ino)
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, NotImplementedError):
         return None
     finally:
-        if file_fd >= 0:
-            try:
-                os.close(file_fd)
-            except OSError:
-                pass
         if current_fd is not None:
             try:
                 os.close(current_fd)
             except OSError:
                 pass
+
+
+def reject_matching_output_targets(
+    root: Path,
+    *,
+    first_rel: Path,
+    second_rel: Path,
+    second_option: str,
+    reason: str,
+) -> None:
+    first_identity = existing_output_identity_under_root(root, first_rel)
+    second_identity = existing_output_identity_under_root(root, second_rel)
+    same_existing_target = first_identity is not None and first_identity == second_identity
+    same_lexical_target = first_rel == second_rel or first_rel.as_posix().casefold() == second_rel.as_posix().casefold()
+    if same_lexical_target or same_existing_target:
+        raise PackError(f"invalid {second_option}: {reason}")
 
 
 def write_text_under_root(root: Path, raw_path: str, content: str, option_name: str) -> str:
@@ -1618,12 +1620,13 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
     pack_rel = output_rel_for_collision_check(args.pack_out, "--pack-out") if args.pack_out else None
     if manifest_rel is not None and pack_rel is not None:
-        manifest_identity = existing_output_identity_under_root(root, manifest_rel)
-        pack_identity = existing_output_identity_under_root(root, pack_rel)
-        same_existing_target = manifest_identity is not None and manifest_identity == pack_identity
-        same_lexical_target = manifest_rel == pack_rel or manifest_rel.as_posix().casefold() == pack_rel.as_posix().casefold()
-        if same_lexical_target or same_existing_target:
-            raise PackError("invalid --pack-out: same_as_manifest_out")
+        reject_matching_output_targets(
+            root,
+            first_rel=manifest_rel,
+            second_rel=pack_rel,
+            second_option="--pack-out",
+            reason="same_as_manifest_out",
+        )
     if args.manifest_out:
         validate_output_path_under_root(root, args.manifest_out, "--manifest-out")
     if args.pack_out:
@@ -1635,6 +1638,24 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     specs = manifest_to_source_specs(manifest)
     budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
     build_payload = build_pack(root, specs, budget_bytes=budget, root_arg=root_arg, store_artifact=False)
+    if not args.no_artifact:
+        receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
+        if manifest_rel is not None:
+            reject_matching_output_targets(
+                root,
+                first_rel=receipt_rel,
+                second_rel=manifest_rel,
+                second_option="--manifest-out",
+                reason="same_as_artifact_receipt",
+            )
+        if pack_rel is not None:
+            reject_matching_output_targets(
+                root,
+                first_rel=receipt_rel,
+                second_rel=pack_rel,
+                second_option="--pack-out",
+                reason="same_as_artifact_receipt",
+            )
     manifest_path: str | None = None
     pack_path: str | None = None
     if args.pack_out:
