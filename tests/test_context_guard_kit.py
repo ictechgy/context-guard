@@ -5684,6 +5684,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("diet_scan", data)
                     self.assertIn("recommended_commands", data)
                     self.assertIn("context-guard setup", "\n".join(data["recommended_commands"]))
+                    self.assertIn("--root", data["recommended_commands"][0])
+                    self.assertIn(str(root), data["recommended_commands"][0])
                     check_ids = {check["id"] for check in data["checks"]}
                     self.assertIn("setup-plan", check_ids)
                     self.assertIn("diet-scan", check_ids)
@@ -5789,6 +5791,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(data["scope"], "user")
             self.assertTrue(data["read_only"])
             self.assertEqual(data["settings_path"], str(home.resolve() / ".claude" / "settings.json"))
+            self.assertIn("--agent claude", "\n".join(data["recommended_commands"]))
             self.assertFalse((home / ".claude" / "settings.json").exists())
             self.assertFalse((home / ".context-guard").exists())
             self.assertEqual(list(home.rglob("*")), [])
@@ -5821,6 +5824,65 @@ class ClaudeTokenKitTests(unittest.TestCase):
         smoke = (ROOT / "scripts" / "release_smoke.py").read_text(encoding="utf-8")
         self.assertIn("--verify", smoke)
         self.assertIn("context-guard doctor", smoke)
+
+    def test_context_guard_doctor_reports_missing_helpers_as_json_error(self):
+        setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_doctor_missing_helper")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = setup.build_parser().parse_args(["--root", str(root), "--verify", "--json"])
+            original_helper_argv = setup.helper_argv
+
+            def flaky_helper_argv(helper_name, kit_script, *, shell=None):
+                if helper_name == setup.HELPER_DIET:
+                    raise SystemExit("missing diet helper")
+                return original_helper_argv(helper_name, kit_script, shell=shell)
+
+            with mock.patch.object(setup, "helper_argv", side_effect=flaky_helper_argv):
+                report = setup.run_doctor(args)
+            self.assertEqual(report["schema_version"], "contextguard.doctor.v1")
+            self.assertEqual(report["status"], "error")
+            self.assertEqual(report["diet_scan"], {"status": "skipped", "reason": "helper-unavailable"})
+            helper = next(check for check in report["checks"] if check["id"] == "helper-availability")
+            self.assertEqual(helper["status"], "error")
+            self.assertIn(setup.HELPER_DIET, helper["detail"]["missing"])
+            self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_context_guard_doctor_recommended_commands_preserve_verified_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--verify",
+                    "--json",
+                    "--no-statusline",
+                    "--no-bash-hook",
+                    "--no-read-guard",
+                    "--no-model-defaults",
+                    "--no-failed-attempt-nudge",
+                    "--no-diet-scan",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            commands = "\n".join(data["recommended_commands"])
+            self.assertIn("--root", commands)
+            self.assertIn(str(root), commands)
+            for flag in (
+                "--no-statusline",
+                "--no-bash-hook",
+                "--no-read-guard",
+                "--no-model-defaults",
+                "--no-failed-attempt-nudge",
+                "--no-diet-scan",
+            ):
+                self.assertIn(flag, commands)
+            self.assertFalse((root / ".claude" / "settings.json").exists())
 
     def test_context_guard_doctor_verify_does_not_prompt_even_on_tty(self):
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_doctor_no_prompt")

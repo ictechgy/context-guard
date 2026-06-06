@@ -1642,11 +1642,15 @@ def doctor_check(
     return check
 
 
-def _setup_command(args: argparse.Namespace, *, apply: bool) -> str:
+def _setup_command(args: argparse.Namespace, *, apply: bool, root: Path | None = None) -> str:
     parts = ["context-guard", "setup", "--scope", normalize_scope(getattr(args, "scope", "project"))]
+    if root is not None and normalize_scope(getattr(args, "scope", "project")) == "project":
+        parts.extend(["--root", str(root)])
     selected = explicit_agent_selection(args)
     if selected:
         parts.extend(["--agent", ",".join(selected)])
+    elif normalize_scope(getattr(args, "scope", "project")) == "user":
+        parts.extend(["--agent", "claude"])
     if getattr(args, "with_init", False):
         parts.append("--with-init")
     if getattr(args, "with_skill", False):
@@ -1654,6 +1658,20 @@ def _setup_command(args: argparse.Namespace, *, apply: bool) -> str:
     brief_mode = getattr(args, "brief_mode", None)
     if brief_mode:
         parts.extend(["--brief-mode", str(brief_mode)])
+    for attr, flag in (
+        ("no_denies", "--no-denies"),
+        ("no_statusline", "--no-statusline"),
+        ("no_bash_hook", "--no-bash-hook"),
+        ("no_read_guard", "--no-read-guard"),
+        ("no_model_defaults", "--no-model-defaults"),
+        ("no_diet_scan", "--no-diet-scan"),
+    ):
+        if getattr(args, attr, False):
+            parts.append(flag)
+    if getattr(args, "failed_attempt_nudge", None) is False:
+        parts.append("--no-failed-attempt-nudge")
+    elif getattr(args, "failed_attempt_nudge", None) is True:
+        parts.append("--failed-attempt-nudge")
     parts.append("--yes" if apply else "--plan")
     return shlex.join(parts)
 
@@ -1709,7 +1727,8 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     scope = normalize_scope(getattr(args, "scope", "project"))
     root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
-    checks: list[dict[str, Any]] = [_helper_availability_check()]
+    helper_check = _helper_availability_check()
+    checks: list[dict[str, Any]] = [helper_check]
     warnings: list[str] = []
     if scope == "user":
         warnings.append("user-scope verify is read-only; applying user-scope setup still requires --yes and an explicit agent")
@@ -1745,6 +1764,26 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             detail={"path": str(settings_path)},
         ))
 
+    if helper_check.get("status") == "error":
+        diet_scan = {"status": "skipped", "reason": "helper-unavailable"}
+        return {
+            "schema_version": "contextguard.doctor.v1",
+            "status": "error",
+            "root": str(root),
+            "scope": scope,
+            "settings_path": str(settings_path),
+            "read_only": True,
+            "warnings": warnings,
+            "checks": checks,
+            "setup_plan": {
+                "changed": False,
+                "actions": [],
+                "adapter_plan": [],
+            },
+            "diet_scan": diet_scan,
+            "recommended_commands": [],
+        }
+
     choices = choices_from_args(args)
     actions = apply_choices(settings, choices) if claude_targeted else []
     changed = (settings != original) if claude_targeted else False
@@ -1755,7 +1794,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             "medium",
             "ContextGuard setup is not fully applied for the requested selections.",
             detail={"planned_action_count": len(actions), "planned_actions": actions},
-            next_action=_setup_command(args, apply=False),
+            next_action=_setup_command(args, apply=False, root=root),
         ))
     else:
         checks.append(doctor_check(
@@ -1795,7 +1834,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             "medium",
             "Some requested adapters still have planned or unsupported setup actions.",
             detail={"adapters": adapter_warnings},
-            next_action=_setup_command(args, apply=False),
+            next_action=_setup_command(args, apply=False, root=root),
         ))
     else:
         checks.append(doctor_check(
@@ -1848,9 +1887,9 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                     detail=diet_scan,
                 ))
 
-    recommended = [_setup_command(args, apply=False)]
+    recommended = [_setup_command(args, apply=False, root=root)]
     if changed or adapter_warnings:
-        recommended.append(_setup_command(args, apply=True))
+        recommended.append(_setup_command(args, apply=True, root=root))
     return {
         "schema_version": "contextguard.doctor.v1",
         "status": _doctor_status(checks),
