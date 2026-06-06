@@ -1237,6 +1237,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-cost"]["args"], ["--help"])
         self.assertIn({"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
+        self.assertIn({"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
         self.assertEqual(smoke.npm_dispatcher_smoke_plan(), smoke.DISPATCHER_SMOKE_COMMANDS)
 
     def test_experimental_token_reduction_radar_claim_discipline(self):
@@ -2790,13 +2791,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(meta["content_type"], "prose")
                 self.assertEqual(meta["type_source"], "override")
 
-    def _run_pack(self, script: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    def _run_pack(self, script: Path, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(script), *args],
             cwd=cwd,
             text=True,
             capture_output=True,
-            check=True,
+            check=check,
         )
 
     def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
@@ -3548,6 +3549,268 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     else:
                         self.assertEqual(artifact["error"], "receipt_metadata_too_large")
                         self.assertFalse((root / ".context-guard" / "packs" / f"{data['pack_id']}.json").exists())
+
+    def _init_pack_git_repo(self, root: Path) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required for context-pack suggest diff tests")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "context-guard@example.test"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "Context Guard"], cwd=root, check=True)
+
+    def test_context_pack_suggest_json_manifest_round_trips_into_build(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._init_pack_git_repo(root)
+                    (root / "README.md").write_text("context pack overview\n", encoding="utf-8")
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("def app():\n    return 'ok'\n", encoding="utf-8")
+                    subprocess.run(["git", "add", "README.md", "src/app.py"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+                    (root / "src" / "app.py").write_text("def app():\n    raise RuntimeError('failure')\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--query",
+                        "app failure context",
+                        "--diff",
+                        "HEAD",
+                        "--files",
+                        "README.md",
+                        "--manifest-out",
+                        "suggested-pack.json",
+                        "--budget-bytes",
+                        "3000",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.pack-suggest.v1")
+                    self.assertEqual(data["mode"], "suggest")
+                    self.assertTrue((root / "suggested-pack.json").is_file())
+                    manifest = json.loads((root / "suggested-pack.json").read_text(encoding="utf-8"))
+                    self.assertEqual(manifest, data["manifest"])
+                    self.assertIn("README.md", [item["path"] for item in manifest["sources"]])
+                    self.assertIn("src/app.py", [item["path"] for item in manifest["sources"]])
+                    manifest_identities = [
+                        (item["path"], json.dumps(item.get("lines", "all"), sort_keys=True))
+                        for item in manifest["sources"]
+                    ]
+                    self.assertEqual(len(manifest_identities), len(set(manifest_identities)))
+
+                    build = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            "suggested-pack.json",
+                            "--budget-bytes",
+                            "3000",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    self.assertLessEqual(build["pack_bytes"], 3000)
+                    self.assertIn("src/app.py", build["pack"])
+                    self.assertIn("README.md", build["pack"])
+
+    def test_context_pack_suggest_redacts_outputs_and_omits_duplicate_and_unsafe_paths(self):
+        secret = "ghp_" + ("D" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "tests").mkdir()
+                    (root / "src" / "app.py").write_text("def app():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "tests" / "test_app.py").write_text("from src.app import app\nassert app()\n", encoding="utf-8")
+                    (root / "output.txt").write_text(f"FAILED src/app.py:2 token={secret}\n", encoding="utf-8")
+                    (root / "test-output.txt").write_text(f"tests/test_app.py:1 api_key={secret}\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--query",
+                        f"app test token={secret}",
+                        "--files",
+                        "src/app.py",
+                        "--files",
+                        "src/app.py",
+                        "--files",
+                        "../outside.py",
+                        "--output",
+                        "output.txt",
+                        "--test-output",
+                        "test-output.txt",
+                        "--json",
+                    )
+                    self.assertNotIn(secret, proc.stdout)
+                    data = json.loads(proc.stdout)
+                    paths = [item["path"] for item in data["sources"]]
+                    self.assertIn("src/app.py", paths)
+                    self.assertIn("tests/test_app.py", paths)
+                    reasons = {item["reason"] for item in data["omitted_sources"]}
+                    self.assertIn("duplicate_source", reasons)
+                    self.assertIn("outside_root", reasons)
+                    manifest_paths = [item["path"] for item in data["manifest"]["sources"]]
+                    self.assertNotIn("../outside.py", manifest_paths)
+
+    def test_context_pack_suggest_invalid_diff_fails_without_partial_json(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._init_pack_git_repo(root)
+                    (root / "README.md").write_text("readme\n", encoding="utf-8")
+                    subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--diff",
+                        "definitely-not-a-ref",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertEqual(proc.stdout, "")
+                    self.assertIn("could not read diff", proc.stderr)
+
+    def test_context_pack_suggest_diff_disables_textconv_helpers(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._init_pack_git_repo(root)
+                    (root / ".gitattributes").write_text("*.txt diff=leaky\n", encoding="utf-8")
+                    (root / "watched.txt").write_text("before\n", encoding="utf-8")
+                    textconv = root / "textconv.py"
+                    textconv.write_text(
+                        "from pathlib import Path\n"
+                        "import sys\n"
+                        "Path('textconv-ran').write_text('ran', encoding='utf-8')\n"
+                        "print(Path(sys.argv[1]).read_text(encoding='utf-8'))\n",
+                        encoding="utf-8",
+                    )
+                    subprocess.run(["git", "config", "diff.leaky.textconv", f"{sys.executable} {textconv}"], cwd=root, check=True)
+                    subprocess.run(["git", "add", ".gitattributes", "watched.txt"], cwd=root, check=True)
+                    subprocess.run(["git", "commit", "-qm", "init"], cwd=root, check=True)
+                    (root / "watched.txt").write_text("after\n", encoding="utf-8")
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--diff",
+                        "HEAD",
+                        "--json",
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertIn("watched.txt", [item["path"] for item in data["sources"]])
+                    self.assertFalse((root / "textconv-ran").exists())
+
+    def test_context_pack_suggest_build_hint_omits_unsafe_root_and_handles_non_root_cwd(self):
+        secret_component = "ghp_" + ("E" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    root = sandbox / "repo"
+                    root.mkdir()
+                    (root / "file.txt").write_text("one\ntwo\n", encoding="utf-8")
+                    from_parent = json.loads(
+                        self._run_pack(
+                            script,
+                            sandbox,
+                            "suggest",
+                            "--root",
+                            "repo",
+                            "--files",
+                            "file.txt",
+                            "--manifest-out",
+                            "suggested.json",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(from_parent["manifest_path"], "suggested.json")
+                    self.assertIn("cd repo && context-guard-pack build --root . --manifest suggested.json", from_parent["build_hint"])
+
+                    secret_root = sandbox / secret_component
+                    secret_root.mkdir()
+                    (secret_root / "safe.txt").write_text("ok\n", encoding="utf-8")
+                    unsafe = json.loads(
+                        self._run_pack(
+                            script,
+                            sandbox,
+                            "suggest",
+                            "--root",
+                            str(secret_root),
+                            "--files",
+                            "safe.txt",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertIsNone(unsafe["build_hint"])
+                    self.assertEqual(unsafe["build_hint_omitted_reason"], "unsafe_root_path")
+                    self.assertNotIn(secret_component, json.dumps(unsafe, ensure_ascii=False))
+
+    def test_context_pack_suggest_preserves_build_and_slice_entrypoints(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "file.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+                    suggested = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--query",
+                            "file two",
+                            "--files",
+                            "file.txt",
+                            "--manifest-out",
+                            "suggested.json",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(suggested["manifest_path"], "suggested.json")
+                    built = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            "suggested.json",
+                            "--budget-bytes",
+                            "2000",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    self.assertEqual(built["tool"], "context-guard-pack")
+                    sliced = json.loads(
+                        self._run_pack(script, root, "slice", "--root", ".", "--path", "file.txt", "--lines", "2:2", "--json").stdout
+                    )
+                    self.assertEqual(sliced["content"], "two\n")
 
     def test_artifact_escrow_stores_sanitized_receipt_and_queries_lines(self):
         generic_openai_key = "sk-" + ("C" * 32)
