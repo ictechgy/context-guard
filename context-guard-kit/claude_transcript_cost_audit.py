@@ -179,7 +179,7 @@ class UsageSummary:
     by_tool: Counter[str] = field(default_factory=Counter)
     token_field_presence: Counter[str] = field(default_factory=Counter)
     cost_field_count: int = 0
-    record_timestamps: list[_dt.datetime] = field(default_factory=list)
+    cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
     cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
     cache_diagnostics_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -713,14 +713,14 @@ def add_usage(
 ) -> RecordUsage:
     root_model = None
     root_query_source = None
+    parsed_timestamp = None
     if isinstance(root, dict):
         root_model = first_string(root, MODEL_KEYS)
         root_query_source = first_string(root, QUERY_SOURCE_KEYS)
         parsed_timestamp = record_timestamp(root)
-        if parsed_timestamp is not None:
-            summary.record_timestamps.append(parsed_timestamp)
 
     record = RecordUsage()
+    cache_telemetry_present = False
     summary.prompt_cache_audit.observe(root)
     for d in walk(root):
         local_tokens: Counter[str] = Counter()
@@ -744,6 +744,8 @@ def add_usage(
 
         for bucket in present_buckets:
             summary.token_field_presence[bucket] += 1
+        if "cache_read" in present_buckets or "cache_creation" in present_buckets:
+            cache_telemetry_present = True
 
         if local_tokens:
             summary.tokens.update(local_tokens)
@@ -762,6 +764,8 @@ def add_usage(
                 record.cost_usd += cost
                 summary.cost_field_count += 1
                 break
+    if parsed_timestamp is not None and cache_telemetry_present:
+        summary.cache_record_timestamps.append(parsed_timestamp)
     commands, tools = collect_record_hints(root, show_commands=show_commands)
     record.commands = commands
     record.tools = tools
@@ -1202,9 +1206,9 @@ def _cache_diagnostic_confidence(*, skipped: bool, samples: bool, has_cache: boo
 
 
 def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped: bool) -> dict[str, Any]:
-    timestamps = sorted(summary.record_timestamps)
+    timestamps = sorted(summary.cache_record_timestamps)
     caveats = [
-        "Transcript timestamps do not prove exact provider cache-prefix identity or provider cache TTL state.",
+        "Timestamped cache telemetry records do not prove exact provider cache-prefix identity or provider cache TTL state.",
         "5-minute versus 1-hour TTL guidance is a local hypothesis unless corroborated with provider telemetry and repeated stable prefixes.",
     ]
     if len(timestamps) < 2:
@@ -1212,24 +1216,28 @@ def build_ttl_diagnostics(summary: UsageSummary, *, has_cache_any: bool, skipped
             "status": "unavailable",
             "evidence": EVIDENCE_UNAVAILABLE,
             "confidence": "unavailable" if not skipped else "partial",
-            "timestamp_count": len(timestamps),
-            "observed_interval_seconds": None,
+            "timestamped_cache_record_count": len(timestamps),
+            "timestamped_cache_record_span_seconds": None,
             "candidate": None,
-            "reason": "Fewer than two parseable transcript timestamps were observed, so reuse intervals cannot be inferred.",
+            "reason": (
+                "Fewer than two timestamped cache telemetry records were observed, so TTL reuse intervals cannot be inferred."
+            ),
+            "interval_basis": "timestamped_cache_records",
             "caveats": caveats,
         }
     interval = max(0, int((timestamps[-1] - timestamps[0]).total_seconds()))
     candidate = "within-5m" if interval <= 5 * 60 else ("between-5m-and-1h" if interval <= 60 * 60 else "beyond-1h")
     return {
-        "status": "hypothesis" if has_cache_any else "partial",
+        "status": "hypothesis" if has_cache_any else "unavailable",
         "evidence": EVIDENCE_INFERRED if has_cache_any else EVIDENCE_UNAVAILABLE,
         "confidence": "partial" if skipped else "hypothesis",
-        "timestamp_count": len(timestamps),
-        "observed_interval_seconds": interval,
+        "timestamped_cache_record_count": len(timestamps),
+        "timestamped_cache_record_span_seconds": interval,
         "candidate": candidate,
         "reason": (
-            "Parseable transcript timestamps bound the local scan interval, but exact provider cache TTL reuse remains a hypothesis."
+            "Timestamped cache telemetry records bound the local cache-observation span, but exact provider cache TTL reuse remains a hypothesis."
         ),
+        "interval_basis": "timestamped_cache_records",
         "caveats": caveats,
     }
 
@@ -1513,6 +1521,7 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     output_ratio = output_tokens / total
     input_ratio = input_tokens / total
     cache_friendliness = cache_friendliness_for_summary(summary)
+    cache_diagnostics = cache_diagnostics_for_summary(summary)
     for finding in cache_friendliness.get("findings", []):
         if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
             evidence = dict(finding.get("evidence") or {})
@@ -1572,25 +1581,56 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             },
         ))
     if cache_creation >= 50_000 and 1.0 <= summary.cache_amortization < 5.0:
+        ttl = cache_diagnostics.get("ttl_diagnostics") or {}
+        ttl_status = str(ttl.get("status") or "unavailable")
+        ttl_confidence = str(ttl.get("confidence") or "unavailable")
+        ttl_candidate = ttl.get("candidate")
+        ttl_span = ttl.get("timestamped_cache_record_span_seconds")
+        if ttl_status == "hypothesis" and ttl_candidate in {"between-5m-and-1h", "beyond-1h"}:
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens; timestamped cache telemetry spans {ttl_span} seconds "
+                f"({ttl_candidate})."
+            )
+            ttl_action = (
+                "Evaluate a longer provider prompt-cache TTL only after confirming the same stable prefix "
+                "pattern in representative sessions and rechecking current provider TTL/pricing documentation."
+            )
+        elif ttl_status == "hypothesis":
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens, but timestamped cache telemetry currently points to {ttl_candidate}."
+            )
+            ttl_action = (
+                "Keep collecting timestamped cache read/write evidence; do not enable a longer TTL solely from this scan."
+            )
+        else:
+            ttl_reason = (
+                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
+                f"{cache_creation} write tokens, but TTL diagnostics are {ttl_status} because this scan lacks "
+                "at least two timestamped cache telemetry records."
+            )
+            ttl_action = (
+                "Collect or inspect timestamped cache read/write evidence before evaluating a longer provider "
+                "prompt-cache TTL; historical token totals alone are not TTL evidence."
+            )
         recs.append(recommendation(
             "evaluate-1h-ttl-cache",
-            "Cache writes are large; evaluate the 1h TTL cache beta",
-            (
-                f"Heuristic only — cache amortization {summary.cache_amortization:.2f}x with "
-                f"{cache_creation} write tokens; absolute write cost is high and reuse is moderate. "
-                "This metric does not inspect timestamps, so confirm reuse spans >5min in a sample "
-                "session before enabling 1h TTL."
-            ),
-            (
-                "If sessions reuse the same prefix beyond the 5-minute default TTL, evaluate the 1h prompt cache "
-                "beta (write 2x, read 0.1x). It pays off when reuse spans the gap between two 5-min cache writes."
-            ),
+            "Cache writes are large; validate TTL evidence before longer TTL",
+            ttl_reason,
+            ttl_action,
             "P2",
             {
                 "cache_creation": cache_creation,
                 "cache_read": cache_read,
                 "cache_amortization": round(summary.cache_amortization, 4),
                 "cache_hit_rate": round(summary.cache_hit_rate, 4),
+                "ttl_status": ttl_status,
+                "ttl_evidence": ttl.get("evidence") or EVIDENCE_UNAVAILABLE,
+                "ttl_confidence": ttl_confidence,
+                "ttl_candidate": ttl_candidate,
+                "timestamped_cache_record_count": ttl.get("timestamped_cache_record_count"),
+                "timestamped_cache_record_span_seconds": ttl_span,
                 "heuristic": True,
             },
         ))

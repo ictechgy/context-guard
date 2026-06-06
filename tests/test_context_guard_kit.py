@@ -10507,6 +10507,12 @@ for malformed in malformed_values:
             recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
             self.assertIn("evaluate-1h-ttl-cache", recs_by_id)
             self.assertNotIn("improve-prompt-cache-reuse", recs_by_id)
+            rec = recs_by_id["evaluate-1h-ttl-cache"]
+            self.assertEqual(rec["title"], "Cache writes are large; validate TTL evidence before longer TTL")
+            self.assertEqual(rec["evidence"]["ttl_status"], "unavailable")
+            self.assertEqual(rec["evidence"]["ttl_evidence"], "unavailable")
+            self.assertIn("historical token totals alone are not TTL evidence", rec["action"])
+            self.assertNotIn("pays off", json.dumps(rec).lower())
 
     def test_transcript_audit_cache_diagnostics_ttl_unavailable_and_timestamp_hypothesis(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -10533,10 +10539,16 @@ for malformed in malformed_values:
             ttl = data["cache_diagnostics"]["ttl_diagnostics"]
             self.assertEqual(ttl["status"], "unavailable")
             self.assertEqual(ttl["evidence"], "unavailable")
-            self.assertIsNone(ttl["observed_interval_seconds"])
-            self.assertIn("reuse intervals cannot be inferred", ttl["reason"])
+            self.assertIsNone(ttl["timestamped_cache_record_span_seconds"])
+            self.assertEqual(ttl["timestamped_cache_record_count"], 0)
+            self.assertEqual(ttl["interval_basis"], "timestamped_cache_records")
+            self.assertIn("TTL reuse intervals cannot be inferred", ttl["reason"])
             rec = {rec["id"]: rec for rec in data["recommendations"]}["evaluate-1h-ttl-cache"]
             self.assertTrue(rec["evidence"]["heuristic"])
+            self.assertEqual(rec["evidence"]["ttl_status"], "unavailable")
+            self.assertEqual(rec["evidence"]["ttl_evidence"], "unavailable")
+            self.assertIn("timestamped cache read/write evidence", rec["action"])
+            self.assertNotIn("pays off", json.dumps(rec).lower())
 
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -10573,10 +10585,49 @@ for malformed in malformed_values:
             self.assertEqual(ttl["status"], "hypothesis")
             self.assertEqual(ttl["evidence"], "inferred")
             self.assertEqual(ttl["confidence"], "hypothesis")
-            self.assertEqual(ttl["observed_interval_seconds"], 450)
+            self.assertEqual(ttl["timestamped_cache_record_count"], 2)
+            self.assertEqual(ttl["timestamped_cache_record_span_seconds"], 450)
             self.assertEqual(ttl["candidate"], "between-5m-and-1h")
             self.assertNotIn("savings", json.dumps(ttl).lower())
             self.assertIn("hypothesis", json.dumps(ttl).lower())
+
+    def test_transcript_audit_cache_diagnostics_ttl_ignores_unrelated_timestamps(self):
+        scenarios = [
+            (
+                "no_cache_fields_with_timestamps",
+                [
+                    {"timestamp": "2026-06-06T00:00:00Z", "usage": {"input_tokens": 100}},
+                    {"timestamp": "2026-06-06T00:10:00Z", "usage": {"input_tokens": 100}},
+                ],
+                0,
+            ),
+            (
+                "untimestamped_cache_fields_with_unrelated_timestamp",
+                [
+                    {"timestamp": "2026-06-06T00:00:00Z", "usage": {"input_tokens": 100}},
+                    {"usage": {"input_tokens": 100, "cache_creation_input_tokens": 60_000}},
+                    {"timestamp": "2026-06-06T00:10:00Z", "usage": {"input_tokens": 100}},
+                ],
+                0,
+            ),
+        ]
+        for label, records, expected_count in scenarios:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sample = Path(tmp) / "session.jsonl"
+                    sample.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    ttl = json.loads(proc.stdout)["cache_diagnostics"]["ttl_diagnostics"]
+                    self.assertEqual(ttl["status"], "unavailable")
+                    self.assertEqual(ttl["evidence"], "unavailable")
+                    self.assertEqual(ttl["timestamped_cache_record_count"], expected_count)
+                    self.assertIsNone(ttl["timestamped_cache_record_span_seconds"])
+                    self.assertIsNone(ttl["candidate"])
 
     def test_transcript_audit_cache_diagnostics_text_output_is_compact_and_private(self):
         with tempfile.TemporaryDirectory() as tmp:
