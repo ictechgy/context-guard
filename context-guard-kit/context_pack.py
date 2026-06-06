@@ -1320,6 +1320,52 @@ def validate_output_path_under_root(root: Path, raw_path: str, option_name: str)
     return display
 
 
+def output_rel_for_collision_check(raw_path: str, option_name: str) -> Path:
+    rel, reason = lexical_rel(raw_path)
+    if rel is None:
+        raise PackError(f"invalid {option_name}: {reason}")
+    _display, redacted = display_rel_path(rel.as_posix())
+    if redacted:
+        raise PackError(f"invalid {option_name}: redacted_path")
+    return rel
+
+
+def existing_output_identity_under_root(root: Path, rel: Path) -> tuple[int, int] | None:
+    current_fd: int | None = None
+    file_fd = -1
+    try:
+        current_fd = open_dir_no_follow(root)
+        for part in rel.parts[:-1]:
+            next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        file_fd = os.open(rel.parts[-1], flags, dir_fd=current_fd)
+        st = os.fstat(file_fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        return int(st.st_dev), int(st.st_ino)
+    except (FileNotFoundError, OSError):
+        return None
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+
 def write_text_under_root(root: Path, raw_path: str, content: str, option_name: str) -> str:
     rel, reason = lexical_rel(raw_path)
     if rel is None:
@@ -1569,6 +1615,15 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
+    manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
+    pack_rel = output_rel_for_collision_check(args.pack_out, "--pack-out") if args.pack_out else None
+    if manifest_rel is not None and pack_rel is not None:
+        manifest_identity = existing_output_identity_under_root(root, manifest_rel)
+        pack_identity = existing_output_identity_under_root(root, pack_rel)
+        same_existing_target = manifest_identity is not None and manifest_identity == pack_identity
+        same_lexical_target = manifest_rel == pack_rel or manifest_rel.as_posix().casefold() == pack_rel.as_posix().casefold()
+        if same_lexical_target or same_existing_target:
+            raise PackError("invalid --pack-out: same_as_manifest_out")
     if args.manifest_out:
         validate_output_path_under_root(root, args.manifest_out, "--manifest-out")
     if args.pack_out:
