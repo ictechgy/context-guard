@@ -12507,6 +12507,11 @@ for malformed in malformed_values:
                         "---\ndescription: orphan\n---\n# Orphan\n",
                         encoding="utf-8",
                     )
+                    (skills / secret_component).mkdir()
+                    (skills / secret_component / "SKILL.md").write_text(
+                        "---\ndescription: secret-shaped label\n---\n# Secret-shaped label\n",
+                        encoding="utf-8",
+                    )
                     (skills / "referenced_stage_skill").mkdir()
                     (skills / "referenced_stage_skill" / "SKILL.md").write_text(
                         "---\ndescription: referenced\n---\n# Referenced\n",
@@ -12518,7 +12523,7 @@ for malformed in malformed_values:
                         json.dumps({
                             "tools": [
                                 {"name": "read_file", "description": "read file", "inputSchema": {"path": "string"}},
-                                {"name": "big_tool", "description": "x" * 40, "inputSchema": {"blob": "x" * 80}},
+                                {"name": f"big_tool_{secret_component}", "server": f"server_{secret_component}", "description": "x" * 40, "inputSchema": {"blob": "x" * 80}},
                                 {"name": "write_file", "description": "write file", "inputSchema": {"path": "string"}},
                             ]
                         }),
@@ -12532,7 +12537,7 @@ for malformed in malformed_values:
                         "name": "Read",
                         "input": {"file_path": f"/tmp/{secret_component}/src/app.py"},
                     }
-                    bash_call = {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}}
+                    bash_call = {"tool_name": f"Bash-{secret_component}", "tool_input": {"command": "pytest -q"}}
                     log_path.write_text(
                         "\n".join(json.dumps(item) for item in [read_call, read_call, bash_call, bash_call]) + "\n",
                         encoding="utf-8",

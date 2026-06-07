@@ -84,6 +84,7 @@ DEFAULT_MAX_TOOL_CATALOG_BYTES = 1_000_000
 DEFAULT_MAX_LOG_BYTES = 5_000_000
 DEFAULT_MAX_LOG_LINE_BYTES = 1_000_000
 DEFAULT_MAX_STRUCTURAL_FILES = 2_000
+MAX_REPORT_LABEL_CHARS = 160
 TEXT_REFERENCE_SUFFIXES = {".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".py", ".js", ".ts", ".tsx", ".jsx", ".sh"}
 TOOL_CALL_NAME_KEYS = ("tool_name", "toolName", "tool")
 TOOL_CALL_INPUT_KEYS = ("tool_input", "input", "arguments", "args", "parameters")
@@ -218,7 +219,7 @@ def display_path_hash(path: Path) -> str:
 
 def path_label(path: Path, show_paths: bool) -> str:
     if show_paths:
-        return str(path)
+        return sanitize_path_text(str(path))
     name = sanitize_path_component(path.name or "path")
     return f"{name}#path:{display_path_hash(path)}"
 
@@ -237,7 +238,7 @@ def context_finding(
 
 def root_label(root: Path, show_paths: bool) -> str:
     if show_paths:
-        return str(root)
+        return sanitize_path_text(str(root))
     name = sanitize_path_component(root.name or "project")
     return f"{name}#path:{display_path_hash(root)}"
 
@@ -975,6 +976,15 @@ def path_text_label(path_text: str, show_paths: bool) -> str:
     return f"{name}#path:{text_hash(sanitized)}"
 
 
+def safe_report_label(value: Any, limit: int = MAX_REPORT_LABEL_CHARS) -> str:
+    text = " ".join(str(value or "").split())
+    text = SECRET_CONTENT_RE.sub("[REDACTED]", sanitize_path_text(text))
+    if len(text) <= limit:
+        return text
+    marker = f"…[trimmed:{len(text)} chars]"
+    return text[: max(0, limit - len(marker))] + marker
+
+
 def json_byte_len(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8", "replace"))
 
@@ -1168,7 +1178,7 @@ def scan_unused_skills(root: Path, *, top: int, max_files: int) -> tuple[dict[st
         if references:
             continue
         rel = rel_path(skill, root)
-        candidate = {"path": rel, "skill": skill_name, "reference_count": 0, "confidence": "low-advisory"}
+        candidate = {"path": rel, "skill": safe_report_label(skill_name), "reference_count": 0, "confidence": "low-advisory"}
         candidates.append(candidate)
         instance = f"unused-skill-candidate-{text_hash(rel)}"
         findings.append(Finding(
@@ -1206,7 +1216,7 @@ def tool_name_from_schema(d: dict[str, Any]) -> str | None:
     for key in ("name", "tool", "id", "title"):
         value = d.get(key)
         if isinstance(value, str) and value.strip():
-            return " ".join(value.split())[:160]
+            return safe_report_label(value)
     return None
 
 
@@ -1218,7 +1228,8 @@ def collect_tool_schemas(raw: Any) -> list[dict[str, Any]]:
             continue
         if not any(key in d for key in ("inputSchema", "input_schema", "schema", "parameters", "description")):
             continue
-        tools.append({"name": name, "schema_bytes": json_byte_len(d), "server": d.get("server") if isinstance(d.get("server"), str) else None})
+        server = safe_report_label(d.get("server")) if isinstance(d.get("server"), str) else None
+        tools.append({"name": name, "schema_bytes": json_byte_len(d), "server": server})
     dedup: dict[tuple[str, str | None], dict[str, Any]] = {}
     for tool in tools:
         key = (tool["name"], tool.get("server"))
@@ -1449,7 +1460,7 @@ def scan_logs(root: Path, args: argparse.Namespace, *, top: int) -> tuple[dict[s
     for fp, count in read_counts.most_common(top):
         if count < args.duplicate_call_threshold:
             continue
-        item = {"path": read_labels[fp], "path_fingerprint": fp, "read_count": count, "tools": sorted(read_tools[fp]), "confidence": "observed-log"}
+        item = {"path": read_labels[fp], "path_fingerprint": fp, "read_count": count, "tools": sorted(safe_report_label(name) for name in read_tools[fp]), "confidence": "observed-log"}
         repeated_reads.append(item)
         instance = f"repeated-file-read-{fp}"
         findings.append(Finding(
@@ -1466,7 +1477,7 @@ def scan_logs(root: Path, args: argparse.Namespace, *, top: int) -> tuple[dict[s
     for (name, fp), count in tool_counts.most_common(top * 2):
         if count < args.duplicate_call_threshold:
             continue
-        item = {"tool_name": name, "input_fingerprint": fp, "call_count": count, "log_files": sorted(tool_files[(name, fp)])[:top], "confidence": "observed-log"}
+        item = {"tool_name": safe_report_label(name), "input_fingerprint": fp, "call_count": count, "log_files": sorted(tool_files[(name, fp)])[:top], "confidence": "observed-log"}
         duplicate_calls.append(item)
         instance = f"duplicate-tool-call-{text_hash(name + ':' + fp)}"
         findings.append(Finding(
