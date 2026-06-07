@@ -14976,10 +14976,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     ]
                     self.assertEqual(len(ledger_rows), 2)
                     optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
+                    self.assertEqual(optimized_ledger["schema_version"], "contextguard.bench.run-evidence.v1")
+                    self.assertEqual(optimized_ledger["transform_id"], "optimized")
                     self.assertTrue(optimized_ledger["primary_cost_measured"])
                     self.assertTrue(optimized_ledger["primary_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_cost_measured"])
+                    self.assertTrue(optimized_ledger["measurement_availability"]["shifted_cost"])
+                    self.assertEqual(optimized_ledger["proxy_metrics"]["claim_boundary"], "proxy_only_not_hosted_token_savings")
                     self.assertEqual(optimized_ledger["provider_cached_tokens"], 25)
                     self.assertTrue(optimized_ledger["provider_cached_tokens_measured"])
                     self.assertGreater(optimized_ledger["wall_time_seconds"], 0)
@@ -15000,6 +15004,17 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(comparison["quality_gate"], "pass")
                     self.assertEqual(comparison["matched_successful_task_count"], 1)
                     self.assertGreater(comparison["token_savings_pct"], 0)
+                    pair = report["matched_pair_evidence"][0]
+                    self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
+                    self.assertEqual(pair["task_id"], "t01")
+                    self.assertEqual(pair["transform_id"], "optimized")
+                    self.assertEqual(pair["measurements"]["baseline"]["run_count"], 1)
+                    self.assertEqual(pair["measurements"]["variant"]["row_indices"], [2])
+                    self.assertTrue(pair["claim_boundary"]["token_savings_claim_allowed"])
+                    self.assertTrue(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+                    self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
+                    self.assertEqual(pair["delta"]["token_savings_pct"], comparison["token_savings_pct"])
+                    self.assertLess(pair["delta"]["bytes_after_total"], 0)
                     self.assertEqual(comparison["paired_wall_time_task_count"], 1)
                     self.assertIn("wall_time_change_pct", comparison)
                     self.assertGreater(
@@ -15044,12 +15059,206 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     )
                     self.assertIn("Wall time", report["caveat"])
 
+    def test_benchmark_report_matched_pair_evidence_disables_claims_without_measurements(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_pair_unmeasured_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.10",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.10",
+                            "bytes_before": "1000",
+                            "bytes_after": "1000",
+                            "corrections": "0",
+                        },
+                        {
+                            "task_id": "t01",
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "0",
+                            "primary_tokens_measured": "false",
+                            "cost_usd": "0.05",
+                            "cost_measured": "true",
+                            "external_tokens": "9",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "false",
+                            "total_cost_with_shift_usd": "",
+                            "bytes_before": "1000",
+                            "bytes_after": "100",
+                            "corrections": "0",
+                        },
+                    ],
+                    "baseline",
+                )
+                pair = report["matched_pair_evidence"][0]
+                self.assertEqual(pair["quality_gate"], "pass")
+                self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
+                self.assertFalse(pair["claim_boundary"]["token_savings_claim_allowed"])
+                self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+                self.assertIsNone(pair["delta"]["token_savings_pct"])
+                self.assertIsNone(pair["delta"]["cost_savings_pct_with_shift"])
+                self.assertEqual(pair["delta"]["token_proxy_after_total"], -225)
+                self.assertEqual(pair["delta"]["proxy_measurement"], "chars_div_4_proxy_only")
+
+    def test_benchmark_report_matched_pair_evidence_requires_usable_values_for_claims(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_pair_unusable_values_{index}")
+                report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.10",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.10",
+                            "bytes_before": "1000",
+                            "bytes_after": "1000",
+                            "corrections": "0",
+                        },
+                        {
+                            "task_id": "t01",
+                            "variant": "optimized",
+                            "success": "true",
+                            "total_tokens": "",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.05",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "",
+                            "bytes_before": "1000",
+                            "bytes_after": "100",
+                            "corrections": "0",
+                        },
+                    ],
+                    "baseline",
+                )
+                pair = report["matched_pair_evidence"][0]
+                self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
+                self.assertTrue(pair["measurements"]["variant"]["primary_tokens"]["measured"])
+                self.assertIsNone(pair["measurements"]["variant"]["primary_tokens"]["average"])
+                self.assertFalse(pair["claim_boundary"]["token_savings_claim_allowed"])
+                self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+                self.assertIsNone(pair["delta"]["token_savings_pct"])
+                self.assertIsNone(pair["delta"]["cost_savings_pct_with_shift"])
+
+    def test_benchmark_report_matched_pair_evidence_handles_duplicate_rows_and_quality_gate(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_pair_duplicates_{index}")
+                rows = [
+                    {
+                        "task_id": "t01",
+                        "variant": "baseline",
+                        "success": "true",
+                        "total_tokens": "100",
+                        "primary_tokens_measured": "true",
+                        "cost_usd": "0.10",
+                        "cost_measured": "true",
+                        "external_tokens": "0",
+                        "external_tokens_measured": "true",
+                        "external_cost_usd": "0",
+                        "external_cost_measured": "true",
+                        "total_cost_with_shift_usd": "0.10",
+                        "bytes_before": "1000",
+                        "bytes_after": "1000",
+                        "corrections": "0",
+                    },
+                    {
+                        "task_id": "t01",
+                        "variant": "baseline",
+                        "success": "true",
+                        "total_tokens": "120",
+                        "primary_tokens_measured": "true",
+                        "cost_usd": "0.12",
+                        "cost_measured": "true",
+                        "external_tokens": "0",
+                        "external_tokens_measured": "true",
+                        "external_cost_usd": "0",
+                        "external_cost_measured": "true",
+                        "total_cost_with_shift_usd": "0.12",
+                        "bytes_before": "1000",
+                        "bytes_after": "900",
+                        "corrections": "0",
+                    },
+                    {
+                        "task_id": "t01",
+                        "variant": "optimized",
+                        "success": "true",
+                        "total_tokens": "50",
+                        "primary_tokens_measured": "true",
+                        "cost_usd": "0.05",
+                        "cost_measured": "true",
+                        "external_tokens": "0",
+                        "external_tokens_measured": "true",
+                        "external_cost_usd": "0",
+                        "external_cost_measured": "true",
+                        "total_cost_with_shift_usd": "0.05",
+                        "bytes_before": "1000",
+                        "bytes_after": "200",
+                        "corrections": "1",
+                    },
+                    {
+                        "task_id": "t01",
+                        "variant": "optimized",
+                        "success": "true",
+                        "total_tokens": "60",
+                        "primary_tokens_measured": "true",
+                        "cost_usd": "0.06",
+                        "cost_measured": "true",
+                        "external_tokens": "0",
+                        "external_tokens_measured": "true",
+                        "external_cost_usd": "0",
+                        "external_cost_measured": "true",
+                        "total_cost_with_shift_usd": "0.06",
+                        "bytes_before": "1000",
+                        "bytes_after": "220",
+                        "corrections": "1",
+                    },
+                ]
+                report = module.summarize_benchmark_rows(rows, "baseline")
+                comparison = report["comparisons"][0]
+                self.assertEqual(comparison["quality_gate"], "corrections_regression")
+                pair = report["matched_pair_evidence"][0]
+                self.assertEqual(pair["measurements"]["baseline"]["run_count"], 2)
+                self.assertEqual(pair["measurements"]["baseline"]["row_indices"], [1, 2])
+                self.assertEqual(pair["measurements"]["variant"]["run_count"], 2)
+                self.assertEqual(pair["measurements"]["variant"]["row_indices"], [3, 4])
+                self.assertEqual(pair["quality_gate"], "corrections_regression")
+                self.assertFalse(pair["claim_boundary"]["token_savings_claim_allowed"])
+                self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+                self.assertIsNone(pair["delta"]["token_savings_pct"])
+                self.assertEqual(pair["measurements"]["variant"]["primary_tokens"]["average"], 55.0)
+
     def test_benchmark_report_example_documents_diagnostic_shape(self):
         sample = json.loads((ROOT / "docs" / "benchmark-report.example.json").read_text(encoding="utf-8"))
         self.assertEqual(sample["schema"], "context-guard-bench-report-v1")
         baseline = sample["summary_by_variant"]["baseline"]
         optimized = sample["summary_by_variant"]["context_hygiene"]
         comparison = sample["comparisons"][0]
+        pair = sample["matched_pair_evidence"][0]
         self.assertEqual(baseline["primary_tokens_measured_successful"], 1)
         self.assertEqual(baseline["provider_cached_tokens_successful"], 0)
         self.assertEqual(baseline["provider_cached_tokens_measured_successful"], 1)
@@ -15060,6 +15269,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(optimized["wall_time_seconds_measured_successful"], 1)
         self.assertEqual(comparison["paired_token_task_count"], 1)
         self.assertEqual(comparison["paired_wall_time_task_count"], 1)
+        self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
+        self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
+        self.assertEqual(pair["delta"]["proxy_measurement"], "chars_div_4_proxy_only")
+        self.assertIn("byte_proxy_only applies only", sample["caveat"])
+        self.assertIn("matched_pair_evidence[*].claim_boundary", sample["caveat"])
         self.assertIn("diagnostic telemetry", sample["caveat"])
         self.assertIn("provider-cache discounts", sample["caveat"].lower())
         self.assertIn("report shape only", sample["caveat"].lower())

@@ -181,6 +181,8 @@ MAX_USAGE_COST_USD = 10**9
 # 추정치이며, report에서 evidence="inferred"로 분명히 라벨링한다. 영어 텍스트 기준
 # ~4 bytes/token의 통용 근사값을 사용한다.
 TOKEN_PROXY_BYTES_PER_TOKEN = 4
+BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
+MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
@@ -1129,11 +1131,14 @@ def write_text_no_follow(path: Path, text: str) -> None:
 
 def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> None:
     shifted_cost_known = cost_shift_measured(result)
+    byte_metrics_observed = bool(result.bytes_before or result.bytes_after)
     payload = {
+        "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
         "date": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "claude_version": claude_ver,
         "task_id": result.task_id,
         "variant": result.variant,
+        "transform_id": result.variant,
         "success": result.success,
         "primary_cost_measured": result.cost_measured,
         "primary_cost_usd": round(result.cost_usd, 6),
@@ -1155,6 +1160,22 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
         "hook_triggers": result.hook_triggers,
         "turns": result.turns,
         "notes": sanitize_csv_note(result.notes),
+        "measurement_availability": {
+            "primary_tokens": result.primary_tokens_measured,
+            "primary_cost": result.cost_measured,
+            "external_tokens": result.external_tokens_measured,
+            "external_cost": result.external_cost_measured,
+            "shifted_cost": shifted_cost_known,
+            "provider_cache": result.provider_cached_tokens_measured,
+            "byte_metrics": byte_metrics_observed,
+            "wall_time": result.wall_time_seconds >= 0,
+        },
+        "proxy_metrics": {
+            "byte_metrics_observed": byte_metrics_observed,
+            "token_proxy": "chars_div_4",
+            "bytes_per_token": TOKEN_PROXY_BYTES_PER_TOKEN,
+            "claim_boundary": "proxy_only_not_hosted_token_savings",
+        },
     }
     with csv_file_lock(path, create_parent=True):
         fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600, create_parent=True)
@@ -1296,7 +1317,9 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
     seen_tasks_by_variant: dict[str, set[str]] = {}
     successful_tasks_by_variant: dict[str, set[str]] = {}
 
-    for row in rows:
+    for row_index, raw_row in enumerate(rows, start=1):
+        row = dict(raw_row)
+        row["_row_index"] = str(row_index)
         variant = row.get("variant") or "unknown"
         task_id = row.get("task_id") or "unknown"
         seen_tasks_by_variant.setdefault(variant, set()).add(task_id)
@@ -1579,7 +1602,215 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             len(baseline_values),
         )
 
+    def row_indices_for(rows_for_task: list[dict[str, str]]) -> list[int]:
+        out: list[int] = []
+        for row in rows_for_task:
+            index = row_optional_nonnegative_int(row, "_row_index")
+            if index is not None:
+                out.append(index)
+        return out
+
+    def all_rows_bool(rows_for_task: list[dict[str, str]], key: str) -> bool:
+        return bool(rows_for_task) and all(row_bool(row, key) for row in rows_for_task)
+
+    def all_rows_optional_int(rows_for_task: list[dict[str, str]], key: str) -> list[int] | None:
+        values = [row_optional_nonnegative_int(row, key) for row in rows_for_task]
+        if not values or any(value is None for value in values):
+            return None
+        return [value for value in values if value is not None]
+
+    def all_rows_optional_float(rows_for_task: list[dict[str, str]], key: str) -> list[float] | None:
+        values = [row_optional_float(row, key) for row in rows_for_task]
+        if not values or any(value is None for value in values):
+            return None
+        return [value for value in values if value is not None]
+
+    def average_optional_int(rows_for_task: list[dict[str, str]], key: str) -> float | None:
+        values = all_rows_optional_int(rows_for_task, key)
+        return (sum(values) / len(values)) if values else None
+
+    def average_optional_float(rows_for_task: list[dict[str, str]], key: str) -> float | None:
+        values = all_rows_optional_float(rows_for_task, key)
+        return (sum(values) / len(values)) if values else None
+
+    def total_optional_int(rows_for_task: list[dict[str, str]], key: str) -> int | None:
+        values = all_rows_optional_int(rows_for_task, key)
+        return sum(values) if values is not None else None
+
+    def all_rows_shifted_cost_measured(rows_for_task: list[dict[str, str]]) -> bool:
+        return bool(rows_for_task) and all(
+            row_cost_shift_measured(row) and row_optional_float(row, "total_cost_with_shift_usd") is not None
+            for row in rows_for_task
+        )
+
+    def matched_side_evidence(variant: str, task_id: str, rows_for_task: list[dict[str, str]]) -> dict[str, Any]:
+        primary_tokens_measured = all_rows_bool(rows_for_task, "primary_tokens_measured")
+        primary_cost_measured = all_rows_bool(rows_for_task, "cost_measured")
+        shifted_cost_measured = all_rows_shifted_cost_measured(rows_for_task)
+        provider_cache_measured = all_rows_bool(rows_for_task, "provider_cached_tokens_measured")
+        external_tokens_measured = all_rows_bool(rows_for_task, "external_tokens_measured")
+        external_cost_measured = all_rows_bool(rows_for_task, "external_cost_measured")
+        corrections_values = all_rows_optional_int(rows_for_task, "corrections")
+        bytes_before_values = [row_optional_nonnegative_int(row, "bytes_before") for row in rows_for_task]
+        bytes_after_values = [row_optional_nonnegative_int(row, "bytes_after") for row in rows_for_task]
+        byte_metrics_observed = bool(rows_for_task) and not any(
+            value is None for value in [*bytes_before_values, *bytes_after_values]
+        )
+        bytes_before_total = sum(value for value in bytes_before_values if value is not None)
+        bytes_after_total = sum(value for value in bytes_after_values if value is not None)
+        byte_delta = bytes_after_total - bytes_before_total if byte_metrics_observed else None
+        token_proxy_delta = (
+            int(byte_delta / TOKEN_PROXY_BYTES_PER_TOKEN) if byte_delta is not None else None
+        )
+        return {
+            "variant": variant,
+            "task_id": task_id,
+            "run_count": len(rows_for_task),
+            "row_indices": row_indices_for(rows_for_task),
+            "primary_tokens": {
+                "measured": primary_tokens_measured,
+                "average": average_optional_int(rows_for_task, "total_tokens") if primary_tokens_measured else None,
+                "total": total_optional_int(rows_for_task, "total_tokens") if primary_tokens_measured else None,
+            },
+            "primary_cost_usd": {
+                "measured": primary_cost_measured,
+                "average": average_optional_float(rows_for_task, "cost_usd") if primary_cost_measured else None,
+            },
+            "total_cost_with_shift_usd": {
+                "measured": shifted_cost_measured,
+                "average": (
+                    average_optional_float(rows_for_task, "total_cost_with_shift_usd")
+                    if shifted_cost_measured else None
+                ),
+            },
+            "external_tokens": {
+                "measured": external_tokens_measured,
+                "total": total_optional_int(rows_for_task, "external_tokens") if external_tokens_measured else None,
+            },
+            "external_cost_usd": {
+                "measured": external_cost_measured,
+                "total": (
+                    sum(row_float(row, "external_cost_usd") for row in rows_for_task)
+                    if external_cost_measured else None
+                ),
+            },
+            "bytes": {
+                "measurement": "observed" if byte_metrics_observed else "unavailable",
+                "before_total": bytes_before_total if byte_metrics_observed else None,
+                "after_total": bytes_after_total if byte_metrics_observed else None,
+                "delta_total": byte_delta,
+                "token_proxy_delta": token_proxy_delta,
+                "token_proxy": "chars_div_4_proxy_only" if byte_metrics_observed else "unavailable",
+            },
+            "wall_time_seconds": {
+                "measured": all_rows_optional_float(rows_for_task, "wall_time_seconds") is not None,
+                "average": average_optional_float(rows_for_task, "wall_time_seconds"),
+            },
+            "provider_cached_tokens": {
+                "measured": provider_cache_measured,
+                "average": (
+                    average_optional_int(rows_for_task, "provider_cached_tokens")
+                    if provider_cache_measured else None
+                ),
+            },
+            "corrections": {
+                "measured": corrections_values is not None,
+                "average": (sum(corrections_values) / len(corrections_values)) if corrections_values else None,
+            },
+        }
+
+    def matched_pair_evidence_entry(
+        variant: str,
+        task_id: str,
+        quality_gate: str,
+    ) -> dict[str, Any]:
+        baseline_rows = successful_rows_by_variant_task[baseline_variant][task_id]
+        variant_rows = successful_rows_by_variant_task[variant][task_id]
+        baseline_evidence = matched_side_evidence(baseline_variant, task_id, baseline_rows)
+        variant_evidence = matched_side_evidence(variant, task_id, variant_rows)
+        baseline_token_avg = baseline_evidence["primary_tokens"]["average"]
+        variant_token_avg = variant_evidence["primary_tokens"]["average"]
+        token_claim_allowed = (
+            quality_gate == "pass"
+            and bool(baseline_evidence["primary_tokens"]["measured"])
+            and bool(variant_evidence["primary_tokens"]["measured"])
+            and isinstance(baseline_token_avg, (int, float))
+            and baseline_token_avg > 0
+            and isinstance(variant_token_avg, (int, float))
+        )
+        baseline_cost_avg = baseline_evidence["total_cost_with_shift_usd"]["average"]
+        variant_cost_avg = variant_evidence["total_cost_with_shift_usd"]["average"]
+        shifted_cost_claim_allowed = (
+            quality_gate == "pass"
+            and bool(baseline_evidence["total_cost_with_shift_usd"]["measured"])
+            and bool(variant_evidence["total_cost_with_shift_usd"]["measured"])
+            and isinstance(baseline_cost_avg, (int, float))
+            and baseline_cost_avg > 0
+            and isinstance(variant_cost_avg, (int, float))
+        )
+        token_delta = (
+            variant_token_avg - baseline_token_avg
+            if token_claim_allowed
+            else None
+        )
+        token_savings_pct = (
+            (baseline_token_avg - variant_token_avg) / baseline_token_avg * 100.0
+            if token_delta is not None
+            else None
+        )
+        cost_delta = (
+            variant_cost_avg - baseline_cost_avg
+            if shifted_cost_claim_allowed
+            else None
+        )
+        cost_savings_pct = (
+            (baseline_cost_avg - variant_cost_avg) / baseline_cost_avg * 100.0
+            if cost_delta is not None
+            else None
+        )
+        base_after = baseline_evidence["bytes"]["after_total"]
+        variant_after = variant_evidence["bytes"]["after_total"]
+        byte_after_delta = (
+            variant_after - base_after
+            if isinstance(base_after, int) and isinstance(variant_after, int)
+            else None
+        )
+        return {
+            "schema_version": MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION,
+            "task_id": task_id,
+            "baseline_variant": baseline_variant,
+            "variant": variant,
+            "transform_id": variant,
+            "quality_gate": quality_gate,
+            "evidence_kind": "matched_successful_task_bucket",
+            "measurements": {
+                "baseline": baseline_evidence,
+                "variant": variant_evidence,
+            },
+            "delta": {
+                "primary_tokens_average": token_delta,
+                "token_savings_pct": token_savings_pct,
+                "total_cost_with_shift_usd_average": cost_delta,
+                "cost_savings_pct_with_shift": cost_savings_pct,
+                "bytes_after_total": byte_after_delta,
+                "token_proxy_after_total": (
+                    int(byte_after_delta / TOKEN_PROXY_BYTES_PER_TOKEN)
+                    if byte_after_delta is not None else None
+                ),
+                "proxy_measurement": "chars_div_4_proxy_only",
+            },
+            "claim_boundary": {
+                "quality_gate": quality_gate,
+                "token_savings_claim_allowed": token_claim_allowed,
+                "shifted_cost_claim_allowed": shifted_cost_claim_allowed,
+                "byte_proxy_only": True,
+                "requires_matched_successful_tasks": True,
+                "raw_estimate_only_claim_allowed": False,
+            },
+        }
+
     comparisons: list[dict[str, Any]] = []
+    matched_pair_evidence: list[dict[str, Any]] = []
     baseline = by_variant.get(baseline_variant)
     baseline_successful_tasks = successful_tasks_by_variant.get(baseline_variant, set())
     baseline_failure_rate = baseline.get("failure_rate") if baseline else None
@@ -1693,6 +1924,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         else:
             comparison["cost_savings_pct_with_shift"] = None
             comparison["paired_cost_task_count"] = cost_task_count
+        for task_id in sorted(matched_tasks):
+            matched_pair_evidence.append(matched_pair_evidence_entry(variant, task_id, quality_gate))
         comparisons.append(comparison)
 
     claim_status = "insufficient_baseline"
@@ -1725,6 +1958,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         "row_count": len(rows),
         "summary_by_variant": by_variant,
         "comparisons": comparisons,
+        "matched_pair_evidence": matched_pair_evidence,
         "claim_status": claim_status,
         "caveat": (
             "Proxy byte reductions are reported separately from matched-task token/cost metrics; "
