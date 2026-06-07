@@ -13834,6 +13834,177 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn('ROOT / "docs" / "benchmark-workflow-examples.md"', prepublish)
         self.assertIn('ROOT / "docs" / "benchmark-workflows"', prepublish)
 
+    def test_experimental_benchmark_fixtures_are_parseable_claim_safe_and_packaged(self):
+        fixture_dir = ROOT / "docs" / "benchmark-fixtures"
+        guide = ROOT / "docs" / "experimental-benchmark-fixtures.md"
+        self.assertTrue(guide.is_file())
+        self.assertTrue(fixture_dir.is_dir())
+
+        fixture_pairs = {
+            "visual_ocr": (
+                fixture_dir / "visual-ocr.tasks.example.json",
+                fixture_dir / "visual-ocr.variants.example.json",
+            ),
+            "learned_compression": (
+                fixture_dir / "learned-compression.tasks.example.json",
+                fixture_dir / "learned-compression.variants.example.json",
+            ),
+        }
+        self.assertEqual(
+            {path.name for path in fixture_dir.glob("*.example.json")},
+            {path.name for pair in fixture_pairs.values() for path in pair},
+        )
+
+        kit_module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_experimental_fixtures_kit")
+        plugin_module = load_python_script_module(
+            PLUGIN_BIN / "context-guard-bench",
+            "_bench_runner_test_experimental_fixtures_plugin",
+        )
+
+        combined_fixture_text = guide.read_text(encoding="utf-8").lower()
+        for lane, (task_path, variant_path) in fixture_pairs.items():
+            with self.subTest(lane=lane):
+                task_raw = json.loads(task_path.read_text(encoding="utf-8"))
+                variant_raw = json.loads(variant_path.read_text(encoding="utf-8"))
+                self.assertIsInstance(task_raw, list)
+                self.assertIsInstance(variant_raw, list)
+                self.assertTrue(task_raw)
+                self.assertTrue(variant_raw)
+                for item in task_raw:
+                    self.assertIn("id", item)
+                    self.assertIn("prompt", item)
+                    self.assertTrue(str(item["id"]).startswith(lane))
+                for item in variant_raw:
+                    self.assertIn("name", item)
+                    self.assertIn("extra_args", item)
+                    self.assertIsInstance(item["extra_args"], list)
+
+                for module in (kit_module, plugin_module):
+                    parsed_tasks = module.parse_tasks(task_path)
+                    parsed_variants = module.parse_variants(variant_path)
+                    self.assertEqual(len(parsed_tasks), len(task_raw))
+                    self.assertEqual(len(parsed_variants), len(variant_raw))
+                    self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
+                    self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
+                    for variant in parsed_variants:
+                        self.assertEqual(variant.extra_args, [])
+
+                combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
+                combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
+
+        for required in (
+            "fixture-only",
+            "synthetic",
+            "not a shipped runtime feature",
+            "provider-measured",
+            "matched successful tasks",
+            "failure-rate guardrail",
+            "human corrections",
+            "shifted-cost accounting",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, combined_fixture_text)
+
+        forbidden_claim_patterns = [
+            r"guarantees?\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"guaranteed\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"fixed\s+\d+%\s+(?:token|cost)\s+savings",
+            r"reduces?\s+tokens?\s+by\s+\d+%",
+            r"cuts?\s+costs?\s+by\s+\d+%",
+        ]
+        for pattern in forbidden_claim_patterns:
+            with self.subTest(forbidden_claim=pattern):
+                self.assertNotRegex(combined_fixture_text, pattern)
+        for forbidden in (
+            "sk-ant-",
+            "bearer ",
+            "http://",
+            "https://",
+            str(Path.home()).lower(),
+            ".png",
+            ".jpg",
+            "api_key",
+            "client_secret",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, combined_fixture_text)
+
+        for forbidden_helper in (
+            "context-guard-ocr",
+            "context-guard-crop",
+            "context-guard-visual-token",
+            "context-guard-learned-compression",
+            "context-guard-kv-cache",
+            "context-guard-latent",
+        ):
+            with self.subTest(forbidden_helper=forbidden_helper):
+                self.assertFalse((PLUGIN_BIN / forbidden_helper).exists())
+                self.assertNotIn(forbidden_helper, json.dumps(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))))
+
+        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
+        self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
+        self.assertIn("docs/benchmark-fixtures/*.example.json", package_files)
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        package_metadata = " ".join(
+            [str(package.get("description", ""))]
+            + [str(keyword) for keyword in package.get("keywords", [])]
+        ).lower()
+        for pattern in (r"\blearned\b", r"\bocr\b", r"visual[-\s]+token", r"\bkv\b", r"\blatent\b"):
+            with self.subTest(package_metadata_pattern=pattern):
+                self.assertIsNone(re.search(pattern, package_metadata))
+
+        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
+        for expected in (
+            "docs/experimental-benchmark-fixtures.md",
+            "docs/benchmark-fixtures/learned-compression.tasks.example.json",
+            "docs/benchmark-fixtures/learned-compression.variants.example.json",
+            "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
+            "docs/benchmark-fixtures/visual-ocr.variants.example.json",
+            'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
+            'ROOT / "docs" / "benchmark-fixtures"',
+        ):
+            with self.subTest(prepublish_expected=expected):
+                self.assertIn(expected, prepublish)
+
+        for doc, expected_link in (
+            (ROOT / "README.md", "docs/experimental-benchmark-fixtures.md"),
+            (ROOT / "README.ko.md", "docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.md", "../../docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.ko.md", "../../docs/experimental-benchmark-fixtures.md"),
+            (KIT_DIR / "README.md", "../docs/experimental-benchmark-fixtures.md"),
+            (ROOT / "docs" / "benchmark-workflow-examples.md", "experimental-benchmark-fixtures.md"),
+            (ROOT / "research" / "experimental-token-reduction-radar.md", "../docs/experimental-benchmark-fixtures.md"),
+        ):
+            with self.subTest(doc=doc):
+                self.assertIn(expected_link, doc.read_text(encoding="utf-8"))
+
+        for script in (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"):
+            task_path, variant_path = fixture_pairs["visual_ocr"]
+            with tempfile.TemporaryDirectory() as tmp:
+                csv_path = Path(tmp) / "dry-run.csv"
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--tasks",
+                        str(task_path),
+                        "--variants",
+                        str(variant_path),
+                        "--task-id",
+                        "visual_ocr_nav_error_fixture",
+                        "--variant",
+                        "baseline_full_visual_fixture",
+                        "--csv",
+                        str(csv_path),
+                        "--dry-run",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("dry-run; CSV not updated", proc.stdout)
+                self.assertFalse(csv_path.exists())
+
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")
         report = module.summarize_benchmark_rows(

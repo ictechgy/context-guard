@@ -36,3 +36,5 @@ Avoid language like:
 > ContextGuard guarantees this workflow will save tokens or cost.
 
 The fixtures intentionally use full `context-guard-bench-report-v1` shapes so tests can catch schema drift and overclaim wording.
+
+For task/variant starter fixtures rather than full report-shape examples, see [`experimental-benchmark-fixtures.md`](experimental-benchmark-fixtures.md). Those files are fixture-only and synthetic; they are not shipped OCR, visual-token, or learned-compression runtime features, and real claims still require provider-measured matched successful tasks plus failure-rate, correction, and shifted-cost guardrails.
