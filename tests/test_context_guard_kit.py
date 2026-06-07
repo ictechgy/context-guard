@@ -657,8 +657,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "ttl": "1h",
                     "volatile": True,
                     "protected": True,
+                    # Intentionally invalid/private content_type verifies protected policy metadata
+                    # whitelists labels instead of echoing raw manifest strings.
                     "content_type": "/tmp/private-protected.log",
                     "protected_zone_classes": ["path", "hash", "stack_frame"],
+                    "protected_zones": ["/tmp/raw-zone-should-not-emit", {"span": "0123456789abcdef0123456789abcdef01234567"}],
                     "bytes": 70000,
                     "content": sentinel,
                     "path": "/tmp/private-protected.log",
@@ -707,6 +710,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("protected_volatile_tail", codes)
                 self.assertNotIn(sentinel, proc.stdout)
                 self.assertNotIn("/tmp/private-protected.log", proc.stdout)
+                self.assertNotIn("/tmp/raw-zone-should-not-emit", proc.stdout)
+                self.assertNotIn("0123456789abcdef0123456789abcdef01234567", proc.stdout)
 
 
     def test_cost_guard_scoped_cache_control_stripping_preserves_user_schema_fields(self):

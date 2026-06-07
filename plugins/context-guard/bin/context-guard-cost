@@ -1541,8 +1541,19 @@ def section_ttl(section: dict[str, Any]) -> str:
 
 PROTECTED_ALLOWED_TRANSFORMS = ["exact_dedupe", "structural_window", "line_truncate", "whitespace_normalize", "json_compact", "artifact_retrieval"]
 PROTECTED_DENIED_TRANSFORMS = ["semantic_compress", "paraphrase", "identifier_rewrite", "numeric_rewrite", "hash_rewrite", "path_rewrite", "quoted_literal_rewrite"]
-PROTECTED_ZONE_CLASS_RE = re.compile(r"[^a-z0-9_.:-]+")
+PROTECTED_ZONE_CLASS_RE = re.compile(r"[^a-z0-9]+")
 KNOWN_PROTECTED_CONTENT_TYPES = {"json", "diff", "log", "search", "code", "prose", "unknown"}
+KNOWN_PROTECTED_ZONE_CLASSES = {
+    "code_fence",
+    "diff",
+    "identifier",
+    "numeric_constant",
+    "hash",
+    "path",
+    "stack_frame",
+    "quoted_string",
+    "json_key",
+}
 
 
 def manifest_bool(value: Any) -> bool:
@@ -1554,15 +1565,15 @@ def manifest_bool(value: Any) -> bool:
 
 
 def protected_zone_classes(raw: dict[str, Any]) -> list[str]:
-    value = raw.get("protected_zone_classes") or raw.get("protected_zones") or raw.get("zone_classes") or []
+    value = raw.get("protected_zone_classes") or raw.get("zone_classes") or []
     if isinstance(value, str):
         items = [item.strip() for item in value.split(",")]
     elif isinstance(value, list):
         items = [str(item).strip() for item in value]
     else:
         items = []
-    cleaned = sorted({PROTECTED_ZONE_CLASS_RE.sub("-", item.lower()).strip("-")[:48] for item in items if item})
-    return [item for item in cleaned if item]
+    cleaned = sorted({PROTECTED_ZONE_CLASS_RE.sub("_", item.lower()).strip("_") for item in items if item})
+    return [item for item in cleaned if item in KNOWN_PROTECTED_ZONE_CLASSES]
 
 
 def protected_content_type(raw: dict[str, Any]) -> str:
