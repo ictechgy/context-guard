@@ -65,15 +65,41 @@
       "measurements": {
         "baseline": {
           "run_count": 1,
-          "row_indices": [1],
-          "primary_tokens": {"measured": true, "average": 1000, "total": 1000},
-          "bytes": {"measurement": "observed", "before_total": 12000, "after_total": 12000, "delta_total": 0, "token_proxy_delta": 0, "token_proxy": "chars_div_4_proxy_only"}
+          "row_indices": [
+            1
+          ],
+          "primary_tokens": {
+            "measured": true,
+            "average": 1000,
+            "total": 1000
+          },
+          "bytes": {
+            "measurement": "observed",
+            "before_total": 12000,
+            "after_total": 12000,
+            "delta_total": 0,
+            "token_proxy_delta": 0,
+            "token_proxy": "chars_div_4_proxy_only"
+          }
         },
         "variant": {
           "run_count": 1,
-          "row_indices": [2],
-          "primary_tokens": {"measured": true, "average": 650, "total": 650},
-          "bytes": {"measurement": "observed", "before_total": 12000, "after_total": 8600, "delta_total": -3400, "token_proxy_delta": -850, "token_proxy": "chars_div_4_proxy_only"}
+          "row_indices": [
+            2
+          ],
+          "primary_tokens": {
+            "measured": true,
+            "average": 650,
+            "total": 650
+          },
+          "bytes": {
+            "measurement": "observed",
+            "before_total": 12000,
+            "after_total": 8600,
+            "delta_total": -3400,
+            "token_proxy_delta": -850,
+            "token_proxy": "chars_div_4_proxy_only"
+          }
         }
       },
       "delta": {
@@ -95,5 +121,5 @@
       }
     }
   ],
-  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. Provider-cache discounts must stay separate from token-reduction claims. This example documents report shape only; make real savings claims only from your own matched successful task runs."
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; byte_proxy_only applies only to byte/token-proxy deltas, while token_savings_claim_allowed is driven by measured primary tokens on both matched sides and a passing quality gate. Shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. Provider-cache discounts must stay separate from token-reduction claims. Inspect matched_pair_evidence[*].claim_boundary before making any savings statement; it links each task bucket to the quality gate and measurement flags that gate each claim. This example documents report shape only; make real savings claims only from your own matched successful task runs."
 }

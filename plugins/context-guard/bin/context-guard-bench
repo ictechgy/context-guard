@@ -1651,9 +1651,13 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         external_tokens_measured = all_rows_bool(rows_for_task, "external_tokens_measured")
         external_cost_measured = all_rows_bool(rows_for_task, "external_cost_measured")
         corrections_values = all_rows_optional_int(rows_for_task, "corrections")
-        bytes_before_total = sum(row_int(row, "bytes_before") for row in rows_for_task)
-        bytes_after_total = sum(row_int(row, "bytes_after") for row in rows_for_task)
-        byte_metrics_observed = bool(bytes_before_total or bytes_after_total)
+        bytes_before_values = [row_optional_nonnegative_int(row, "bytes_before") for row in rows_for_task]
+        bytes_after_values = [row_optional_nonnegative_int(row, "bytes_after") for row in rows_for_task]
+        byte_metrics_observed = bool(rows_for_task) and not any(
+            value is None for value in [*bytes_before_values, *bytes_after_values]
+        )
+        bytes_before_total = sum(value for value in bytes_before_values if value is not None)
+        bytes_after_total = sum(value for value in bytes_after_values if value is not None)
         byte_delta = bytes_after_total - bytes_before_total if byte_metrics_observed else None
         token_proxy_delta = (
             int(byte_delta / TOKEN_PROXY_BYTES_PER_TOKEN) if byte_delta is not None else None
@@ -1724,38 +1728,44 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         variant_rows = successful_rows_by_variant_task[variant][task_id]
         baseline_evidence = matched_side_evidence(baseline_variant, task_id, baseline_rows)
         variant_evidence = matched_side_evidence(variant, task_id, variant_rows)
+        baseline_token_avg = baseline_evidence["primary_tokens"]["average"]
+        variant_token_avg = variant_evidence["primary_tokens"]["average"]
         token_claim_allowed = (
             quality_gate == "pass"
             and bool(baseline_evidence["primary_tokens"]["measured"])
             and bool(variant_evidence["primary_tokens"]["measured"])
+            and isinstance(baseline_token_avg, (int, float))
+            and baseline_token_avg > 0
+            and isinstance(variant_token_avg, (int, float))
         )
+        baseline_cost_avg = baseline_evidence["total_cost_with_shift_usd"]["average"]
+        variant_cost_avg = variant_evidence["total_cost_with_shift_usd"]["average"]
         shifted_cost_claim_allowed = (
             quality_gate == "pass"
             and bool(baseline_evidence["total_cost_with_shift_usd"]["measured"])
             and bool(variant_evidence["total_cost_with_shift_usd"]["measured"])
+            and isinstance(baseline_cost_avg, (int, float))
+            and baseline_cost_avg > 0
+            and isinstance(variant_cost_avg, (int, float))
         )
-        baseline_token_avg = baseline_evidence["primary_tokens"]["average"]
-        variant_token_avg = variant_evidence["primary_tokens"]["average"]
         token_delta = (
             variant_token_avg - baseline_token_avg
-            if token_claim_allowed and isinstance(baseline_token_avg, (int, float)) and isinstance(variant_token_avg, (int, float))
+            if token_claim_allowed
             else None
         )
         token_savings_pct = (
             (baseline_token_avg - variant_token_avg) / baseline_token_avg * 100.0
-            if token_delta is not None and isinstance(baseline_token_avg, (int, float)) and baseline_token_avg
+            if token_delta is not None
             else None
         )
-        baseline_cost_avg = baseline_evidence["total_cost_with_shift_usd"]["average"]
-        variant_cost_avg = variant_evidence["total_cost_with_shift_usd"]["average"]
         cost_delta = (
             variant_cost_avg - baseline_cost_avg
-            if shifted_cost_claim_allowed and isinstance(baseline_cost_avg, (int, float)) and isinstance(variant_cost_avg, (int, float))
+            if shifted_cost_claim_allowed
             else None
         )
         cost_savings_pct = (
             (baseline_cost_avg - variant_cost_avg) / baseline_cost_avg * 100.0
-            if cost_delta is not None and isinstance(baseline_cost_avg, (int, float)) and baseline_cost_avg
+            if cost_delta is not None
             else None
         )
         base_after = baseline_evidence["bytes"]["after_total"]
