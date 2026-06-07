@@ -325,7 +325,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 
 아래는 프로젝트가 기록해 둔 방향이지 약속된 기능이 아닙니다. 저장소의 다른 문서에 명시되지 않는 한 아직 제공 기능이 아닙니다.
 
-- learned prompt/context compression, multimodal crop/OCR 또는 visual-token pruning, self-hosted KV/latent inference optimization. [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. 이 lane들은 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence가 있어야 hosted API 절감 주장을 할 수 있습니다.
+- learned prompt/context compression, multimodal crop/OCR 또는 visual-token pruning, self-hosted KV/latent inference optimization. [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. 이 lane들은 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence가 있어야 hosted API 절감 주장을 할 수 있습니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, context-diff compaction, local proxy constraint도 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 묶습니다.
 
 ## 저장소 구조
 

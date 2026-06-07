@@ -20,6 +20,34 @@ A lane can move from radar to shipped feature only when it satisfies the same ev
 5. **Provider-measured evidence**: token or cost savings require measured primary token/cost fields, not only bytes saved.
 6. **Privacy and reversibility**: local artifacts must be sanitized, bounded, and retrievable when lossy transforms are used.
 
+## Later roadmap gates
+
+The following ideas remain later-roadmap gates, not shipped runtime features. They may appear in research notes or fixture-only benchmark designs, but package descriptions, hero copy, and default helper behavior must not present them as available features or hosted API savings.
+
+### Neural/semantic compression gate
+
+Neural or semantic compression is allowed only behind an explicit experimental mode and only for already-sanitized, unprotected prose. It must deny protected zones, code, diffs, identifiers, paths, stack frames, numeric constants, hashes, quoted strings, JSON keys, prompt-like instructions, and any content that requires exact retrieval. A future PR must provide an exact retrieval fallback or local receipt handle before replacing text with a lossy semantic summary, and it must keep byte/token-proxy reductions separate from provider-measured token/cost evidence.
+
+Promotion requires matched successful tasks, failure-rate and human-correction guardrails, shifted-cost accounting for any compressor or subagent work, and provider-measured primary token/cost data on both sides before any hosted API savings claim.
+
+### Trust-tiered / injection-aware compression gate
+
+Trust-tiered or injection-aware compression requires explicit trust labels for each input region, prompt-injection regression fixtures, and deny-by-default behavior for untrusted, instruction-bearing, user-supplied, or tool-output content. The safe default is structural selection, local artifact storage, and exact retrieval, not neural rewriting.
+
+Future experiments must prove that injection-like text is not elevated into system/developer instructions, that untrusted content cannot change compression policy, and that regressions are benchmarked before a lane can be promoted.
+
+### Reviewable context-diff compaction gate
+
+Reviewable context-diff compaction must produce human-reviewable diffs plus stable exact handles for every omitted or transformed source. Local receipts and an audit trail must identify source paths or sanitized labels, byte ranges or line ranges when safe, transform policy, and exact re-expand commands. Lossy replacement is allowed only when the user can inspect the diff, retrieve the original, and see the bounded-loss disclosure.
+
+No context-diff compaction may claim hosted token/cost savings from a smaller local diff alone; savings claims require the shared promotion gate and provider-measured matched-task evidence.
+
+### Opt-in local proxy constraints gate
+
+Local proxy constraints are opt-in and local-only. They must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
+
+A future proxy-related PR must show configuration that keeps external forwarding disabled unless the user explicitly opts in, must preserve privacy/reversibility expectations, and must not convert local proxy metrics into hosted API token/cost savings without provider-measured evidence.
+
 
 ## Graduated local experiment — receipt-backed output trimming
 

@@ -364,7 +364,7 @@ The report compares successful baseline/variant runs by real tokens and `cost_us
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- learned prompt/context compression, multimodal crop/OCR or visual-token pruning, and self-hosted KV/latent inference optimizations. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); these lanes require matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, and provider-measured token/cost evidence before any hosted API savings claim.
+- learned prompt/context compression, multimodal crop/OCR or visual-token pruning, and self-hosted KV/latent inference optimizations. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); these lanes require matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, and provider-measured token/cost evidence before any hosted API savings claim. The radar's later-roadmap gates also keep neural/semantic compression, trust-tiered injection-aware compression, context-diff compaction, and local proxy constraints experimental/non-shipped until a separate future PR satisfies those gates.
 
 ## Repository layout
 

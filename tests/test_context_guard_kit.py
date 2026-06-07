@@ -1803,6 +1803,88 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             self.assertIsNone(re.search(pattern, term), f"{pattern} leaked into metadata term {term!r}")
                     self.assertTrue(generic_terms & terms)
 
+    def test_experimental_later_roadmap_gates_are_claim_safe(self):
+        radar = ROOT / "research" / "experimental-token-reduction-radar.md"
+        radar_text = radar.read_text(encoding="utf-8").lower()
+        plain_radar = re.sub(r"[*_`]+", "", radar_text)
+        self.assertIn("## later roadmap gates", plain_radar)
+        later_section = plain_radar.split("## later roadmap gates", 1)[1].split("## graduated local experiment", 1)[0]
+
+        required_gate_terms = [
+            "neural/semantic compression",
+            "experimental mode",
+            "unprotected prose",
+            "sanitized",
+            "exact retrieval",
+            "trust-tiered",
+            "injection-aware",
+            "trust labels",
+            "prompt-injection regression",
+            "deny-by-default",
+            "reviewable context-diff compaction",
+            "exact handles",
+            "audit trail",
+            "receipt",
+            "opt-in",
+            "local-only",
+            "no hidden external forwarding",
+            "shifted-cost accounting",
+            "provider-measured",
+            "not shipped runtime features",
+        ]
+        for term in required_gate_terms:
+            with self.subTest(term=term):
+                self.assertIn(term, later_section)
+
+        user_docs = [
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "index.html",
+        ]
+        for doc in user_docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                plain_text = re.sub(r"[*_`]+", "", text)
+                self.assertIn("experimental-token-reduction-radar", text)
+                self.assertRegex(plain_text, r"later[-\s]+roadmap gate|experimental/non-shipped|제공 기능이 아닙니다")
+                self.assertRegex(
+                    plain_text,
+                    r"provider-measured|provider가\s+측정|matched-task\s+근거|matched successful",
+                )
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        plugin = json.loads((PLUGIN_DIR / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        metadata_descriptions = [
+            str(package.get("description", "")),
+            str(marketplace.get("description", "")),
+            *[str(item.get("description", "")) for item in marketplace.get("plugins", [])],
+            str(plugin.get("description", "")),
+        ]
+        index_html = (ROOT / "docs" / "index.html").read_text(encoding="utf-8")
+        hero_match = re.search(r"<header[^>]*class=\"[^\"]*\bhero\b[^\"]*\"[^>]*>(.*?)</header>", index_html, re.DOTALL | re.IGNORECASE)
+        self.assertIsNotNone(hero_match)
+        metadata_and_hero = "\n".join(metadata_descriptions + [hero_match.group(1)]).lower()
+        forbidden_shipped_surface_terms = [
+            r"\bneural\b",
+            r"semantic\s+compression",
+            r"trust[-\s]+tiered",
+            r"injection[-\s]+aware",
+            r"context[-\s]+diff\s+compaction",
+            r"local\s+proxy",
+            r"hosted\s+api\s+(?:token|cost)\s+savings",
+            r"fixed\s+\d+%\s+(?:token|cost)\s+savings",
+        ]
+        for pattern in forbidden_shipped_surface_terms:
+            with self.subTest(shipped_surface_pattern=pattern):
+                self.assertIsNone(
+                    re.search(pattern, metadata_and_hero),
+                    f"{pattern} leaked into package/plugin descriptions or hero copy",
+                )
+
     def test_hook_secret_helper_imports_are_file_bound_and_fail_closed_against_shadows(self):
         cases = [
             (KIT_DIR / "read_symbol.py", ["--help"], ""),
