@@ -1684,14 +1684,15 @@ def _doctor_status(checks: list[dict[str, Any]]) -> str:
     return "ok"
 
 
-def _helper_availability_check() -> dict[str, Any]:
+def _helper_availability_check(*, include_diet: bool = True) -> dict[str, Any]:
     helpers = {
         HELPER_STATUSLINE: "statusline_merged.sh",
         HELPER_REWRITE_BASH: "rewrite_bash_for_token_budget.py",
         HELPER_GUARD_READ: "guard_large_read.py",
         HELPER_FAILED_NUDGE: "failed_attempt_nudge.py",
-        HELPER_DIET: "context_guard_diet.py",
     }
+    if include_diet:
+        helpers[HELPER_DIET] = "context_guard_diet.py"
     resolved: dict[str, str] = {}
     missing: list[str] = []
     for helper, kit_script in helpers.items():
@@ -1717,6 +1718,19 @@ def _helper_availability_check() -> dict[str, Any]:
     )
 
 
+def _adapter_warning_detail(entry: dict[str, Any]) -> dict[str, Any]:
+    detail = {
+        "key": entry.get("key"),
+        "status": entry.get("status"),
+        "planned_actions": entry.get("planned_actions", []),
+        "unsupported_reason": entry.get("unsupported_reason"),
+    }
+    for key in ("brief_mode", "brief_mode_status", "brief_mode_reason", "brief_mode_file"):
+        if key in entry:
+            detail[key] = entry.get(key)
+    return detail
+
+
 def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     """Return a read-only setup health report.
 
@@ -1727,7 +1741,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     scope = normalize_scope(getattr(args, "scope", "project"))
     root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
-    helper_check = _helper_availability_check()
+    helper_check = _helper_availability_check(include_diet=not getattr(args, "no_diet_scan", False))
     checks: list[dict[str, Any]] = [helper_check]
     warnings: list[str] = []
     if scope == "user":
@@ -1741,20 +1755,51 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     original: dict[str, Any] = {}
     settings: dict[str, Any] = {}
     if claude_targeted:
-        validate_settings_target(root, settings_path, allow_home_settings=(args.allow_home_settings or scope == "user"))
-        original_text = _read_optional_text_no_follow(settings_path)
-        original = _parse_json_object_text(original_text, settings_path)
-        settings = json.loads(json.dumps(original))
-        checks.append(doctor_check(
-            "settings-target",
-            "ok",
-            "low",
-            "Claude settings target is readable without following symlinks.",
-            detail={
-                "exists": original_text is not None,
-                "path": str(settings_path),
-            },
-        ))
+        try:
+            validate_settings_target(root, settings_path, allow_home_settings=(args.allow_home_settings or scope == "user"))
+            original_text = _read_optional_text_no_follow(settings_path)
+            original = _parse_json_object_text(original_text, settings_path)
+            settings = json.loads(json.dumps(original))
+            checks.append(doctor_check(
+                "settings-target",
+                "ok",
+                "low",
+                "Claude settings target is readable without following symlinks.",
+                detail={
+                    "exists": original_text is not None,
+                    "path": str(settings_path),
+                },
+            ))
+        except SystemExit as exc:
+            checks.append(doctor_check(
+                "settings-target",
+                "error",
+                "error",
+                "Claude settings target could not be read as a safe JSON object.",
+                detail={
+                    "exists": settings_path.exists(),
+                    "path": str(settings_path),
+                    "error": str(exc),
+                },
+                next_action=f"Fix or remove {settings_path} before running setup or verify again.",
+            ))
+            return {
+                "schema_version": "contextguard.doctor.v1",
+                "status": "error",
+                "root": str(root),
+                "scope": scope,
+                "settings_path": str(settings_path),
+                "read_only": True,
+                "warnings": warnings,
+                "checks": checks,
+                "setup_plan": {
+                    "changed": False,
+                    "actions": [],
+                    "adapter_plan": [],
+                },
+                "diet_scan": {"status": "skipped", "reason": "settings-target-error"},
+                "recommended_commands": [],
+            }
     else:
         checks.append(doctor_check(
             "settings-target",
@@ -1818,12 +1863,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         brief_mode=getattr(args, "brief_mode", None),
     )
     adapter_warnings = [
-        {
-            "key": entry.get("key"),
-            "status": entry.get("status"),
-            "planned_actions": entry.get("planned_actions", []),
-            "unsupported_reason": entry.get("unsupported_reason"),
-        }
+        _adapter_warning_detail(entry)
         for entry in adapter_plan
         if entry.get("status") in {"planned", "unsupported", "skipped"}
     ]
@@ -1856,6 +1896,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
             detail=diet_scan,
         ))
     else:
+        diet_next_action = shlex.join(["context-guard", "diet", "scan", str(root), "--json"])
         diet_scan = run_post_setup_diet_scan(root)
         if diet_scan.get("status") != "completed":
             checks.append(doctor_check(
@@ -1864,7 +1905,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                 "medium",
                 "Context hygiene scan could not complete.",
                 detail=diet_scan,
-                next_action="context-guard diet scan . --json",
+                next_action=diet_next_action,
             ))
         else:
             counts = diet_scan.get("severity_counts", {})
@@ -1876,7 +1917,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                     "medium",
                     "Context hygiene scan found high/medium findings.",
                     detail=diet_scan,
-                    next_action="context-guard diet scan . --json",
+                    next_action=diet_next_action,
                 ))
             else:
                 checks.append(doctor_check(
@@ -1916,8 +1957,12 @@ def render_doctor_text(report: dict[str, Any]) -> str:
         f"scope={report.get('scope')}",
         f"root={report.get('root')}",
         f"settings={report.get('settings_path')}",
-        "checks:",
     ]
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines.append("warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    lines.append("checks:")
     for check in report.get("checks", []):
         lines.append(
             f"- [{str(check.get('status', '')).upper()}] {check.get('id')}: {check.get('message')}"

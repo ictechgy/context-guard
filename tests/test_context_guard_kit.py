@@ -4224,6 +4224,68 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(secret, receipt_text)
                         self.assertNotIn(secret_path, receipt_text)
 
+    def test_context_pack_auto_explain_matches_exact_build_sources_before_fallbacks(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_explain_exact_first_{index}")
+                args = argparse.Namespace(
+                    files=[],
+                    diff=None,
+                    output=[],
+                    test_output=[],
+                    top=5,
+                    context_lines=2,
+                    no_artifact=True,
+                )
+                suggest_payload = {
+                    "query": "",
+                    "sources": [
+                        {"path": "same.py", "priority": 99, "lines": {"start": 99, "end": 99}, "reason": "non-exact first"},
+                        {"path": "same.py", "priority": 5, "lines": {"start": 10, "end": 10}, "reason": "exact later"},
+                    ],
+                    "omitted_sources": [],
+                }
+                build_payload = {
+                    "included_sources": [
+                        {"path": "same.py", "priority": 5, "requested_lines": {"start": 10, "end": 10}, "included_lines": {"start": 10, "end": 10}, "status": "included", "bytes": 12},
+                        {"path": "same.py", "priority": 1, "requested_lines": {"start": 1, "end": 1}, "included_lines": {"start": 1, "end": 1}, "status": "included", "bytes": 8},
+                    ],
+                    "omitted_sources": [],
+                    "sources": {"included": 2, "partial": 0, "omitted": 0},
+                    "artifact": {"stored": False, "capped": False},
+                    "pack_bytes": 20,
+                    "budget_bytes": 100,
+                    "redaction": {},
+                }
+                payload = {"sources": {"suggested": 2, "included": 2, "partial": 0, "omitted": 0}, "pack_bytes": 20, "budget_bytes": 100}
+                explain = module.build_auto_explain_payload(args, suggest_payload, build_payload, payload)
+                by_reason = {item["reason"]: item for item in explain["selection"]}
+                self.assertEqual(by_reason["exact later"]["included_lines"], {"start": 10, "end": 10})
+                self.assertEqual(by_reason["exact later"]["build_bytes"], 12)
+
+    def test_context_pack_auto_explain_redacts_diff_label(self):
+        secret = "glpat-" + ("A" * 20)
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_explain_redact_diff_{index}")
+                args = argparse.Namespace(
+                    files=[],
+                    diff=f"feature/{secret}",
+                    output=[],
+                    test_output=[],
+                    top=5,
+                    context_lines=2,
+                    no_artifact=True,
+                )
+                explain = module.build_auto_explain_payload(
+                    args,
+                    {"query": "", "sources": [], "omitted_sources": []},
+                    {"included_sources": [], "omitted_sources": [], "sources": {}, "artifact": {}, "pack_bytes": 0, "budget_bytes": 100},
+                    {"sources": {"suggested": 0, "included": 0, "partial": 0, "omitted": 0}, "pack_bytes": 0, "budget_bytes": 100},
+                )
+                self.assertNotIn(secret, json.dumps(explain, sort_keys=True))
+                self.assertEqual(explain["inputs"]["diff"], "feature/[REDACTED]")
+
     def test_context_pack_auto_explain_docs_help_and_smoke_surface_are_listed(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -6116,6 +6178,108 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(helper["status"], "error")
             self.assertIn(setup.HELPER_DIET, helper["detail"]["missing"])
             self.assertFalse((root / ".claude" / "settings.json").exists())
+
+    def test_context_guard_doctor_reports_malformed_settings_as_json_error(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings = root / ".claude" / "settings.json"
+                    settings.parent.mkdir()
+                    settings.write_text("{", encoding="utf-8")
+                    before = settings.read_text(encoding="utf-8")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--verify", "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.doctor.v1")
+                    self.assertEqual(data["status"], "error")
+                    self.assertTrue(data["read_only"])
+                    self.assertEqual(settings.read_text(encoding="utf-8"), before)
+                    target = next(check for check in data["checks"] if check["id"] == "settings-target")
+                    self.assertEqual(target["status"], "error")
+                    self.assertIn("Invalid JSON", target["detail"]["error"])
+                    self.assertIn("Fix or remove", target["next_action"])
+                    self.assertEqual(proc.stderr, "")
+
+    def test_context_guard_doctor_skips_disabled_helper_checks_and_preserves_diet_root(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"setup_wizard_doctor_quad_review_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    args = module.build_parser().parse_args(["--root", str(root), "--verify", "--json", "--no-diet-scan"])
+                    original_helper_argv = module.helper_argv
+
+                    def missing_disabled_diet(helper_name, kit_script, *, shell=None):
+                        if helper_name == module.HELPER_DIET:
+                            raise SystemExit("missing disabled diet helper")
+                        return original_helper_argv(helper_name, kit_script, shell=shell)
+
+                    with mock.patch.object(module, "helper_argv", side_effect=missing_disabled_diet):
+                        report = module.run_doctor(args)
+                    helper = next(check for check in report["checks"] if check["id"] == "helper-availability")
+                    self.assertNotEqual(helper["status"], "error")
+                    self.assertNotIn(module.HELPER_DIET, helper["detail"].get("missing", []))
+                    self.assertEqual(report["diet_scan"], {"status": "skipped", "reason": "disabled-by-flag"})
+
+                    args = module.build_parser().parse_args(["--root", str(root), "--verify", "--json"])
+                    with mock.patch.object(module, "run_post_setup_diet_scan", return_value={"status": "failed", "reason": "forced"}):
+                        report = module.run_doctor(args)
+                    diet_check = next(check for check in report["checks"] if check["id"] == "diet-scan")
+                    self.assertIn(str(root.resolve()), diet_check["next_action"])
+                    self.assertNotIn("scan . --json", diet_check["next_action"])
+
+    def test_context_guard_doctor_text_renders_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--scope",
+                    "user",
+                    "--agent",
+                    "claude",
+                    "--verify",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            self.assertIn("warnings:", proc.stdout)
+            self.assertIn("user-scope verify is read-only", proc.stdout)
+            self.assertFalse((home / ".claude" / "settings.json").exists())
+
+    def test_context_guard_doctor_adapter_warning_preserves_brief_mode_status(self):
+        for index, script in enumerate(SETUP_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"setup_wizard_doctor_brief_warning_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    args = module.build_parser().parse_args([
+                        "--root",
+                        str(root),
+                        "--agent",
+                        "codex",
+                        "--brief-mode",
+                        "lite",
+                        "--verify",
+                        "--json",
+                        "--no-diet-scan",
+                    ])
+                    report = module.run_doctor(args)
+                    adapter_check = next(check for check in report["checks"] if check["id"] == "adapter-plan")
+                    codex = next(item for item in adapter_check["detail"]["adapters"] if item["key"] == "codex")
+                    self.assertEqual(codex["brief_mode"], "lite")
+                    self.assertIn(codex["brief_mode_status"], {"planned", "exists", "unsupported"})
+                    self.assertIn("brief_mode_reason", codex)
 
     def test_context_guard_doctor_recommended_commands_preserve_verified_options(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -10316,7 +10480,7 @@ for malformed in malformed_values:
         for doc in (ROOT / "README.md", ROOT / "README.ko.md"):
             self.assertIn("docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
         for doc in (PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
-            self.assertIn("../../docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
+            self.assertIn("https://github.com/ictechgy/context-guard/blob/main/docs/cache-diagnostics-schema.md", doc.read_text(encoding="utf-8"), str(doc))
 
         package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
         for packaged_doc in (
@@ -13893,10 +14057,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         self.assertIn("replace success_command", task.success_command)
                     for variant in parsed_variants:
                         self.assertEqual(variant.extra_args, [])
-
-                placeholder_success, placeholder_note = kit_module.run_success_command(parsed_tasks[0], ROOT)
-                self.assertFalse(placeholder_success)
-                self.assertIn("exit=", placeholder_note)
+                    placeholder_success, placeholder_note = module.run_success_command(parsed_tasks[0], ROOT)
+                    self.assertFalse(placeholder_success)
+                    self.assertIn("exit=", placeholder_note)
 
                 combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
                 combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
@@ -14004,8 +14167,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
         for doc, expected_link in (
             (ROOT / "README.md", "docs/experimental-benchmark-fixtures.md"),
             (ROOT / "README.ko.md", "docs/experimental-benchmark-fixtures.md"),
-            (PLUGIN_DIR / "README.md", "../../docs/experimental-benchmark-fixtures.md"),
-            (PLUGIN_DIR / "README.ko.md", "../../docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.ko.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
             (KIT_DIR / "README.md", "../docs/experimental-benchmark-fixtures.md"),
             (ROOT / "docs" / "benchmark-workflow-examples.md", "experimental-benchmark-fixtures.md"),
             (ROOT / "research" / "experimental-token-reduction-radar.md", "../docs/experimental-benchmark-fixtures.md"),
@@ -14039,6 +14202,42 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 )
                 self.assertIn("dry-run; CSV not updated", proc.stdout)
                 self.assertFalse(csv_path.exists())
+
+                fake = Path(tmp) / "fake-claude"
+                sentinel = Path(tmp) / "provider-called.txt"
+                fake.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import pathlib, sys\n"
+                    f"pathlib.Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n"
+                    "sys.stdout.write('{}')\n",
+                    encoding="utf-8",
+                )
+                fake.chmod(0o755)
+                real_csv = Path(tmp) / "real-run.csv"
+                real_proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--tasks",
+                        str(task_path),
+                        "--variants",
+                        str(variant_path),
+                        "--task-id",
+                        "visual_ocr_nav_error_fixture",
+                        "--variant",
+                        "baseline_full_visual_fixture",
+                        "--csv",
+                        str(real_csv),
+                        "--claude-bin",
+                        str(fake),
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(real_proc.returncode, 0)
+                self.assertIn("fixture-only placeholder", real_proc.stderr)
+                self.assertFalse(sentinel.exists())
+                self.assertFalse(real_csv.exists())
 
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")

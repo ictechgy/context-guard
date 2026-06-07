@@ -53,11 +53,15 @@ SECRET_CONTENT_RE = re.compile(
     r"(?is)("
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
     r"AKIA[0-9A-Z]{16}|"
+    r"ASIA[0-9A-Z]{16}|"
     r"gh[pousr]_[A-Za-z0-9_]{20,}|"
     r"github_pat_[A-Za-z0-9_]{20,}|"
+    r"glpat-[A-Za-z0-9_-]{12,}|"
     r"xox[abprs]-[A-Za-z0-9-]{10,}|"
     r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|"
     r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|"
+    r"npm_[A-Za-z0-9]{20,}|"
     r"AIza[0-9A-Za-z_\-]{20,}|"
     r"(?i:Authorization)\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
@@ -1633,29 +1637,40 @@ def copy_explain_fields(item: dict[str, Any], fields: tuple[str, ...]) -> dict[s
     return out
 
 
-def find_build_source_for_explain(
+def build_source_matches_exact(suggest_item: dict[str, Any], build_item: dict[str, Any]) -> bool:
+    if build_item.get("path") != suggest_item.get("path"):
+        return False
+    if build_item.get("priority") != suggest_item.get("priority"):
+        return False
+    lines = line_range_identity(suggest_item.get("lines"))
+    requested = line_range_identity(build_item.get("requested_lines"))
+    included = line_range_identity(build_item.get("included_lines"))
+    return lines in {requested, included, "all"}
+
+
+def find_exact_build_source_for_explain(
+    suggest_item: dict[str, Any],
+    build_sources: list[dict[str, Any]],
+    used_indexes: set[int],
+) -> dict[str, Any] | None:
+    for index, item in enumerate(build_sources):
+        if index in used_indexes:
+            continue
+        if build_source_matches_exact(suggest_item, item):
+            used_indexes.add(index)
+            return item
+    return None
+
+
+def find_fallback_build_source_for_explain(
     suggest_item: dict[str, Any],
     build_sources: list[dict[str, Any]],
     used_indexes: set[int],
 ) -> dict[str, Any] | None:
     path = suggest_item.get("path")
-    priority = suggest_item.get("priority")
-    lines = line_range_identity(suggest_item.get("lines"))
-    fallback: tuple[int, dict[str, Any]] | None = None
     for index, item in enumerate(build_sources):
         if index in used_indexes or item.get("path") != path:
             continue
-        if fallback is None:
-            fallback = (index, item)
-        if item.get("priority") != priority:
-            continue
-        requested = line_range_identity(item.get("requested_lines"))
-        included = line_range_identity(item.get("included_lines"))
-        if lines in {requested, included, "all"}:
-            used_indexes.add(index)
-            return item
-    if fallback is not None:
-        index, item = fallback
         used_indexes.add(index)
         return item
     return None
@@ -1678,15 +1693,26 @@ def build_auto_explain_payload(args: argparse.Namespace, suggest_payload: dict[s
         if isinstance(item, dict)
     ]
     used_build_indexes: set[int] = set()
+    suggest_sources = [
+        item
+        for item in suggest_payload.get("sources", [])
+        if isinstance(item, dict)
+    ]
+    exact_matches: dict[int, dict[str, Any]] = {}
+    for index, item in enumerate(suggest_sources):
+        build_item = find_exact_build_source_for_explain(item, build_sources, used_build_indexes)
+        if build_item is not None:
+            exact_matches[index] = build_item
+
     selection: list[dict[str, Any]] = []
-    for item in suggest_payload.get("sources", []):
-        if not isinstance(item, dict):
-            continue
+    for index, item in enumerate(suggest_sources):
         entry = copy_explain_fields(
             item,
             ("path", "score", "priority", "reason", "label", "lines", "bytes", "retrieval_cli", "retrieval_omitted_reason"),
         )
-        build_item = find_build_source_for_explain(item, build_sources, used_build_indexes)
+        build_item = exact_matches.get(index)
+        if build_item is None:
+            build_item = find_fallback_build_source_for_explain(item, build_sources, used_build_indexes)
         if build_item is not None:
             entry["build_status"] = build_item.get("status", "included")
             for key in ("requested_lines", "included_lines"):
