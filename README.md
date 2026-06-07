@@ -284,7 +284,7 @@ pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-Use `--digest markdown` or `--digest json` for a compact semantic digest instead of head/tail logs. Digest mode keeps status, exit code, truncation counts, runner failure facts, a sanitized failure signature, duplicate-line groups, representative lines, redaction counts, and suggested next queries while preserving the wrapped command exit code. Wrapped commands time out after 600 seconds by default; tune this with `--timeout-seconds`.
+Use `--digest markdown` or `--digest json` for a compact semantic digest instead of head/tail logs. Digest mode keeps status, exit code, truncation counts, runner failure facts, a sanitized failure signature, duplicate-line groups, representative lines, redaction counts, and suggested next queries while preserving the wrapped command exit code. Add `--artifact-receipt` with digest mode when you want the exact sanitized full output stored locally as a `context-guard-artifact` receipt; re-expand with the emitted `context-guard-artifact get ...` command before relying on omitted details. Wrapped commands time out after 600 seconds by default; tune this with `--timeout-seconds`.
 
 ### Sanitize search and diff output
 
