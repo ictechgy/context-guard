@@ -21,7 +21,7 @@ Use this order:
    - startup context -> prune `CLAUDE.md`, move long workflows to skills, disable unused MCP servers.
    - large file reads -> use `context-guard-read-symbol` and the example Read guard before whole-file context.
    - very large logs that may need later exact slices -> store sanitized output with `context-guard-artifact store` and query only needed lines/patterns.
-   - noisy command output -> use `context-guard-trim-output` wrappers or the example PreToolUse hook.
+   - noisy command output -> use `context-guard-trim-output` wrappers or the example PreToolUse hook; use `context-guard-filter` only with an explicit user-owned config for stable successful command shapes.
    - grep/diff output with possible secrets -> use `context-guard-sanitize-output` or the example Bash hook.
    - expensive reasoning -> route default work to `sonnet` and lower `/effort`; reserve Opus/`opusplan` for planning.
    - noisy exploration -> keep it local: use `rg`, `context-guard-read-symbol`, artifact queries, or a bounded subagent only when parallel value justifies the multiplier.
@@ -44,6 +44,7 @@ context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
 context-guard-trim-output --max-lines 120 -- npm test
 context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
+context-guard-filter validate --config .context-guard/filter-dsl.json
 context-guard-statusline
 ```
 

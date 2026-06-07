@@ -128,6 +128,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Structural-waste doctor | Opt-in local diagnostics for duplicate rules, stale imports, unused skill candidates, oversized tool schemas, and repeated read/tool-call loops. |
 | Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
+| Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
 | Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, and adds `--explain` for compact local selection reasons. |
@@ -310,6 +311,28 @@ Use `--digest markdown` or `--digest json` for a compact semantic digest instead
 ```
 
 The sanitizer reduces the chance that token-like, key-like, password-like, or sensitive path values are copied into agent context.
+
+### Apply an opt-in declarative output filter
+
+```bash
+cat > .context-guard/filter-dsl.json <<'JSON'
+{
+  "schema_version": "contextguard.filter-dsl.v1",
+  "filters": [
+    {
+      "id": "git-status-short",
+      "match": {"argv_prefix": ["git", "status", "--short"]},
+      "include_regex": ["^[ MADRCU?!]"],
+      "max_lines": 80
+    }
+  ]
+}
+JSON
+./plugins/context-guard/bin/context-guard-filter validate --config .context-guard/filter-dsl.json
+./plugins/context-guard/bin/context-guard-filter run --config .context-guard/filter-dsl.json -- git status --short
+```
+
+`context-guard-filter` is an opt-in local helper for user-owned JSON filter files; it does not install default filters or change hooks. Invalid configs, no-match commands, filtering errors, empty filtered output, and protected `git`/test/lint/`gh` command failures pass the original command stdout/stderr and exit code through. In filtered mode, line rules apply to combined stdout+stderr and write the filtered result to stdout; passthrough mode preserves stdout/stderr streams. `run --json-report` writes filter diagnostics to stderr so stdout remains command/filter output; protected nonzero passthrough suppresses that report to keep stderr raw. Treat filtered byte reductions as local presentation changes, not hosted token/cost savings claims.
 
 ### Audit local transcript usage
 

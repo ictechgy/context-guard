@@ -35,6 +35,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
     (KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"),
     (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
+    (KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"),
     (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
@@ -61,6 +62,7 @@ NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guar
 ARTIFACT_SCRIPTS = [KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"]
 COMPRESS_SCRIPTS = [KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"]
 PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
+FILTER_SCRIPTS = [KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"]
 TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"]
 
@@ -178,6 +180,369 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(plugin=plugin):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertEqual(stat.S_IMODE(plugin.stat().st_mode) & 0o111, 0, f"{plugin} should not be executable")
+
+    def test_context_filter_validates_and_filters_successful_output(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / "filters.json"
+                    config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": "python-keep-lines",
+                                    "match": {"argv_prefix": [sys.executable]},
+                                    "include_regex": ["KEEP"],
+                                    "exclude_regex": ["DROP"],
+                                    "max_lines": 10,
+                                }
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    valid = subprocess.run(
+                        [sys.executable, str(script), "validate", "--config", str(config), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    valid_payload = json.loads(valid.stdout)
+                    self.assertTrue(valid_payload["valid"])
+                    self.assertEqual(valid_payload["schema_version"], "contextguard.filter-dsl.v1")
+                    self.assertEqual(valid_payload["filter_count"], 1)
+
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(config),
+                            "--json-report",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('KEEP alpha'); print('DROP beta'); print('KEEP gamma')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(proc.stdout, "KEEP alpha\nKEEP gamma\n")
+                    report = json.loads(proc.stderr)
+                    self.assertEqual(report["decision"], "filtered")
+                    self.assertEqual(report["filter_id"], "python-keep-lines")
+
+                    overlap_config = Path(tmp) / "overlap.json"
+                    overlap_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": "head-tail-overlap",
+                                    "match": {"argv_prefix": [sys.executable]},
+                                    "head_lines": 3,
+                                    "tail_lines": 3,
+                                }
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    overlap = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(overlap_config),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('L1'); print('L2'); print('L3'); print('L4')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(overlap.stdout, "L1\nL2\nL3\nL4\n")
+
+    def test_context_filter_invalid_no_match_and_empty_filter_passthrough(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    invalid = root / "invalid.json"
+                    invalid.write_text(json.dumps({"schema_version": "bad", "filters": []}), encoding="utf-8")
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(invalid),
+                            "--json-report",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('ORIGINAL invalid config')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(proc.stdout, "ORIGINAL invalid config\n")
+                    self.assertEqual(json.loads(proc.stderr)["reason"], "invalid-config")
+
+                    no_match = root / "no-match.json"
+                    no_match.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [{"id": "other", "match": {"argv_prefix": ["not-this-command"]}, "include_regex": ["NOPE"]}],
+                        }),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(no_match),
+                            "--json-report",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('ORIGINAL no match')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(proc.stdout, "ORIGINAL no match\n")
+                    self.assertEqual(json.loads(proc.stderr)["reason"], "no-match")
+
+                    empty = root / "empty.json"
+                    empty.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [{"id": "empty", "match": {"argv_prefix": [sys.executable]}, "include_regex": ["NEVER_MATCH"]}],
+                        }),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(empty),
+                            "--json-report",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('ORIGINAL empty fallback')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(proc.stdout, "ORIGINAL empty fallback\n")
+                    self.assertEqual(json.loads(proc.stderr)["reason"], "empty-output-fallback")
+
+    def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
+        cases = {
+            "unknown": {
+                "schema_version": "contextguard.filter-dsl.v1",
+                "filters": [{"id": "bad", "match": {"argv_prefix": ["cmd"]}, "surprise": True}],
+            },
+            "invalid_regex": {
+                "schema_version": "contextguard.filter-dsl.v1",
+                "filters": [{"id": "bad", "match": {"argv_prefix": ["cmd"]}, "include_regex": ["["]}],
+            },
+            "too_many_filters": {
+                "schema_version": "contextguard.filter-dsl.v1",
+                "filters": [{"id": f"f{i}", "match": {"argv_prefix": ["cmd"]}} for i in range(101)],
+            },
+            "too_many_regexes": {
+                "schema_version": "contextguard.filter-dsl.v1",
+                "filters": [{"id": "bad", "match": {"argv_prefix": ["cmd"]}, "include_regex": [f"x{i}" for i in range(21)]}],
+            },
+            "oversized_regex_and_bad_cap": {
+                "schema_version": "contextguard.filter-dsl.v1",
+                "filters": [{"id": "bad", "match": {"argv_prefix": ["cmd"]}, "include_regex": ["x" * 501], "max_lines": -1}],
+            },
+        }
+        for script in FILTER_SCRIPTS:
+            for name, payload in cases.items():
+                with self.subTest(script=script, case=name):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        config = Path(tmp) / "filters.json"
+                        config.write_text(json.dumps(payload), encoding="utf-8")
+                        proc = subprocess.run(
+                            [sys.executable, str(script), "validate", "--config", str(config), "--json"],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        data = json.loads(proc.stdout)
+                        self.assertFalse(data["valid"])
+                        self.assertTrue(data["errors"])
+
+    def test_context_filter_protected_failures_always_passthrough(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    commands: list[Path] = []
+                    for name in ("git", "gh", "pytest", "ruff"):
+                        exe = root / name
+                        exe.write_text(
+                            f"#!/bin/sh\necho PROTECTED-OUT-{name}\necho PROTECTED-ERR-{name} >&2\nexit 7\n",
+                            encoding="utf-8",
+                        )
+                        exe.chmod(0o755)
+                        commands.append(exe)
+                    config = root / "filters.json"
+                    config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": f"hide-{exe.name}",
+                                    "match": {"argv_prefix": [str(exe)]},
+                                    "passthrough_on_exit": False,
+                                    "include_regex": ["NEVER_MATCH"],
+                                }
+                                for exe in commands
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    for exe in commands:
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "run",
+                                "--config",
+                                str(config),
+                                "--json-report",
+                                "--",
+                                str(exe),
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 7)
+                        self.assertEqual(proc.stdout, f"PROTECTED-OUT-{exe.name}\n")
+                        self.assertEqual(proc.stderr, f"PROTECTED-ERR-{exe.name}\n")
+
+                        raw_proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "run",
+                                "--config",
+                                str(config),
+                                "--",
+                                str(exe),
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(raw_proc.returncode, 7)
+                        self.assertEqual(raw_proc.stdout, f"PROTECTED-OUT-{exe.name}\n")
+                        self.assertEqual(raw_proc.stderr, f"PROTECTED-ERR-{exe.name}\n")
+
+                    protected = commands[0]
+                    invalid_config = root / "invalid-protected.json"
+                    invalid_config.write_text(json.dumps({"schema_version": "bad", "filters": []}), encoding="utf-8")
+                    no_match_config = root / "no-match-protected.json"
+                    no_match_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [{"id": "other", "match": {"argv_prefix": ["not-this-command"]}}],
+                        }),
+                        encoding="utf-8",
+                    )
+                    for extra_args in (
+                        ["--config", str(invalid_config), "--json-report", "--", str(protected)],
+                        ["--config", str(no_match_config), "--json-report", "--", str(protected)],
+                        ["--config", str(config), "--json-report", "--max-capture-bytes", "1", "--", str(protected)],
+                    ):
+                        proc = subprocess.run(
+                            [sys.executable, str(script), "run", *extra_args],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 7)
+                        self.assertEqual(proc.stdout, f"PROTECTED-OUT-{protected.name}\n")
+                        self.assertEqual(proc.stderr, f"PROTECTED-ERR-{protected.name}\n")
+
+                    wrapper_cases: list[tuple[str, list[str]]] = [
+                        ("make", ["test"]),
+                        ("npx", ["jest"]),
+                        ("npm", ["run", "test:unit"]),
+                        ("poetry", ["run", "pytest"]),
+                        ("bun", ["test"]),
+                    ]
+                    wrapper_commands: list[tuple[Path, list[str]]] = []
+                    for name, extra_args in wrapper_cases:
+                        exe = root / name
+                        exe.write_text(
+                            f"#!/bin/sh\necho WRAPPER-OUT-{name}\necho WRAPPER-ERR-{name} >&2\nexit 9\n",
+                            encoding="utf-8",
+                        )
+                        exe.chmod(0o755)
+                        wrapper_commands.append((exe, extra_args))
+                    wrapper_config = root / "wrapper-filters.json"
+                    wrapper_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": f"hide-wrapper-{exe.name}",
+                                    "match": {"argv_prefix": [str(exe), *extra_args]},
+                                    "passthrough_on_exit": False,
+                                    "include_regex": ["NEVER_MATCH"],
+                                }
+                                for exe, extra_args in wrapper_commands
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    for exe, extra_args in wrapper_commands:
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "run",
+                                "--config",
+                                str(wrapper_config),
+                                "--json-report",
+                                "--",
+                                str(exe),
+                                *extra_args,
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 9)
+                        self.assertEqual(proc.stdout, f"WRAPPER-OUT-{exe.name}\n")
+                        self.assertEqual(proc.stderr, f"WRAPPER-ERR-{exe.name}\n")
+
+    def test_context_filter_dispatcher_help_routes_to_helper(self):
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [sys.executable, str(dispatcher), "filter", "--help"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                self.assertIn("Validate and apply bounded declarative command-output filters", proc.stdout)
 
     def test_auxiliary_ai_delegation_is_not_packaged(self):
         self.assertFalse((KIT_DIR / "aux_ai_delegate.py").exists())
