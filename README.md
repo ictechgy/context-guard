@@ -132,6 +132,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, and adds `--explain` for compact local selection reasons. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
+| Protected-zone policy receipts | Opt-in `context-guard-compress --protected-policy` and `context-guard cost compile` metadata mark code/diff/path/hash/JSON/literal zones as structural-only with exact retrieval guidance. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage and cache-friendliness hotspots, and records conservative before/after evidence. |
 
@@ -274,9 +275,12 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ```bash
 git diff | ./plugins/context-guard/bin/context-guard-compress --json
 pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
+cat evidence.txt | ./plugins/context-guard/bin/context-guard-compress --json --protected-policy
 ```
 
 `context-guard-compress` classifies sanitized stdin as JSON, diff, log, search output, code, or prose, then applies deterministic reductions such as JSON compaction, diff context folding, duplicate log/search line collapse, and whitespace normalization. It never claims observed model-token savings; byte counts are observed, token counts are labeled as estimates, and lossy receipts point you back to `context-guard-artifact store` for exact retrieval.
+
+Add `--protected-policy` when the input may contain semantic-sensitive zones such as code fences, diffs, identifiers, numeric constants, hashes, paths, stack frames, quoted strings, or JSON keys. The flag does not change default compressor behavior; it adds `protected_zone_policy` and `transform_policy` metadata that denies semantic/paraphrase rewrites, allows only structural transforms plus artifact retrieval, and stores only class/count policy metadata rather than raw protected spans.
 
 ### Trim or summarize command output
 

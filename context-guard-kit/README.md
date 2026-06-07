@@ -50,6 +50,10 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 `tool_schema_pruner.py`는 provider-neutral tool/MCP catalog helper입니다. `select`는 task query와 lexical overlap으로 top-k tool을 고르고, inline schema는 `--budget-bytes` 안에만 넣으며, compact receipt와 별도 sanitized payload를 `.context-guard/tool-prune`에 기록합니다. `get`은 payload size/SHA-256을 검증한 뒤 전체 정제 schema를 반환합니다. 이 helper는 MCP 설정을 바꾸지 않으며, token 절감은 측정값이 아니라 추정 proxy로만 표현합니다.
 
+`context_compress.py --protected-policy`는 기본 압축 동작을 바꾸지 않고 code fence, diff, identifier, numeric constant, hash, path, stack frame, quoted string, JSON key 같은 보호-zone class/count 정책 메타데이터를 추가합니다. 보호-zone 정책은 semantic/paraphrase rewrite를 금지하고 structural dedupe/window/truncate 및 artifact retrieval만 허용합니다. raw span은 receipt에 저장하지 않으며, lossy structural transform에는 정확 재조회가 필요하다는 hint를 남깁니다.
+
+`cost_guard.py compile`은 section manifest의 `protected`, `semantic_sensitive`, `protected_zone_classes`, `content_type`, `volatile`, `ttl`, `bytes` 필드를 읽어 `protected_zone_policy`와 `transform_policy`를 출력합니다. `protected=true`와 `volatile=true`가 같이 있으면 volatile이 cache ordering을 tail 쪽으로 보내고, protection은 transform/retrieval 정책만 제어합니다. 대용량 protected section은 local artifact retrieval을 권고하지만 provider prompt cache를 대체한다고 주장하지 않습니다.
+
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 
 `../research/experimental-token-reduction-radar.md`는 learned compression, multimodal crop/OCR/visual-token pruning, self-hosted KV/latent inference optimization 같은 선택적 미래 실험을 문서화한 gate입니다. `../docs/experimental-benchmark-fixtures.md`에는 fixture-only task/variant 시작 예시가 있습니다. 이 radar와 fixture는 runtime helper가 아니며, hosted API token/cost 절감을 보장하지 않습니다. hosted API token/cost 절감 주장은 provider가 측정한 matched-task 근거가 있을 때만 허용합니다.
