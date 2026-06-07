@@ -64,6 +64,7 @@ Common helpers:
 context-guard-audit ~/.claude/projects --top 20 --recommend
 context-guard-setup
 context-guard-diet scan . --json
+context-guard-diet structural-waste . --tool-catalog tools.json --log-path .claude --json
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80
 context-guard-compress --json < large-output.txt
@@ -87,6 +88,7 @@ context-guard-statusline-merged
 
 - **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; use `--no-diet-scan` when automation needs setup output without the post-apply scan.
 - **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, large or secret-like agent rule files, and advisory context-exclusion recommendations for bulky/sensitive local paths. Its `--top` cap applies to both context-like files and context-exclusion recommendations.
+- **Structural-waste doctor** is an opt-in read-only `context-guard-diet structural-waste` report for duplicate rule units, stale Python import candidates, unused skill candidates, excessive MCP/tool schema catalogs, and repeated file reads or duplicate tool calls in local JSON/JSONL logs. It does not mutate config, call the network, or print raw prompt/tool-input text; low-confidence import/skill findings are review prompts, not delete instructions.
 - **Large-read guard and symbol reader** guide the agent from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Artifact store** saves large sanitized command output under `.context-guard/artifacts` by default and returns compact receipts or exact requested slices. JSON receipts include line-numbered top errors, duplicate-line groups, and sanitized bounded suggested queries. In suggested `--lines START:END` queries, `--max-lines` is only the returned-line cap for that selected range, not a wider selector. `get` and `list` can also read legacy `.claude-token-optimizer/artifacts` receipts.
 - **Budgeted context packer** assembles prioritized local file evidence into a rendered byte-budgeted Markdown pack with included/partial/omitted source metadata, bounded `.context-guard/packs` receipts, exact sanitized `slice` commands when safe, and `retrieval_omitted_reason` when a path/root should not be echoed. The additive `auto` subcommand runs that recommendation and pack build in one step, and `auto --explain` adds compact deterministic local selection/build reasons without changing the manifest, pack body, receipt, or byte budget. `suggest` remains available to rank local query, diff, explicit file, and sanitized output/test-output signals into a build-compatible manifest without network, model, embedding, or provider-cost calls. Token counts are estimated `chars_div_4` proxies, not measured provider-token savings.
