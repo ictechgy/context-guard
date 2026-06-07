@@ -663,7 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--protected-policy",
         action="store_true",
-        help="emit opt-in protected-zone transform policy metadata; default compression output is unchanged",
+        help="add opt-in protected-zone transform policy metadata to --json/--metadata-only receipts; default content is unchanged",
     )
     parser.add_argument(
         "--metadata-only",

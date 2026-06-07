@@ -1539,9 +1539,10 @@ def section_ttl(section: dict[str, Any]) -> str:
     return "1h" if ttl in {"1h", "60m", "hour"} else "5m"
 
 
-PROTECTED_ALLOWED_TRANSFORMS = ["exact_dedupe", "structural_window", "line_truncate", "artifact_retrieval"]
-PROTECTED_DENIED_TRANSFORMS = ["semantic_compress", "paraphrase", "identifier_rewrite", "numeric_rewrite", "hash_rewrite", "path_rewrite"]
+PROTECTED_ALLOWED_TRANSFORMS = ["exact_dedupe", "structural_window", "line_truncate", "whitespace_normalize", "json_compact", "artifact_retrieval"]
+PROTECTED_DENIED_TRANSFORMS = ["semantic_compress", "paraphrase", "identifier_rewrite", "numeric_rewrite", "hash_rewrite", "path_rewrite", "quoted_literal_rewrite"]
 PROTECTED_ZONE_CLASS_RE = re.compile(r"[^a-z0-9_.:-]+")
+KNOWN_PROTECTED_CONTENT_TYPES = {"json", "diff", "log", "search", "code", "prose", "unknown"}
 
 
 def manifest_bool(value: Any) -> bool:
@@ -1562,6 +1563,12 @@ def protected_zone_classes(raw: dict[str, Any]) -> list[str]:
         items = []
     cleaned = sorted({PROTECTED_ZONE_CLASS_RE.sub("-", item.lower()).strip("-")[:48] for item in items if item})
     return [item for item in cleaned if item]
+
+
+def protected_content_type(raw: dict[str, Any]) -> str:
+    """Return a known content-type label without echoing raw manifest strings."""
+    value = str(raw.get("content_type") or raw.get("type") or "unknown").strip().lower()
+    return value if value in KNOWN_PROTECTED_CONTENT_TYPES else "unknown"
 
 
 def section_is_protected(raw: dict[str, Any], zone_classes: list[str]) -> bool:
@@ -1595,7 +1602,7 @@ def compile_command(args: argparse.Namespace) -> int:
             "tokens_estimated": safe_int(raw.get("tokens") or raw.get("estimated_tokens") or 0),
             "has_path": "path" in raw or "file" in raw,
             "protected": section_is_protected(raw, zone_classes),
-            "content_type": str(raw.get("content_type") or raw.get("type") or "unknown")[:40],
+            "content_type": protected_content_type(raw),
             "protected_zone_classes": zone_classes,
         }
         sections.append(sec)
@@ -1693,10 +1700,12 @@ def compile_command(args: argparse.Namespace) -> int:
             "sections": protected_policy_sections,
         },
         "transform_policy": {
-            "semantic_transforms_allowed": False,
-            "semantic_compress": False,
-            "allowed": PROTECTED_ALLOWED_TRANSFORMS,
-            "denied": PROTECTED_DENIED_TRANSFORMS,
+            "scope": "protected_sections" if protected_sections else "none",
+            "protected_sections_only": True,
+            "semantic_transforms_allowed": False if protected_sections else None,
+            "semantic_compress": False if protected_sections else None,
+            "allowed": PROTECTED_ALLOWED_TRANSFORMS if protected_sections else [],
+            "denied": PROTECTED_DENIED_TRANSFORMS if protected_sections else [],
             "large_protected_sections_use": "local_artifact_retrieval",
         },
         "local_artifact_retrieval": {

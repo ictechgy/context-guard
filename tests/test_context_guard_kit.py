@@ -640,6 +640,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertIn("volatile_prefix_before_stable_context", codes)
         self.assertIn("too_many_cache_breakpoints", codes)
         self.assertIn("use_local_artifact_retrieval", codes)
+        self.assertFalse(payload["protected_zone_policy"]["enabled"])
+        self.assertEqual(payload["protected_zone_policy"]["section_count"], 0)
+        self.assertEqual(payload["transform_policy"]["scope"], "none")
+        self.assertIsNone(payload["transform_policy"]["semantic_transforms_allowed"])
         self.assertFalse(payload["local_artifact_retrieval"]["replaces_provider_prompt_cache"])
         self.assertNotIn(sentinel, proc.stdout)
         self.assertNotIn("/tmp/private-token.txt", proc.stdout)
@@ -653,7 +657,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "ttl": "1h",
                     "volatile": True,
                     "protected": True,
-                    "content_type": "log",
+                    "content_type": "/tmp/private-protected.log",
                     "protected_zone_classes": ["path", "hash", "stack_frame"],
                     "bytes": 70000,
                     "content": sentinel,
@@ -688,9 +692,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(policy["section_count"], 2)
                 self.assertFalse(policy["semantic_compress"])
                 self.assertIn("artifact_retrieval", policy["allowed_transforms"])
+                self.assertIn("json_compact", policy["allowed_transforms"])
+                self.assertIn("quoted_literal_rewrite", policy["denied_transforms"])
                 protected_volatile = next(section for section in policy["sections"] if section["section_id"] == "protected-volatile-evidence")
+                self.assertEqual(protected_volatile["content_type"], "unknown")
                 self.assertEqual(protected_volatile["cache_ordering"], "volatile_tail")
                 self.assertTrue(protected_volatile["retrieval_required"])
+                self.assertEqual(payload["transform_policy"]["scope"], "protected_sections")
                 self.assertFalse(payload["transform_policy"]["semantic_transforms_allowed"])
                 self.assertFalse(payload["local_artifact_retrieval"]["replaces_provider_prompt_cache"])
                 codes = {finding["code"] for finding in payload["findings"]}
