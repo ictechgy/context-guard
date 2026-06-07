@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships as a Claude Code plugin first — install once, apply per project, reverse if needed. The same guardrails for noisy command output, large file reads, repeated failures, likely-secret values, and usage measurement extend to other agents through local helper commands and advisory brief-mode rule snippets.
+ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships as a Claude Code plugin first — install once, apply per project, reverse if needed. Guardrails cover trimmed output, symbol-level reads, repeated-failure nudges, secret-pattern redaction, and usage measurement, then extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
@@ -104,7 +104,7 @@ When you need a savings claim, measure it on your own tasks:
 - `context-guard cost preflight` estimates for Anthropic request JSON, followed by `context-guard cost observe` using provider usage fields (`cache_creation_input_tokens`, `cache_read_input_tokens`) after the call
 - matched successful baseline/variant runs from `context-guard-bench`
 - large tool/MCP catalogs versus `context-guard-tool-prune` top-k reports plus receipt retrieval
-- optional experimental lanes in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md), with fixture-only starter task/variant examples in [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md), measured with the same matched-task benchmark gates before any savings claim
+- optional experimental lanes in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md); fixture-only starters in [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md) use the same matched-task benchmark gates before any savings claim
 
 ## What ContextGuard does not do
 
@@ -129,11 +129,13 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
-| Budgeted context packer | Assembles prioritized local file evidence into a hard byte-budgeted Markdown pack, and can suggest a build-compatible manifest from local query, diff, file, and sanitized output signals. |
+| Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, and adds `--explain` for compact local selection reasons. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage and cache-friendliness hotspots, and records conservative before/after evidence. |
+
+### Cost guard key provisioning
 
 Cost guard creates its local HMAC key automatically at `.context-guard/cost-ledger/hmac.key`. If you provision that file yourself, it must contain exactly one canonical URL-safe base64 32-byte key with required padding and no trailing newline or whitespace. Reports never emit the key or raw prompt text, and the local ledger does not replace Anthropic/provider prompt caching.
 
@@ -200,6 +202,15 @@ Until the tap is published, use npm/npx or the Claude plugin install path above.
 
 Most users should start with `/context-guard:setup`. The helper commands below are useful for local testing, automation, or targeted debugging. The canonical command prefix is `context-guard-*`.
 
+### Health check before setup
+
+```bash
+context-guard doctor --root . --json
+context-guard setup --agent claude --scope user --verify --json
+```
+
+Both modes are read-only configuration checks. `doctor` reports recommended next commands, and `setup --verify` checks whether setup is complete without applying changes. With `--json`, the report is written to stdout.
+
 ### Scan context hygiene
 
 ```bash
@@ -223,7 +234,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
 ```
 
-Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. When a suggested `--lines START:END` query also includes `--max-lines`, that flag is only the returned-line cap for the selected range; it does not broaden the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. When `--max-lines` accompanies a `--lines START:END` selector, it caps lines returned within that range; it does not expand the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
 
 ### Build a budgeted context pack
 

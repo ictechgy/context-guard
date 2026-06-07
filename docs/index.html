@@ -301,7 +301,7 @@
           <p class="tagline">파일·로그·출력을 AI 컨텍스트에 들어가기 전에 줄입니다.</p>
           <p class="subtitle">
             ContextGuard는 불필요한 파일·로그·출력이 AI 에이전트 컨텍스트에 유입되기 전에 걸러내는 로컬 가드레일입니다.
-            Claude Code 플러그인으로 바로 시작하고, 다른 AI 코딩·도구 에이전트에도 같은 규칙을 적용할 수 있습니다.
+            Claude Code 플러그인으로 바로 시작하고, 적용 전에는 읽기 전용 점검으로 현재 상태를 확인하며, 다른 AI 코딩·도구 에이전트에도 같은 규칙을 적용할 수 있습니다.
           </p>
           <div class="cta-row">
             <a class="button primary" href="#setup">빠른 시작</a>
@@ -346,14 +346,14 @@
         <article class="card"><span class="icon">✦</span><h3>민감정보 가림</h3><p>에이전트 컨텍스트에 들어가기 전 토큰·키·비밀번호처럼 보이는 값을 가립니다.</p></article>
         <article class="card"><span class="icon">⌁</span><h3>대용량 파일 가드</h3><p>전체 파일 읽기 대신 검색, 심볼 구간, 작은 줄 범위 읽기를 안내합니다.</p></article>
         <article class="card"><span class="icon">▣</span><h3>로컬 로그 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
-        <article class="card"><span class="icon">⊡</span><h3>예산 기반 컨텍스트 팩</h3><p>우선순위 있는 로컬 파일을 바이트 예산 안의 Markdown 팩으로 조립하고, 생략 사유와 정확한 slice 명령을 함께 기록합니다.</p></article>
-        <article class="card"><span class="icon">◎</span><h3>컨텍스트 진단</h3><p>누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 찾습니다.</p></article>
+        <article class="card"><span class="icon">⊡</span><h3>예산 기반 컨텍스트 팩</h3><p>우선순위 있는 로컬 파일을 바이트 예산 안의 Markdown 팩으로 조립하고, <code>--explain</code>으로 짧은 로컬 선택 이유를 함께 남깁니다.</p></article>
+        <article class="card"><span class="icon">◎</span><h3>설치 전 상태 점검</h3><p><code>doctor</code>와 <code>setup --verify</code>로 변경 없이 누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 확인합니다.</p></article>
         <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량과 절감 근거를 확인합니다.</p></article>
-        <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>제한된 범위의 가림 처리된 segment hash로 자주 바뀌는 내용이 안정적인 프롬프트 앞부분을 흔드는지 점검합니다.</p></article>
+        <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>대화 기록의 프롬프트 배치를 점검해 캐시에 불리한 구성과 안정적인 prefix 후보를 알립니다.</p></article>
         <article class="card"><span class="icon">₩</span><h3>Anthropic 비용 가드</h3><p>호출 전 cache breakpoint별 위험과 낮음/중간/높음 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>안전한 텍스트 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
-        <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 가림 처리된 schema는 로컬 요약 기록로 다시 조회합니다.</p></article>
+        <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 가림 처리된 schema는 로컬 요약 기록으로 다시 조회합니다.</p></article>
       </div>
     </section>
 
@@ -405,7 +405,7 @@
         <article class="card step"><h3>Codex / npm</h3><p><code>npm install -g @ictechgy/context-guard</code><br><code>context-guard setup --agent codex --scope project --with-init --with-skill --plan</code><br><code>context-guard setup --agent codex --scope project --brief-mode standard --plan</code></p></article>
         <article class="card step"><h3>macOS / Homebrew</h3><p><code>brew tap ictechgy/contextguard</code><br><code>brew install context-guard</code><br>formula 공개 전에는 npm/npx를 사용합니다.</p></article>
       </div>
-      <p class="setup-note">기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 <code>--scope user</code>와 명시적인 <code>--agent</code>가 필요하며, 지원되는 쓰기는 백업과 되돌리기 기록을 남깁니다.</p>
+      <p class="setup-note">처음이라면 <code>context-guard doctor --root . --json</code>으로 현재 상태를 먼저 점검하세요. 기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 <code>--scope user</code>와 명시적인 <code>--agent</code>가 필요하며, 지원되는 쓰기는 백업과 되돌리기 기록을 남깁니다.</p>
     </section>
 
     <section class="shell">
@@ -427,7 +427,7 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
 ./plugins/context-guard/bin/context-guard-trim-output -- npm test
 
 <span class="comment"># 예산 기반 컨텍스트 팩</span>
-./plugins/context-guard/bin/context-guard-pack auto --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-pack auto --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain
 <span class="comment"># 또는 명시적인 두 단계:</span>
 ./plugins/context-guard/bin/context-guard-pack suggest --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
