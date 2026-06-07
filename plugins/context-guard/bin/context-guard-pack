@@ -110,6 +110,7 @@ IMPORT_PATH_RE = re.compile(
     r"from\s+(?P<pyfrom>\.*[A-Za-z_][\w.]*|\.+)\s+import|"
     r"import\s+(?P<pyimport>[A-Za-z_][\w.]*))"
 )
+PY_FROM_IMPORT_LINE_RE = re.compile(r"^\s*from\s+(?P<module>\.*[A-Za-z_][\w.]*|\.+)\s+import\s+(?P<names>[^\n#;]+)")
 
 
 @dataclass(frozen=True)
@@ -266,6 +267,13 @@ def repo_map_display_rel_path(rel: str) -> tuple[str, bool]:
     if repo_map_path_has_sensitive_evidence(normalized):
         return f"redacted-path#path:{sha256_text(normalized)[:12]}", True
     return display_rel_path(normalized)
+
+
+def repo_map_safe_raw_path_label(raw: str) -> str:
+    normalized = raw.replace("\\", "/")
+    if repo_map_path_has_sensitive_evidence(normalized):
+        return f"redacted-path#path:{sha256_text(normalized)[:12]}"
+    return safe_raw_path_label(normalized)
 
 
 def parse_line_range(value: object) -> LineRange | None:
@@ -1763,7 +1771,7 @@ def is_repo_map_text_path(path: str) -> bool:
 def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     rel, reason = lexical_rel(rel_path)
     if rel is None:
-        return None, {"path": safe_raw_path_label(rel_path), "reason": reason}
+        return None, {"path": repo_map_safe_raw_path_label(rel_path), "reason": reason}
     display, redacted_path = repo_map_display_rel_path(rel.as_posix())
     if not is_repo_map_text_path(display):
         return None, {"path": display, "reason": "unsupported_file_type"}
@@ -1993,24 +2001,41 @@ def resolve_import_target(raw_target: str, source_path: str, known_paths: set[st
     return None
 
 
+def python_from_import_targets(module_name: str, imported_names: str) -> list[str]:
+    targets = [module_name]
+    if module_name.strip("."):
+        return targets
+    for raw_name in imported_names.replace("(", " ").replace(")", " ").split(","):
+        name = raw_name.strip().split(" as ", 1)[0].strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", name):
+            continue
+        targets.append(f"{module_name}{name}")
+    return targets
+
+
 def collect_import_edges(records: list[dict[str, Any]]) -> list[dict[str, str]]:
     known = {str(record.get("path", "")) for record in records}
     edges: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for record in records:
         source = str(record.get("path", ""))
-        for match in IMPORT_PATH_RE.finditer(str(record.get("text", ""))):
-            raw_target = next((value for value in match.groupdict().values() if value), "")
-            target = resolve_import_target(raw_target, source, known)
-            if target is None or target == source:
-                continue
-            edge = (source, target)
-            if edge in seen:
-                continue
-            seen.add(edge)
-            edges.append({"from": source, "to": target})
-            if len(edges) >= MAX_REPO_MAP_FILES:
-                return edges
+        for line in str(record.get("text", "")).splitlines():
+            py_from_match = PY_FROM_IMPORT_LINE_RE.match(line)
+            if py_from_match:
+                raw_targets = python_from_import_targets(py_from_match.group("module"), py_from_match.group("names"))
+            else:
+                raw_targets = [next((value for value in match.groupdict().values() if value), "") for match in IMPORT_PATH_RE.finditer(line)]
+            for raw_target in raw_targets:
+                target = resolve_import_target(raw_target, source, known)
+                if target is None or target == source:
+                    continue
+                edge = (source, target)
+                if edge in seen:
+                    continue
+                seen.add(edge)
+                edges.append({"from": source, "to": target})
+                if len(edges) >= MAX_REPO_MAP_FILES:
+                    return edges
     return edges
 
 

@@ -4748,6 +4748,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         encoding="utf-8",
                     )
                     (root / "src" / "helper.py").write_text("def helper():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "src" / "pkg").mkdir()
+                    (root / "src" / "pkg" / "app.py").write_text(
+                        "from . import helper\n\n"
+                        "def pkg_entry():\n"
+                        "    return helper.pkg_helper()\n",
+                        encoding="utf-8",
+                    )
+                    (root / "src" / "pkg" / "helper.py").write_text("def pkg_helper():\n    return 'pkg-ok'\n", encoding="utf-8")
                     (root / "src" / "js-helper.ts").write_text("export default function helper(): string { return 'ok' }\n", encoding="utf-8")
                     (root / "src" / "util.ts").write_text(
                         "import helper from './js-helper'\n"
@@ -4797,6 +4805,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertGreaterEqual(repo_map["summary"]["graph_edges"], 1)
                     edges = {(item["from"], item["to"]) for item in repo_map["graph"]["edges"]}
                     self.assertIn(("src/app.py", "src/helper.py"), edges)
+                    self.assertIn(("src/pkg/app.py", "src/pkg/helper.py"), edges)
                     self.assertIn(("src/util.ts", "src/js-helper.ts"), edges)
                     retrieval = repo_map["retrieval"]
                     self.assertTrue(any(item.get("slice_cli", "").startswith("context-guard-pack slice --root .") for item in retrieval))
@@ -4896,6 +4905,13 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     for _case, (_rel_path, forbidden_fragments) in cases.items():
                         for fragment in forbidden_fragments:
                             self.assertNotIn(fragment, combined)
+
+                    module = load_python_script_module(script, f"context_pack_repo_map_rejected_redact_{PACK_SCRIPTS.index(script)}")
+                    record, omission = module.read_repo_map_text(root, "../https:/user:pass@example.invalid/db.py")
+                    self.assertIsNone(record)
+                    omission_text = json.dumps(omission, ensure_ascii=False, sort_keys=True)
+                    self.assertNotIn("user:pass", omission_text)
+                    self.assertIn("redacted-path#path:", omission_text)
 
     def test_context_pack_auto_explain_repo_map_omits_retrieval_for_secret_like_root_arg(self):
         root_arg = "https:/user:pass@example.invalid/repo"
