@@ -13,7 +13,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import queue
 import re
 import shlex
@@ -33,6 +33,8 @@ MAX_RUNNER_SUMMARY_ITEMS_LIMIT = 100
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
+DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES = 10_000_000
+MAX_ARTIFACT_RECEIPT_MAX_BYTES = 100_000_000
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -178,6 +180,166 @@ def load_line_sanitizer(show_paths: bool) -> object:
             continue
     diagnostic = "; ".join(load_errors) if load_errors else "strong sanitizer not found next to trim wrapper"
     return FallbackLineSanitizer(show_paths=show_paths, diagnostic=diagnostic)
+
+
+def load_artifact_store_module() -> object:
+    """Load the adjacent artifact store without importing by package name.
+
+    The plugin ships helper scripts as sibling executable files, so the trim
+    wrapper must resolve both source-tree (`context_escrow.py`) and packaged
+    (`context-guard-artifact`) names.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    load_errors: list[str] = []
+    for name in ("context_escrow.py", "context-guard-artifact", "claude-token-artifact"):
+        candidate = os.path.join(script_dir, name)
+        if not os.path.exists(candidate):
+            continue
+        try:
+            loader = importlib.machinery.SourceFileLoader(f"_context_guard_artifact_{os.getpid()}", candidate)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            if spec is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+        except Exception as exc:
+            load_errors.append(f"{os.path.basename(candidate)} failed to load: {exc.__class__.__name__}: {exc}")
+            continue
+    diagnostic = "; ".join(load_errors) if load_errors else "artifact store not found next to trim wrapper"
+    raise RuntimeError(diagnostic)
+
+
+def store_sanitized_artifact_receipt(
+    *,
+    sanitized_text: str,
+    command: list[str],
+    args: argparse.Namespace,
+    line_sanitizer: object,
+    redacted_lines: int,
+) -> dict[str, object]:
+    """Store exact sanitized output using the existing artifact receipt format."""
+    artifact = load_artifact_store_module()
+    max_bytes = bounded_int(
+        getattr(args, "artifact_max_bytes", DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES),
+        DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES,
+        1,
+        MAX_ARTIFACT_RECEIPT_MAX_BYTES,
+    )
+    content_bytes = len(sanitized_text.encode("utf-8", errors="replace"))
+    if content_bytes > max_bytes:
+        return {
+            "stored": False,
+            "error": "sanitized_output_exceeds_artifact_max_bytes",
+            "bytes": content_bytes,
+            "max_bytes": max_bytes,
+            "exact_reexpand": {"available": False, "reason": "artifact size cap exceeded"},
+        }
+
+    directory = artifact.normalize_allowed_first_absolute_symlink(Path(args.artifact_dir).expanduser())
+    content_sha = hashlib.sha256(sanitized_text.encode("utf-8", errors="replace")).hexdigest()
+    preview = command_preview(command, line_sanitizer, args.max_line_chars)
+    id_basis = json.dumps(
+        {
+            "content_sha256": content_sha,
+            "command_preview": preview,
+            "input_truncated": False,
+            "producer": "context-guard-trim-output",
+        },
+        sort_keys=True,
+    )
+    artifact_id = hashlib.sha256(id_basis.encode("utf-8")).hexdigest()[:20]
+    content_path, meta_path = artifact.artifact_paths(directory, artifact_id)
+    total_lines = sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0)
+    content_type = artifact.classify_content_type(sanitized_text)
+    strategy = artifact.recommended_strategy(content_type)
+    metadata: dict[str, object] = {
+        "artifact_id": artifact_id,
+        "created_at": int(time.time()),
+        "command_preview": preview,
+        "content_type": content_type,
+        "input": {
+            "bytes_read": content_bytes,
+            "truncated": False,
+            "max_bytes": max_bytes,
+            "source": "context-guard-trim-output:sanitized-output",
+        },
+        "stored_output": {
+            "bytes": content_bytes,
+            "lines": total_lines,
+            "sha256": content_sha,
+            "content_file": content_path.name,
+            "metadata_file": meta_path.name,
+            "scope": "sanitized_full_output",
+        },
+        "digest": artifact.build_digest(sanitized_text, artifact_id=artifact_id, redacted_lines=redacted_lines),
+        "retrieval": {
+            "strategy": strategy,
+            "deterministic": True,
+            "hints": artifact.build_retrieval_hints(
+                artifact_id,
+                sanitized_text,
+                content_type=content_type,
+                strategy=strategy,
+                total_lines=total_lines,
+            ),
+        },
+    }
+    artifact.shrink_digest_for_metadata_cap(metadata)
+    artifact.write_private_text(content_path, sanitized_text)
+    artifact.write_private_text(meta_path, artifact.metadata_json_text(metadata))
+    receipt = artifact.receipt_for(metadata)
+    query_line_cap = int(getattr(artifact, "MAX_QUERY_LINES", 5_000))
+    query_char_cap = 1_000_000
+    content_chars = len(sanitized_text)
+    exact_reexpand: dict[str, object] = {
+        "available": False,
+        "scope": "sanitized_full_output",
+        "sha256": content_sha,
+        "bytes": content_bytes,
+        "lines": total_lines,
+        "reason": "artifact query cap exceeded; use retrieval hints for exact slices",
+    }
+    if total_lines <= query_line_cap and content_chars <= query_char_cap:
+        raw_artifact_dir = str(getattr(args, "artifact_dir", ".context-guard/artifacts"))
+        dir_flags = ""
+        if raw_artifact_dir != ".context-guard/artifacts":
+            dir_flags = f" --dir {shlex.quote(raw_artifact_dir)}"
+        line_flags = ""
+        if total_lines > 0:
+            line_flags = f" --lines 1:{total_lines} --max-lines {max(1, total_lines)}"
+        exact_reexpand = {
+            "available": True,
+            "scope": "sanitized_full_output",
+            "sha256": content_sha,
+            "bytes": content_bytes,
+            "lines": total_lines,
+            "cli": (
+                f"context-guard-artifact{dir_flags} get {artifact_id}{line_flags} "
+                f"--max-chars {max(1, content_chars)}"
+            ),
+        }
+    receipt["exact_reexpand"] = exact_reexpand
+    return receipt
+
+
+def capture_sanitized_artifact_line(
+    *,
+    capture_enabled: bool,
+    sanitized_line: str,
+    artifact_lines: list[str],
+    capture_bytes: int,
+    capture_overflow: bool,
+    max_bytes: int,
+) -> tuple[int, bool]:
+    if not capture_enabled or capture_overflow:
+        return capture_bytes, capture_overflow
+    source_bytes = len(sanitized_line.encode("utf-8", errors="replace"))
+    if capture_bytes + source_bytes <= max_bytes:
+        artifact_lines.append(sanitized_line)
+        return capture_bytes + source_bytes, False
+    artifact_lines.clear()
+    return capture_bytes, True
 
 
 def unique_keep_order(lines: Iterable[str]) -> list[str]:
@@ -557,55 +719,106 @@ def build_digest_payload(
     return payload
 
 
+def markdown_artifact_receipt_lines(artifact_receipt: dict[str, object]) -> list[str]:
+    lines = [
+        "- artifact_receipt: "
+        f"stored={str(artifact_receipt.get('stored')).lower()} "
+        f"id={artifact_receipt.get('artifact_id') or artifact_receipt.get('error')}\n"
+    ]
+    exact = artifact_receipt.get("exact_reexpand")
+    if isinstance(exact, dict) and exact.get("cli"):
+        lines.append(f"- exact_reexpand: `{exact.get('cli')}`\n")
+    return lines
+
+
+def compact_markdown_artifact_receipt(payload: dict[str, object], max_chars: int) -> str:
+    artifact_receipt = payload.get("artifact_receipt")
+    if not isinstance(artifact_receipt, dict) or max_chars <= 0:
+        return ""
+
+    full = "".join(markdown_artifact_receipt_lines(artifact_receipt))
+    if len(full) <= max_chars:
+        return full
+
+    artifact_id = artifact_receipt.get("artifact_id") or artifact_receipt.get("error")
+    stored = str(artifact_receipt.get("stored")).lower()
+    exact = artifact_receipt.get("exact_reexpand")
+    exact_available = ""
+    if isinstance(exact, dict) and "available" in exact:
+        exact_available = f" exact_available={str(exact.get('available')).lower()}"
+
+    candidates = [
+        f"- artifact_receipt: stored={stored} id={artifact_id}{exact_available}; raise --max-chars for full exact_reexpand\n",
+        f"- artifact_receipt: stored={stored} id={artifact_id}{exact_available}\n",
+        f"- artifact_receipt: id={artifact_id}\n",
+    ]
+    for candidate in candidates:
+        if len(candidate) <= max_chars:
+            return candidate
+    return ""
+
+
 def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
     raw_output = payload.get("raw_output", {})
     budget = payload.get("budget", {})
     lines: list[str] = []
+    non_receipt_lines: list[str] = []
+
+    def add(line: str, *, receipt: bool = False) -> None:
+        lines.append(line)
+        if not receipt:
+            non_receipt_lines.append(line)
+
     lines.append("[context-guard-kit] semantic digest\n")
-    lines.append(f"- status: {payload.get('status')}\n")
-    lines.append(f"- exit_code: {payload.get('exit_code')}\n")
-    lines.append(f"- timed_out: {str(payload.get('timed_out')).lower()}\n")
+    non_receipt_lines.append("[context-guard-kit] semantic digest\n")
+    add(f"- status: {payload.get('status')}\n")
+    add(f"- exit_code: {payload.get('exit_code')}\n")
+    add(f"- timed_out: {str(payload.get('timed_out')).lower()}\n")
     if isinstance(raw_output, dict):
-        lines.append(
+        add(
             "- raw_output: "
             f"{raw_output.get('lines')} lines/{raw_output.get('chars')} chars"
             f" (visible={raw_output.get('visible_chars')}, truncated={str(raw_output.get('truncated')).lower()})\n"
         )
         if raw_output.get("line_capped"):
-            lines.append(f"- line_capped: true\n")
+            add(f"- line_capped: true\n")
         if raw_output.get("redacted_lines"):
-            lines.append(f"- redacted_lines: {raw_output.get('redacted_lines')}\n")
+            add(f"- redacted_lines: {raw_output.get('redacted_lines')}\n")
     if isinstance(budget, dict):
-        lines.append(
+        add(
             "- budget: "
             f"{budget.get('max_lines')} lines/{budget.get('max_chars')} chars/"
             f"line={budget.get('max_line_chars')} chars\n"
         )
     if payload.get("command_preview"):
-        lines.append(f"- command: `{payload.get('command_preview')}`\n")
+        add(f"- command: `{payload.get('command_preview')}`\n")
+    artifact_receipt = payload.get("artifact_receipt")
+    if isinstance(artifact_receipt, dict):
+        for line in markdown_artifact_receipt_lines(artifact_receipt):
+            add(line, receipt=True)
     failure_signature = payload.get("failure_signature")
     if isinstance(failure_signature, dict):
-        lines.append(
+        add(
             "- failure_signature: "
             f"{failure_signature.get('hash')} ({failure_signature.get('source')})\n"
         )
 
     runner_summary = payload.get("runner_failure_summary")
     if isinstance(runner_summary, dict) and runner_summary:
-        lines.append("\n## runner_failure_summary\n")
+        add("\n## runner_failure_summary\n")
         for runner, items in sorted(runner_summary.items()):
-            lines.append(f"- runner={runner}\n")
+            add(f"- runner={runner}\n")
             if isinstance(items, list):
                 for item in items:
-                    lines.append(f"  - {item}\n")
+                    add(f"  - {item}\n")
 
     duplicate_line_groups = payload.get("duplicate_line_groups")
     if isinstance(duplicate_line_groups, list) and duplicate_line_groups:
-        lines.append("\n## duplicate_line_groups\n")
+        add("\n## duplicate_line_groups\n")
         for group in duplicate_line_groups:
             if not isinstance(group, dict):
                 continue
-            lines.append(
+            add(
                 "- "
                 f"count={group.get('count')} "
                 f"first_line={group.get('first_line')} "
@@ -620,9 +833,9 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
     ]:
         values = payload.get(key)
         if isinstance(values, list) and values:
-            lines.append(f"\n## {title}\n")
+            add(f"\n## {title}\n")
             for value in values:
-                lines.append(f"- {value}\n")
+                add(f"- {value}\n")
 
     text = "".join(lines)
     output, capped = cap_text(text, max_chars)
@@ -631,6 +844,21 @@ def render_digest_markdown(payload: dict[str, object], max_chars: int) -> str:
     marker = "[context-guard-kit] digest capped by --max-chars.\n"
     if max_chars <= len(marker):
         return marker[:max_chars]
+    reserved_receipt = compact_markdown_artifact_receipt(payload, max_chars - len(marker))
+    if reserved_receipt:
+        head_budget = max_chars - len(marker) - len(reserved_receipt)
+        head = ""
+        if head_budget > 0:
+            non_receipt_text = "".join(non_receipt_lines)
+            text_cap_marker = f"\n[context-guard-kit] text capped: {len(non_receipt_text)} chars total\n"
+            if len(non_receipt_text) <= head_budget:
+                head = non_receipt_text
+            elif head_budget > len(text_cap_marker):
+                keep = head_budget - len(text_cap_marker)
+                head = non_receipt_text[:keep].rstrip() + text_cap_marker
+            if head and not head.endswith("\n"):
+                head += "\n"
+        return head + reserved_receipt + marker
     output, _ = cap_text(text, max_chars - len(marker))
     return output + marker
 
@@ -661,6 +889,35 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
             if len(output) <= max_chars:
                 return output
         return dumps(candidates[-1])
+
+    def compact_artifact_receipt(*, include_exact_reexpand: bool) -> dict[str, object] | None:
+        artifact_receipt = payload.get("artifact_receipt")
+        if not isinstance(artifact_receipt, dict):
+            return None
+        compact: dict[str, object] = {}
+        for key in ("stored", "artifact_id", "error", "bytes", "max_bytes"):
+            if key in artifact_receipt:
+                compact[key] = artifact_receipt[key]
+        stored_output = artifact_receipt.get("stored_output")
+        if isinstance(stored_output, dict):
+            compact["stored_output"] = {
+                key: stored_output[key]
+                for key in ("scope", "bytes", "lines", "sha256")
+                if key in stored_output
+            }
+        exact = artifact_receipt.get("exact_reexpand")
+        if include_exact_reexpand and isinstance(exact, dict):
+            compact["exact_reexpand"] = {
+                key: exact[key]
+                for key in ("available", "scope", "sha256", "bytes", "lines", "cli", "reason")
+                if key in exact
+            }
+        return compact
+
+    def attach_artifact_receipt(candidate: dict[str, object], artifact_receipt: dict[str, object] | None) -> dict[str, object]:
+        if artifact_receipt is not None:
+            candidate["artifact_receipt"] = artifact_receipt
+        return candidate
 
     output = dumps(payload)
     if len(output) <= max_chars:
@@ -696,37 +953,57 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
             "exit_code": failure_signature.get("exit_code"),
             "timed_out": failure_signature.get("timed_out"),
         }
+    compact_receipt = compact_artifact_receipt(include_exact_reexpand=True)
+    minimal_receipt = compact_artifact_receipt(include_exact_reexpand=False)
 
     return first_fitting(
         [
-            {
-                "tool": payload.get("tool"),
-                "digest_version": payload.get("digest_version"),
-                "digest_capped": True,
-                "status": payload.get("status"),
-                "exit_code": payload.get("exit_code"),
-                "timed_out": payload.get("timed_out"),
-                "failure_signature": compact_signature,
-                "raw_output": payload.get("raw_output"),
-                "budget": payload.get("budget"),
-                "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
-            },
-            {
-                "digest_capped": True,
-                "status": payload.get("status"),
-                "exit_code": payload.get("exit_code"),
-                "timed_out": payload.get("timed_out"),
-                "failure_signature": compact_signature,
-                "raw_output": payload.get("raw_output"),
-                "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
-            },
-            {
-                "digest_capped": True,
-                "status": payload.get("status"),
-                "exit_code": payload.get("exit_code"),
-                "timed_out": payload.get("timed_out"),
-                "failure_signature": compact_signature,
-            },
+            attach_artifact_receipt(
+                {
+                    "tool": payload.get("tool"),
+                    "digest_version": payload.get("digest_version"),
+                    "digest_capped": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "timed_out": payload.get("timed_out"),
+                    "failure_signature": compact_signature,
+                    "raw_output": payload.get("raw_output"),
+                    "budget": payload.get("budget"),
+                    "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
+                },
+                compact_receipt,
+            ),
+            attach_artifact_receipt(
+                {
+                    "digest_capped": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "timed_out": payload.get("timed_out"),
+                    "failure_signature": compact_signature,
+                    "raw_output": payload.get("raw_output"),
+                    "next_queries": ["Raise --max-chars or inspect a narrower command for details."],
+                },
+                compact_receipt,
+            ),
+            attach_artifact_receipt(
+                {
+                    "digest_capped": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "timed_out": payload.get("timed_out"),
+                    "failure_signature": compact_signature,
+                },
+                compact_receipt,
+            ),
+            attach_artifact_receipt(
+                {
+                    "digest_capped": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "timed_out": payload.get("timed_out"),
+                },
+                minimal_receipt,
+            ),
             {"digest_capped": True},
         ]
     )
@@ -931,9 +1208,40 @@ def main() -> int:
             "(default: off; formats: markdown, json)"
         ),
     )
+    parser.add_argument(
+        "--artifact-receipt",
+        action="store_true",
+        help=(
+            "with --digest, store the exact sanitized full output as a local "
+            "context-guard-artifact receipt and include re-expand metadata"
+        ),
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        default=".context-guard/artifacts",
+        help="artifact receipt directory used by --artifact-receipt (default: .context-guard/artifacts)",
+    )
+    parser.add_argument(
+        "--artifact-max-bytes",
+        type=int,
+        default=DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES,
+        help=(
+            "maximum sanitized output bytes eligible for --artifact-receipt "
+            f"(default: {DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES}, max: {MAX_ARTIFACT_RECEIPT_MAX_BYTES})"
+        ),
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     normalize_budgets(args)
+    args.artifact_max_bytes = bounded_int(
+        args.artifact_max_bytes,
+        DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES,
+        1,
+        MAX_ARTIFACT_RECEIPT_MAX_BYTES,
+    )
+    if args.artifact_receipt and args.digest == "off":
+        print("trim_command_output.py: --artifact-receipt requires --digest markdown or --digest json", file=sys.stderr)
+        return 2
 
     command = args.command
     if command and command[0] == "--":
@@ -971,6 +1279,9 @@ def main() -> int:
     line_sanitizer = load_line_sanitizer(args.show_paths)
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
+    artifact_lines: list[str] = []
+    artifact_capture_bytes = 0
+    artifact_capture_overflow = False
 
     if proc.stdout is None:
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
@@ -987,6 +1298,14 @@ def main() -> int:
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
         if redacted:
             redacted_lines += 1
+        artifact_capture_bytes, artifact_capture_overflow = capture_sanitized_artifact_line(
+            capture_enabled=args.artifact_receipt,
+            sanitized_line=visible_source,
+            artifact_lines=artifact_lines,
+            capture_bytes=artifact_capture_bytes,
+            capture_overflow=artifact_capture_overflow,
+            max_bytes=args.artifact_max_bytes,
+        )
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
@@ -1009,6 +1328,14 @@ def main() -> int:
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
         if redacted:
             redacted_lines += 1
+        artifact_capture_bytes, artifact_capture_overflow = capture_sanitized_artifact_line(
+            capture_enabled=args.artifact_receipt,
+            sanitized_line=visible_source,
+            artifact_lines=artifact_lines,
+            capture_bytes=artifact_capture_bytes,
+            capture_overflow=artifact_capture_overflow,
+            max_bytes=args.artifact_max_bytes,
+        )
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
@@ -1040,6 +1367,30 @@ def main() -> int:
             line_sanitizer=line_sanitizer,
             duplicate_line_groups=duplicate_tracker.as_list(),
         )
+        if args.artifact_receipt:
+            if artifact_capture_overflow:
+                payload["artifact_receipt"] = {
+                    "stored": False,
+                    "error": "sanitized_output_exceeds_artifact_max_bytes",
+                    "max_bytes": args.artifact_max_bytes,
+                    "exact_reexpand": {"available": False, "reason": "artifact size cap exceeded"},
+                }
+            else:
+                try:
+                    payload["artifact_receipt"] = store_sanitized_artifact_receipt(
+                        sanitized_text="".join(artifact_lines),
+                        command=command,
+                        args=args,
+                        line_sanitizer=line_sanitizer,
+                        redacted_lines=redacted_lines,
+                    )
+                except Exception as exc:
+                    payload["artifact_receipt"] = {
+                        "stored": False,
+                        "error": "artifact_receipt_unavailable",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                        "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
+                    }
         if args.digest == "json":
             sys.stdout.write(render_digest_json(payload, args.max_chars))
         else:

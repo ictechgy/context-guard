@@ -5303,6 +5303,233 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("sanitizer fallback active", proc.stderr)
                     self.assertIn(expected_stderr, proc.stderr)
 
+    def test_trim_digest_artifact_receipt_exactly_reexpands_sanitized_output(self):
+        secret = "ghp_" + ("A" * 36)
+        code = (
+            "print('line 1')\n"
+            f"print('API_TOKEN={secret}')\n"
+            "print('ERROR bad widget')\n"
+        )
+        expected_sanitized = "line 1\nAPI_TOKEN=[REDACTED]\nERROR bad widget\n"
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                artifact_script = ARTIFACT_SCRIPTS[index]
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--max-lines",
+                            "2",
+                            "--max-chars",
+                            "50000",
+                            "--digest",
+                            "json",
+                            "--artifact-receipt",
+                            "--artifact-dir",
+                            str(artifact_dir),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertNotIn(secret, proc.stdout)
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["raw_output"]["truncated"])
+                    receipt = data["artifact_receipt"]
+                    self.assertTrue(receipt["stored"])
+                    self.assertTrue(receipt["exact_reexpand"]["available"])
+                    artifact_id = receipt["artifact_id"]
+                    self.assertRegex(artifact_id, r"^[a-f0-9]{20}$")
+                    stored = receipt["stored_output"]
+                    self.assertEqual(stored["scope"], "sanitized_full_output")
+                    self.assertEqual(stored["bytes"], len(expected_sanitized.encode("utf-8")))
+                    self.assertEqual(stored["sha256"], hashlib.sha256(expected_sanitized.encode("utf-8")).hexdigest())
+                    self.assertTrue(receipt["exact_reexpand"]["cli"].startswith("context-guard-artifact "))
+                    self.assertIn("--dir", receipt["exact_reexpand"]["cli"])
+                    self.assertIn(str(artifact_dir), receipt["exact_reexpand"]["cli"])
+                    self.assertIn("--lines 1:3", receipt["exact_reexpand"]["cli"])
+                    self.assertIn("--max-lines 3", receipt["exact_reexpand"]["cli"])
+
+                    content_path = artifact_dir / f"{artifact_id}.txt"
+                    metadata_path = artifact_dir / f"{artifact_id}.json"
+                    self.assertEqual(stat.S_IMODE(content_path.stat().st_mode), 0o600)
+                    self.assertEqual(stat.S_IMODE(metadata_path.stat().st_mode), 0o600)
+                    self.assertEqual(content_path.read_text(encoding="utf-8"), expected_sanitized)
+                    self.assertNotIn(secret, metadata_path.read_text(encoding="utf-8"))
+
+                    query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(artifact_script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--json",
+                            "--max-chars",
+                            "1000",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    query_data = json.loads(query.stdout)
+                    self.assertEqual(query_data["content"], expected_sanitized)
+                    self.assertEqual(query_data["stored_output"]["sha256"], stored["sha256"])
+                    self.assertNotIn(secret, query.stdout)
+
+                    emitted_parts = shlex.split(receipt["exact_reexpand"]["cli"])
+                    emitted_query = subprocess.run(
+                        [sys.executable, str(artifact_script), *emitted_parts[1:]],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(emitted_query.stdout, expected_sanitized)
+                    self.assertNotIn(secret, emitted_query.stdout)
+
+    def test_trim_artifact_receipt_requires_digest_mode(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(KIT_DIR / "trim_command_output.py"),
+                "--artifact-receipt",
+                "--",
+                sys.executable,
+                "-c",
+                "print('ok')",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--artifact-receipt requires --digest", proc.stderr)
+
+    def test_trim_artifact_receipt_respects_max_bytes_cap(self):
+        code = "print('first line')\nprint('second line')\n"
+        for script in TRIM_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--max-chars",
+                            "50000",
+                            "--digest",
+                            "json",
+                            "--artifact-receipt",
+                            "--artifact-dir",
+                            str(artifact_dir),
+                            "--artifact-max-bytes",
+                            "5",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    receipt = data["artifact_receipt"]
+                    self.assertFalse(receipt["stored"])
+                    self.assertEqual(receipt["error"], "sanitized_output_exceeds_artifact_max_bytes")
+                    self.assertFalse(receipt["exact_reexpand"]["available"])
+                    self.assertFalse(artifact_dir.exists())
+
+    def test_trim_artifact_receipt_survives_tight_json_budget(self):
+        code = "for i in range(100): print('ERROR noisy line ' + str(i) + ' ' + ('x' * 120))\n"
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                artifact_script = ARTIFACT_SCRIPTS[index]
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "custom artifacts"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--max-chars",
+                            "1000",
+                            "--digest",
+                            "json",
+                            "--artifact-receipt",
+                            "--artifact-dir",
+                            str(artifact_dir),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertLessEqual(len(proc.stdout), 1000)
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["digest_capped"])
+                    receipt = data["artifact_receipt"]
+                    self.assertTrue(receipt["stored"])
+                    self.assertRegex(receipt["artifact_id"], r"^[a-f0-9]{20}$")
+                    self.assertTrue(receipt["exact_reexpand"]["available"])
+                    emitted_parts = shlex.split(receipt["exact_reexpand"]["cli"])
+                    emitted_query = subprocess.run(
+                        [sys.executable, str(artifact_script), *emitted_parts[1:]],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("ERROR noisy line 99", emitted_query.stdout)
+
+    def test_trim_artifact_receipt_survives_tight_markdown_budget(self):
+        code = "for i in range(50): print('ERROR noisy line ' + str(i) + ' ' + ('x' * 100))\n"
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                artifact_script = ARTIFACT_SCRIPTS[index]
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--max-chars",
+                            "500",
+                            "--digest",
+                            "markdown",
+                            "--artifact-receipt",
+                            "--artifact-dir",
+                            str(artifact_dir),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            code,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertLessEqual(len(proc.stdout), 500)
+                    self.assertIn("digest capped", proc.stdout)
+                    self.assertRegex(proc.stdout, r"artifact_receipt: stored=true id=[a-f0-9]{20}")
+                    match = re.search(r"- exact_reexpand: `(.*?)`", proc.stdout)
+                    self.assertIsNotNone(match)
+                    emitted_parts = shlex.split(match.group(1))
+                    emitted_query = subprocess.run(
+                        [sys.executable, str(artifact_script), *emitted_parts[1:]],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("ERROR noisy line 49", emitted_query.stdout)
+
     def test_trim_missing_command_returns_clean_127(self):
         proc = subprocess.run(
             [sys.executable, str(KIT_DIR / "trim_command_output.py"), "--", "definitely-not-a-real-command"],
