@@ -436,10 +436,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         )
                         self.assertEqual(proc.returncode, 7)
                         self.assertEqual(proc.stdout, f"PROTECTED-OUT-{exe.name}\n")
-                        self.assertIn(f"PROTECTED-ERR-{exe.name}\n", proc.stderr)
-                        report = json.loads(proc.stderr.strip().splitlines()[-1])
-                        self.assertEqual(report["reason"], "protected-nonzero")
-                        self.assertEqual(report["filter_id"], f"hide-{exe.name}")
+                        self.assertEqual(proc.stderr, f"PROTECTED-ERR-{exe.name}\n")
 
                         raw_proc = subprocess.run(
                             [
@@ -508,10 +505,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         )
                         self.assertEqual(proc.returncode, 9)
                         self.assertEqual(proc.stdout, f"WRAPPER-OUT-{exe.name}\n")
-                        self.assertIn(f"WRAPPER-ERR-{exe.name}\n", proc.stderr)
-                        report = json.loads(proc.stderr.strip().splitlines()[-1])
-                        self.assertEqual(report["reason"], "protected-nonzero")
-                        self.assertEqual(report["filter_id"], f"hide-wrapper-{exe.name}")
+                        self.assertEqual(proc.stderr, f"WRAPPER-ERR-{exe.name}\n")
 
     def test_context_filter_dispatcher_help_routes_to_helper(self):
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):

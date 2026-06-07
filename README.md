@@ -332,7 +332,7 @@ JSON
 ./plugins/context-guard/bin/context-guard-filter run --config .context-guard/filter-dsl.json -- git status --short
 ```
 
-`context-guard-filter` is an opt-in local helper for user-owned JSON filter files; it does not install default filters or change hooks. Invalid configs, no-match commands, filtering errors, empty filtered output, and protected `git`/test/lint/`gh` command failures pass the original command stdout/stderr and exit code through. In filtered mode, line rules apply to combined stdout+stderr and write the filtered result to stdout; passthrough mode preserves stdout/stderr streams. `run --json-report` writes filter diagnostics to stderr so stdout remains command/filter output. Treat filtered byte reductions as local presentation changes, not hosted token/cost savings claims.
+`context-guard-filter` is an opt-in local helper for user-owned JSON filter files; it does not install default filters or change hooks. Invalid configs, no-match commands, filtering errors, empty filtered output, and protected `git`/test/lint/`gh` command failures pass the original command stdout/stderr and exit code through. In filtered mode, line rules apply to combined stdout+stderr and write the filtered result to stdout; passthrough mode preserves stdout/stderr streams. `run --json-report` writes filter diagnostics to stderr so stdout remains command/filter output; protected nonzero passthrough suppresses that report to keep stderr raw. Treat filtered byte reductions as local presentation changes, not hosted token/cost savings claims.
 
 ### Audit local transcript usage
 

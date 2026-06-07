@@ -348,9 +348,11 @@ def run_command(argv: list[str], timeout_seconds: int) -> tuple[int, str, str, b
 
 
 def emit_run_report(args: argparse.Namespace, payload: dict[str, Any]) -> None:
+    if payload.get("reason") == "protected-nonzero":
+        return
     if args.json_report:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)
-    elif payload.get("decision") == "passthrough" and payload.get("reason") not in {"no-match", "protected-nonzero", "nonzero-passthrough"}:
+    elif payload.get("decision") == "passthrough" and payload.get("reason") not in {"no-match", "nonzero-passthrough"}:
         print(f"{TOOL_NAME}: passthrough: {payload.get('reason')}", file=sys.stderr)
 
 
@@ -425,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(func=cmd_validate)
     run = sub.add_parser("run", help="run a command and apply the first matching safe filter")
     run.add_argument("--config", required=True, help="path to user-owned filter JSON")
-    run.add_argument("--json-report", action="store_true", help="emit filter decision JSON to stderr")
+    run.add_argument("--json-report", action="store_true", help="emit filter decision JSON to stderr; protected nonzero passthrough suppresses reports to preserve raw stderr")
     run.add_argument("--max-capture-bytes", type=int, default=DEFAULT_MAX_CAPTURE_BYTES)
     run.add_argument("--max-line-chars", type=int, default=DEFAULT_MAX_LINE_CHARS)
     run.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
