@@ -1,0 +1,10 @@
+[
+  {
+    "name": "baseline_uncompressed_fixture",
+    "extra_args": []
+  },
+  {
+    "name": "fixture_only_learned_compression_candidate",
+    "extra_args": []
+  }
+]

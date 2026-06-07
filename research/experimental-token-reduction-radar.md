@@ -73,4 +73,5 @@ Recommended first experiment: document how to record self-hosted latency/memory 
 
 ## Current status
 
-This radar is intentionally documentation-only. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, and benchmark evidence. Future experiments must pass the gates above before becoming product features.
+This radar is intentionally documentation-only. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, and benchmark evidence. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers or hosted API savings evidence.
+Future experiments must pass the gates above before becoming product features.

@@ -52,7 +52,7 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 `benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
 
-`../research/experimental-token-reduction-radar.md`는 learned compression, multimodal crop/OCR/visual-token pruning, self-hosted KV/latent inference optimization 같은 선택적 미래 실험을 문서화한 gate입니다. 이 radar는 runtime helper가 아니며, hosted API token/cost 절감을 보장하지 않습니다. hosted API token/cost 절감 주장은 provider가 측정한 matched-task 근거가 있을 때만 허용합니다.
+`../research/experimental-token-reduction-radar.md`는 learned compression, multimodal crop/OCR/visual-token pruning, self-hosted KV/latent inference optimization 같은 선택적 미래 실험을 문서화한 gate입니다. `../docs/experimental-benchmark-fixtures.md`에는 fixture-only task/variant 시작 예시가 있습니다. 이 radar와 fixture는 runtime helper가 아니며, hosted API token/cost 절감을 보장하지 않습니다. hosted API token/cost 절감 주장은 provider가 측정한 matched-task 근거가 있을 때만 허용합니다.
 
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 시 안전하도록 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
 대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 노출됩니다. JSON summary/feasibility 출력의 `cache_friendliness`는 제한된 정제 segment hash로 안정적인 prefix와 volatile prefix/tail 신호를 비교하는 휴리스틱입니다. 원문 prompt text는 출력하지 않고, provider cache token field는 ContextGuard가 만든 토큰 절감 증거가 아니라 별도 진단 텔레메트리로 해석하세요.

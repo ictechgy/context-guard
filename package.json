@@ -56,6 +56,8 @@
     "docs/cache-diagnostics.example.json",
     "docs/benchmark-workflows/*.example.json",
     "docs/benchmark-workflow-examples.md",
+    "docs/benchmark-fixtures/*.example.json",
+    "docs/experimental-benchmark-fixtures.md",
     "packaging/homebrew/context-guard.rb.template"
   ],
   "engines": {
