@@ -48,6 +48,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "context-guard-tool-prune": {"args": ["--help"], "mode": "text"},
     "context-guard-diet": {"args": ["--help"], "mode": "text"},
     "context-guard-failed-nudge": {"args": [], "mode": "hook-json"},
+    "context-guard-filter": {"args": ["--help"], "mode": "text"},
     "context-guard-guard-read": {"args": [], "mode": "hook-json"},
     "context-guard-rewrite-bash": {"args": [], "mode": "hook-json"},
     "context-guard-setup": {"args": ["--help"], "mode": "text"},

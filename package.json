@@ -19,6 +19,7 @@
     "context-guard-audit": "plugins/context-guard/bin/context-guard-audit",
     "context-guard-trim-output": "plugins/context-guard/bin/context-guard-trim-output",
     "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",
+    "context-guard-filter": "plugins/context-guard/bin/context-guard-filter",
     "context-guard-artifact": "plugins/context-guard/bin/context-guard-artifact",
     "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
     "context-guard-tool-prune": "plugins/context-guard/bin/context-guard-tool-prune",

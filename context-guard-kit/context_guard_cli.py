@@ -27,6 +27,7 @@ HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "trim": ("context-guard-trim-output",),
     "sanitize-output": ("context-guard-sanitize-output",),
     "sanitize": ("context-guard-sanitize-output",),
+    "filter": ("context-guard-filter",),
     "artifact": ("context-guard-artifact",),
     "pack": ("context-guard-pack",),
     "tool-prune": ("context-guard-tool-prune",),

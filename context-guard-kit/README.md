@@ -14,6 +14,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
 - `context_escrow.py` — 큰 command output을 sanitize 후 로컬 artifact로 저장하고 line/pattern query로 다시 조회
 - `context_pack.py` — 우선순위 local file evidence를 byte budget 안의 Markdown context pack으로 조립하고, local query/diff/output 신호에서 build manifest를 추천
+- `context_filter.py` — user-owned JSON DSL로 성공 output line filter를 적용하되 protected failure output은 원문 passthrough
 - `tool_schema_pruner.py` — 로컬 tool/MCP catalog를 top-k schema 자문 리포트로 줄이고 전체 정제 schema는 receipt/payload로 재조회
 - `benchmark_runner.py` — 고정 task/variant fixture로 A/B token/cost 절감 benchmark, cost-shift ledger, report 생성
 - `setup_wizard.py` — 설치 후 project-local `.claude/settings.json`을 대화형으로 선택하고 병합
@@ -29,6 +30,8 @@ python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --t
 python3 context-guard-kit/setup_wizard.py
 python3 context-guard-kit/context_guard_diet.py scan . --json
 python3 context-guard-kit/context_guard_diet.py structural-waste . --tool-catalog tools.json --log-path .claude --json
+python3 context-guard-kit/context_filter.py validate --config .context-guard/filter-dsl.json --json
+python3 context-guard-kit/context_filter.py run --config .context-guard/filter-dsl.json -- git status --short
 python3 context-guard-kit/read_symbol.py path/to/file.py TargetSymbol
 long-command 2>&1 | python3 context-guard-kit/context_escrow.py store --command "long-command" --json
 python3 context-guard-kit/context_escrow.py get <artifact_id> --lines 1:80
@@ -48,6 +51,8 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 
 `context_pack.py auto`는 `suggest`와 `build`를 한 번에 합성해 build-compatible manifest와 예산 기반 Markdown pack을 함께 만듭니다. `auto --explain`은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 결정적 로컬 선택/build 이유를 JSON 또는 텍스트로 짧게 보여줍니다. `context_pack.py suggest`는 `--query`, `--diff`, 반복 `--files`, 가림 처리한 `--output`, `--test-output`에서 build-compatible manifest 후보를 만듭니다. 모두 `--root` 아래 로컬 파일과 `git diff`만 읽고, 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. `context_pack.py build`는 여러 로컬 파일 source를 우선순위와 줄 범위에 따라 정렬하고, 렌더링된 UTF-8 byte budget 안에서 Markdown context pack을 만듭니다. 포함·부분 포함·누락 source, 누락 사유, `.context-guard/packs` bounded receipt, 그리고 `slice --lines` 정확 재조회 명령을 JSON으로 남깁니다. pack 본문과 receipt를 만들기 전에 sanitizer를 적용하며, token 값은 관측값이 아닌 추정 proxy로만 표시합니다.
+
+`context_filter.py`는 opt-in declarative output filter helper입니다. filter JSON은 사용자가 package code 밖(예: `.context-guard/filter-dsl.json`)에 두고 `validate`로 검증한 뒤 `run --config ... -- <command>`로 적용합니다. invalid config, no-match, filter error, empty output, protected `git`/test/lint/`gh` failure는 원래 command output과 exit code를 passthrough합니다. `--json-report`는 stdout을 command output 전용으로 두기 위해 stderr에만 diagnostic JSON을 씁니다. token/cost 절감 수치는 측정 claim이 아니라 local presentation 변화로만 다루세요.
 
 `tool_schema_pruner.py`는 provider-neutral tool/MCP catalog helper입니다. `select`는 task query와 lexical overlap으로 top-k tool을 고르고, inline schema는 `--budget-bytes` 안에만 넣으며, compact receipt와 별도 sanitized payload를 `.context-guard/tool-prune`에 기록합니다. `get`은 payload size/SHA-256을 검증한 뒤 전체 정제 schema를 반환합니다. 이 helper는 MCP 설정을 바꾸지 않으며, token 절감은 측정값이 아니라 추정 proxy로만 표현합니다.
 
