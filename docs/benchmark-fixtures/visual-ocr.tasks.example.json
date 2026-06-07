@@ -7,7 +7,7 @@
     "max_turns": 3,
     "max_budget_usd": 1.0,
     "allowed_tools": [],
-    "success_command": null,
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
     "success_cwd": "."
   },
   {
@@ -18,7 +18,7 @@
     "max_turns": 3,
     "max_budget_usd": 1.0,
     "allowed_tools": [],
-    "success_command": null,
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
     "success_cwd": "."
   }
 ]

@@ -5,6 +5,7 @@ These fixtures are **fixture-only** starter scaffolds for future visual/OCR and 
 Use them when designing an experiment that starts from ContextGuard's existing benchmark discipline:
 
 1. Run `context-guard-bench --tasks ... --variants ... --csv ... --dry-run` first to validate command shape. Dry-run output confirms only the argv shape; it is not benchmark evidence.
+   Unchanged fixture files are dry-run-only starters: before any non-dry-run benchmark, replace the placeholder prompts and replace the failing placeholder `success_command` with an explicit success check or documented manual correction/evaluation workflow.
 2. Replace the placeholder prompts with sanitized project tasks and run baseline plus variant on the same task set.
 3. Compare only **matched successful tasks**.
 4. Record the **failure-rate guardrail**, **human corrections**, and **shifted-cost accounting** for work moved to local tools, subagents, artifact stores, OCR tools, or compressors.

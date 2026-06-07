@@ -13874,6 +13874,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("id", item)
                     self.assertIn("prompt", item)
                     self.assertTrue(str(item["id"]).startswith(lane))
+                    self.assertIsInstance(item.get("success_command"), str)
+                    self.assertIn("fixture-only placeholder", item["success_command"])
+                    self.assertIn("replace success_command", item["success_command"])
                 for item in variant_raw:
                     self.assertIn("name", item)
                     self.assertIn("extra_args", item)
@@ -13886,8 +13889,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(parsed_variants), len(variant_raw))
                     self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
                     self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
+                    for task in parsed_tasks:
+                        self.assertIn("replace success_command", task.success_command)
                     for variant in parsed_variants:
                         self.assertEqual(variant.extra_args, [])
+
+                placeholder_success, placeholder_note = kit_module.run_success_command(parsed_tasks[0], ROOT)
+                self.assertFalse(placeholder_success)
+                self.assertIn("exit=", placeholder_note)
 
                 combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
                 combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
@@ -13896,6 +13905,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "fixture-only",
             "synthetic",
             "not a shipped runtime feature",
+            "dry-run-only",
             "provider-measured",
             "matched successful tasks",
             "failure-rate guardrail",
@@ -13912,9 +13922,33 @@ class BenchmarkRunnerTests(unittest.TestCase):
             r"reduces?\s+tokens?\s+by\s+\d+%",
             r"cuts?\s+costs?\s+by\s+\d+%",
         ]
+        public_docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            ROOT / "docs" / "benchmark-workflow-examples.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+            guide,
+        )
+        public_doc_text = "\n".join(
+            re.sub(r"[*_`]+", "", path.read_text(encoding="utf-8").lower())
+            for path in public_docs
+        )
+        korean_forbidden_claim_patterns = [
+            r"(?:토큰|비용)\s*절감\s*보장(?!하지)",
+            r"(?:토큰|비용)\s*절감(?:률)?(?:을|를)?\s*보장(?!하지|할\s+수)",
+            r"(?:토큰|비용)\s*절감(?:을|를)?\s*보장합니다",
+            r"고정\s*\d+%\s*(?:토큰|비용)\s*절감",
+        ]
         for pattern in forbidden_claim_patterns:
             with self.subTest(forbidden_claim=pattern):
                 self.assertNotRegex(combined_fixture_text, pattern)
+                self.assertNotRegex(public_doc_text, pattern)
+        for pattern in korean_forbidden_claim_patterns:
+            with self.subTest(korean_forbidden_claim=pattern):
+                self.assertNotRegex(public_doc_text, pattern)
         for forbidden in (
             "sk-ant-",
             "bearer ",
@@ -13940,6 +13974,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             with self.subTest(forbidden_helper=forbidden_helper):
                 self.assertFalse((PLUGIN_BIN / forbidden_helper).exists())
                 self.assertNotIn(forbidden_helper, json.dumps(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))))
+                self.assertNotIn(forbidden_helper, public_doc_text)
 
         package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
         self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
