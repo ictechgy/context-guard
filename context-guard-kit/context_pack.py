@@ -38,6 +38,7 @@ MAX_REASON_CHARS = 120
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
 SUGGEST_SCHEMA_VERSION = "contextguard.pack-suggest.v1"
 AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
+AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -1616,6 +1617,178 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     return payload, 0
 
 
+def line_range_identity(value: object) -> str:
+    if isinstance(value, dict):
+        return f"{value.get('start')}:{value.get('end')}"
+    if value is None:
+        return "all"
+    return str(value)
+
+
+def copy_explain_fields(item: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for field in fields:
+        if field in item and item[field] is not None:
+            out[field] = copy.deepcopy(item[field])
+    return out
+
+
+def find_build_source_for_explain(
+    suggest_item: dict[str, Any],
+    build_sources: list[dict[str, Any]],
+    used_indexes: set[int],
+) -> dict[str, Any] | None:
+    path = suggest_item.get("path")
+    priority = suggest_item.get("priority")
+    lines = line_range_identity(suggest_item.get("lines"))
+    fallback: tuple[int, dict[str, Any]] | None = None
+    for index, item in enumerate(build_sources):
+        if index in used_indexes or item.get("path") != path:
+            continue
+        if fallback is None:
+            fallback = (index, item)
+        if item.get("priority") != priority:
+            continue
+        requested = line_range_identity(item.get("requested_lines"))
+        included = line_range_identity(item.get("included_lines"))
+        if lines in {requested, included, "all"}:
+            used_indexes.add(index)
+            return item
+    if fallback is not None:
+        index, item = fallback
+        used_indexes.add(index)
+        return item
+    return None
+
+
+def explain_omission_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(item.get("phase", "")),
+        str(item.get("path", "")),
+        str(item.get("reason", "")),
+        str(item.get("suggest_reason", "")),
+        json.dumps(item.get("requested_lines", item.get("lines", "")), ensure_ascii=False, sort_keys=True),
+    )
+
+
+def build_auto_explain_payload(args: argparse.Namespace, suggest_payload: dict[str, Any], build_payload: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    build_sources = [
+        item
+        for item in build_payload.get("included_sources", [])
+        if isinstance(item, dict)
+    ]
+    used_build_indexes: set[int] = set()
+    selection: list[dict[str, Any]] = []
+    for item in suggest_payload.get("sources", []):
+        if not isinstance(item, dict):
+            continue
+        entry = copy_explain_fields(
+            item,
+            ("path", "score", "priority", "reason", "label", "lines", "bytes", "retrieval_cli", "retrieval_omitted_reason"),
+        )
+        build_item = find_build_source_for_explain(item, build_sources, used_build_indexes)
+        if build_item is not None:
+            entry["build_status"] = build_item.get("status", "included")
+            for key in ("requested_lines", "included_lines"):
+                if key in build_item:
+                    entry[key] = copy.deepcopy(build_item[key])
+            if "bytes" in build_item:
+                entry["build_bytes"] = build_item["bytes"]
+        else:
+            entry["build_status"] = "not_built"
+        selection.append(entry)
+
+    omissions: list[dict[str, Any]] = []
+    seen_omissions: set[tuple[str, str, str, str, str]] = set()
+    omission_fields = (
+        "path",
+        "status",
+        "reason",
+        "suggest_reason",
+        "priority",
+        "label",
+        "requested_lines",
+        "included_lines",
+        "lines",
+        "total_lines",
+        "retrieval_cli",
+        "retrieval_omitted_reason",
+        "input_index",
+    )
+    for phase, source in (("suggest", suggest_payload), ("build", build_payload)):
+        for item in source.get("omitted_sources", []):
+            if not isinstance(item, dict):
+                continue
+            entry = copy_explain_fields(item, omission_fields)
+            entry["phase"] = phase
+            key = explain_omission_key(entry)
+            if key in seen_omissions:
+                continue
+            seen_omissions.add(key)
+            omissions.append(entry)
+    omissions.sort(key=explain_omission_key)
+
+    build_source_counts = build_payload.get("sources", {}) if isinstance(build_payload.get("sources"), dict) else {}
+    auto_source_counts = payload.get("sources", {}) if isinstance(payload.get("sources"), dict) else {}
+    artifact = build_payload.get("artifact", {}) if isinstance(build_payload.get("artifact"), dict) else {}
+    pack_bytes = int(payload.get("pack_bytes", build_payload.get("pack_bytes", 0)) or 0)
+    budget_bytes = int(payload.get("budget_bytes", build_payload.get("budget_bytes", 0)) or 0)
+    budget_omitted_count = sum(1 for item in omissions if item.get("reason") == "budget_exhausted")
+    explicit_files = split_suggest_files(args.files)
+    query = str(suggest_payload.get("query", ""))
+    diff_label = cap_label(args.diff) if getattr(args, "diff", None) else None
+    return {
+        "schema_version": AUTO_EXPLAIN_SCHEMA_VERSION,
+        "summary": {
+            "suggested": int(auto_source_counts.get("suggested", len(selection)) or 0),
+            "included": int(auto_source_counts.get("included", build_source_counts.get("included", 0)) or 0),
+            "partial": int(auto_source_counts.get("partial", build_source_counts.get("partial", 0)) or 0),
+            "omitted": int(auto_source_counts.get("omitted", build_source_counts.get("omitted", 0)) or 0),
+            "suggest_omitted": len([item for item in suggest_payload.get("omitted_sources", []) if isinstance(item, dict)]),
+            "explain_omissions": len(omissions),
+            "pack_bytes": pack_bytes,
+            "budget_bytes": budget_bytes,
+            "manifest_written": bool(payload.get("manifest_path")),
+            "pack_written": bool(payload.get("pack_path")),
+            "artifact_stored": bool(artifact.get("stored")),
+            "artifact_capped": bool(artifact.get("capped")),
+        },
+        "inputs": {
+            "query": query,
+            "query_present": bool(query),
+            "diff": diff_label,
+            "diff_present": bool(diff_label),
+            "explicit_file_count": len(explicit_files),
+            "output_count": len(args.output or []),
+            "test_output_count": len(args.test_output or []),
+            "top": bounded_int(args.top, DEFAULT_SUGGEST_TOP, 1, MAX_SUGGEST_TOP),
+            "context_lines": bounded_int(args.context_lines, DEFAULT_SUGGEST_CONTEXT_LINES, 0, MAX_SUGGEST_CONTEXT_LINES),
+            "no_artifact": bool(args.no_artifact),
+            "manifest_path": payload.get("manifest_path"),
+            "pack_path": payload.get("pack_path"),
+        },
+        "selection": selection,
+        "omissions": omissions,
+        "budget": {
+            "pack_bytes": pack_bytes,
+            "budget_bytes": budget_bytes,
+            "remaining_bytes": budget_bytes - pack_bytes,
+            "partial_count": int(build_source_counts.get("partial", 0) or 0),
+            "budget_omitted_count": budget_omitted_count,
+            "token_proxy": copy.deepcopy(payload.get("token_proxy", {})),
+            "measurement": "observed_bytes_estimated_tokens",
+            "caveat": "Byte counts are observed pack bytes; token counts are estimated chars_div_4 proxies, not provider-token savings.",
+        },
+        "safety": {
+            "redaction": copy.deepcopy(build_payload.get("redaction", {})),
+            "caveats": copy.deepcopy(payload.get("caveats", [])),
+            "deterministic_local_only": True,
+            "raw_output_embedded": False,
+            "raw_test_output_embedded": False,
+        },
+    }
+
+
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
     manifest_rel = output_rel_for_collision_check(args.manifest_out, "--manifest-out") if args.manifest_out else None
     pack_rel = output_rel_for_collision_check(args.pack_out, "--pack-out") if args.pack_out else None
@@ -1698,6 +1871,8 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     }
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    if args.explain:
+        payload["explain"] = build_auto_explain_payload(args, suggest_payload, build_payload, payload)
     return payload, rc
 
 
@@ -1723,6 +1898,43 @@ def print_auto_text(payload: dict[str, Any]) -> None:
         f"context-guard-pack auto: {payload['sources']['suggested']} suggested source(s), "
         f"pack {payload['pack_bytes']}/{payload['budget_bytes']} bytes"
     )
+    explain = payload.get("explain")
+    if isinstance(explain, dict):
+        summary = explain.get("summary", {}) if isinstance(explain.get("summary"), dict) else {}
+        budget = explain.get("budget", {}) if isinstance(explain.get("budget"), dict) else {}
+        print(
+            "explain: "
+            f"selected={summary.get('suggested', 0)} "
+            f"included={summary.get('included', 0)} "
+            f"partial={summary.get('partial', 0)} "
+            f"omitted={summary.get('omitted', 0)} "
+            f"budget={budget.get('pack_bytes', payload.get('pack_bytes', 0))}/{budget.get('budget_bytes', payload.get('budget_bytes', 0))} "
+            "heuristic=local"
+        )
+        for item in (explain.get("selection", []) if isinstance(explain.get("selection"), list) else [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            lines = item.get("included_lines") or item.get("lines")
+            if isinstance(lines, dict):
+                line_text = f":{lines.get('start')}:{lines.get('end')}"
+            else:
+                line_text = ""
+            print(
+                f"- {item.get('path')}{line_text} "
+                f"status={item.get('build_status', 'unknown')} "
+                f"score={item.get('score', item.get('priority', 0))} "
+                f"reason={item.get('reason', 'local heuristic')}"
+            )
+        omissions = explain.get("omissions", []) if isinstance(explain.get("omissions"), list) else []
+        if omissions:
+            reason_counts: dict[str, int] = {}
+            for item in omissions:
+                if not isinstance(item, dict):
+                    continue
+                reason = str(item.get("reason", "unknown"))
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            reason_text = ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
+            print(f"omitted reasons: {reason_text}")
     if payload.get("manifest_path"):
         print(f"manifest: {payload['manifest_path']}")
     if payload.get("pack_path"):
@@ -1773,6 +1985,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--pack-out", help="write the built Markdown pack to this relative path under root")
     auto.add_argument("--json", action="store_true", help="emit JSON payload")
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
+    auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     return parser
 
 

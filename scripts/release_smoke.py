@@ -491,6 +491,19 @@ def check_doctor_smoke(proc: subprocess.CompletedProcess[str], command: str) -> 
         fail(f"{command} JSON missing checks")
 
 
+def check_auto_explain_smoke(proc: subprocess.CompletedProcess[str], command: str) -> None:
+    data = load_json(proc.stdout, command)
+    check_json_field(data, "schema_version", "contextguard.pack-auto.v1", command)
+    explain = data.get("explain")
+    if not isinstance(explain, dict):
+        fail(f"{command} JSON missing explain object")
+    check_json_field(explain, "schema_version", "contextguard.pack-auto-explain.v1", command)
+    if data.get("build", {}).get("artifact", {}).get("stored") is not False:
+        fail(f"{command} should not store an artifact in release smoke")
+    if data.get("manifest", {}).get("version") != 1:
+        fail(f"{command} JSON missing build-compatible manifest")
+
+
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
@@ -506,6 +519,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / ".claude").mkdir()
         (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
         (project / "CLAUDE.md").write_text("Keep project context short.\n", encoding="utf-8")
+        (project / "smoke-pack.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
         env = smoke_environment(smoke_home, smoke_tmp)
 
         run_command(
@@ -582,6 +596,23 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             expect=lambda proc: (
                 check_json_field(load_json(proc.stdout, "context-guard-diet"), "tool", "context-guard-diet", "context-guard-diet")
             ),
+        )
+        run_command(
+            [
+                str(command_path(plugin_bin, "context-guard-pack")),
+                "auto",
+                "--root",
+                str(project),
+                "--files",
+                "smoke-pack.txt",
+                "--json",
+                "--explain",
+                "--no-artifact",
+            ],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_auto_explain_smoke(proc, "context-guard-pack auto --explain"),
         )
         run_command(
             [str(commands["context-guard-audit"]), str(project), "--json"],

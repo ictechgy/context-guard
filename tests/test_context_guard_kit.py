@@ -3981,6 +3981,276 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertFalse((root / "receipt-manifest.json").exists())
                     self.assertFalse((root / receipt_rel).exists())
 
+
+    def test_context_pack_auto_explain_json_summarizes_local_selection_reasons(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("def app():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "README.md").write_text("pack explainability overview\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/app.py,README.md",
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+
+                    self.assertEqual(data["schema_version"], "contextguard.pack-auto.v1")
+                    explain = data["explain"]
+                    self.assertEqual(explain["schema_version"], "contextguard.pack-auto-explain.v1")
+                    self.assertEqual(explain["summary"]["suggested"], data["sources"]["suggested"])
+                    self.assertEqual(explain["summary"]["included"], data["sources"]["included"])
+                    self.assertEqual(explain["summary"]["partial"], data["sources"]["partial"])
+                    self.assertEqual(explain["summary"]["omitted"], data["sources"]["omitted"])
+                    self.assertEqual(explain["summary"]["pack_bytes"], data["pack_bytes"])
+                    self.assertEqual(explain["summary"]["budget_bytes"], data["budget_bytes"])
+                    self.assertEqual(explain["inputs"]["explicit_file_count"], 2)
+                    self.assertEqual(explain["inputs"]["output_count"], 0)
+                    self.assertEqual(explain["inputs"]["test_output_count"], 0)
+                    selected = explain["selection"]
+                    self.assertGreaterEqual(len(selected), 2)
+                    by_path = {item["path"]: item for item in selected}
+                    self.assertIn("src/app.py", by_path)
+                    self.assertEqual(by_path["src/app.py"]["reason"], "explicit file request")
+                    self.assertIn("score", by_path["src/app.py"])
+                    self.assertEqual(by_path["src/app.py"]["build_status"], "included")
+                    self.assertIn("included_lines", by_path["src/app.py"])
+                    self.assertIn("lines", by_path["src/app.py"])
+                    self.assertIn("Deterministic local heuristics", " ".join(explain["safety"]["caveats"]))
+
+    def test_context_pack_auto_explain_is_absent_without_flag_and_text_shape_stays_pack_compatible(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "file.txt").write_text("one\ntwo\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "file.txt",
+                            "--json",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    self.assertNotIn("explain", data)
+
+                    text = self._run_pack(script, root, "auto", "--root", ".", "--files", "file.txt", "--no-artifact").stdout
+                    self.assertTrue(text.startswith("context-guard-pack auto: "))
+                    self.assertNotIn("explain:", text)
+                    self.assertIn("# Context Pack", text)
+
+    def test_context_pack_auto_explain_omits_duplicates_and_missing_sources(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "tests").mkdir()
+                    (root / "src" / "app.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+                    (root / "tests" / "test_app.py").write_text("from src.app import app\n", encoding="utf-8")
+                    (root / "output.txt").write_text("FAILED src/app.py:2\nFAILED missing.py:1\n", encoding="utf-8")
+                    (root / "test-output.txt").write_text("FAILED tests/test_app.py:1\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/app.py,../outside.py",
+                            "--output",
+                            "output.txt",
+                            "--test-output",
+                            "test-output.txt",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+
+                    reasons = {item["reason"] for item in data["explain"]["omissions"]}
+                    self.assertIn("duplicate_source", reasons)
+                    self.assertTrue({"outside_root", "missing"} & reasons)
+                    self.assertIn("suggest_reason", json.dumps(data["explain"]["omissions"], sort_keys=True))
+                    manifest_paths = [item["path"] for item in data["manifest"]["sources"]]
+                    self.assertNotIn("../outside.py", manifest_paths)
+                    self.assertNotIn("missing.py", manifest_paths)
+
+    def test_context_pack_auto_explain_does_not_change_build_or_artifact_receipt(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "small.txt").write_text("small\n", encoding="utf-8")
+                    (root / "big.txt").write_text("".join(f"line {i}\n" for i in range(1, 120)), encoding="utf-8")
+
+                    common = [
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "small.txt,big.txt",
+                        "--budget-bytes",
+                        "700",
+                        "--json",
+                        "--no-artifact",
+                    ]
+                    plain = json.loads(self._run_pack(script, root, *common).stdout)
+                    explained = json.loads(self._run_pack(script, root, *common, "--explain").stdout)
+                    for key in ("pack", "pack_bytes", "pack_id", "token_proxy", "sources", "included_sources", "omitted_sources"):
+                        self.assertEqual(explained["build"][key], plain["build"][key], key)
+                    self.assertEqual(explained["pack_bytes"], plain["pack_bytes"])
+                    self.assertEqual(explained["token_proxy"], plain["token_proxy"])
+                    self.assertEqual(explained["manifest"], plain["manifest"])
+                    budget = explained["explain"]["budget"]
+                    self.assertLessEqual(budget["pack_bytes"], budget["budget_bytes"])
+                    self.assertEqual(budget["remaining_bytes"], budget["budget_bytes"] - budget["pack_bytes"])
+                    self.assertTrue(budget["partial_count"] or budget["budget_omitted_count"])
+
+                    artifact = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "small.txt,big.txt",
+                            "--budget-bytes",
+                            "700",
+                            "--manifest-out",
+                            "explained-manifest.json",
+                            "--json",
+                            "--explain",
+                        ).stdout
+                    )
+                    manifest = json.loads((root / "explained-manifest.json").read_text(encoding="utf-8"))
+                    self.assertEqual(manifest, artifact["manifest"])
+                    self.assertEqual(set(manifest), {"version", "sources"})
+                    receipt_path = artifact["build"]["artifact"]["path"]
+                    self.assertIsInstance(receipt_path, str)
+                    receipt = json.loads((root / receipt_path).read_text(encoding="utf-8"))
+                    receipt_text = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+                    self.assertNotIn("explain", receipt_text)
+                    self.assertEqual(receipt["pack_id"], artifact["build"]["pack_id"])
+                    self.assertEqual(receipt["pack"], artifact["build"]["pack"])
+
+    def test_context_pack_auto_explain_redacts_json_and_text_outputs(self):
+        secret = "ghp_" + ("B" * 36)
+        secret_path = "ghp_" + ("C" * 36)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "tests").mkdir()
+                    (root / "src" / "app.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+                    (root / "tests" / "test_app.py").write_text("from src.app import app\n", encoding="utf-8")
+                    (root / "output.txt").write_text(f"FAILED src/app.py:2 token={secret}\nFAILED {secret_path}/leak.py:1\n", encoding="utf-8")
+                    (root / "test-output.txt").write_text(f"FAILED tests/test_app.py:1 api_key={secret}\n", encoding="utf-8")
+
+                    json_proc = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--query",
+                        f"debug token={secret}",
+                        "--output",
+                        "output.txt",
+                        "--test-output",
+                        "test-output.txt",
+                        "--json",
+                        "--explain",
+                        "--no-artifact",
+                    )
+                    self.assertNotIn(secret, json_proc.stdout)
+                    self.assertNotIn(secret, json_proc.stderr)
+                    self.assertNotIn(secret_path, json_proc.stdout)
+                    data = json.loads(json_proc.stdout)
+                    explain_text = json.dumps(data["explain"], ensure_ascii=False, sort_keys=True)
+                    self.assertNotIn(secret_path, explain_text)
+
+                    text_proc = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--query",
+                        f"debug token={secret}",
+                        "--output",
+                        "output.txt",
+                        "--test-output",
+                        "test-output.txt",
+                        "--manifest-out",
+                        "text-manifest.json",
+                        "--pack-out",
+                        "text-pack.md",
+                        "--explain",
+                    )
+                    for haystack in (text_proc.stdout, text_proc.stderr, (root / "text-pack.md").read_text(encoding="utf-8"), (root / "text-manifest.json").read_text(encoding="utf-8")):
+                        self.assertNotIn(secret, haystack)
+                        self.assertNotIn(secret_path, haystack)
+                    self.assertIn("explain:", text_proc.stdout)
+                    self.assertIn("reason=", text_proc.stdout)
+                    manifest = json.loads((root / "text-manifest.json").read_text(encoding="utf-8"))
+                    self.assertEqual(set(manifest), {"version", "sources"})
+                    receipt_path = root / ".context-guard" / "packs" / f"{json.loads(self._run_pack(script, root, 'auto', '--root', '.', '--output', 'output.txt', '--test-output', 'test-output.txt', '--json').stdout)['build']['pack_id']}.json"
+                    if receipt_path.exists():
+                        receipt_text = receipt_path.read_text(encoding="utf-8")
+                        self.assertNotIn(secret, receipt_text)
+                        self.assertNotIn(secret_path, receipt_text)
+
+    def test_context_pack_auto_explain_docs_help_and_smoke_surface_are_listed(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                help_proc = self._run_pack(script, ROOT, "auto", "--help")
+                self.assertIn("--explain", help_proc.stdout)
+        docs = [
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                self.assertIn("--explain", text)
+                self.assertTrue(
+                    "deterministic local" in text
+                    or "no model" in text
+                    or "결정적 로컬" in text
+                    or "모델 호출" in text,
+                    f"{doc} should frame --explain as deterministic/local rather than model reasoning",
+                )
+        smoke = (ROOT / "scripts" / "release_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("--explain", smoke)
+        self.assertIn("contextguard.pack-auto-explain.v1", smoke)
+
     def test_context_pack_auto_query_with_no_matches_returns_empty_pack(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
