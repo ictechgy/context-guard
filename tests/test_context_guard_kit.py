@@ -644,6 +644,62 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn(sentinel, proc.stdout)
         self.assertNotIn("/tmp/private-token.txt", proc.stdout)
 
+    def test_cost_guard_compile_emits_protected_cache_policy(self):
+        sentinel = "UNIQUE_PROTECTED_COMPILE_SENTINEL"
+        manifest = {
+            "sections": [
+                {
+                    "id": "protected-volatile-evidence",
+                    "ttl": "1h",
+                    "volatile": True,
+                    "protected": True,
+                    "content_type": "log",
+                    "protected_zone_classes": ["path", "hash", "stack_frame"],
+                    "bytes": 70000,
+                    "content": sentinel,
+                    "path": "/tmp/private-protected.log",
+                },
+                {
+                    "id": "stable-protected-rules",
+                    "ttl": "1h",
+                    "volatile": False,
+                    "protected": True,
+                    "content_type": "code",
+                    "protected_zone_classes": ["code_fence", "identifier"],
+                    "bytes": 1000,
+                },
+                {"id": "stable-context", "ttl": "1h", "volatile": False, "bytes": 200},
+            ]
+        }
+        for script in COST_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_cost_guard(script, ["compile", "--json"], manifest)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                payload = json.loads(proc.stdout)
+                order_ids = [item["section_id"] for item in payload["recommended_order"]]
+                self.assertLess(order_ids.index("stable-protected-rules"), order_ids.index("protected-volatile-evidence"))
+                self.assertEqual(order_ids[-1], "protected-volatile-evidence")
+                volatile_item = next(item for item in payload["recommended_order"] if item["section_id"] == "protected-volatile-evidence")
+                self.assertTrue(volatile_item["volatile"])
+                self.assertTrue(volatile_item["protected"])
+                self.assertEqual(volatile_item["transform_policy"], "structural_only")
+                policy = payload["protected_zone_policy"]
+                self.assertTrue(policy["enabled"])
+                self.assertEqual(policy["section_count"], 2)
+                self.assertFalse(policy["semantic_compress"])
+                self.assertIn("artifact_retrieval", policy["allowed_transforms"])
+                protected_volatile = next(section for section in policy["sections"] if section["section_id"] == "protected-volatile-evidence")
+                self.assertEqual(protected_volatile["cache_ordering"], "volatile_tail")
+                self.assertTrue(protected_volatile["retrieval_required"])
+                self.assertFalse(payload["transform_policy"]["semantic_transforms_allowed"])
+                self.assertFalse(payload["local_artifact_retrieval"]["replaces_provider_prompt_cache"])
+                codes = {finding["code"] for finding in payload["findings"]}
+                self.assertIn("use_local_artifact_retrieval", codes)
+                self.assertIn("protected_zone_artifact_retrieval", codes)
+                self.assertIn("protected_volatile_tail", codes)
+                self.assertNotIn(sentinel, proc.stdout)
+                self.assertNotIn("/tmp/private-protected.log", proc.stdout)
+
 
     def test_cost_guard_scoped_cache_control_stripping_preserves_user_schema_fields(self):
         module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_cache_control_scope_test")
@@ -2790,6 +2846,75 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 meta = json.loads(self._run_compress(script, '{"a":1}\n', "--type", "prose", "--metadata-only").stdout)
                 self.assertEqual(meta["content_type"], "prose")
                 self.assertEqual(meta["type_source"], "override")
+
+    def test_compress_protected_policy_reports_guardrails_without_default_change(self):
+        raw = '''Intro
+```python
+def process_user_id(user_id: int) -> str:
+    return f"/tmp/app/{user_id}"
+```
+path=/var/log/app/error.log
+hash=0123456789abcdef0123456789abcdef01234567
+{"api_key": "value", "count": 42}
+File "/Users/alice/project/app.py", line 17, in main
+quoted="stable literal"
+numeric=12345
+'''
+        expected_classes = {
+            "code_fence",
+            "identifier",
+            "numeric_constant",
+            "hash",
+            "path",
+            "stack_frame",
+            "quoted_string",
+            "json_key",
+        }
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                default_payload = json.loads(self._run_compress(script, raw, "--json").stdout)
+                self.assertNotIn("protected_zone_policy", default_payload["metadata"])
+                self.assertNotIn("transform_policy", default_payload["metadata"])
+
+                protected_payload = json.loads(self._run_compress(script, raw, "--json", "--protected-policy").stdout)
+                policy = protected_payload["metadata"]["protected_zone_policy"]
+                transform_policy = protected_payload["metadata"]["transform_policy"]
+                self.assertTrue(policy["enabled"])
+                self.assertTrue(policy["detected"])
+                self.assertFalse(policy["semantic_compress"])
+                self.assertFalse(transform_policy["semantic_transforms_allowed"])
+                self.assertIn("artifact_retrieval", policy["allowed_transforms"])
+                self.assertIn("semantic_compress", policy["denied_transforms"])
+                self.assertTrue(expected_classes.issubset(set(policy["zone_counts"])))
+
+                policy_json = json.dumps(policy, ensure_ascii=False)
+                self.assertNotIn("/var/log/app/error.log", policy_json)
+                self.assertNotIn("0123456789abcdef0123456789abcdef01234567", policy_json)
+                self.assertNotIn("stable literal", policy_json)
+
+    def test_compress_protected_diff_uses_structural_policy_and_exact_retrieval_hint(self):
+        raw = """diff --git a/app.py b/app.py
+index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210 100644
+--- a/app.py
++++ b/app.py
+@@ -1,7 +1,7 @@
+ context line with protected_path=/Users/alice/project/app.py
+-old_value = "unchanged"
++new_value = "quoted literal"
+ stable_identifier = 12345
+"""
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                payload = json.loads(self._run_compress(script, raw, "--json", "--protected-policy", "--type", "diff").stdout)
+                policy = payload["metadata"]["protected_zone_policy"]
+                self.assertEqual(payload["metadata"]["content_type"], "diff")
+                self.assertTrue(policy["detected"])
+                self.assertTrue(policy["retrieval_required"])
+                self.assertIn("diff", policy["zone_counts"])
+                self.assertIn("hash", policy["zone_counts"])
+                self.assertIn("path", policy["zone_counts"])
+                self.assertIn("artifact store", payload["metadata"]["retrieval_hint"])
+                self.assertIn("+new_value = \"quoted literal\"", payload["content"])
 
     def _run_pack(self, script: Path, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

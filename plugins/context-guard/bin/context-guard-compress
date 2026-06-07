@@ -44,6 +44,55 @@ CODE_SIGNAL_RE = re.compile(
     r"(^\s*(def |class |function |func |import |from \S+ import |public |private |const |let |var |#include|package )"
     r"|[{};]\s*$|=>|::)"
 )
+CODE_FENCE_RE = re.compile(r"(?m)^\s*```")
+JSON_KEY_RE = re.compile(r'"(?:[^"\\]|\\.)*"\s*:')
+QUOTED_STRING_RE = re.compile(r"""(?x)
+    "(?:[^"\\]|\\.)*" |
+    '(?:[^'\\]|\\.)*'
+""")
+HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{32,}|sha256:[0-9a-fA-F]{32,})\b")
+PATH_RE = re.compile(
+    r"(?x)(?:"
+    r"(?<![\w.-])/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+"
+    r"|"
+    r"\b[A-Za-z]:\\(?:[^\\\s:\"'<>|]+\\)*[^\\\s:\"'<>|]+"
+    r"|"
+    r"\b[A-Za-z0-9._-]+\#path:[0-9a-f]{12}\b"
+    r")"
+)
+STACK_FRAME_RE = re.compile(
+    r"(?m)^\s*(?:File\s+\"[^\"]+\",\s+line\s+\d+,\s+in\s+\S+|at\s+\S+.*\([^)]*:\d+(?::\d+)?\))"
+)
+IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:[A-Z][A-Za-z0-9_]*)?\b")
+NUMERIC_CONSTANT_RE = re.compile(r"(?<![\w.])[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?)(?![\w.])")
+PROTECTED_ZONE_KEYS = (
+    "code_fence",
+    "diff",
+    "identifier",
+    "numeric_constant",
+    "hash",
+    "path",
+    "stack_frame",
+    "quoted_string",
+    "json_key",
+)
+PROTECTED_ALLOWED_TRANSFORMS = (
+    "exact_dedupe",
+    "structural_window",
+    "line_truncate",
+    "whitespace_normalize",
+    "json_compact",
+    "artifact_retrieval",
+)
+PROTECTED_DENIED_TRANSFORMS = (
+    "semantic_compress",
+    "paraphrase",
+    "identifier_rewrite",
+    "numeric_rewrite",
+    "hash_rewrite",
+    "path_rewrite",
+    "quoted_literal_rewrite",
+)
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -171,6 +220,85 @@ def classify_content(text: str) -> str:
     if _looks_like_code(sample):
         return "code"
     return "prose"
+
+
+def protected_zone_counts(text: str) -> dict[str, int]:
+    """Conservatively count semantic-sensitive zones without storing raw spans.
+
+    The counts intentionally over-approximate. They are policy signals for later
+    transform gates, not a parser. Metadata must never include the matched path,
+    identifier, hash, or string contents because receipts are safe to share.
+    """
+    lines = text.splitlines()
+    fence_markers = len(CODE_FENCE_RE.findall(text))
+    diff_lines = sum(
+        1
+        for line in lines
+        if DIFF_FILE_HEADER_RE.match(line)
+        or DIFF_HUNK_RE.match(line)
+        or (line[:1] in "+-" and not line.startswith(("+++", "---")))
+    )
+    counts = {
+        "code_fence": (fence_markers + 1) // 2,
+        "diff": diff_lines,
+        "identifier": len(IDENTIFIER_RE.findall(text)),
+        "numeric_constant": len(NUMERIC_CONSTANT_RE.findall(text)),
+        "hash": len(HASH_RE.findall(text)),
+        "path": len(PATH_RE.findall(text)),
+        "stack_frame": len(STACK_FRAME_RE.findall(text)),
+        "quoted_string": len(QUOTED_STRING_RE.findall(text)),
+        "json_key": len(JSON_KEY_RE.findall(text)),
+    }
+    return {key: counts[key] for key in PROTECTED_ZONE_KEYS if counts.get(key, 0) > 0}
+
+
+def build_protected_policy(
+    *,
+    text: str,
+    content_type: str,
+    strategy_detail: dict[str, object],
+    lossy: bool,
+) -> dict[str, object]:
+    """Build an opt-in transform policy for protected zones.
+
+    Protection governs transform eligibility and exact-retrieval expectations.
+    It does not claim the section should be provider-cache-stable; cache ordering
+    is handled by `context-guard-cost compile`.
+    """
+    zone_counts = protected_zone_counts(text)
+    detected = bool(zone_counts)
+    strategy = str(strategy_detail.get("strategy") or "unknown")
+    retrieval_required = bool(detected and lossy)
+    return {
+        "enabled": True,
+        "detected": detected,
+        "content_type": content_type,
+        "zone_counts": zone_counts,
+        "semantic_compress": False,
+        "allowed_transforms": list(PROTECTED_ALLOWED_TRANSFORMS),
+        "denied_transforms": list(PROTECTED_DENIED_TRANSFORMS),
+        "retrieval_required": retrieval_required,
+        "retrieval_scope": "sanitized_full_input" if retrieval_required else "compressed_output",
+        "raw_spans_stored": False,
+        "policy_note": "Protected zones permit structural transforms only; no semantic/paraphrase rewrites.",
+        "strategy": {
+            "name": strategy,
+            "structural_only": True,
+        },
+    }
+
+
+def build_transform_policy(protected_policy: dict[str, object]) -> dict[str, object]:
+    """Summarize transform eligibility without embedding raw protected content."""
+    return {
+        "mode": "protected" if protected_policy.get("detected") else "structural_default",
+        "semantic_transforms_allowed": False,
+        "semantic_compress": False,
+        "allowed": list(PROTECTED_ALLOWED_TRANSFORMS),
+        "denied": list(PROTECTED_DENIED_TRANSFORMS),
+        "exact_retrieval_required": bool(protected_policy.get("retrieval_required")),
+        "raw_spans_stored": False,
+    }
 
 
 def _looks_like_json(stripped: str) -> bool:
@@ -353,6 +481,7 @@ def build_metadata(
     input_truncated: bool,
     input_bytes: int,
     max_bytes: int,
+    protected_policy_enabled: bool = False,
 ) -> dict[str, object]:
     """Assemble the compress receipt: observed byte/line counts plus an estimated token proxy.
 
@@ -370,7 +499,7 @@ def build_metadata(
         if lossy
         else "Data-preserving: compact form is semantically equivalent to the sanitized input."
     )
-    return {
+    metadata: dict[str, object] = {
         "tool": "context-guard-kit.context_compress",
         "metadata_version": 1,
         "content_type": content_type,
@@ -407,6 +536,21 @@ def build_metadata(
         },
         "retrieval_hint": retrieval_hint,
     }
+    if protected_policy_enabled:
+        protected_policy = build_protected_policy(
+            text=original_text,
+            content_type=content_type,
+            strategy_detail=strategy_detail,
+            lossy=lossy,
+        )
+        metadata["protected_zone_policy"] = protected_policy
+        metadata["transform_policy"] = build_transform_policy(protected_policy)
+        if protected_policy.get("retrieval_required"):
+            metadata["retrieval_hint"] = (
+                "Protected lossy structural transform: store the full sanitized text with "
+                "`context-guard-artifact store` and retrieve exact slices before relying on omitted content."
+            )
+    return metadata
 
 
 def compress_text(
@@ -417,6 +561,7 @@ def compress_text(
     input_truncated: bool,
     input_bytes: int,
     max_bytes: int,
+    protected_policy_enabled: bool = False,
 ) -> tuple[str, dict[str, object]]:
     """Sanitize first, then classify and compress, then build the receipt.
 
@@ -446,6 +591,7 @@ def compress_text(
         input_truncated=input_truncated,
         input_bytes=input_bytes,
         max_bytes=max_bytes,
+        protected_policy_enabled=protected_policy_enabled,
     )
     return compressed, metadata
 
@@ -489,6 +635,7 @@ def run_compress(args: argparse.Namespace) -> int:
         input_truncated=input_truncated,
         input_bytes=input_bytes,
         max_bytes=max_bytes,
+        protected_policy_enabled=bool(args.protected_policy),
     )
     if args.json:
         payload = {"metadata": metadata, "content": compressed}
@@ -513,6 +660,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="force a content type instead of auto-detecting (json/diff/log/search/code/prose)",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON with metadata and compressed content")
+    parser.add_argument(
+        "--protected-policy",
+        action="store_true",
+        help="emit opt-in protected-zone transform policy metadata; default compression output is unchanged",
+    )
     parser.add_argument(
         "--metadata-only",
         action="store_true",

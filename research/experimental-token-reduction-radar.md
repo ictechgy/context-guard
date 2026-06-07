@@ -25,6 +25,10 @@ A lane can move from radar to shipped feature only when it satisfies the same ev
 
 `context-guard-trim-output --digest ... --artifact-receipt` is the first reversible local transform experiment promoted from this roadmap. It stores only sanitized command output in the existing local artifact store and emits exact re-expand commands for omitted details. It is opt-in, does not change default trimming behavior, and does not create a hosted API token/cost savings claim; benchmark reports must still use matched successful tasks and provider-measured primary token fields before reporting token savings.
 
+## Graduated local experiment — protected-zone transform policy
+
+`context-guard-compress --protected-policy` and `context-guard cost compile` now expose opt-in policy metadata for semantic-sensitive zones: code fences, diffs, identifiers, numeric constants, hashes, paths, stack frames, quoted strings, and JSON keys. The policy denies semantic/paraphrase rewrites, allows structural dedupe/window/truncate plus exact local retrieval, and keeps protected+volatile sections ordered by volatility rather than treating protection as provider-cache stability. This is a local guardrail and metadata layer only; it does not claim hosted token/cost savings or replace provider prompt caching.
+
 ## Lane 1 — Learned prompt/context compression
 
 Candidate methods include LLMLingua/LongLLMLingua-style prompt compression, Selective Context-style pruning, gist-token or latent-context representations, and task-aware reranking before compression.

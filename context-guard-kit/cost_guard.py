@@ -1539,6 +1539,39 @@ def section_ttl(section: dict[str, Any]) -> str:
     return "1h" if ttl in {"1h", "60m", "hour"} else "5m"
 
 
+PROTECTED_ALLOWED_TRANSFORMS = ["exact_dedupe", "structural_window", "line_truncate", "artifact_retrieval"]
+PROTECTED_DENIED_TRANSFORMS = ["semantic_compress", "paraphrase", "identifier_rewrite", "numeric_rewrite", "hash_rewrite", "path_rewrite"]
+PROTECTED_ZONE_CLASS_RE = re.compile(r"[^a-z0-9_.:-]+")
+
+
+def manifest_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def protected_zone_classes(raw: dict[str, Any]) -> list[str]:
+    value = raw.get("protected_zone_classes") or raw.get("protected_zones") or raw.get("zone_classes") or []
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        items = []
+    cleaned = sorted({PROTECTED_ZONE_CLASS_RE.sub("-", item.lower()).strip("-")[:48] for item in items if item})
+    return [item for item in cleaned if item]
+
+
+def section_is_protected(raw: dict[str, Any], zone_classes: list[str]) -> bool:
+    return (
+        manifest_bool(raw.get("protected"))
+        or manifest_bool(raw.get("semantic_sensitive"))
+        or bool(zone_classes)
+    )
+
+
 def compile_command(args: argparse.Namespace) -> int:
     manifest, _truncated = load_json_input(args.manifest, max_bytes=args.max_bytes)
     if isinstance(manifest, dict):
@@ -1553,13 +1586,17 @@ def compile_command(args: argparse.Namespace) -> int:
     for i, raw in enumerate(raw_sections):
         if not isinstance(raw, dict):
             continue
+        zone_classes = protected_zone_classes(raw)
         sec = {
             "id": safe_section_id(raw, i),
             "ttl": section_ttl(raw),
-            "volatile": bool(raw.get("volatile") or raw.get("changes_often")),
-            "bytes": int(raw.get("bytes") or raw.get("estimated_bytes") or 0) if str(raw.get("bytes") or raw.get("estimated_bytes") or "0").isdigit() else 0,
-            "tokens_estimated": int(raw.get("tokens") or raw.get("estimated_tokens") or 0) if str(raw.get("tokens") or raw.get("estimated_tokens") or "0").isdigit() else 0,
+            "volatile": manifest_bool(raw.get("volatile")) or manifest_bool(raw.get("changes_often")),
+            "bytes": safe_int(raw.get("bytes") or raw.get("estimated_bytes") or 0),
+            "tokens_estimated": safe_int(raw.get("tokens") or raw.get("estimated_tokens") or 0),
             "has_path": "path" in raw or "file" in raw,
+            "protected": section_is_protected(raw, zone_classes),
+            "content_type": str(raw.get("content_type") or raw.get("type") or "unknown")[:40],
+            "protected_zone_classes": zone_classes,
         }
         sections.append(sec)
 
@@ -1585,15 +1622,83 @@ def compile_command(args: argparse.Namespace) -> int:
                     "message": "store/query large local evidence with context-guard-artifact or context-guard-pack; RAM/disk can reduce sent context but does not replace provider prompt cache",
                 }
             )
+        if sec.get("protected"):
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "protected_zone_structural_only",
+                    "section_id": sec["id"],
+                    "message": "protected sections deny semantic/paraphrase compression; use structural transforms and exact retrieval",
+                }
+            )
+        if sec.get("protected") and sec.get("volatile"):
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "protected_volatile_tail",
+                    "section_id": sec["id"],
+                    "message": "volatile controls cache ordering toward the tail; protection controls transforms and retrieval",
+                }
+            )
+        if sec.get("protected") and int(sec["bytes"] or 0) > int(args.large_section_bytes):
+            findings.append(
+                {
+                    "severity": "info",
+                    "code": "protected_zone_artifact_retrieval",
+                    "section_id": sec["id"],
+                    "message": "large protected evidence should be stored locally and sent as exact retrieved slices, not semantically compressed",
+                }
+            )
+    protected_sections = [sec for sec in sections if sec.get("protected")]
+    protected_policy_sections = [
+        {
+            "section_id": sec["id"],
+            "content_type": sec["content_type"],
+            "volatile": sec["volatile"],
+            "ttl": sec["ttl"],
+            "large": int(sec["bytes"] or 0) > int(args.large_section_bytes),
+            "zone_classes": sec["protected_zone_classes"],
+            "semantic_compress": False,
+            "retrieval_required": int(sec["bytes"] or 0) > int(args.large_section_bytes),
+            "cache_ordering": "volatile_tail" if sec["volatile"] else "stable_prefix_eligible",
+        }
+        for sec in protected_sections
+    ]
     report = {
         "schema_version": SCHEMA_VERSION,
         "tool": TOOL_NAME,
         "mode": "compile",
         "provider_cache": {"replaced_by_local_ram_or_disk": False, "stable_prefix_required": True, "max_breakpoints_advisory": 4},
         "recommended_order": [
-            {"section_id": sec["id"], "ttl": sec["ttl"], "volatile": sec["volatile"], "path_omitted": bool(sec["has_path"])} for sec in recommended
+            {
+                "section_id": sec["id"],
+                "ttl": sec["ttl"],
+                "volatile": sec["volatile"],
+                "protected": sec["protected"],
+                "content_type": sec["content_type"],
+                "path_omitted": bool(sec["has_path"]),
+                "transform_policy": "structural_only" if sec["protected"] else "default",
+            }
+            for sec in recommended
         ],
         "findings": findings,
+        "protected_zone_policy": {
+            "enabled": bool(protected_sections),
+            "section_count": len(protected_sections),
+            "semantic_compress": False,
+            "allowed_transforms": PROTECTED_ALLOWED_TRANSFORMS,
+            "denied_transforms": PROTECTED_DENIED_TRANSFORMS,
+            "raw_spans_stored": False,
+            "protected_volatile_precedence": "volatile controls cache ordering; protection controls transforms and retrieval",
+            "sections": protected_policy_sections,
+        },
+        "transform_policy": {
+            "semantic_transforms_allowed": False,
+            "semantic_compress": False,
+            "allowed": PROTECTED_ALLOWED_TRANSFORMS,
+            "denied": PROTECTED_DENIED_TRANSFORMS,
+            "large_protected_sections_use": "local_artifact_retrieval",
+        },
         "local_artifact_retrieval": {
             "recommended_for_large_sections": True,
             "helpers": ["context-guard-artifact", "context-guard-pack"],
