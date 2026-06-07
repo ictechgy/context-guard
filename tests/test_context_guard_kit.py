@@ -4732,6 +4732,293 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         self.assertNotIn(secret, receipt_text)
                         self.assertNotIn(secret_path, receipt_text)
 
+    def test_context_pack_auto_explain_includes_repo_map_tree_signatures_and_retrieval(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text(
+                        "from .helper import helper\n\n"
+                        "class App:\n"
+                        "    def run(self):\n"
+                        "        return helper()\n\n"
+                        "def app_entry():\n"
+                        "    return App().run()\n",
+                        encoding="utf-8",
+                    )
+                    (root / "src" / "helper.py").write_text("def helper():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "src" / "pkg").mkdir()
+                    (root / "src" / "pkg" / "app.py").write_text(
+                        "from . import helper\n\n"
+                        "def pkg_entry():\n"
+                        "    return helper.pkg_helper()\n",
+                        encoding="utf-8",
+                    )
+                    (root / "src" / "pkg" / "helper.py").write_text("def pkg_helper():\n    return 'pkg-ok'\n", encoding="utf-8")
+                    (root / "src" / "js-helper.ts").write_text("export default function helper(): string { return 'ok' }\n", encoding="utf-8")
+                    (root / "src" / "util.ts").write_text(
+                        "import helper from './js-helper'\n"
+                        "export function formatValue(input: string): string {\n"
+                        "  return helper() + input.trim()\n"
+                        "}\n",
+                        encoding="utf-8",
+                    )
+                    (root / "README.md").write_text("# App Utility\n", encoding="utf-8")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/app.py,src/util.ts,README.md",
+                            "--query",
+                            "app util helper",
+                            "--budget-bytes",
+                            "5000",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+
+                    repo_map = data["explain"]["repo_map"]
+                    self.assertEqual(repo_map["schema_version"], "contextguard.pack-repo-map.v1")
+                    self.assertEqual(repo_map["safety"]["tree_sitter"]["status"], "unavailable_without_optional_dependency")
+                    self.assertTrue(repo_map["safety"]["explain_only"])
+                    self.assertIn("max_tree_entries", repo_map["caps"])
+                    self.assertLessEqual(len(repo_map["token_tree"]), repo_map["caps"]["max_tree_entries"])
+                    tree_paths = {item["path"] for item in repo_map["token_tree"]}
+                    self.assertIn("src/app.py", tree_paths)
+                    self.assertTrue(all(item["kind"] in {"file", "directory"} for item in repo_map["token_tree"]))
+                    signatures = repo_map["signature_index"]
+                    names = {item["name"] for item in signatures}
+                    self.assertIn("App", names)
+                    self.assertIn("app_entry", names)
+                    self.assertIn("formatValue", names)
+                    self.assertLessEqual(len(signatures), repo_map["caps"]["max_signature_entries"])
+                    self.assertTrue(all(item.get("explain_only") for item in repo_map["graph_rank"]))
+                    self.assertIn("src/app.py", {item["path"] for item in repo_map["graph_rank"]})
+                    self.assertGreaterEqual(repo_map["summary"]["graph_edges"], 1)
+                    edges = {(item["from"], item["to"]) for item in repo_map["graph"]["edges"]}
+                    self.assertIn(("src/app.py", "src/helper.py"), edges)
+                    self.assertIn(("src/pkg/app.py", "src/pkg/helper.py"), edges)
+                    self.assertIn(("src/util.ts", "src/js-helper.ts"), edges)
+                    retrieval = repo_map["retrieval"]
+                    self.assertTrue(any(item.get("slice_cli", "").startswith("context-guard-pack slice --root .") for item in retrieval))
+                    self.assertTrue(any("context-guard-read-symbol" in item.get("symbol_cli", "") for item in retrieval))
+                    self.assertLessEqual(len(retrieval), repo_map["caps"]["max_retrieval_hints"])
+                    self.assertLessEqual(data["build"]["pack_bytes"], data["budget_bytes"])
+
+    def test_context_pack_auto_explain_repo_map_redacts_secret_risks(self):
+        github_secret = "ghp_" + ("D" * 36)
+        provider_secret = "sk-" + ("E" * 32)
+        bearer_secret = "Bearer " + ("F" * 32)
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "leak.py").write_text(
+                        f"def {github_secret}():\n"
+                        "    return 'redacted signature name'\n"
+                        f"Authorization: {bearer_secret}\n",
+                        encoding="utf-8",
+                    )
+                    (root / "README.md").write_text(f"# token={provider_secret}\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "src/leak.py,README.md",
+                        "--budget-bytes",
+                        "5000",
+                        "--json",
+                        "--explain",
+                    )
+                    for raw in (github_secret, provider_secret, bearer_secret):
+                        self.assertNotIn(raw, proc.stdout)
+                        self.assertNotIn(raw, proc.stderr)
+                    data = json.loads(proc.stdout)
+                    repo_map = data["explain"]["repo_map"]
+                    risk_counts = repo_map["secret_scan"]["risk_counts"]
+                    self.assertGreaterEqual(risk_counts.get("github_token", 0), 1)
+                    self.assertGreaterEqual(risk_counts.get("provider_api_key", 0), 1)
+                    self.assertGreaterEqual(risk_counts.get("authorization_header", 0), 1)
+                    self.assertTrue(repo_map["secret_scan"]["files_with_risks"])
+                    signature_text = json.dumps(repo_map["signature_index"], ensure_ascii=False, sort_keys=True)
+                    self.assertNotIn(github_secret, signature_text)
+                    self.assertNotIn(provider_secret, signature_text)
+                    receipt_path = data["build"]["artifact"]["path"]
+                    self.assertIsInstance(receipt_path, str)
+                    receipt_text = (root / receipt_path).read_text(encoding="utf-8")
+                    self.assertNotIn("repo_map", receipt_text)
+                    self.assertNotIn(github_secret, receipt_text)
+                    self.assertNotIn(provider_secret, receipt_text)
+                    self.assertNotIn(bearer_secret, receipt_text)
+
+    def test_context_pack_auto_explain_repo_map_redacts_secret_like_paths(self):
+        cases = {
+            "sendgrid": ("SG." + ("A" * 16) + "." + ("B" * 16) + ".py", ["SG."]),
+            "jwt": ("eyJ" + ("A" * 8) + "." + ("B" * 8) + "." + ("C" * 8) + ".py", ["eyJ"]),
+            "bearer": ("Bearer " + ("D" * 20) + ".py", ["Bearer " + ("D" * 20)]),
+            "basic": ("Basic " + ("E" * 20) + ".py", ["Basic " + ("E" * 20)]),
+            "url_userinfo": ("https:/user:pass@example.invalid/db.py", ["user:pass"]),
+            "url_token_only": ("redis:/token@example.invalid/db.py", ["token@"]),
+            "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
+        }
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "safe.py").write_text("def safe_entry():\n    return 1\n", encoding="utf-8")
+                    for rel_path, _forbidden in cases.values():
+                        path = root / rel_path
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text("def hidden():\n    return 2\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "safe.py",
+                        "--budget-bytes",
+                        "5000",
+                        "--json",
+                        "--explain",
+                        "--no-artifact",
+                    )
+                    data = json.loads(proc.stdout)
+                    repo_map_text = json.dumps(data["explain"]["repo_map"], ensure_ascii=False, sort_keys=True)
+                    self.assertIn("safe.py", repo_map_text)
+                    combined = proc.stdout + proc.stderr + repo_map_text
+                    for _case, (_rel_path, forbidden_fragments) in cases.items():
+                        for fragment in forbidden_fragments:
+                            self.assertNotIn(fragment, combined)
+
+                    module = load_python_script_module(script, f"context_pack_repo_map_rejected_redact_{PACK_SCRIPTS.index(script)}")
+                    record, omission = module.read_repo_map_text(root, "../https:/user:pass@example.invalid/db.py")
+                    self.assertIsNone(record)
+                    omission_text = json.dumps(omission, ensure_ascii=False, sort_keys=True)
+                    self.assertNotIn("user:pass", omission_text)
+                    self.assertIn("redacted-path#path:", omission_text)
+
+    def test_context_pack_auto_explain_repo_map_omits_retrieval_for_secret_like_root_arg(self):
+        root_arg = "https:/user:pass@example.invalid/repo"
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    root = sandbox / root_arg
+                    root.mkdir(parents=True)
+                    (root / "safe.py").write_text("def safe_entry():\n    return 1\n", encoding="utf-8")
+
+                    proc = self._run_pack(
+                        script,
+                        sandbox,
+                        "auto",
+                        "--root",
+                        root_arg,
+                        "--files",
+                        "safe.py",
+                        "--query",
+                        "safe",
+                        "--budget-bytes",
+                        "5000",
+                        "--json",
+                        "--explain",
+                        "--no-artifact",
+                    )
+                    self.assertNotIn("user:pass", proc.stdout)
+                    self.assertNotIn("user:pass", proc.stderr)
+                    data = json.loads(proc.stdout)
+                    retrieval = data["explain"]["repo_map"]["retrieval"]
+                    self.assertTrue(retrieval)
+                    self.assertTrue(any(item.get("retrieval_omitted_reason") == "unsafe_root_path" for item in retrieval))
+                    self.assertFalse(any("slice_cli" in item for item in retrieval))
+
+    def test_context_pack_auto_explain_repo_map_tolerates_unparseable_python_for_signatures(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "safe.py").write_text("def safe_entry():\n    return 1\n", encoding="utf-8")
+                    (root / "bad.py").write_bytes(b"def before():\n    return 1\n\x00\ndef after():\n    return 2\n")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "safe.py",
+                            "--budget-bytes",
+                            "5000",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    repo_map = data["explain"]["repo_map"]
+                    self.assertEqual(repo_map["schema_version"], "contextguard.pack-repo-map.v1")
+                    self.assertIn("safe.py", json.dumps(repo_map, ensure_ascii=False, sort_keys=True))
+
+    def test_context_pack_auto_explain_repo_map_is_bounded_and_local(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    for index in range(35):
+                        (root / "src" / f"module_{index}.py").write_text(
+                            f"def function_{index}():\n"
+                            f"    return {index}\n"
+                            + ("x" * 5000)
+                            + "\n",
+                            encoding="utf-8",
+                        )
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--query",
+                            "module function",
+                            "--budget-bytes",
+                            "6000",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    repo_map = data["explain"]["repo_map"]
+                    self.assertLessEqual(len(repo_map["token_tree"]), repo_map["caps"]["max_tree_entries"])
+                    self.assertLessEqual(len(repo_map["signature_index"]), repo_map["caps"]["max_signature_entries"])
+                    self.assertLessEqual(len(repo_map["graph_rank"]), repo_map["caps"]["max_graph_rank_entries"])
+                    self.assertLessEqual(len(repo_map["retrieval"]), repo_map["caps"]["max_retrieval_hints"])
+                    self.assertIn("max_bytes_per_file", repo_map["caps"])
+                    self.assertTrue(all(item.get("explain_only") for item in repo_map["graph_rank"]))
+                    payload_text = json.dumps(repo_map, ensure_ascii=False, sort_keys=True).lower()
+                    self.assertNotIn("provider-token savings", payload_text)
+                    self.assertNotIn("network call", payload_text)
+                    self.assertTrue(repo_map["safety"]["no_network"])
+                    self.assertTrue(repo_map["safety"]["no_model_or_embedding"])
+
     def test_context_pack_auto_explain_matches_exact_build_sources_before_fallbacks(self):
         for index, script in enumerate(PACK_SCRIPTS):
             with self.subTest(script=script):
@@ -4820,6 +5107,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         smoke = (ROOT / "scripts" / "release_smoke.py").read_text(encoding="utf-8")
         self.assertIn("--explain", smoke)
         self.assertIn("contextguard.pack-auto-explain.v1", smoke)
+        self.assertIn("contextguard.pack-repo-map.v1", smoke)
 
     def test_context_pack_auto_query_with_no_matches_returns_empty_pack(self):
         for script in PACK_SCRIPTS:
