@@ -10,6 +10,7 @@ retrieval when the path is safe to display.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import hashlib
 import importlib.machinery
@@ -39,6 +40,7 @@ TOKEN_PROXY_CHARS_PER_TOKEN = 4
 SUGGEST_SCHEMA_VERSION = "contextguard.pack-suggest.v1"
 AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
 AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
+REPO_MAP_SCHEMA_VERSION = "contextguard.pack-repo-map.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -47,8 +49,16 @@ SUGGEST_WHOLE_FILE_MAX_LINES = 120
 MAX_SUGGEST_INPUT_BYTES = 256_000
 MAX_QUERY_SCAN_FILES = 2_000
 MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
+MAX_REPO_MAP_FILES = 1_000
+MAX_REPO_MAP_BYTES_PER_FILE = 120_000
+MAX_REPO_MAP_TREE_ENTRIES = 30
+MAX_REPO_MAP_SIGNATURE_ENTRIES = 40
+MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
+MAX_REPO_MAP_RETRIEVAL_HINTS = 30
+MAX_REPO_MAP_SECRET_RISK_FILES = 20
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 SECRET_CONTENT_RE = re.compile(
     r"(?is)("
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|"
@@ -67,6 +77,33 @@ SECRET_CONTENT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+"
     r")"
 )
+SECRET_PATH_COMPONENT_RE = re.compile(
+    r"(?i)("
+    r"SG\.[A-Za-z0-9_-]{16,256}\.[A-Za-z0-9_-]{16,512}|"
+    r"eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}|"
+    r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}|"
+    r"[a-z][a-z0-9+.-]{0,31}:/+(?:[^/\s:@]{0,256}:[^/\s@]{0,2048}|[^/\s@]{1,2048})@"
+    r")"
+)
+SECRET_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("private_key_block", re.compile(r"(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("github_token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{12,}")),
+    ("provider_api_key", re.compile(r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_\-]{20,}")),
+    ("authorization_header", re.compile(r"(?i)Authorization\s*:\s*(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+")),
+    ("generic_secret_assignment", re.compile(r"(?i)(?:api[_-]?key|token|secret|password|client[_-]?secret)\s*[:=]\s*[^\s]+")),
+)
+REPO_MAP_TEXT_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".kts", ".swift", ".c", ".cc", ".cpp", ".h", ".hpp",
+    ".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml", ".sh", ".css", ".html",
+}
+SYMBOL_HINT_EXTENSIONS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
+SIGNATURE_LINE_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(|class\s+([A-Za-z_$][\w$]*)|"
+    r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|"
+    r"func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(|(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\()"
+)
+IMPORT_PATH_RE = re.compile(r"(?:from\s+['\"](?P<jsfrom>[^'\"]+)['\"]|import\s+['\"](?P<jsimport>[^'\"]+)['\"]|from\s+(?P<pyfrom>[A-Za-z_][\w.]*)\s+import|import\s+(?P<pyimport>[A-Za-z_][\w.]*))")
 
 
 @dataclass(frozen=True)
@@ -189,7 +226,7 @@ def path_hash(path: Path) -> str:
 
 
 def sanitize_path_component(component: str) -> tuple[str, bool]:
-    if SECRET_CONTENT_RE.search(component):
+    if CONTROL_CHAR_RE.search(component) or SECRET_CONTENT_RE.search(component) or SECRET_PATH_COMPONENT_RE.search(component):
         return REDACTED_PATH_COMPONENT, True
     return component, False
 
@@ -202,9 +239,12 @@ def display_root(root: Path) -> str:
 
 
 def display_rel_path(rel: str) -> tuple[str, bool]:
+    normalized = rel.replace("\\", "/")
+    if CONTROL_CHAR_RE.search(normalized) or SECRET_PATH_COMPONENT_RE.search(normalized):
+        return f"redacted-path#path:{sha256_text(normalized)[:12]}", True
     parts: list[str] = []
     redacted = False
-    for part in rel.replace("\\", "/").split("/"):
+    for part in normalized.split("/"):
         if not part:
             continue
         safe, did = sanitize_path_component(part)
@@ -357,6 +397,8 @@ def omission(spec: SourceSpec, reason: str, *, path: str | None = None, redacted
 
 def safe_raw_path_label(raw: str) -> str:
     text = raw.replace("\\", "/")
+    if CONTROL_CHAR_RE.search(text) or SECRET_PATH_COMPONENT_RE.search(text):
+        return f"redacted-path#path:{sha256_text(text)[:12]}"
     parts = []
     for part in text.split("/"):
         if part in {"", "."}:
@@ -510,7 +552,7 @@ def retrieval_cli(root_arg: str, display_path: str, lines: LineRange) -> str:
 
 def safe_root_arg_for_retrieval(root_arg: str) -> str | None:
     text = str(root_arg)
-    if SECRET_CONTENT_RE.search(text):
+    if CONTROL_CHAR_RE.search(text) or SECRET_CONTENT_RE.search(text) or SECRET_PATH_COMPONENT_RE.search(text):
         return None
     for part in text.replace("\\", "/").split("/"):
         if not part:
@@ -1686,7 +1728,438 @@ def explain_omission_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]
     )
 
 
-def build_auto_explain_payload(args: argparse.Namespace, suggest_payload: dict[str, Any], build_payload: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def sanitize_explain_text(value: str, *, limit: int = MAX_LABEL_CHARS) -> str:
+    sanitized, _redacted = sanitize_text(str(value))
+    return cap_label(sanitized, default="", limit=limit) or ""
+
+
+def is_repo_map_text_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    if name in {"readme", "license", "dockerfile", "makefile"}:
+        return True
+    return Path(path).suffix.lower() in REPO_MAP_TEXT_EXTENSIONS
+
+
+def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    rel, reason = lexical_rel(rel_path)
+    if rel is None:
+        return None, {"path": safe_raw_path_label(rel_path), "reason": reason}
+    display, redacted_path = display_rel_path(rel.as_posix())
+    if not is_repo_map_text_path(display):
+        return None, {"path": display, "reason": "unsupported_file_type"}
+    handle, open_reason = open_regular_under_root(root, rel)
+    if handle is None:
+        return None, {"path": display, "reason": open_reason, "retrieval_omitted_reason": "redacted_path" if redacted_path else None}
+    try:
+        with handle:
+            text = handle.read(MAX_REPO_MAP_BYTES_PER_FILE + 1)
+    except (OSError, UnicodeError):
+        return None, {"path": display, "reason": "unsafe_path", "retrieval_omitted_reason": "redacted_path" if redacted_path else None}
+    capped = byte_len(text) > MAX_REPO_MAP_BYTES_PER_FILE
+    if capped:
+        text = text.encode("utf-8", errors="replace")[:MAX_REPO_MAP_BYTES_PER_FILE].decode("utf-8", errors="ignore")
+    risk_counts = secret_risk_counts(text)
+    sanitized_text, redacted_lines = sanitize_text(text)
+    return {
+        "path": display,
+        "raw_path": rel.as_posix(),
+        "redacted_path": redacted_path,
+        "text": sanitized_text,
+        "bytes": byte_len(sanitized_text),
+        "bytes_capped": capped,
+        "line_count": len(sanitized_text.splitlines()) or (1 if sanitized_text else 0),
+        "redacted_lines": redacted_lines,
+        "secret_risk_counts": risk_counts,
+    }, None
+
+
+def repo_map_records(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    paths = git_ls_files(root)
+    path_cap_reached = len(paths) > MAX_REPO_MAP_FILES
+    records: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    for rel_path in paths[:MAX_REPO_MAP_FILES]:
+        record, omission_item = read_repo_map_text(root, rel_path)
+        if record is not None:
+            records.append(record)
+        elif omission_item is not None and omission_item.get("reason") != "unsupported_file_type":
+            omitted.append({key: value for key, value in omission_item.items() if value is not None})
+    caps = {
+        "max_files": MAX_REPO_MAP_FILES,
+        "files_capped": path_cap_reached,
+        "max_bytes_per_file": MAX_REPO_MAP_BYTES_PER_FILE,
+        "bytes_per_file_capped_count": sum(1 for item in records if item.get("bytes_capped")),
+        "max_tree_entries": MAX_REPO_MAP_TREE_ENTRIES,
+        "max_signature_entries": MAX_REPO_MAP_SIGNATURE_ENTRIES,
+        "max_graph_rank_entries": MAX_REPO_MAP_GRAPH_RANK_ENTRIES,
+        "max_retrieval_hints": MAX_REPO_MAP_RETRIEVAL_HINTS,
+        "max_secret_risk_files": MAX_REPO_MAP_SECRET_RISK_FILES,
+    }
+    return records, omitted, caps
+
+
+def secret_risk_counts(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name, pattern in SECRET_RISK_PATTERNS:
+        found = len(pattern.findall(text))
+        if found:
+            counts[name] = found
+    return counts
+
+
+def build_secret_scan(records: list[dict[str, Any]]) -> dict[str, Any]:
+    risk_counts: dict[str, int] = {}
+    files: list[dict[str, Any]] = []
+    for record in records:
+        counts = dict(record.get("secret_risk_counts", {}) if isinstance(record.get("secret_risk_counts"), dict) else {})
+        if not counts:
+            continue
+        for name, count in counts.items():
+            risk_counts[name] = risk_counts.get(name, 0) + count
+        files.append({
+            "path": record["path"],
+            "counts": counts,
+            "redacted_path": bool(record.get("redacted_path")),
+        })
+    files.sort(key=lambda item: (-sum(item["counts"].values()), item["path"]))
+    return {
+        "risk_counts": dict(sorted(risk_counts.items())),
+        "files_with_risks": files[:MAX_REPO_MAP_SECRET_RISK_FILES],
+        "files_omitted_by_cap": max(0, len(files) - MAX_REPO_MAP_SECRET_RISK_FILES),
+        "caveat": "Counts are local best-effort secret-pattern risk signals; raw matched values are never emitted.",
+    }
+
+
+def build_token_tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    directory_totals: dict[str, dict[str, int]] = {}
+    file_entries: list[dict[str, Any]] = []
+    for record in records:
+        path = str(record["path"])
+        bytes_count = int(record.get("bytes", 0) or 0)
+        file_entries.append({
+            "kind": "file",
+            "path": path,
+            "bytes": bytes_count,
+            "token_proxy": token_proxy(str(record.get("text", ""))),
+            "line_count": int(record.get("line_count", 0) or 0),
+            "bytes_capped": bool(record.get("bytes_capped")),
+        })
+        parts = path.split("/")
+        if len(parts) > 1:
+            prefix = ""
+            for part in parts[:-1]:
+                prefix = part if not prefix else f"{prefix}/{part}"
+                bucket = directory_totals.setdefault(prefix, {"bytes": 0, "file_count": 0})
+                bucket["bytes"] += bytes_count
+                bucket["file_count"] += 1
+    directory_entries = [
+        {
+            "kind": "directory",
+            "path": path,
+            "bytes": data["bytes"],
+            "token_proxy": max(0, round(data["bytes"] / TOKEN_PROXY_CHARS_PER_TOKEN)),
+            "file_count": data["file_count"],
+        }
+        for path, data in directory_totals.items()
+    ]
+    entries = directory_entries + file_entries
+    entries.sort(key=lambda item: (-int(item.get("bytes", 0) or 0), str(item.get("path", ""))))
+    return entries[:MAX_REPO_MAP_TREE_ENTRIES]
+
+
+def signature_range(line_number: int, total_lines: int) -> LineRange:
+    return LineRange(max(1, line_number), min(max(1, total_lines), max(1, line_number) + 24))
+
+
+def signature_entry(record: dict[str, Any], *, kind: str, name: str, raw_signature: str, line_number: int) -> dict[str, Any]:
+    total_lines = int(record.get("line_count", 0) or 1)
+    line_range = signature_range(line_number, total_lines)
+    return {
+        "path": record["path"],
+        "kind": kind,
+        "name": sanitize_explain_text(name, limit=80),
+        "signature": sanitize_explain_text(raw_signature, limit=180),
+        "line": line_number,
+        "lines": line_range.as_dict(),
+    }
+
+
+def python_signatures(record: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return []
+    lines = text.splitlines()
+    out: list[dict[str, Any]] = []
+    for node in module.body:
+        if isinstance(node, ast.ClassDef):
+            raw = lines[node.lineno - 1].strip() if 0 < node.lineno <= len(lines) else f"class {node.name}"
+            out.append(signature_entry(record, kind="class", name=node.name, raw_signature=raw, line_number=node.lineno))
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    raw_child = lines[child.lineno - 1].strip() if 0 < child.lineno <= len(lines) else f"def {child.name}"
+                    out.append(signature_entry(record, kind="method", name=child.name, raw_signature=raw_child, line_number=child.lineno))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raw = lines[node.lineno - 1].strip() if 0 < node.lineno <= len(lines) else f"def {node.name}"
+            out.append(signature_entry(record, kind="function", name=node.name, raw_signature=raw, line_number=node.lineno))
+    return out
+
+
+def regex_signatures(record: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    suffix = Path(str(record.get("path", ""))).suffix.lower()
+    for index, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.strip()
+        if suffix in {".md", ".mdx"}:
+            heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+            if heading:
+                out.append(signature_entry(record, kind="heading", name=heading.group(2), raw_signature=stripped, line_number=index))
+            continue
+        match = SIGNATURE_LINE_RE.match(raw)
+        if not match:
+            continue
+        name = next((group for group in match.groups() if group), "signature")
+        kind = "class" if re.search(r"\bclass\s+" + re.escape(name), raw) else "function"
+        out.append(signature_entry(record, kind=kind, name=name, raw_signature=stripped, line_number=index))
+    return out
+
+
+def extract_signatures(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    signatures: list[dict[str, Any]] = []
+    for record in records:
+        text = str(record.get("text", ""))
+        suffix = Path(str(record.get("path", ""))).suffix.lower()
+        if suffix == ".py":
+            parsed = python_signatures(record, text)
+            if parsed:
+                signatures.extend(parsed)
+                continue
+        signatures.extend(regex_signatures(record, text))
+    signatures.sort(key=lambda item: (str(item.get("path", "")), int(item.get("line", 0) or 0), str(item.get("name", ""))))
+    return signatures[:MAX_REPO_MAP_SIGNATURE_ENTRIES]
+
+
+def resolve_import_target(raw_target: str, source_path: str, known_paths: set[str]) -> str | None:
+    target = raw_target.strip()
+    if not target:
+        return None
+    candidates: list[str] = []
+    source_dir = Path(source_path).parent
+    if target.startswith("."):
+        base = (source_dir / target).as_posix()
+        candidates.extend([base, f"{base}.py", f"{base}.ts", f"{base}.tsx", f"{base}.js", f"{base}.jsx", f"{base}/index.ts", f"{base}/index.js"])
+    else:
+        module_path = target.replace(".", "/")
+        candidates.extend([f"{module_path}.py", f"{module_path}.ts", f"{module_path}.tsx", f"{module_path}.js", f"{module_path}.jsx", f"{module_path}/index.ts", f"{module_path}/index.js"])
+    for candidate in candidates:
+        normalized = Path(candidate).as_posix().lstrip("./")
+        if normalized in known_paths:
+            return normalized
+    return None
+
+
+def collect_import_edges(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    known = {str(record.get("path", "")) for record in records}
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        source = str(record.get("path", ""))
+        for match in IMPORT_PATH_RE.finditer(str(record.get("text", ""))):
+            raw_target = next((value for value in match.groupdict().values() if value), "")
+            target = resolve_import_target(raw_target, source, known)
+            if target is None or target == source:
+                continue
+            edge = (source, target)
+            if edge in seen:
+                continue
+            seen.add(edge)
+            edges.append({"from": source, "to": target})
+            if len(edges) >= MAX_REPO_MAP_FILES:
+                return edges
+    return edges
+
+
+def repo_map_seed_paths(args: argparse.Namespace, suggest_payload: dict[str, Any], build_payload: dict[str, Any]) -> set[str]:
+    seeds: set[str] = set()
+    for raw in split_suggest_files(getattr(args, "files", None)):
+        rel, _reason = lexical_rel(raw)
+        if rel is not None:
+            display, redacted = display_rel_path(rel.as_posix())
+            if not redacted:
+                seeds.add(display)
+    for source in suggest_payload.get("sources", []):
+        if isinstance(source, dict) and isinstance(source.get("path"), str):
+            seeds.add(source["path"])
+    for source in build_payload.get("included_sources", []):
+        if isinstance(source, dict) and isinstance(source.get("path"), str):
+            seeds.add(source["path"])
+    return seeds
+
+
+def build_graph_rank(
+    records: list[dict[str, Any]],
+    signatures: list[dict[str, Any]],
+    edges: list[dict[str, str]],
+    *,
+    query_terms: set[str],
+    seed_paths: set[str],
+    secret_scan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    signature_paths = {str(item.get("path", "")) for item in signatures}
+    secret_paths = {str(item.get("path", "")) for item in secret_scan.get("files_with_risks", []) if isinstance(item, dict)}
+    degree: dict[str, int] = {}
+    for edge in edges:
+        degree[edge["from"]] = degree.get(edge["from"], 0) + 1
+        degree[edge["to"]] = degree.get(edge["to"], 0) + 1
+    ranked: list[dict[str, Any]] = []
+    for record in records:
+        path = str(record.get("path", ""))
+        text = str(record.get("text", "")).lower()
+        components = {
+            "seed": 1000 if path in seed_paths else 0,
+            "query_path": suggest_score_path(path, query_terms),
+            "query_content": min(500, 25 * sum(text.count(term) for term in query_terms)),
+            "signature": 80 if path in signature_paths else 0,
+            "graph_degree": 25 * degree.get(path, 0),
+            "secret_risk_penalty": -25 if path in secret_paths else 0,
+        }
+        score = sum(components.values())
+        if score <= 0:
+            continue
+        ranked.append({
+            "path": path,
+            "score": score,
+            "components": components,
+            "explain_only": True,
+            "line_count": int(record.get("line_count", 0) or 0),
+        })
+    ranked.sort(key=lambda item: (-int(item["score"]), str(item["path"])))
+    return ranked[:MAX_REPO_MAP_GRAPH_RANK_ENTRIES]
+
+
+def repo_map_retrieval(
+    record_by_path: dict[str, dict[str, Any]],
+    signatures: list[dict[str, Any]],
+    graph_rank: list[dict[str, Any]],
+    *,
+    root_arg: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(path: str, line_range: LineRange, source: str, name: str | None = None) -> None:
+        record = record_by_path.get(path)
+        if record is None:
+            return
+        retrieval, reason = retrieval_for(root_arg, path, line_range, redacted_path=bool(record.get("redacted_path")))
+        key = (path, line_range.identity(), source)
+        if key in seen:
+            return
+        seen.add(key)
+        item: dict[str, Any] = {"path": path, "source": source, "lines": line_range.as_dict()}
+        if retrieval:
+            item["slice_cli"] = retrieval
+        elif reason:
+            item["retrieval_omitted_reason"] = reason
+        if name and retrieval and Path(path).suffix.lower() in SYMBOL_HINT_EXTENSIONS:
+            item["symbol_cli"] = " ".join(shlex.quote(part) for part in ["context-guard-read-symbol", "--json", path, name])
+        out.append(item)
+
+    for signature in signatures:
+        lines = signature.get("lines")
+        if isinstance(lines, dict):
+            try:
+                line_range = LineRange(int(lines.get("start")), int(lines.get("end")))
+            except (TypeError, ValueError):
+                continue
+            add(str(signature.get("path", "")), line_range, "signature", str(signature.get("name", "")) or None)
+        if len(out) >= MAX_REPO_MAP_RETRIEVAL_HINTS:
+            return out[:MAX_REPO_MAP_RETRIEVAL_HINTS]
+    for item in graph_rank:
+        path = str(item.get("path", ""))
+        record = record_by_path.get(path)
+        if record is None:
+            continue
+        total = int(record.get("line_count", 0) or 1)
+        add(path, LineRange(1, min(total, 80)), "graph_rank")
+        if len(out) >= MAX_REPO_MAP_RETRIEVAL_HINTS:
+            break
+    return out[:MAX_REPO_MAP_RETRIEVAL_HINTS]
+
+
+def build_repo_map_payload(
+    root: Path,
+    args: argparse.Namespace,
+    suggest_payload: dict[str, Any],
+    build_payload: dict[str, Any],
+    *,
+    root_arg: str,
+) -> dict[str, Any]:
+    records, omitted, caps = repo_map_records(root)
+    record_by_path = {str(record["path"]): record for record in records}
+    signatures = extract_signatures(records)
+    secret_scan = build_secret_scan(records)
+    edges = collect_import_edges(records)
+    query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
+    graph_rank = build_graph_rank(
+        records,
+        signatures,
+        edges,
+        query_terms=query_terms,
+        seed_paths=repo_map_seed_paths(args, suggest_payload, build_payload),
+        secret_scan=secret_scan,
+    )
+    retrieval = repo_map_retrieval(record_by_path, signatures, graph_rank, root_arg=root_arg)
+    tree = build_token_tree(records)
+    total_bytes = sum(int(record.get("bytes", 0) or 0) for record in records)
+    return {
+        "schema_version": REPO_MAP_SCHEMA_VERSION,
+        "summary": {
+            "files_scanned": len(records),
+            "files_capped": bool(caps["files_capped"]),
+            "bytes_per_file_capped_count": int(caps["bytes_per_file_capped_count"]),
+            "tree_bytes": total_bytes,
+            "tree_token_proxy": sum(int(item.get("token_proxy", 0) or 0) for item in tree),
+            "signature_files": len({str(item.get("path", "")) for item in signatures}),
+            "signature_count": len(signatures),
+            "secret_risk_files": len(secret_scan.get("files_with_risks", [])),
+            "graph_edges": len(edges),
+        },
+        "caps": caps,
+        "token_tree": tree,
+        "secret_scan": secret_scan,
+        "signature_index": signatures,
+        "graph": {
+            "edges": edges[:MAX_REPO_MAP_GRAPH_RANK_ENTRIES],
+            "edges_omitted_by_cap": max(0, len(edges) - MAX_REPO_MAP_GRAPH_RANK_ENTRIES),
+        },
+        "graph_rank": graph_rank,
+        "retrieval": retrieval,
+        "omitted_files": omitted[:MAX_REPO_MAP_TREE_ENTRIES],
+        "safety": {
+            "deterministic_local_only": True,
+            "no_network": True,
+            "no_model_or_embedding": True,
+            "explain_only": True,
+            "redacted_before_output": True,
+            "tree_sitter": {"status": "unavailable_without_optional_dependency", "fallback": "python_ast_and_regex_signatures"},
+            "caveats": [
+                "Repo-map bytes are local sampled UTF-8 bytes and estimated chars_div_4 token proxies, not provider-token or savings claims.",
+                "Graph ranking is deterministic explain metadata only; it does not change pack selection in this stage.",
+            ],
+        },
+    }
+
+
+def build_auto_explain_payload(
+    args: argparse.Namespace,
+    suggest_payload: dict[str, Any],
+    build_payload: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    root: Path | None = None,
+    root_arg: str = ".",
+) -> dict[str, Any]:
     build_sources = [
         item
         for item in build_payload.get("included_sources", [])
@@ -1763,7 +2236,7 @@ def build_auto_explain_payload(args: argparse.Namespace, suggest_payload: dict[s
     explicit_files = split_suggest_files(args.files)
     query = str(suggest_payload.get("query", ""))
     diff_label = cap_label(args.diff) if getattr(args, "diff", None) else None
-    return {
+    explain = {
         "schema_version": AUTO_EXPLAIN_SCHEMA_VERSION,
         "summary": {
             "suggested": int(auto_source_counts.get("suggested", len(selection)) or 0),
@@ -1813,6 +2286,9 @@ def build_auto_explain_payload(args: argparse.Namespace, suggest_payload: dict[s
             "raw_test_output_embedded": False,
         },
     }
+    if root is not None:
+        explain["repo_map"] = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    return explain
 
 
 def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
@@ -1898,7 +2374,7 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
     if args.explain:
-        payload["explain"] = build_auto_explain_payload(args, suggest_payload, build_payload, payload)
+        payload["explain"] = build_auto_explain_payload(args, suggest_payload, build_payload, payload, root=root, root_arg=root_arg)
     return payload, rc
 
 

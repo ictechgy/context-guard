@@ -499,6 +499,12 @@ def check_auto_explain_smoke(proc: subprocess.CompletedProcess[str], command: st
     if not isinstance(explain, dict):
         fail(f"{command} JSON missing explain object")
     check_json_field(explain, "schema_version", "contextguard.pack-auto-explain.v1", command)
+    repo_map = explain.get("repo_map")
+    if not isinstance(repo_map, dict):
+        fail(f"{command} JSON missing explain.repo_map object")
+    check_json_field(repo_map, "schema_version", "contextguard.pack-repo-map.v1", command)
+    if repo_map.get("safety", {}).get("explain_only") is not True:
+        fail(f"{command} repo_map should be explain-only")
     if data.get("build", {}).get("artifact", {}).get("stored") is not False:
         fail(f"{command} should not store an artifact in release smoke")
     if data.get("manifest", {}).get("version") != 1:
