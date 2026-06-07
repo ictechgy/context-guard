@@ -8,7 +8,7 @@ Claude Code CLI 토큰 절감을 위한 실험용 도구 모음입니다. 모두
 - `trim_command_output.py` — 긴 명령 output을 head/tail/error와 pytest/Jest/Vitest/Go/Rust 실패 요약 중심으로 축약하고 원래 exit code 보존
 - `rewrite_bash_for_token_budget.py` — Claude Code `PreToolUse` hook에서 test/build/lint 명령을 wrapper로 감쌈
 - `claude_transcript_cost_audit.py` — `~/.claude/projects` JSONL transcript에서 usage/cost/cache field와 cache-friendly prompt layout 신호를 집계하고 `--recommend`로 절감 액션 제안
-- `context_guard_diet.py` — project `.claude/settings.json` deny/hook/statusline, 여러 AI 에이전트 rule file의 context bloat, local context-exclusion 추천을 스캔
+- `context_guard_diet.py` — project `.claude/settings.json` deny/hook/statusline, 여러 AI 에이전트 rule file의 context bloat, local context-exclusion 추천, structural-waste 진단을 스캔
 - `guard_large_read.py` — Claude Code `PreToolUse` Read hook에서 큰 파일 전체 읽기를 막고 symbol/line-range 읽기로 유도
 - `read_symbol.py` — Python/JS/TS/Go/Rust 파일에서 지정 symbol 주변만 출력
 - `sanitize_output.py` — `rg`/`grep`/`git diff` 같은 검색·diff output에서 credential을 redact하고 head/anchor/tail로 축약
@@ -28,6 +28,7 @@ python3 context-guard-kit/trim_command_output.py --max-lines 80 -- pytest tests 
 python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
 python3 context-guard-kit/setup_wizard.py
 python3 context-guard-kit/context_guard_diet.py scan . --json
+python3 context-guard-kit/context_guard_diet.py structural-waste . --tool-catalog tools.json --log-path .claude --json
 python3 context-guard-kit/read_symbol.py path/to/file.py TargetSymbol
 long-command 2>&1 | python3 context-guard-kit/context_escrow.py store --command "long-command" --json
 python3 context-guard-kit/context_escrow.py get <artifact_id> --lines 1:80
@@ -62,6 +63,8 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 노출됩니다. JSON summary/feasibility 출력의 `cache_friendliness`는 제한된 정제 segment hash로 안정적인 prefix와 volatile prefix/tail 신호를 비교하는 휴리스틱입니다. 원문 prompt text는 출력하지 않고, provider cache token field는 ContextGuard가 만든 토큰 절감 증거가 아니라 별도 진단 텔레메트리로 해석하세요.
 
 `context_guard_diet.py scan`은 항상 로컬에서만 읽는 read-only 스캐너입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--top`은 보고서의 context-like file 목록과 context-exclusion recommendation 목록에 공통으로 적용됩니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
+
+`context_guard_diet.py structural-waste`는 opt-in read-only 구조 진단입니다. context/rule file의 중복 rule unit, stale Python import 후보, unused skill 후보, MCP/tool schema 과다, local JSON/JSONL log의 반복 file read·중복 tool call을 bounded scan으로 보고합니다. 네트워크 호출이나 삭제/수정은 하지 않고, 기본 출력은 raw prompt/tool input/command를 출력하지 않으며 secret-shaped path component를 redaction합니다. import/skill 결과는 동적 사용을 놓칠 수 있는 advisory 후보로만 다루세요.
 
 `context_pack.py suggest`가 쓰는 manifest는 그대로 `context_pack.py build --manifest suggested-pack.json`에 넣을 수 있습니다. `context_pack.py build`의 retrieval command는 path/root를 안전하게 표시할 수 있을 때만 출력됩니다. 안전하지 않으면 pack 본문과 JSON source metadata에 `retrieval_omitted_reason`을 기록합니다. `token_proxy`는 렌더링된 pack 문자 수를 `chars_div_4`로 나눈 추정치이며, provider가 실제로 청구/소모한 token 측정값이 아닙니다.
 

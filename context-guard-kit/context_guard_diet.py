@@ -9,6 +9,8 @@ burn during noisy command runs.
 from __future__ import annotations
 
 import argparse
+import ast
+from collections import Counter, defaultdict
 import errno
 import hashlib
 import json
@@ -71,6 +73,22 @@ MAX_SETTINGS_READ_BYTES = 256_000
 DEFAULT_LARGE_CONTEXT_BYTES = 16_000
 DEFAULT_HUGE_CONTEXT_BYTES = 64_000
 DEFAULT_LONG_CONTEXT_LINES = 300
+STRUCTURAL_WASTE_SCHEMA_VERSION = "contextguard.structural-waste.v1"
+DEFAULT_STRUCTURAL_WASTE_TOP = 20
+DEFAULT_DUPLICATE_RULE_MIN_CHARS = 48
+DEFAULT_DUPLICATE_CALL_THRESHOLD = 3
+DEFAULT_MCP_SERVER_THRESHOLD = 6
+DEFAULT_TOOL_COUNT_THRESHOLD = 40
+DEFAULT_LARGE_SCHEMA_BYTES = 12_000
+DEFAULT_MAX_TOOL_CATALOG_BYTES = 1_000_000
+DEFAULT_MAX_LOG_BYTES = 5_000_000
+DEFAULT_MAX_LOG_LINE_BYTES = 1_000_000
+DEFAULT_MAX_STRUCTURAL_FILES = 2_000
+TEXT_REFERENCE_SUFFIXES = {".md", ".txt", ".json", ".toml", ".yaml", ".yml", ".py", ".js", ".ts", ".tsx", ".jsx", ".sh"}
+TOOL_CALL_NAME_KEYS = ("tool_name", "toolName", "tool")
+TOOL_CALL_INPUT_KEYS = ("tool_input", "input", "arguments", "args", "parameters")
+READ_TOOL_NAMES = {"read", "read_file", "fileread", "view_file", "open_file", "get_file", "functions.get_file"}
+FILE_PATH_KEYS = {"file_path", "filepath", "path", "absolute_path", "relative_path", "file"}
 
 HEAVY_PROJECT_DENIES: tuple[tuple[str, str, str], ...] = (
     ("node_modules", "node_modules", "Read(./node_modules/**)"),
@@ -945,6 +963,625 @@ def scan_context(root: Path, large_bytes: int, huge_bytes: int, long_lines: int)
     return context_files, findings
 
 
+def bounded_top(value: int) -> int:
+    return max(1, min(int(value), 200))
+
+
+def path_text_label(path_text: str, show_paths: bool) -> str:
+    sanitized = sanitize_path_text(str(path_text))
+    if show_paths:
+        return sanitized
+    name = sanitize_path_component(Path(sanitized).name or "path")
+    return f"{name}#path:{text_hash(sanitized)}"
+
+
+def json_byte_len(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8", "replace"))
+
+
+def iter_project_files(root: Path, suffixes: set[str], max_files: int) -> Iterable[Path]:
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in EXCLUDED_DIR_NAMES and not (current / name).is_symlink()
+        ]
+        for name in filenames:
+            path = current / name
+            if path.is_symlink() or path.suffix.lower() not in suffixes:
+                continue
+            yield path
+            seen += 1
+            if seen >= max_files:
+                return
+
+
+def walk_json(value: Any) -> Iterable[dict[str, Any]]:
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            yield current
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
+def normalize_rule_unit(line: str, min_chars: int) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped in {"```", "---"}:
+        return None
+    stripped = re.sub(r"^[-*+>]\s+", "", stripped)
+    stripped = re.sub(r"^\d+[.)]\s+", "", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip().lower()
+    if len(stripped) < min_chars:
+        return None
+    if len(stripped.split()) < 6:
+        return None
+    return stripped
+
+
+def scan_duplicate_rules(root: Path, *, min_chars: int, top: int) -> tuple[list[dict[str, Any]], list[Finding]]:
+    occurrences: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for path in sorted(iter_context_files(root), key=lambda p: rel_path(p, root)):
+        rel = rel_path(path, root)
+        try:
+            text, truncated = read_text_prefix(path, root=root)
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), 1):
+            normalized = normalize_rule_unit(line, min_chars)
+            if normalized is None:
+                continue
+            occurrences[normalized].append({"path": rel, "line": line_no, "sample_truncated": truncated})
+    groups: list[dict[str, Any]] = []
+    findings: list[Finding] = []
+    for normalized, items in occurrences.items():
+        paths = sorted({item["path"] for item in items})
+        if len(items) < 2 or len(paths) < 2:
+            continue
+        fingerprint = text_hash(normalized)
+        group = {
+            "fingerprint": fingerprint,
+            "occurrence_count": len(items),
+            "path_count": len(paths),
+            "paths": paths[:top],
+            "sample_chars": len(normalized),
+            "confidence": "observed",
+        }
+        groups.append(group)
+        findings.append(Finding(
+            f"duplicate-context-rule-{fingerprint}",
+            "low" if len(items) < 4 else "medium",
+            "context-rules",
+            "A normalized instruction/rule unit appears in multiple context-like files.",
+            "Keep one canonical copy and replace duplicates with a short pointer if the rule is still needed.",
+            group,
+            rule_id="duplicate-context-rule",
+            instance_id=f"duplicate-context-rule-{fingerprint}",
+        ))
+    groups.sort(key=lambda item: (-item["occurrence_count"], item["fingerprint"]))
+    findings.sort(key=lambda item: (SEVERITY_ORDER.get(item.severity, 99), item.id))
+    return groups[:top], findings[:top]
+
+
+def assigned_all_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, (ast.List, ast.Tuple)):
+                    for item in node.value.elts:
+                        if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                            names.add(item.value)
+    return names
+
+
+def scan_python_imports(root: Path, *, top: int, max_files: int) -> tuple[dict[str, Any], list[Finding]]:
+    findings: list[Finding] = []
+    files_scanned = 0
+    parse_errors = 0
+    for path in iter_project_files(root, {".py"}, max_files):
+        files_scanned += 1
+        rel = rel_path(path, root)
+        try:
+            text, _ = read_text_prefix(path, limit=MAX_CONTEXT_READ_BYTES, root=root)
+            tree = ast.parse(text, filename=rel)
+        except (OSError, SyntaxError, ValueError):
+            parse_errors += 1
+            continue
+        imports: list[tuple[str, int, str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname or alias.name.split(".", 1)[0]
+                    if not name.startswith("_"):
+                        imports.append((name, node.lineno, alias.name))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "__future__":
+                    continue
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    name = alias.asname or alias.name
+                    if not name.startswith("_"):
+                        imports.append((name, node.lineno, f"{node.module or ''}.{alias.name}".strip(".")))
+        if not imports:
+            continue
+        used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | assigned_all_names(tree)
+        for name, line, module in imports:
+            if name in used:
+                continue
+            instance = f"stale-python-import-{text_hash(f'{rel}:{line}:{name}')}"
+            findings.append(Finding(
+                instance,
+                "low",
+                rel,
+                f"Python import `{name}` appears unused in static AST analysis.",
+                "Review before removing; dynamic imports, re-exports, and type-checking paths can make this a false positive.",
+                {"imported_name": name, "module": module, "line": line, "confidence": "advisory-static-ast"},
+                rule_id="stale-python-import",
+                instance_id=instance,
+            ))
+            if len(findings) >= top:
+                break
+        if len(findings) >= top:
+            break
+    return {"files_scanned": files_scanned, "parse_errors": parse_errors, "unused_imports": [f.as_dict() for f in findings]}, findings
+
+
+def iter_skill_files(root: Path, max_files: int) -> Iterable[Path]:
+    count = 0
+    for path in iter_project_files(root, {".md"}, max_files):
+        if path.name == "SKILL.md" and "skills" in path.parts:
+            yield path
+            count += 1
+            if count >= max_files:
+                return
+
+
+def safe_read_reference_text(path: Path, root: Path) -> str:
+    try:
+        text, _ = read_text_prefix(path, limit=128_000, root=root)
+        return text.lower()
+    except OSError:
+        return ""
+
+
+def scan_unused_skills(root: Path, *, top: int, max_files: int) -> tuple[dict[str, Any], list[Finding]]:
+    skill_files = list(iter_skill_files(root, max_files))
+    reference_files = [path for path in iter_project_files(root, TEXT_REFERENCE_SUFFIXES, max_files) if path.name != "SKILL.md"]
+    reference_cache = {path: safe_read_reference_text(path, root) for path in reference_files}
+    findings: list[Finding] = []
+    candidates: list[dict[str, Any]] = []
+    for skill in skill_files:
+        skill_name = skill.parent.name
+        needle_forms = {skill_name.lower(), f"/{skill_name.lower()}", f"context-guard:{skill_name.lower()}"}
+        references = 0
+        for ref_path, text in reference_cache.items():
+            if ref_path == skill:
+                continue
+            if any(needle in text for needle in needle_forms):
+                references += 1
+        if references:
+            continue
+        rel = rel_path(skill, root)
+        candidate = {"path": rel, "skill": skill_name, "reference_count": 0, "confidence": "low-advisory"}
+        candidates.append(candidate)
+        instance = f"unused-skill-candidate-{text_hash(rel)}"
+        findings.append(Finding(
+            instance,
+            "low",
+            rel,
+            "Skill file has no obvious project-local references outside its own SKILL.md.",
+            "Confirm real usage through plugin manifests, user docs, or runtime telemetry before deleting or renaming it.",
+            candidate,
+            rule_id="unused-skill-candidate",
+            instance_id=instance,
+        ))
+        if len(findings) >= top:
+            break
+    return {"skills_scanned": len(skill_files), "reference_files_scanned": len(reference_files), "unused_candidates": candidates[:top]}, findings
+
+
+def read_json_file_limited(path: Path, max_bytes: int) -> tuple[Any | None, str | None, int]:
+    try:
+        with open_regular_no_follow(path) as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > max_bytes:
+                return None, f"skipped oversized file ({size} bytes > {max_bytes})", size
+            data = handle.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            return None, f"skipped oversized file (> {max_bytes} bytes)", len(data)
+        return json.loads(data.decode("utf-8", "replace")), None, len(data)
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON at line {exc.lineno}: {exc.msg}", 0
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, f"unreadable: {format_os_error(exc) if isinstance(exc, OSError) else exc.__class__.__name__}", 0
+
+
+def tool_name_from_schema(d: dict[str, Any]) -> str | None:
+    for key in ("name", "tool", "id", "title"):
+        value = d.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:160]
+    return None
+
+
+def collect_tool_schemas(raw: Any) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    for d in walk_json(raw):
+        name = tool_name_from_schema(d)
+        if not name:
+            continue
+        if not any(key in d for key in ("inputSchema", "input_schema", "schema", "parameters", "description")):
+            continue
+        tools.append({"name": name, "schema_bytes": json_byte_len(d), "server": d.get("server") if isinstance(d.get("server"), str) else None})
+    dedup: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for tool in tools:
+        key = (tool["name"], tool.get("server"))
+        prior = dedup.get(key)
+        if prior is None or int(tool["schema_bytes"]) > int(prior["schema_bytes"]):
+            dedup[key] = tool
+    return list(dedup.values())
+
+
+def scan_tool_catalogs(root: Path, args: argparse.Namespace, settings: list[dict[str, Any]], *, top: int) -> tuple[dict[str, Any], list[Finding]]:
+    findings: list[Finding] = []
+    catalogs: list[dict[str, Any]] = []
+    merged = merged_settings(settings)
+    mcp_servers = merged.get("mcpServers") if isinstance(merged.get("mcpServers"), dict) else {}
+    if len(mcp_servers) >= args.mcp_server_threshold:
+        evidence = {"mcp_server_count": len(mcp_servers), "threshold": args.mcp_server_threshold, "confidence": "observed-settings"}
+        findings.append(Finding(
+            "excessive-mcp-servers",
+            "low",
+            ".claude/settings.json",
+            "Project Claude settings configure many MCP servers, which can increase tool discovery/schema overhead.",
+            "Disable unused MCP servers for sessions that do not need them; keep this advisory until task-specific need is known.",
+            evidence,
+            rule_id="excessive-mcp-servers",
+            instance_id="excessive-mcp-servers",
+        ))
+    for raw_path in getattr(args, "tool_catalog", []) or []:
+        path = safe_resolve(Path(raw_path).expanduser())
+        label = path_text_label(str(path), args.show_paths)
+        raw, error, size = read_json_file_limited(path, args.max_tool_catalog_bytes)
+        if error:
+            catalogs.append({"path": label, "status": "skipped", "reason": error, "bytes": size})
+            continue
+        tools = collect_tool_schemas(raw)
+        total_schema_bytes = sum(int(tool["schema_bytes"]) for tool in tools)
+        large_tools = sorted([tool for tool in tools if int(tool["schema_bytes"]) >= args.large_schema_bytes], key=lambda item: (-int(item["schema_bytes"]), item["name"]))[:top]
+        catalog = {"path": label, "status": "scanned", "tool_count": len(tools), "schema_bytes": total_schema_bytes, "large_schema_tools": large_tools}
+        catalogs.append(catalog)
+        if len(tools) >= args.tool_count_threshold:
+            instance = f"excessive-tool-catalog-{text_hash(label)}"
+            findings.append(Finding(
+                instance,
+                "medium",
+                label,
+                "Local tool catalog contains many tools for one task context.",
+                "Use context-guard-tool-prune or a task-specific tool allowlist before injecting full schemas.",
+                {"tool_count": len(tools), "threshold": args.tool_count_threshold, "schema_bytes": total_schema_bytes, "confidence": "observed-catalog"},
+                rule_id="excessive-tool-catalog",
+                instance_id=instance,
+            ))
+        for tool in large_tools:
+            instance = f"large-tool-schema-{text_hash(label + ':' + tool['name'])}"
+            findings.append(Finding(
+                instance,
+                "low",
+                label,
+                "A local tool schema is large enough to dominate narrow task context.",
+                "Prefer a bounded top-k schema report and retrieve the full sanitized schema only when needed.",
+                {"tool_name": tool["name"], "schema_bytes": tool["schema_bytes"], "threshold": args.large_schema_bytes, "confidence": "observed-catalog"},
+                rule_id="large-tool-schema",
+                instance_id=instance,
+            ))
+    return {"mcp_server_count": len(mcp_servers), "catalogs": catalogs[:top]}, findings[: max(top, 1) * 2]
+
+
+def iter_log_candidates(root: Path, log_paths: list[str], max_files: int) -> Iterable[Path]:
+    candidates: list[Path] = []
+    explicit = [Path(item).expanduser() for item in log_paths]
+    default_roots = [root / ".claude", root / ".codex"]
+    for path in explicit + default_roots:
+        try:
+            resolved = safe_resolve(path)
+        except OSError:
+            resolved = path
+        if resolved.exists() and not resolved.is_symlink():
+            candidates.append(resolved)
+    yielded = 0
+    for candidate in candidates:
+        if candidate.is_file() and candidate.suffix.lower() in {".json", ".jsonl", ".ndjson", ".log"}:
+            yield candidate
+            yielded += 1
+        elif candidate.is_dir():
+            for dirpath, dirnames, filenames in os.walk(candidate, followlinks=False):
+                current = Path(dirpath)
+                dirnames[:] = [name for name in dirnames if name not in EXCLUDED_DIR_NAMES and not (current / name).is_symlink()]
+                for name in filenames:
+                    path = current / name
+                    if path.is_symlink() or path.suffix.lower() not in {".json", ".jsonl", ".ndjson", ".log"}:
+                        continue
+                    yield path
+                    yielded += 1
+                    if yielded >= max_files:
+                        return
+        if yielded >= max_files:
+            return
+
+
+def parse_possible_json(value: Any) -> Any:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped and stripped[0] in "[{":
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                return value
+    return value
+
+
+def call_name(d: dict[str, Any]) -> str | None:
+    for key in TOOL_CALL_NAME_KEYS:
+        value = d.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:120]
+    typ = str(d.get("type") or "").lower()
+    name = d.get("name")
+    if isinstance(name, str) and name.strip() and (typ in {"tool_use", "tool_call", "function_call"} or any(key in d for key in TOOL_CALL_INPUT_KEYS)):
+        return name.strip()[:120]
+    return None
+
+
+def call_input(d: dict[str, Any]) -> Any:
+    for key in TOOL_CALL_INPUT_KEYS:
+        if key in d:
+            return parse_possible_json(d[key])
+    return {}
+
+
+def sanitized_fingerprint_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in sorted(value.items(), key=lambda kv: str(kv[0])):
+            safe_key = sanitize_path_component(str(key))
+            out[safe_key] = sanitized_fingerprint_value(item)
+        return out
+    if isinstance(value, list):
+        return [sanitized_fingerprint_value(item) for item in value[:20]]
+    if isinstance(value, str):
+        return SECRET_CONTENT_RE.sub("[REDACTED]", sanitize_path_text(value))[:500]
+    return value
+
+
+def find_path_argument(value: Any) -> str | None:
+    stack = [parse_possible_json(value)]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, item in current.items():
+                if str(key) in FILE_PATH_KEYS and isinstance(item, str) and item.strip():
+                    return item.strip()
+                stack.append(item)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return None
+
+
+def is_read_tool(name: str) -> bool:
+    lowered = name.lower().replace("-", "_")
+    tail = lowered.rsplit(".", 1)[-1]
+    return lowered in READ_TOOL_NAMES or tail in READ_TOOL_NAMES or "read_file" in lowered
+
+
+def scan_logs(root: Path, args: argparse.Namespace, *, top: int) -> tuple[dict[str, Any], list[Finding]]:
+    tool_counts: Counter[tuple[str, str]] = Counter()
+    tool_files: dict[tuple[str, str], set[str]] = defaultdict(set)
+    read_counts: Counter[str] = Counter()
+    read_labels: dict[str, str] = {}
+    read_tools: dict[str, set[str]] = defaultdict(set)
+    files_scanned = 0
+    records_scanned = 0
+    skipped_files: list[dict[str, Any]] = []
+    skipped_records = 0
+    for path in iter_log_candidates(root, getattr(args, "log_path", []) or [], args.max_structural_files):
+        label = path_text_label(str(path), args.show_paths)
+        try:
+            with open_regular_no_follow(path) as handle:
+                size = os.fstat(handle.fileno()).st_size
+                if size > args.max_log_bytes:
+                    skipped_files.append({"path": label, "reason": f"oversized:{size}>{args.max_log_bytes}"})
+                    continue
+                data = handle.read(args.max_log_bytes + 1)
+            if len(data) > args.max_log_bytes:
+                skipped_files.append({"path": label, "reason": f"oversized:>{args.max_log_bytes}"})
+                continue
+        except OSError as exc:
+            skipped_files.append({"path": label, "reason": format_os_error(exc)})
+            continue
+        files_scanned += 1
+        text = data.decode("utf-8", "replace")
+        raw_records: list[Any] = []
+        if path.suffix.lower() == ".json":
+            try:
+                parsed = json.loads(text)
+                raw_records = parsed if isinstance(parsed, list) else [parsed]
+            except json.JSONDecodeError:
+                skipped_records += 1
+                continue
+        else:
+            for raw_line in text.splitlines():
+                if len(raw_line.encode("utf-8", "replace")) > args.max_log_line_bytes:
+                    skipped_records += 1
+                    continue
+                if not raw_line.strip():
+                    continue
+                try:
+                    raw_records.append(json.loads(raw_line))
+                except json.JSONDecodeError:
+                    skipped_records += 1
+        for record in raw_records:
+            records_scanned += 1
+            for d in walk_json(record):
+                name = call_name(d)
+                if not name:
+                    continue
+                value = call_input(d)
+                fp = text_hash(json.dumps(sanitized_fingerprint_value(value), ensure_ascii=False, sort_keys=True, default=str))
+                key = (name, fp)
+                tool_counts[key] += 1
+                tool_files[key].add(label)
+                if is_read_tool(name):
+                    path_arg = find_path_argument(value)
+                    if path_arg:
+                        read_fp = text_hash(sanitize_path_text(path_arg))
+                        read_counts[read_fp] += 1
+                        read_labels[read_fp] = path_text_label(path_arg, args.show_paths)
+                        read_tools[read_fp].add(name)
+    findings: list[Finding] = []
+    repeated_reads: list[dict[str, Any]] = []
+    for fp, count in read_counts.most_common(top):
+        if count < args.duplicate_call_threshold:
+            continue
+        item = {"path": read_labels[fp], "path_fingerprint": fp, "read_count": count, "tools": sorted(read_tools[fp]), "confidence": "observed-log"}
+        repeated_reads.append(item)
+        instance = f"repeated-file-read-{fp}"
+        findings.append(Finding(
+            instance,
+            "medium",
+            "local-logs",
+            "The same file path appears to be read repeatedly in local tool-call logs.",
+            "Use search/symbol/slice reads or a local artifact receipt instead of repeating whole-file reads.",
+            item,
+            rule_id="repeated-file-read",
+            instance_id=instance,
+        ))
+    duplicate_calls: list[dict[str, Any]] = []
+    for (name, fp), count in tool_counts.most_common(top * 2):
+        if count < args.duplicate_call_threshold:
+            continue
+        item = {"tool_name": name, "input_fingerprint": fp, "call_count": count, "log_files": sorted(tool_files[(name, fp)])[:top], "confidence": "observed-log"}
+        duplicate_calls.append(item)
+        instance = f"duplicate-tool-call-{text_hash(name + ':' + fp)}"
+        findings.append(Finding(
+            instance,
+            "low" if count < args.duplicate_call_threshold * 2 else "medium",
+            "local-logs",
+            "A tool call with the same sanitized input fingerprint repeats in local logs.",
+            "Avoid replaying identical calls; keep one receipt or summarize the result before retrying.",
+            item,
+            rule_id="duplicate-tool-call",
+            instance_id=instance,
+        ))
+        if len(duplicate_calls) >= top:
+            break
+    return {
+        "files_scanned": files_scanned,
+        "records_scanned": records_scanned,
+        "skipped_files": skipped_files[:top],
+        "skipped_records": skipped_records,
+        "repeated_file_reads": repeated_reads[:top],
+        "duplicate_tool_calls": duplicate_calls[:top],
+    }, findings[: top * 2]
+
+
+def structural_summary(findings: list[Finding]) -> dict[str, Any]:
+    by_rule: Counter[str] = Counter(item.rule_id or item.id for item in findings)
+    by_severity: Counter[str] = Counter(item.severity for item in findings)
+    return {
+        "finding_count": len(findings),
+        "by_rule": dict(sorted(by_rule.items())),
+        "by_severity": dict(sorted(by_severity.items())),
+    }
+
+
+def build_structural_waste_report(args: argparse.Namespace) -> dict[str, Any]:
+    root = safe_resolve(Path(args.path).expanduser())
+    try:
+        is_scan_root = root.exists() and root.is_dir()
+    except OSError:
+        is_scan_root = False
+    if not is_scan_root:
+        raise SystemExit(f"context-guard-diet: structural-waste path is not a directory: {path_label(root, args.show_paths)}")
+    top = bounded_top(args.top)
+    settings, _settings_findings = collect_settings(root)
+    context_files, context_findings = scan_context(root, args.large_context_bytes, args.huge_context_bytes, args.long_context_lines)
+    oversized_rule_findings = [item for item in context_findings if (item.rule_id or item.id) in {"large-context-file", "huge-context-file", "context-heavy-code-fences"}]
+    duplicate_rule_groups, duplicate_rule_findings = scan_duplicate_rules(root, min_chars=args.duplicate_rule_min_chars, top=top)
+    imports_category, import_findings = scan_python_imports(root, top=top, max_files=args.max_structural_files)
+    skills_category, skill_findings = scan_unused_skills(root, top=top, max_files=args.max_structural_files)
+    tools_category, tool_findings = scan_tool_catalogs(root, args, settings, top=top)
+    logs_category, log_findings = scan_logs(root, args, top=top)
+    findings = oversized_rule_findings + duplicate_rule_findings + import_findings + skill_findings + tool_findings + log_findings
+    findings.sort(key=lambda item: (SEVERITY_ORDER.get(item.severity, 99), item.rule_id or item.id, item.path))
+    return {
+        "tool": "context-guard-diet",
+        "mode": "structural-waste",
+        "schema_version": STRUCTURAL_WASTE_SCHEMA_VERSION,
+        "root": root_label(root, args.show_paths),
+        "read_only": True,
+        "network": "not-used",
+        "destructive_actions": [],
+        "limits": {
+            "top": top,
+            "max_structural_files": args.max_structural_files,
+            "large_context_bytes": args.large_context_bytes,
+            "huge_context_bytes": args.huge_context_bytes,
+            "long_context_lines": args.long_context_lines,
+            "duplicate_rule_min_chars": args.duplicate_rule_min_chars,
+            "duplicate_call_threshold": args.duplicate_call_threshold,
+            "mcp_server_threshold": args.mcp_server_threshold,
+            "tool_count_threshold": args.tool_count_threshold,
+            "large_schema_bytes": args.large_schema_bytes,
+            "max_tool_catalog_bytes": args.max_tool_catalog_bytes,
+            "max_log_bytes": args.max_log_bytes,
+            "max_log_line_bytes": args.max_log_line_bytes,
+        },
+        "summary": structural_summary(findings),
+        "categories": {
+            "rule_files": {
+                "context_files_scanned": len(context_files),
+                "oversized_or_heavy": [item.as_dict() for item in oversized_rule_findings[:top]],
+                "duplicate_rule_groups": duplicate_rule_groups,
+            },
+            "python_imports": imports_category,
+            "skills": skills_category,
+            "tool_schemas": tools_category,
+            "local_logs": logs_category,
+        },
+        "finding_count": len(findings),
+        "findings": [item.as_dict() for item in findings[: top * 10]],
+        "caveats": [
+            "Structural-waste diagnostics are advisory heuristics; verify before deleting rules, imports, skills, or tools.",
+            "No network calls or destructive actions are performed by this command.",
+            "Local log diagnostics use sanitized input fingerprints and do not print raw prompt, command, or tool-input text.",
+            "Unused-skill and stale-import candidates can be false positives when usage is dynamic or outside the scanned project.",
+        ],
+    }
+
+
+def print_structural_waste_text(report: dict[str, Any]) -> None:
+    print("ContextGuard structural-waste diagnostics")
+    print(f"root: {report['root']}")
+    print("read_only: yes  network: not-used  destructive_actions: none")
+    summary = report["summary"]
+    print(f"findings: {summary['finding_count']} by_rule={json.dumps(summary['by_rule'], sort_keys=True)}")
+    if not report["findings"]:
+        print("\nFindings:\n- none")
+        return
+    print("\nFindings:")
+    for finding in report["findings"]:
+        print(f"- [{finding['severity'].upper()}] {finding['rule_id']} @ {finding['path']}")
+        print(f"  why: {finding['message']}")
+        print(f"  fix: {finding['action']}")
+
+
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
@@ -1019,6 +1656,26 @@ def main() -> int:
     scan.add_argument("--large-context-bytes", type=int, default=DEFAULT_LARGE_CONTEXT_BYTES)
     scan.add_argument("--huge-context-bytes", type=int, default=DEFAULT_HUGE_CONTEXT_BYTES)
     scan.add_argument("--long-context-lines", type=int, default=DEFAULT_LONG_CONTEXT_LINES)
+
+    structural = sub.add_parser("structural-waste", help="run local read-only structural waste diagnostics")
+    structural.add_argument("path", nargs="?", default=".")
+    structural.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    structural.add_argument("--show-paths", action="store_true", help="show raw local paths for debugging; secret-shaped path components remain redacted")
+    structural.add_argument("--top", type=int, default=DEFAULT_STRUCTURAL_WASTE_TOP, help="maximum findings per structural-waste category to list")
+    structural.add_argument("--log-path", action="append", default=[], help="local JSON/JSONL log or directory to inspect for repeated reads/tool calls; may be repeated")
+    structural.add_argument("--tool-catalog", action="append", default=[], help="local tool/MCP catalog JSON to inspect; may be repeated")
+    structural.add_argument("--large-context-bytes", type=int, default=DEFAULT_LARGE_CONTEXT_BYTES)
+    structural.add_argument("--huge-context-bytes", type=int, default=DEFAULT_HUGE_CONTEXT_BYTES)
+    structural.add_argument("--long-context-lines", type=int, default=DEFAULT_LONG_CONTEXT_LINES)
+    structural.add_argument("--duplicate-rule-min-chars", type=int, default=DEFAULT_DUPLICATE_RULE_MIN_CHARS)
+    structural.add_argument("--duplicate-call-threshold", type=int, default=DEFAULT_DUPLICATE_CALL_THRESHOLD)
+    structural.add_argument("--mcp-server-threshold", type=int, default=DEFAULT_MCP_SERVER_THRESHOLD)
+    structural.add_argument("--tool-count-threshold", type=int, default=DEFAULT_TOOL_COUNT_THRESHOLD)
+    structural.add_argument("--large-schema-bytes", type=int, default=DEFAULT_LARGE_SCHEMA_BYTES)
+    structural.add_argument("--max-tool-catalog-bytes", type=int, default=DEFAULT_MAX_TOOL_CATALOG_BYTES)
+    structural.add_argument("--max-log-bytes", type=int, default=DEFAULT_MAX_LOG_BYTES)
+    structural.add_argument("--max-log-line-bytes", type=int, default=DEFAULT_MAX_LOG_LINE_BYTES)
+    structural.add_argument("--max-structural-files", type=int, default=DEFAULT_MAX_STRUCTURAL_FILES)
     args = parser.parse_args()
 
     if args.command == "scan":
@@ -1027,6 +1684,13 @@ def main() -> int:
             print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
         else:
             print_text(report)
+        return 0
+    if args.command == "structural-waste":
+        report = build_structural_waste_report(args)
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False))
+        else:
+            print_structural_waste_text(report)
         return 0
     parser.error("unknown command")
     return 2

@@ -125,6 +125,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Claude Code plugin skills | Guided setup, optimization, and transcript usage audits. |
 | Project-local setup wizard | Applies recommended `.claude/settings.json` options without touching global settings. |
 | Context hygiene scanner | Finds missing guardrails, noisy hooks, broad reads, large context files, secret-like files, excessive MCP servers, and expensive defaults. |
+| Structural-waste doctor | Opt-in local diagnostics for duplicate rules, stale imports, unused skill candidates, oversized tool schemas, and repeated read/tool-call loops. |
 | Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
@@ -219,6 +220,17 @@ Both modes are read-only configuration checks. `doctor` reports recommended next
 ```
 
 The scanner reports missing guardrails, noisy hooks, broad context paths, large or secret-like instruction/rule files across common AI-agent surfaces, and local context-exclusion recommendations for bulky or sensitive paths. `--top` caps both the reported context-like files and context-exclusion recommendations. Recommendations are heuristic/advisory unless they are emitted as Claude `permissions.deny` entries.
+
+### Diagnose structural context waste
+
+```bash
+./plugins/context-guard/bin/context-guard-diet structural-waste . \
+  --tool-catalog tools.json \
+  --log-path .claude \
+  --json
+```
+
+The structural-waste doctor is opt-in and read-only. It reuses the diet scanner's local safety model, then adds advisory findings for duplicate rule units, stale Python imports, unused skill candidates, excessive MCP/tool schema catalogs, and repeated file reads or duplicate tool calls from local JSON/JSONL logs. It does not edit files, disable tools, call the network, or print raw prompt/tool-input text; default output uses relative paths, hashed labels, and redacted secret-shaped path components. Treat low-confidence import/skill findings as review prompts, not deletion instructions.
 
 ### Read symbols instead of whole large files
 

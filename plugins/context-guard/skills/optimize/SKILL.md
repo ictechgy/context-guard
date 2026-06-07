@@ -1,7 +1,7 @@
 ---
 description: Diagnose and reduce Claude Code token usage for a project or session using context hygiene, model and effort routing, MCP minimization, output trimming/sanitizing, subagent discipline, and measurement. Use when the user asks to lower Claude Code token usage, cost, context bloat, or usage-limit burn.
 argument-hint: [project/session symptoms]
-allowed-tools: Bash(context-guard-setup *), Bash(context-guard-audit *), Bash(context-guard-diet scan *), Bash(context-guard-read-symbol *), Bash(context-guard-artifact store *), Bash(context-guard-artifact get *), Bash(context-guard-artifact list *), Bash(context-guard-statusline)
+allowed-tools: Bash(context-guard-setup *), Bash(context-guard-audit *), Bash(context-guard-diet scan *), Bash(context-guard-diet structural-waste *), Bash(context-guard-read-symbol *), Bash(context-guard-artifact store *), Bash(context-guard-artifact get *), Bash(context-guard-artifact list *), Bash(context-guard-statusline)
 ---
 
 # ContextGuard
@@ -15,6 +15,7 @@ Use this order:
    - For first-time setup, run `context-guard-setup --plan` and offer `context-guard-setup --yes` for recommended project-local settings.
    - If transcript files are available, run `context-guard-audit ~/.claude/projects --top 20 --recommend`.
    - For project configuration/context bloat, run `context-guard-diet scan .`.
+   - For structural waste such as duplicate rules, stale import candidates, oversized tool schemas, or repeated reads in local logs, run `context-guard-diet structural-waste . --json`.
 2. Identify the largest bucket:
    - stale conversation history -> recommend `/clear` between unrelated tasks and focused `/compact` for long tasks.
    - startup context -> prune `CLAUDE.md`, move long workflows to skills, disable unused MCP servers.
@@ -37,6 +38,7 @@ Useful local commands provided by this plugin:
 context-guard-audit ~/.claude/projects --top 20 --recommend
 context-guard-setup --plan
 context-guard-diet scan .
+context-guard-diet structural-waste . --json
 context-guard-read-symbol path/to/file.py TargetSymbol
 context-guard-artifact store --command "long-command" --json < large.log
 context-guard-artifact get <artifact_id> --lines 1:80

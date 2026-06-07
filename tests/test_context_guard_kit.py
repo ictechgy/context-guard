@@ -12479,6 +12479,139 @@ for malformed in malformed_values:
                     self.assertRegex(data["root"], r"#path:[0-9a-f]{12}")
                     self.assertNotIn(str(root), proc.stdout)
 
+    def test_token_diet_structural_waste_reports_local_advisories(self):
+        duplicate_rule = (
+            "Always keep deterministic local structural waste diagnostics advisory only with no network or destructive writes."
+        )
+        secret_component = "token=ghp_" + ("A" * 36)
+        for script in DIET_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / ".claude").mkdir()
+                    (root / ".claude" / "settings.json").write_text(
+                        json.dumps({"mcpServers": {"one": {}, "two": {}}}),
+                        encoding="utf-8",
+                    )
+                    (root / "CLAUDE.md").write_text((duplicate_rule + "\n") * 3, encoding="utf-8")
+                    (root / "AGENTS.md").write_text(duplicate_rule + "\n", encoding="utf-8")
+                    src = root / "src"
+                    src.mkdir()
+                    (src / "app.py").write_text(
+                        "import os\nimport json\n\nVALUE = json.dumps({'ok': True})\n",
+                        encoding="utf-8",
+                    )
+                    skills = root / "plugins" / "context-guard" / "skills"
+                    (skills / "orphan_stage_skill").mkdir(parents=True)
+                    (skills / "orphan_stage_skill" / "SKILL.md").write_text(
+                        "---\ndescription: orphan\n---\n# Orphan\n",
+                        encoding="utf-8",
+                    )
+                    (skills / "referenced_stage_skill").mkdir()
+                    (skills / "referenced_stage_skill" / "SKILL.md").write_text(
+                        "---\ndescription: referenced\n---\n# Referenced\n",
+                        encoding="utf-8",
+                    )
+                    (root / "README.md").write_text("Use /referenced_stage_skill for setup.\n", encoding="utf-8")
+                    catalog = root / "tools.json"
+                    catalog.write_text(
+                        json.dumps({
+                            "tools": [
+                                {"name": "read_file", "description": "read file", "inputSchema": {"path": "string"}},
+                                {"name": "big_tool", "description": "x" * 40, "inputSchema": {"blob": "x" * 80}},
+                                {"name": "write_file", "description": "write file", "inputSchema": {"path": "string"}},
+                            ]
+                        }),
+                        encoding="utf-8",
+                    )
+                    oversized_catalog = root / "oversized-tools.json"
+                    oversized_catalog.write_text(json.dumps({"tools": [{"name": "huge", "description": "x" * 2000}]}), encoding="utf-8")
+                    log_path = root / ".claude" / "trace.jsonl"
+                    read_call = {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": f"/tmp/{secret_component}/src/app.py"},
+                    }
+                    bash_call = {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}}
+                    log_path.write_text(
+                        "\n".join(json.dumps(item) for item in [read_call, read_call, bash_call, bash_call]) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "structural-waste",
+                            str(root),
+                            "--json",
+                            "--top",
+                            "10",
+                            "--large-context-bytes",
+                            "100",
+                            "--long-context-lines",
+                            "9999",
+                            "--duplicate-call-threshold",
+                            "2",
+                            "--mcp-server-threshold",
+                            "2",
+                            "--tool-count-threshold",
+                            "2",
+                            "--large-schema-bytes",
+                            "50",
+                            "--max-tool-catalog-bytes",
+                            "1000",
+                            "--tool-catalog",
+                            str(catalog),
+                            "--tool-catalog",
+                            str(oversized_catalog),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    rule_ids = {item["rule_id"] for item in data["findings"]}
+                    self.assertEqual(data["schema_version"], "contextguard.structural-waste.v1")
+                    self.assertTrue(data["read_only"])
+                    self.assertEqual(data["network"], "not-used")
+                    self.assertEqual(data["destructive_actions"], [])
+                    for expected in {
+                        "large-context-file",
+                        "duplicate-context-rule",
+                        "stale-python-import",
+                        "unused-skill-candidate",
+                        "excessive-mcp-servers",
+                        "excessive-tool-catalog",
+                        "large-tool-schema",
+                        "repeated-file-read",
+                        "duplicate-tool-call",
+                    }:
+                        self.assertIn(expected, rule_ids)
+                    self.assertNotIn(str(root), proc.stdout)
+                    self.assertNotIn(secret_component, proc.stdout)
+                    self.assertTrue(
+                        any(item["status"] == "skipped" for item in data["categories"]["tool_schemas"]["catalogs"])
+                    )
+
+                    show_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "structural-waste",
+                            str(root),
+                            "--json",
+                            "--show-paths",
+                            "--duplicate-call-threshold",
+                            "2",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn(str(root.resolve()), show_proc.stdout)
+                    self.assertNotIn(secret_component, show_proc.stdout)
+
     def test_token_diet_scan_reports_cross_agent_rule_bloat_and_context_exclusions(self):
         for script in DIET_SCRIPTS:
             with self.subTest(script=script):
