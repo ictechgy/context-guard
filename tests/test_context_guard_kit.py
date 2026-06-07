@@ -653,7 +653,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         manifest = {
             "sections": [
                 {
-                    "id": "protected-volatile-evidence",
+                    "id": "/tmp/private-protected-section-id.log",
                     "ttl": "1h",
                     "volatile": True,
                     "protected": True,
@@ -668,6 +668,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 },
                 {
                     "id": "stable-protected-rules",
+                    "name": "/tmp/private-protected-section-name.log",
                     "ttl": "1h",
                     "volatile": False,
                     "protected": True,
@@ -684,11 +685,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 payload = json.loads(proc.stdout)
                 order_ids = [item["section_id"] for item in payload["recommended_order"]]
-                self.assertLess(order_ids.index("stable-protected-rules"), order_ids.index("protected-volatile-evidence"))
-                self.assertEqual(order_ids[-1], "protected-volatile-evidence")
-                volatile_item = next(item for item in payload["recommended_order"] if item["section_id"] == "protected-volatile-evidence")
+                self.assertLess(order_ids.index("protected-section-2"), order_ids.index("protected-section-1"))
+                self.assertEqual(order_ids[-1], "protected-section-1")
+                volatile_item = next(item for item in payload["recommended_order"] if item["section_id"] == "protected-section-1")
                 self.assertTrue(volatile_item["volatile"])
                 self.assertTrue(volatile_item["protected"])
+                self.assertTrue(volatile_item["source_id_omitted"])
                 self.assertEqual(volatile_item["transform_policy"], "structural_only")
                 policy = payload["protected_zone_policy"]
                 self.assertTrue(policy["enabled"])
@@ -697,10 +699,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("artifact_retrieval", policy["allowed_transforms"])
                 self.assertIn("json_compact", policy["allowed_transforms"])
                 self.assertIn("quoted_literal_rewrite", policy["denied_transforms"])
-                protected_volatile = next(section for section in policy["sections"] if section["section_id"] == "protected-volatile-evidence")
+                protected_volatile = next(section for section in policy["sections"] if section["section_id"] == "protected-section-1")
                 self.assertEqual(protected_volatile["content_type"], "unknown")
                 self.assertEqual(protected_volatile["cache_ordering"], "volatile_tail")
                 self.assertTrue(protected_volatile["retrieval_required"])
+                self.assertTrue(protected_volatile["source_id_omitted"])
                 self.assertEqual(payload["transform_policy"]["scope"], "protected_sections")
                 self.assertFalse(payload["transform_policy"]["semantic_transforms_allowed"])
                 self.assertFalse(payload["local_artifact_retrieval"]["replaces_provider_prompt_cache"])
@@ -711,6 +714,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn(sentinel, proc.stdout)
                 self.assertNotIn("/tmp/private-protected.log", proc.stdout)
                 self.assertNotIn("/tmp/raw-zone-should-not-emit", proc.stdout)
+                self.assertNotIn("/tmp/private-protected-section-id.log", proc.stdout)
+                self.assertNotIn("/tmp/private-protected-section-name.log", proc.stdout)
                 self.assertNotIn("0123456789abcdef0123456789abcdef01234567", proc.stdout)
 
 

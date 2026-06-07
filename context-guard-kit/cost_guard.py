@@ -1605,14 +1605,16 @@ def compile_command(args: argparse.Namespace) -> int:
         if not isinstance(raw, dict):
             continue
         zone_classes = protected_zone_classes(raw)
+        protected = section_is_protected(raw, zone_classes)
         sec = {
-            "id": safe_section_id(raw, i),
+            "id": f"protected-section-{i + 1}" if protected else safe_section_id(raw, i),
+            "source_id_omitted": protected,
             "ttl": section_ttl(raw),
             "volatile": manifest_bool(raw.get("volatile")) or manifest_bool(raw.get("changes_often")),
             "bytes": safe_int(raw.get("bytes") or raw.get("estimated_bytes") or 0),
             "tokens_estimated": safe_int(raw.get("tokens") or raw.get("estimated_tokens") or 0),
             "has_path": "path" in raw or "file" in raw,
-            "protected": section_is_protected(raw, zone_classes),
+            "protected": protected,
             "content_type": protected_content_type(raw),
             "protected_zone_classes": zone_classes,
         }
@@ -1679,6 +1681,7 @@ def compile_command(args: argparse.Namespace) -> int:
             "semantic_compress": False,
             "retrieval_required": int(sec["bytes"] or 0) > int(args.large_section_bytes),
             "cache_ordering": "volatile_tail" if sec["volatile"] else "stable_prefix_eligible",
+            "source_id_omitted": bool(sec["source_id_omitted"]),
         }
         for sec in protected_sections
     ]
@@ -1695,6 +1698,7 @@ def compile_command(args: argparse.Namespace) -> int:
                 "protected": sec["protected"],
                 "content_type": sec["content_type"],
                 "path_omitted": bool(sec["has_path"]),
+                "source_id_omitted": bool(sec["source_id_omitted"]),
                 "transform_policy": "structural_only" if sec["protected"] else "default",
             }
             for sec in recommended
