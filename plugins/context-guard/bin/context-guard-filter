@@ -47,6 +47,8 @@ PROTECTED_BASENAMES = {
 }
 PROTECTED_NPM_TASKS = {"test", "lint"}
 PROTECTED_PYTHON_MODULES = {"pytest", "ruff", "mypy"}
+PROTECTED_DIRECT_NAMES = {"pytest", "ruff", "mypy", "eslint", "vitest", "jest", "tox"}
+PROTECTED_INTENT_TOKENS = {"test", "tests", "lint", "clippy"}
 
 
 @dataclass(frozen=True)
@@ -121,14 +123,14 @@ def compile_regexes(patterns: Iterable[str], *, field: str, errors: list[str]) -
     return tuple(compiled)
 
 
-def bounded_optional_int(raw: Any, *, field: str, errors: list[str]) -> int | None:
+def bounded_optional_int(raw: Any, *, field: str, errors: list[str], minimum: int = 0) -> int | None:
     if raw is None:
         return None
     if not isinstance(raw, int) or isinstance(raw, bool):
         errors.append(f"{field} must be an integer")
         return None
-    if raw < 0 or raw > MAX_EMIT_LINES:
-        errors.append(f"{field} out of bounds: 0..{MAX_EMIT_LINES}")
+    if raw < minimum or raw > MAX_EMIT_LINES:
+        errors.append(f"{field} out of bounds: {minimum}..{MAX_EMIT_LINES}")
         return None
     return raw
 
@@ -179,7 +181,8 @@ def validate_config(raw: Any) -> tuple[list[CompiledFilter], list[str]]:
                 for part_idx, part in enumerate(parts):
                     if len(part) > MAX_ARG_CHARS:
                         errors.append(f"{prefix}.match.argv_prefix[{part_idx}] exceeds {MAX_ARG_CHARS} chars")
-                argv_prefix = tuple(parts)
+                if parts:
+                    argv_prefix = tuple(parts)
             if "argv_regex" in match:
                 pattern = match.get("argv_regex")
                 if not isinstance(pattern, str) or not pattern.strip():
@@ -201,9 +204,7 @@ def validate_config(raw: Any) -> tuple[list[CompiledFilter], list[str]]:
             errors.append(f"{prefix} has too many regexes: {len(include) + len(exclude)}>{MAX_REGEXES_PER_FILTER}")
         head = bounded_optional_int(item.get("head_lines"), field=f"{prefix}.head_lines", errors=errors)
         tail = bounded_optional_int(item.get("tail_lines"), field=f"{prefix}.tail_lines", errors=errors)
-        max_lines = bounded_optional_int(item.get("max_lines"), field=f"{prefix}.max_lines", errors=errors)
-        if max_lines == 0:
-            errors.append(f"{prefix}.max_lines must be at least 1 when set")
+        max_lines = bounded_optional_int(item.get("max_lines"), field=f"{prefix}.max_lines", errors=errors, minimum=1)
         compiled.append(CompiledFilter(
             id=str(fid),
             argv_prefix=argv_prefix,
@@ -244,19 +245,38 @@ def basename(arg: str) -> str:
     return Path(arg).name.lower()
 
 
+def argv_signal_tokens(argv: list[str]) -> set[str]:
+    tokens: set[str] = set()
+    for arg in argv:
+        lowered = basename(arg)
+        if lowered:
+            tokens.add(lowered)
+        tokens.update(part for part in re.split(r"[^a-z0-9]+", lowered) if part)
+    return tokens
+
+
+def has_test_lint_signal(argv: list[str]) -> bool:
+    tokens = argv_signal_tokens(argv)
+    return bool(tokens & PROTECTED_DIRECT_NAMES or tokens & PROTECTED_INTENT_TOKENS)
+
+
 def is_protected_command(argv: list[str]) -> bool:
     if not argv:
         return False
     first = basename(argv[0])
     if first in PROTECTED_BASENAMES:
         return True
-    if first in {"python", "python3"} and len(argv) >= 3 and argv[1] == "-m" and argv[2] in PROTECTED_PYTHON_MODULES:
+    if first in {"python", "python3"} and len(argv) >= 3 and argv[1] == "-m" and basename(argv[2]) in PROTECTED_PYTHON_MODULES:
         return True
     if first in {"npm", "pnpm", "yarn"} and len(argv) >= 2:
         if argv[1] in PROTECTED_NPM_TASKS:
             return True
-        if len(argv) >= 3 and argv[1] == "run" and argv[2] in PROTECTED_NPM_TASKS:
+        if len(argv) >= 3 and argv[1] == "run" and has_test_lint_signal(argv[2:]):
             return True
+        if len(argv) >= 3 and argv[1] in {"exec", "x", "dlx"} and has_test_lint_signal(argv[2:]):
+            return True
+    if first in {"npx", "bun", "make", "gradle", "gradlew", "mvn", "poetry", "uv", "pipenv", "hatch", "tox"} and has_test_lint_signal(argv):
+        return True
     if first == "go" and len(argv) >= 2 and argv[1] == "test":
         return True
     if first == "cargo" and len(argv) >= 2 and argv[1] in {"test", "clippy"}:
@@ -397,7 +417,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=TOOL_NAME, description="Validate and apply bounded declarative command-output filters.")
+    parser = argparse.ArgumentParser(prog=TOOL_NAME, description="Validate and apply bounded declarative command-output filters. Filtered mode applies line rules to combined stdout+stderr and writes the filtered result to stdout; passthrough mode preserves stdout/stderr streams.")
     sub = parser.add_subparsers(dest="command_name", required=True)
     validate = sub.add_parser("validate", help="validate a filter DSL JSON file")
     validate.add_argument("--config", required=True, help="path to user-owned filter JSON")

@@ -234,6 +234,39 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(report["decision"], "filtered")
                     self.assertEqual(report["filter_id"], "python-keep-lines")
 
+                    overlap_config = Path(tmp) / "overlap.json"
+                    overlap_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": "head-tail-overlap",
+                                    "match": {"argv_prefix": [sys.executable]},
+                                    "head_lines": 3,
+                                    "tail_lines": 3,
+                                }
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    overlap = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(overlap_config),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('L1'); print('L2'); print('L3'); print('L4')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(overlap.stdout, "L1\nL2\nL3\nL4\n")
+
     def test_context_filter_invalid_no_match_and_empty_filter_passthrough(self):
         for script in FILTER_SCRIPTS:
             with self.subTest(script=script):
@@ -424,6 +457,61 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertEqual(raw_proc.returncode, 7)
                         self.assertEqual(raw_proc.stdout, f"PROTECTED-OUT-{exe.name}\n")
                         self.assertEqual(raw_proc.stderr, f"PROTECTED-ERR-{exe.name}\n")
+
+                    wrapper_cases: list[tuple[str, list[str]]] = [
+                        ("make", ["test"]),
+                        ("npx", ["jest"]),
+                        ("npm", ["run", "test:unit"]),
+                        ("poetry", ["run", "pytest"]),
+                        ("bun", ["test"]),
+                    ]
+                    wrapper_commands: list[tuple[Path, list[str]]] = []
+                    for name, extra_args in wrapper_cases:
+                        exe = root / name
+                        exe.write_text(
+                            f"#!/bin/sh\necho WRAPPER-OUT-{name}\necho WRAPPER-ERR-{name} >&2\nexit 9\n",
+                            encoding="utf-8",
+                        )
+                        exe.chmod(0o755)
+                        wrapper_commands.append((exe, extra_args))
+                    wrapper_config = root / "wrapper-filters.json"
+                    wrapper_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [
+                                {
+                                    "id": f"hide-wrapper-{exe.name}",
+                                    "match": {"argv_prefix": [str(exe), *extra_args]},
+                                    "passthrough_on_exit": False,
+                                    "include_regex": ["NEVER_MATCH"],
+                                }
+                                for exe, extra_args in wrapper_commands
+                            ],
+                        }),
+                        encoding="utf-8",
+                    )
+                    for exe, extra_args in wrapper_commands:
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "run",
+                                "--config",
+                                str(wrapper_config),
+                                "--json-report",
+                                "--",
+                                str(exe),
+                                *extra_args,
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 9)
+                        self.assertEqual(proc.stdout, f"WRAPPER-OUT-{exe.name}\n")
+                        self.assertIn(f"WRAPPER-ERR-{exe.name}\n", proc.stderr)
+                        report = json.loads(proc.stderr.strip().splitlines()[-1])
+                        self.assertEqual(report["reason"], "protected-nonzero")
+                        self.assertEqual(report["filter_id"], f"hide-wrapper-{exe.name}")
 
     def test_context_filter_dispatcher_help_routes_to_helper(self):
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
