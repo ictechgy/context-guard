@@ -17,6 +17,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import shlex
@@ -80,7 +81,7 @@ SECRET_CONTENT_RE = re.compile(
 SECRET_PATH_COMPONENT_RE = re.compile(
     r"(?i)("
     r"SG\.[A-Za-z0-9_-]{16,256}\.[A-Za-z0-9_-]{16,512}|"
-    r"eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){2}|"
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|"
     r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}|"
     r"[a-z][a-z0-9+.-]{0,31}:/+(?:[^/\s:@]{0,256}:[^/\s@]{0,2048}|[^/\s@]{1,2048})@"
     r")"
@@ -103,7 +104,12 @@ SIGNATURE_LINE_RE = re.compile(
     r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|"
     r"func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(|(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\()"
 )
-IMPORT_PATH_RE = re.compile(r"(?:from\s+['\"](?P<jsfrom>[^'\"]+)['\"]|import\s+['\"](?P<jsimport>[^'\"]+)['\"]|from\s+(?P<pyfrom>[A-Za-z_][\w.]*)\s+import|import\s+(?P<pyimport>[A-Za-z_][\w.]*))")
+IMPORT_PATH_RE = re.compile(
+    r"(?:from\s+['\"](?P<jsfrom>[^'\"]+)['\"]|"
+    r"import(?:\s+[^;\n'\"]+?\s+from)?\s+['\"](?P<jsimport>[^'\"]+)['\"]|"
+    r"from\s+(?P<pyfrom>\.*[A-Za-z_][\w.]*|\.+)\s+import|"
+    r"import\s+(?P<pyimport>[A-Za-z_][\w.]*))"
+)
 
 
 @dataclass(frozen=True)
@@ -226,7 +232,7 @@ def path_hash(path: Path) -> str:
 
 
 def sanitize_path_component(component: str) -> tuple[str, bool]:
-    if CONTROL_CHAR_RE.search(component) or SECRET_CONTENT_RE.search(component) or SECRET_PATH_COMPONENT_RE.search(component):
+    if SECRET_CONTENT_RE.search(component):
         return REDACTED_PATH_COMPONENT, True
     return component, False
 
@@ -240,8 +246,6 @@ def display_root(root: Path) -> str:
 
 def display_rel_path(rel: str) -> tuple[str, bool]:
     normalized = rel.replace("\\", "/")
-    if CONTROL_CHAR_RE.search(normalized) or SECRET_PATH_COMPONENT_RE.search(normalized):
-        return f"redacted-path#path:{sha256_text(normalized)[:12]}", True
     parts: list[str] = []
     redacted = False
     for part in normalized.split("/"):
@@ -251,6 +255,17 @@ def display_rel_path(rel: str) -> tuple[str, bool]:
         parts.append(safe)
         redacted = redacted or did
     return "/".join(parts), redacted
+
+
+def repo_map_path_has_sensitive_evidence(value: str) -> bool:
+    return bool(CONTROL_CHAR_RE.search(value) or SECRET_PATH_COMPONENT_RE.search(value))
+
+
+def repo_map_display_rel_path(rel: str) -> tuple[str, bool]:
+    normalized = rel.replace("\\", "/")
+    if repo_map_path_has_sensitive_evidence(normalized):
+        return f"redacted-path#path:{sha256_text(normalized)[:12]}", True
+    return display_rel_path(normalized)
 
 
 def parse_line_range(value: object) -> LineRange | None:
@@ -397,8 +412,6 @@ def omission(spec: SourceSpec, reason: str, *, path: str | None = None, redacted
 
 def safe_raw_path_label(raw: str) -> str:
     text = raw.replace("\\", "/")
-    if CONTROL_CHAR_RE.search(text) or SECRET_PATH_COMPONENT_RE.search(text):
-        return f"redacted-path#path:{sha256_text(text)[:12]}"
     parts = []
     for part in text.split("/"):
         if part in {"", "."}:
@@ -561,6 +574,13 @@ def safe_root_arg_for_retrieval(root_arg: str) -> str | None:
         if redacted:
             return None
     return text
+
+
+def safe_repo_map_root_arg_for_retrieval(root_arg: str) -> str | None:
+    text = str(root_arg)
+    if repo_map_path_has_sensitive_evidence(text):
+        return None
+    return safe_root_arg_for_retrieval(text)
 
 
 def retrieval_for(root_arg: str, display_path: str, lines: LineRange, *, redacted_path: bool) -> tuple[str | None, str | None]:
@@ -1744,7 +1764,7 @@ def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None
     rel, reason = lexical_rel(rel_path)
     if rel is None:
         return None, {"path": safe_raw_path_label(rel_path), "reason": reason}
-    display, redacted_path = display_rel_path(rel.as_posix())
+    display, redacted_path = repo_map_display_rel_path(rel.as_posix())
     if not is_repo_map_text_path(display):
         return None, {"path": display, "reason": "unsupported_file_type"}
     handle, open_reason = open_regular_under_root(root, rel)
@@ -1887,7 +1907,7 @@ def signature_entry(record: dict[str, Any], *, kind: str, name: str, raw_signatu
 def python_signatures(record: dict[str, Any], text: str) -> list[dict[str, Any]]:
     try:
         module = ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, ValueError, RecursionError):
         return []
     lines = text.splitlines()
     out: list[dict[str, Any]] = []
@@ -1939,20 +1959,35 @@ def extract_signatures(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return signatures[:MAX_REPO_MAP_SIGNATURE_ENTRIES]
 
 
+def normalize_repo_map_candidate(path: str) -> str:
+    normalized = posixpath.normpath(path.replace("\\", "/"))
+    if normalized == ".":
+        return ""
+    return normalized.lstrip("/")
+
+
 def resolve_import_target(raw_target: str, source_path: str, known_paths: set[str]) -> str | None:
     target = raw_target.strip()
     if not target:
         return None
     candidates: list[str] = []
-    source_dir = Path(source_path).parent
+    source_dir = Path(source_path).parent.as_posix()
     if target.startswith("."):
-        base = (source_dir / target).as_posix()
+        if target.startswith("./") or target.startswith("../"):
+            base = normalize_repo_map_candidate(posixpath.join(source_dir, target))
+        else:
+            leading = len(target) - len(target.lstrip("."))
+            remainder = target[leading:].replace(".", "/")
+            base_dir = source_dir
+            for _ in range(max(0, leading - 1)):
+                base_dir = posixpath.dirname(base_dir)
+            base = normalize_repo_map_candidate(posixpath.join(base_dir, remainder)) if remainder else normalize_repo_map_candidate(base_dir)
         candidates.extend([base, f"{base}.py", f"{base}.ts", f"{base}.tsx", f"{base}.js", f"{base}.jsx", f"{base}/index.ts", f"{base}/index.js"])
     else:
         module_path = target.replace(".", "/")
         candidates.extend([f"{module_path}.py", f"{module_path}.ts", f"{module_path}.tsx", f"{module_path}.js", f"{module_path}.jsx", f"{module_path}/index.ts", f"{module_path}/index.js"])
     for candidate in candidates:
-        normalized = Path(candidate).as_posix().lstrip("./")
+        normalized = normalize_repo_map_candidate(candidate)
         if normalized in known_paths:
             return normalized
     return None
@@ -1984,7 +2019,7 @@ def repo_map_seed_paths(args: argparse.Namespace, suggest_payload: dict[str, Any
     for raw in split_suggest_files(getattr(args, "files", None)):
         rel, _reason = lexical_rel(raw)
         if rel is not None:
-            display, redacted = display_rel_path(rel.as_posix())
+            display, redacted = repo_map_display_rel_path(rel.as_posix())
             if not redacted:
                 seeds.add(display)
     for source in suggest_payload.get("sources", []):
@@ -2037,6 +2072,15 @@ def build_graph_rank(
     return ranked[:MAX_REPO_MAP_GRAPH_RANK_ENTRIES]
 
 
+def repo_map_retrieval_for(root_arg: str, display_path: str, lines: LineRange, *, redacted_path: bool) -> tuple[str | None, str | None]:
+    if redacted_path:
+        return None, "redacted_path"
+    safe_root = safe_repo_map_root_arg_for_retrieval(root_arg)
+    if safe_root is None:
+        return None, "unsafe_root_path"
+    return retrieval_cli(safe_root, display_path, lines), None
+
+
 def repo_map_retrieval(
     record_by_path: dict[str, dict[str, Any]],
     signatures: list[dict[str, Any]],
@@ -2051,7 +2095,7 @@ def repo_map_retrieval(
         record = record_by_path.get(path)
         if record is None:
             return
-        retrieval, reason = retrieval_for(root_arg, path, line_range, redacted_path=bool(record.get("redacted_path")))
+        retrieval, reason = repo_map_retrieval_for(root_arg, path, line_range, redacted_path=bool(record.get("redacted_path")))
         key = (path, line_range.identity(), source)
         if key in seen:
             return

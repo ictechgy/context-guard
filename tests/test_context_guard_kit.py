@@ -4739,7 +4739,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     root = Path(tmp)
                     (root / "src").mkdir()
                     (root / "src" / "app.py").write_text(
-                        "from src.helper import helper\n\n"
+                        "from .helper import helper\n\n"
                         "class App:\n"
                         "    def run(self):\n"
                         "        return helper()\n\n"
@@ -4748,9 +4748,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         encoding="utf-8",
                     )
                     (root / "src" / "helper.py").write_text("def helper():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "src" / "js-helper.ts").write_text("export default function helper(): string { return 'ok' }\n", encoding="utf-8")
                     (root / "src" / "util.ts").write_text(
+                        "import helper from './js-helper'\n"
                         "export function formatValue(input: string): string {\n"
-                        "  return input.trim()\n"
+                        "  return helper() + input.trim()\n"
                         "}\n",
                         encoding="utf-8",
                     )
@@ -4793,6 +4795,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertTrue(all(item.get("explain_only") for item in repo_map["graph_rank"]))
                     self.assertIn("src/app.py", {item["path"] for item in repo_map["graph_rank"]})
                     self.assertGreaterEqual(repo_map["summary"]["graph_edges"], 1)
+                    edges = {(item["from"], item["to"]) for item in repo_map["graph"]["edges"]}
+                    self.assertIn(("src/app.py", "src/helper.py"), edges)
+                    self.assertIn(("src/util.ts", "src/js-helper.ts"), edges)
                     retrieval = repo_map["retrieval"]
                     self.assertTrue(any(item.get("slice_cli", "").startswith("context-guard-pack slice --root .") for item in retrieval))
                     self.assertTrue(any("context-guard-read-symbol" in item.get("symbol_cli", "") for item in retrieval))
@@ -4858,6 +4863,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             "basic": ("Basic " + ("E" * 20) + ".py", ["Basic " + ("E" * 20)]),
             "url_userinfo": ("https:/user:pass@example.invalid/db.py", ["user:pass"]),
             "url_token_only": ("redis:/token@example.invalid/db.py", ["token@"]),
+            "control": ("bad-\x1b[31m-name.py", ["\x1b", "[31m"]),
         }
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -4924,6 +4930,34 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertTrue(retrieval)
                     self.assertTrue(any(item.get("retrieval_omitted_reason") == "unsafe_root_path" for item in retrieval))
                     self.assertFalse(any("slice_cli" in item for item in retrieval))
+
+    def test_context_pack_auto_explain_repo_map_tolerates_unparseable_python_for_signatures(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "safe.py").write_text("def safe_entry():\n    return 1\n", encoding="utf-8")
+                    (root / "bad.py").write_bytes(b"def before():\n    return 1\n\x00\ndef after():\n    return 2\n")
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "auto",
+                            "--root",
+                            ".",
+                            "--files",
+                            "safe.py",
+                            "--budget-bytes",
+                            "5000",
+                            "--json",
+                            "--explain",
+                            "--no-artifact",
+                        ).stdout
+                    )
+                    repo_map = data["explain"]["repo_map"]
+                    self.assertEqual(repo_map["schema_version"], "contextguard.pack-repo-map.v1")
+                    self.assertIn("safe.py", json.dumps(repo_map, ensure_ascii=False, sort_keys=True))
 
     def test_context_pack_auto_explain_repo_map_is_bounded_and_local(self):
         for script in PACK_SCRIPTS:
