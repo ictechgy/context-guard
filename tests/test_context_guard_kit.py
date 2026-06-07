@@ -455,6 +455,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertEqual(raw_proc.stdout, f"PROTECTED-OUT-{exe.name}\n")
                         self.assertEqual(raw_proc.stderr, f"PROTECTED-ERR-{exe.name}\n")
 
+                    protected = commands[0]
+                    invalid_config = root / "invalid-protected.json"
+                    invalid_config.write_text(json.dumps({"schema_version": "bad", "filters": []}), encoding="utf-8")
+                    no_match_config = root / "no-match-protected.json"
+                    no_match_config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [{"id": "other", "match": {"argv_prefix": ["not-this-command"]}}],
+                        }),
+                        encoding="utf-8",
+                    )
+                    for extra_args in (
+                        ["--config", str(invalid_config), "--json-report", "--", str(protected)],
+                        ["--config", str(no_match_config), "--json-report", "--", str(protected)],
+                        ["--config", str(config), "--json-report", "--max-capture-bytes", "1", "--", str(protected)],
+                    ):
+                        proc = subprocess.run(
+                            [sys.executable, str(script), "run", *extra_args],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 7)
+                        self.assertEqual(proc.stdout, f"PROTECTED-OUT-{protected.name}\n")
+                        self.assertEqual(proc.stderr, f"PROTECTED-ERR-{protected.name}\n")
+
                     wrapper_cases: list[tuple[str, list[str]]] = [
                         ("make", ["test"]),
                         ("npx", ["jest"]),

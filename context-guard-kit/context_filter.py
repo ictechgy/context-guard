@@ -348,7 +348,7 @@ def run_command(argv: list[str], timeout_seconds: int) -> tuple[int, str, str, b
 
 
 def emit_run_report(args: argparse.Namespace, payload: dict[str, Any]) -> None:
-    if payload.get("reason") == "protected-nonzero":
+    if payload.get("protected_nonzero"):
         return
     if args.json_report:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)
@@ -376,7 +376,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     rc, stdout_text, stderr_text, timed_out = run_command(command, timeout_seconds)
     output = stdout_text + stderr_text
     output_bytes = len(output.encode("utf-8", "replace"))
-    report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified"}
+    protected_nonzero = rc != 0 and is_protected_command(command)
+    report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
     if timed_out:
         report["reason"] = "timeout"
     elif errors:
@@ -390,7 +391,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         matched = next((flt for flt in filters if filter_matches(flt, command)), None)
         if matched is None:
             report["reason"] = "no-match"
-        elif rc != 0 and is_protected_command(command):
+        elif protected_nonzero:
             report["reason"] = "protected-nonzero"
             report["filter_id"] = matched.id
         elif rc != 0 and matched.passthrough_on_exit:
