@@ -60,7 +60,7 @@ python3 context-guard-kit/sanitize_output.py -- git diff
 
 `cost_guard.py compile`은 section manifest의 `protected`, `semantic_sensitive`, `protected_zone_classes`, `content_type`, `volatile`, `ttl`, `bytes` 필드를 읽어 `protected_zone_policy`와 `transform_policy`를 출력합니다. `protected=true`와 `volatile=true`가 같이 있으면 volatile이 cache ordering을 tail 쪽으로 보내고, protection은 transform/retrieval 정책만 제어합니다. 대용량 protected section은 local artifact retrieval을 권고하지만 provider prompt cache를 대체한다고 주장하지 않습니다.
 
-`benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost를 run별로 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다.
+`benchmark_runner.py`는 `research/benchmark-plan.md`의 고정 task/variant 실험을 실행합니다. `--ledger-jsonl`은 subagent·artifact 등 외부 실행 표면으로 옮겨간 token/cost와 run별 측정 가능 여부를 남기고, `--report-json`은 baseline 대비 실제 token/cost 절감과 proxy byte 감소를 분리한 A/B report를 생성합니다. Report의 `matched_pair_evidence`는 성공한 baseline/variant task bucket을 transform, quality gate, 측정 가능 여부, claim boundary와 연결하므로 절감 주장을 쓰기 전에 이 항목을 확인하세요.
 
 `../research/experimental-token-reduction-radar.md`는 learned compression, multimodal crop/OCR/visual-token pruning, self-hosted KV/latent inference optimization 같은 선택적 미래 실험을 문서화한 gate입니다. `../docs/experimental-benchmark-fixtures.md`에는 fixture-only task/variant 시작 예시가 있습니다. 이 radar와 fixture는 runtime helper가 아니며, hosted API token/cost 절감을 보장하지 않습니다. hosted API token/cost 절감 주장은 provider가 측정한 matched-task 근거가 있을 때만 허용합니다.
 
