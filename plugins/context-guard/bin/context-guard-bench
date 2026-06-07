@@ -108,6 +108,7 @@ CSV_COLUMNS = [
 MAX_CSV_NOTE_CHARS = 500
 MAX_CSV_ROWS = 100_000
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+PLACEHOLDER_SUCCESS_COMMAND_MARKER = "fixture-only placeholder: replace success_command before real benchmark runs"
 PROTECTED_VARIANT_FLAGS = frozenset({
     "--",
     "-p",
@@ -393,6 +394,10 @@ class BoundedProcessResult:
     stderr: str
     timed_out: bool = False
     output_truncated: bool = False
+
+
+def is_placeholder_success_command(command: str | None) -> bool:
+    return bool(command and PLACEHOLDER_SUCCESS_COMMAND_MARKER in command)
 
 
 def parse_positive_int(value: Any, *, field: str, owner: str) -> int:
@@ -939,6 +944,14 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
             success=True, notes=f"dry-run: {shlex.join(argv)}",
             wall_time_seconds=0.0,
+        )
+    if is_placeholder_success_command(task.success_command):
+        return RunResult(
+            task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+            tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+            success=False,
+            notes=f"{PLACEHOLDER_SUCCESS_COMMAND_MARKER}; refusing to invoke provider",
+            wall_time_seconds=elapsed_seconds_since(started_at),
         )
     argv[0] = executable_argv0(argv[0])
     try:
@@ -1843,12 +1856,6 @@ def main() -> int:
     require_no_follow_file_ops_supported()
     validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json)
 
-    if not args.dry_run and shutil.which(args.claude_bin) is None:
-        # claude_bin 이 절대경로면 shutil.which 가 None 일 수 있으므로 추가 검사.
-        if not Path(args.claude_bin).exists():
-            print(f"claude binary not found: {args.claude_bin}", file=sys.stderr)
-            return 2
-
     tasks = parse_tasks(args.tasks)
     variants = parse_variants(args.variants)
     targets = filter_targets(tasks, variants, args.task_id, args.variant)
@@ -1857,8 +1864,32 @@ def main() -> int:
         return 1
 
     skip_keys = existing_keys(args.csv) if args.resume else set()
+    runnable_targets = [
+        (task, variant)
+        for task, variant in targets
+        if (task.id, variant.name) not in skip_keys
+    ]
+    placeholder_targets = [
+        f"{task.id}/{variant.name}"
+        for task, variant in runnable_targets
+        if is_placeholder_success_command(task.success_command)
+    ]
+    if placeholder_targets and not args.dry_run:
+        print(
+            f"{PLACEHOLDER_SUCCESS_COMMAND_MARKER}; refusing non-dry-run provider invocation for: "
+            f"{', '.join(placeholder_targets)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if runnable_targets and not args.dry_run and shutil.which(args.claude_bin) is None:
+        # claude_bin 이 절대경로면 shutil.which 가 None 일 수 있으므로 추가 검사.
+        if not Path(args.claude_bin).exists():
+            print(f"claude binary not found: {args.claude_bin}", file=sys.stderr)
+            return 2
+
     project_root = args.project_root.resolve()
-    claude_ver = "dry-run" if args.dry_run else claude_version(args.claude_bin)
+    claude_ver = "dry-run" if args.dry_run else (claude_version(args.claude_bin) if runnable_targets else "skipped")
 
     completed = 0
     for task, variant in targets:
