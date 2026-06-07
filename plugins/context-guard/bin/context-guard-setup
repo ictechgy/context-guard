@@ -1097,9 +1097,9 @@ def validate_settings_target(root: Path, settings_path: Path, *, allow_home_sett
             "pass --root <project>, or use --allow-home-settings if you intentionally want this."
         )
     claude_dir = root / ".claude"
-    if claude_dir.exists() and claude_dir.is_symlink():
+    if claude_dir.is_symlink():
         raise SystemExit(f"Refusing to use symlinked Claude settings directory: {claude_dir}")
-    if settings_path.exists() and settings_path.is_symlink():
+    if settings_path.is_symlink():
         raise SystemExit(f"Refusing to write through symlinked settings file: {settings_path}")
     if claude_dir.exists():
         try:
@@ -1285,6 +1285,16 @@ def _read_optional_text_no_follow(path: Path) -> str | None:
         return None
     except OSError as exc:
         raise SystemExit(f"Could not read {path} without following symlinks: {exc}") from exc
+
+
+def _path_exists_no_follow(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+    return True
 
 
 def _parse_json_object_text(text: str | None, path: Path) -> dict[str, Any]:
@@ -1777,7 +1787,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
                 "error",
                 "Claude settings target could not be read as a safe JSON object.",
                 detail={
-                    "exists": settings_path.exists(),
+                    "exists": _path_exists_no_follow(settings_path),
                     "path": str(settings_path),
                     "error": str(exc),
                 },

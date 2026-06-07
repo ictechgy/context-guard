@@ -1863,9 +1863,15 @@ def main() -> int:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
 
+    skip_keys = existing_keys(args.csv) if args.resume else set()
+    runnable_targets = [
+        (task, variant)
+        for task, variant in targets
+        if (task.id, variant.name) not in skip_keys
+    ]
     placeholder_targets = [
         f"{task.id}/{variant.name}"
-        for task, variant in targets
+        for task, variant in runnable_targets
         if is_placeholder_success_command(task.success_command)
     ]
     if placeholder_targets and not args.dry_run:
@@ -1876,15 +1882,14 @@ def main() -> int:
         )
         return 2
 
-    if not args.dry_run and shutil.which(args.claude_bin) is None:
+    if runnable_targets and not args.dry_run and shutil.which(args.claude_bin) is None:
         # claude_bin 이 절대경로면 shutil.which 가 None 일 수 있으므로 추가 검사.
         if not Path(args.claude_bin).exists():
             print(f"claude binary not found: {args.claude_bin}", file=sys.stderr)
             return 2
 
-    skip_keys = existing_keys(args.csv) if args.resume else set()
     project_root = args.project_root.resolve()
-    claude_ver = "dry-run" if args.dry_run else claude_version(args.claude_bin)
+    claude_ver = "dry-run" if args.dry_run else (claude_version(args.claude_bin) if runnable_targets else "skipped")
 
     completed = 0
     for task, variant in targets:

@@ -6205,6 +6205,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("Fix or remove", target["next_action"])
                     self.assertEqual(proc.stderr, "")
 
+    def test_context_guard_doctor_reports_symlink_settings_without_following_target(self):
+        for script in SETUP_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    settings = root / ".claude" / "settings.json"
+                    settings.parent.mkdir()
+                    settings.symlink_to(root / "missing-target.json")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--root", str(root), "--verify", "--json", "--no-diet-scan"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.doctor.v1")
+                    self.assertEqual(data["status"], "error")
+                    target = next(check for check in data["checks"] if check["id"] == "settings-target")
+                    self.assertEqual(target["status"], "error")
+                    self.assertTrue(target["detail"]["exists"])
+                    self.assertIn("symlinked settings file", target["detail"]["error"])
+                    self.assertFalse((root / "missing-target.json").exists())
+
     def test_context_guard_doctor_skips_disabled_helper_checks_and_preserves_diet_root(self):
         for index, script in enumerate(SETUP_SCRIPTS):
             with self.subTest(script=script):
@@ -14238,6 +14261,47 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertIn("fixture-only placeholder", real_proc.stderr)
                 self.assertFalse(sentinel.exists())
                 self.assertFalse(real_csv.exists())
+
+                module = kit_module if script == KIT_DIR / "benchmark_runner.py" else plugin_module
+                resume_csv = Path(tmp) / "resume.csv"
+                row = {column: "" for column in module.CSV_COLUMNS}
+                row.update({
+                    "date": "2026-01-01T00:00:00Z",
+                    "claude_version": "skipped",
+                    "task_id": "visual_ocr_nav_error_fixture",
+                    "variant": "baseline_full_visual_fixture",
+                    "success": "true",
+                })
+                with resume_csv.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerow(row)
+                sentinel.unlink(missing_ok=True)
+                resume_proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--tasks",
+                        str(task_path),
+                        "--variants",
+                        str(variant_path),
+                        "--task-id",
+                        "visual_ocr_nav_error_fixture",
+                        "--variant",
+                        "baseline_full_visual_fixture",
+                        "--csv",
+                        str(resume_csv),
+                        "--claude-bin",
+                        str(fake),
+                        "--resume",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("skip visual_ocr_nav_error_fixture/baseline_full_visual_fixture", resume_proc.stdout)
+                self.assertIn("completed 0 run(s)", resume_proc.stdout)
+                self.assertFalse(sentinel.exists())
 
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")
