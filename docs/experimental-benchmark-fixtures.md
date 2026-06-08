@@ -23,7 +23,7 @@ This runner-native swap only proves command shape and prompt selection until the
 | Fixture set | Task file | Variant file | Intended future experiment |
 | --- | --- | --- | --- |
 | Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized artifacts and provider telemetry. |
-| Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare baseline context packs or artifact digests against a future learned-compression candidate after quality gates and shifted costs are measured. |
+| Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
 | Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
@@ -32,7 +32,7 @@ The visual/OCR fixtures describe placeholder evidence only. They do not crop ima
 
 ## Learned-compression fixture notes
 
-The learned-compression fixtures describe already-sanitized context-pack or artifact-digest comparisons. They do not invoke LLMLingua-style, gist-token, latent-context, or reranking implementations. Future experiments should preserve exact retrieval for lossy transforms where possible and record bytes before/after, primary provider tokens, cost, success, corrections, compressor latency, and external cost.
+The learned-compression fixtures describe already-sanitized context-pack or artifact-digest comparisons and now demonstrate `variant_prompt_files` for baseline context-pack evidence versus a fixture-only compressed digest candidate. They do not invoke LLMLingua-style, gist-token, latent-context, embedding, or reranking implementations. Future experiments must follow a sanitized evidence only rule, keep protected evidence exact or receipt-retrievable, forbid semantic rewrites of identifiers, numeric constants, hashes, paths, quoted strings, stack frames, JSON keys, code fences, and diff zones, and record bytes before/after, primary provider tokens, cost, success, corrections, compressor latency, and external cost.
 
 ## Reversible output-transform fixture notes
 
