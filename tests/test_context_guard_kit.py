@@ -14728,6 +14728,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     task = tasks[0]
                     baseline = next(variant for variant in variants if variant.name == "baseline")
                     digest = next(variant for variant in variants if variant.name == "digest")
+                    task.variant_prompt_texts["digest"] = "stale inline prompt evidence"
+                    module.load_variant_prompt_files_for_targets(
+                        [(task, digest)],
+                        task_file_dir=tasks_path.parent,
+                    )
                     self.assertEqual(
                         module.build_claude_argv("claude", task, baseline)[-1],
                         "fallback prompt evidence",
@@ -14815,8 +14820,245 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     variants = module.parse_variants(variants_path)
-                    with self.assertRaises(OSError):
-                        module.parse_tasks(tasks_path, variants=variants)
+                    tasks = module.parse_tasks(tasks_path, variants=variants)
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.load_variant_prompt_files_for_targets(
+                            [(tasks[0], variants[0])],
+                            task_file_dir=tasks_path.parent,
+                        )
+                    self.assertIn("could not read prompt file", str(ctx.exception))
+
+    def test_variant_prompt_files_defer_unselected_reads_and_fail_selected_clearly(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    csv_path = root / "results.csv"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt evidence",
+                                "max_turns": 1,
+                                "variant_prompt_files": {"digest": "missing-digest.prompt.md"},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([
+                            {"name": "baseline", "extra_args": []},
+                            {"name": "digest", "extra_args": []},
+                        ]),
+                        encoding="utf-8",
+                    )
+
+                    baseline_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--task-id",
+                            "t01",
+                            "--variant",
+                            "baseline",
+                            "--csv",
+                            str(csv_path),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("fallback prompt evidence", baseline_proc.stdout)
+                    self.assertNotIn("Traceback", baseline_proc.stderr)
+
+                    digest_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--task-id",
+                            "t01",
+                            "--variant",
+                            "digest",
+                            "--csv",
+                            str(root / "digest.csv"),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(digest_proc.returncode, 0)
+                    self.assertIn("could not read prompt file", digest_proc.stderr)
+                    self.assertNotIn("Traceback", digest_proc.stderr)
+
+    def test_variant_prompt_files_defer_unselected_oversized_prompt_file(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_defer_size_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    oversized = root / "oversized.prompt.md"
+                    oversized.write_text("x" * (module.MAX_VARIANT_PROMPT_FILE_BYTES + 1), encoding="utf-8")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt evidence",
+                                "max_turns": 1,
+                                "variant_prompt_files": {"digest": oversized.name},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([
+                            {"name": "baseline", "extra_args": []},
+                            {"name": "digest", "extra_args": []},
+                        ]),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--task-id",
+                            "t01",
+                            "--variant",
+                            "baseline",
+                            "--csv",
+                            str(root / "results.csv"),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("fallback prompt evidence", proc.stdout)
+                    self.assertNotIn("exceeds", proc.stderr)
+
+    def test_variant_prompt_files_reject_oversized_selected_prompt_file(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_size_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompt_file = root / "oversized.prompt.md"
+                    prompt_file.write_text(
+                        "x" * (module.MAX_VARIANT_PROMPT_FILE_BYTES + 1),
+                        encoding="utf-8",
+                    )
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt",
+                                "variant_prompt_files": {"digest": prompt_file.name},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([{"name": "digest", "extra_args": []}]),
+                        encoding="utf-8",
+                    )
+                    variants = module.parse_variants(variants_path)
+                    tasks = module.parse_tasks(tasks_path, variants=variants)
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.load_variant_prompt_files_for_targets(
+                            [(tasks[0], variants[0])],
+                            task_file_dir=tasks_path.parent,
+                        )
+                    self.assertIn("exceeds", str(ctx.exception))
+
+    def test_variant_prompt_files_reject_non_utf8_selected_prompt_file(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_utf8_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompt_file = root / "binary.prompt.md"
+                    prompt_file.write_bytes(b"\xff\xfe\x00")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt",
+                                "variant_prompt_files": {"digest": prompt_file.name},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([{"name": "digest", "extra_args": []}]),
+                        encoding="utf-8",
+                    )
+                    variants = module.parse_variants(variants_path)
+                    tasks = module.parse_tasks(tasks_path, variants=variants)
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.load_variant_prompt_files_for_targets(
+                            [(tasks[0], variants[0])],
+                            task_file_dir=tasks_path.parent,
+                        )
+                    self.assertIn("UTF-8", str(ctx.exception))
+
+    def test_variant_prompt_files_reject_symlink_parent_directories(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_parent_symlink_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real_dir = root / "real"
+                    real_dir.mkdir()
+                    (real_dir / "prompt.md").write_text("digest prompt evidence", encoding="utf-8")
+                    link_dir = root / "linked"
+                    try:
+                        link_dir.symlink_to(real_dir, target_is_directory=True)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt",
+                                "variant_prompt_files": {"digest": "linked/prompt.md"},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([{"name": "digest", "extra_args": []}]),
+                        encoding="utf-8",
+                    )
+                    variants = module.parse_variants(variants_path)
+                    tasks = module.parse_tasks(tasks_path, variants=variants)
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.load_variant_prompt_files_for_targets(
+                            [(tasks[0], variants[0])],
+                            task_file_dir=tasks_path.parent,
+                        )
+                    self.assertIn("could not read prompt file", str(ctx.exception))
 
     def test_csv_access_rejects_symlink_targets_and_parents(self):
         for index, script in enumerate(BENCH_SCRIPTS):
@@ -16337,6 +16579,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 for module in (kit_module, plugin_module):
                     parsed_variants = module.parse_variants(variant_path)
                     parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
+                    module.load_variant_prompt_files_for_targets(
+                        module.filter_targets(parsed_tasks, parsed_variants, None, None),
+                        task_file_dir=task_path.parent,
+                    )
                     self.assertEqual(len(parsed_tasks), len(task_raw))
                     self.assertEqual(len(parsed_variants), len(variant_raw))
                     self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))

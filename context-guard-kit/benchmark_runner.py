@@ -190,6 +190,7 @@ SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_to
 MAX_SELF_HOSTED_LABEL_CHARS = 120
 MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
 MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
+MAX_VARIANT_PROMPT_FILE_BYTES = 128_000
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
@@ -481,17 +482,15 @@ def validate_variant_prompt_file_path(raw_path: str, *, owner: str) -> Path:
     return rel_path
 
 
-def load_variant_prompt_files(
+def validate_variant_prompt_file_references(
     tasks: list[TaskFixture],
     variants: list["Variant"],
-    *,
-    task_file_dir: Path,
 ) -> None:
-    """Validate variant prompt-file keys first, then read file-backed prompts no-follow.
+    """Validate variant prompt-file keys and paths without dereferencing files.
 
-    Unknown variant keys are rejected before dereferencing their mapped prompt files.
-    This preserves the benchmark runner's no-follow fixture safety while making prompt
-    evidence swaps explicit and reviewable.
+    Unknown variant keys and unsafe relative paths are rejected before any file
+    read. Missing prompt files are intentionally not checked here so a run
+    narrowed by --task-id/--variant is not blocked by unselected prompt files.
     """
     known_variants = {variant.name for variant in variants}
     for task in tasks:
@@ -500,16 +499,70 @@ def load_variant_prompt_files(
             raise SystemExit(
                 f"task {task.id} variant_prompt_files references unknown variant(s): {', '.join(unknown)}"
             )
-
-    for task in tasks:
-        loaded: dict[str, str] = {}
         for variant_name, raw_path in task.variant_prompt_files.items():
-            rel_path = validate_variant_prompt_file_path(
+            validate_variant_prompt_file_path(
                 raw_path,
                 owner=f"task {task.id} variant {variant_name}",
             )
-            loaded[variant_name] = _read_text_no_follow(task_file_dir / rel_path)
-        task.variant_prompt_texts = loaded
+
+
+def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None = None) -> str:
+    """Read one selected prompt file with no-follow IO and an argv-safe size cap."""
+    label = display_path or path.name
+    try:
+        fd = _open_regular_no_symlink(path)
+    except OSError as exc:
+        detail = exc.strerror or exc.__class__.__name__
+        raise SystemExit(f"{owner} variant_prompt_files could not read prompt file: {label}: {detail}") from None
+    try:
+        size = os.fstat(fd).st_size
+        if size > MAX_VARIANT_PROMPT_FILE_BYTES:
+            raise SystemExit(
+                f"{owner} variant_prompt_files prompt file exceeds "
+                f"{MAX_VARIANT_PROMPT_FILE_BYTES} bytes: {label}"
+            )
+        try:
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                fd = -1
+                text = handle.read()
+        except UnicodeDecodeError as exc:
+            raise SystemExit(
+                f"{owner} variant_prompt_files prompt file must be UTF-8 text: "
+                f"{label}: {exc.reason}"
+            ) from None
+        except OSError as exc:
+            detail = exc.strerror or exc.__class__.__name__
+            raise SystemExit(f"{owner} variant_prompt_files could not read prompt file: {label}: {detail}") from None
+    finally:
+        if fd != -1:
+            os.close(fd)
+    if len(text.encode("utf-8", errors="replace")) > MAX_VARIANT_PROMPT_FILE_BYTES:
+        raise SystemExit(
+            f"{owner} variant_prompt_files prompt text exceeds "
+            f"{MAX_VARIANT_PROMPT_FILE_BYTES} bytes after decoding: {label}"
+        )
+    return text
+
+
+def load_variant_prompt_files_for_targets(
+    targets: list[tuple[TaskFixture, "Variant"]],
+    *,
+    task_file_dir: Path,
+) -> None:
+    """Load file-backed prompts only for selected (task, variant) targets."""
+    for task, variant in targets:
+        raw_path = task.variant_prompt_files.get(variant.name)
+        if raw_path is None:
+            continue
+        rel_path = validate_variant_prompt_file_path(
+            raw_path,
+            owner=f"task {task.id} variant {variant.name}",
+        )
+        task.variant_prompt_texts[variant.name] = read_variant_prompt_file(
+            task_file_dir / rel_path,
+            owner=f"task {task.id} variant {variant.name}",
+            display_path=str(rel_path),
+        )
 
 
 def normalize_usage_token(value: Any) -> int | None:
@@ -583,7 +636,7 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
             ),
         ))
     if variants is not None:
-        load_variant_prompt_files(fixtures, variants, task_file_dir=path.parent)
+        validate_variant_prompt_file_references(fixtures, variants)
     return fixtures
 
 
@@ -2303,6 +2356,9 @@ def main() -> int:
         if not Path(args.claude_bin).exists():
             print(f"claude binary not found: {args.claude_bin}", file=sys.stderr)
             return 2
+
+    if runnable_targets:
+        load_variant_prompt_files_for_targets(runnable_targets, task_file_dir=args.tasks.parent)
 
     project_root = args.project_root.resolve()
     claude_ver = "dry-run" if args.dry_run else (claude_version(args.claude_bin) if runnable_targets else "skipped")
