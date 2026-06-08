@@ -203,6 +203,8 @@ EXPECTED_NPM_PACK_FILES = {
     "docs/experimental-benchmark-fixtures.md",
     "docs/benchmark-fixtures/learned-compression.tasks.example.json",
     "docs/benchmark-fixtures/learned-compression.variants.example.json",
+    "docs/benchmark-fixtures/output-transform.tasks.example.json",
+    "docs/benchmark-fixtures/output-transform.variants.example.json",
     "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
     "docs/benchmark-fixtures/visual-ocr.variants.example.json",
     "package.json",
