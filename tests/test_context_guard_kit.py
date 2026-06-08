@@ -1836,6 +1836,91 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, later_section)
 
+        def extract_gate_body(markdown: str, heading: str) -> str:
+            # Normalize inside the helper so the checklist contract stays
+            # case-insensitive even if a future caller passes raw Markdown.
+            normalized_markdown = markdown.lower()
+            normalized_heading = heading.lower()
+            match = re.search(
+                rf"^### {re.escape(normalized_heading)}\n(?P<body>.*?)(?=^### |^## |\Z)",
+                normalized_markdown,
+                re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match, heading)
+            return match.group("body")
+
+        def extract_future_pr_checklist(markdown: str, heading: str) -> list[str]:
+            body = extract_gate_body(markdown, heading)
+            body_lower = body.lower()
+            self.assertEqual(body_lower.count("future pr checklist:"), 1, heading)
+            self.assertNotIn("- [x]", body_lower, heading)
+            lines = body_lower.splitlines()
+            checklist_start = next(
+                (index for index, line in enumerate(lines) if line.strip() == "future pr checklist:"),
+                None,
+            )
+            self.assertIsNotNone(checklist_start, heading)
+            items: list[str] = []
+            for line in lines[checklist_start + 1:]:
+                if line.startswith("- [ ] "):
+                    items.append(line)
+                    continue
+                if items and line.strip():
+                    break
+            self.assertGreaterEqual(len(items), 5, heading)
+            return items
+
+        gate_checklist_requirements = {
+            "neural/semantic compression gate": [
+                "explicit experimental mode",
+                "already-sanitized unprotected prose",
+                "deny protected zones",
+                "code, diffs, identifiers",
+                "exact retrieval fallback",
+                "local receipt handle",
+                "provider-measured matched successful task",
+            ],
+            "trust-tiered / injection-aware compression gate": [
+                "trust labels",
+                "deny-by-default",
+                "untrusted",
+                "instruction-bearing",
+                "tool-output",
+                "prompt-injection regression",
+                "untrusted content cannot change compression policy",
+                "system/developer instructions",
+            ],
+            "reviewable context-diff compaction gate": [
+                "human-reviewable diffs",
+                "stable exact handles",
+                "local receipts",
+                "audit trail",
+                "source paths or sanitized labels",
+                "byte ranges or line ranges",
+                "exact re-expand commands",
+                "bounded-loss disclosure",
+                "no hosted token/cost savings claim from a smaller local diff alone",
+            ],
+            "opt-in local proxy constraints gate": [
+                "explicit opt-in",
+                "local-only service boundary",
+                "no hidden external forwarding",
+                "external forwarding disabled",
+                "privacy and reversibility",
+                "shifted-cost accounting",
+                "local services, subagents, model servers, and proxy infrastructure",
+                "no hosted api token/cost savings claim from proxy byte reductions, cache hits, or local latency alone",
+            ],
+        }
+        for heading, checklist_terms in gate_checklist_requirements.items():
+            items = extract_future_pr_checklist(radar_text, heading)
+            checklist_text = "\n".join(items)
+            with self.subTest(heading=heading, checklist_items=items):
+                self.assertTrue(all(item.startswith("- [ ] ") for item in items))
+            for term in checklist_terms:
+                with self.subTest(heading=heading, checklist_term=term):
+                    self.assertIn(term, checklist_text)
+
         user_docs = [
             ROOT / "README.md",
             ROOT / "README.ko.md",
