@@ -28,6 +28,13 @@ The following ideas remain later-roadmap gates, not shipped runtime features. Th
 
 Neural or semantic compression is allowed only behind an explicit experimental mode and only for already-sanitized, unprotected prose. It must deny protected zones, code, diffs, identifiers, paths, stack frames, numeric constants, hashes, quoted strings, JSON keys, prompt-like instructions, and any content that requires exact retrieval. A future PR must provide an exact retrieval fallback or local receipt handle before replacing text with a lossy semantic summary, and it must keep byte/token-proxy reductions separate from provider-measured token/cost evidence.
 
+Future PR checklist:
+- [ ] Keep the feature behind an explicit experimental mode with no default runtime activation.
+- [ ] Limit neural or semantic rewriting to already-sanitized unprotected prose only.
+- [ ] Deny protected zones, code, diffs, identifiers, paths, stack frames, numeric constants, hashes, quoted strings, JSON keys, prompt-like instructions, and exact-retrieval-required evidence.
+- [ ] Provide exact retrieval fallback or a local receipt handle before replacing text with any lossy semantic summary.
+- [ ] Keep byte/token-proxy reductions separate from provider-measured matched successful task token/cost evidence.
+
 Promotion requires matched successful tasks, failure-rate and human-correction guardrails, shifted-cost accounting for any compressor or subagent work, and provider-measured primary token/cost data on both sides before any hosted API savings claim.
 
 ### Trust-tiered / injection-aware compression gate
@@ -36,17 +43,40 @@ Trust-tiered or injection-aware compression requires explicit trust labels for e
 
 Future experiments must prove that injection-like text is not elevated into system/developer instructions, that untrusted content cannot change compression policy, and that regressions are benchmarked before a lane can be promoted.
 
+Future PR checklist:
+- [ ] Require explicit trust labels for every input region before any compression policy is applied.
+- [ ] Keep deny-by-default behavior for untrusted, instruction-bearing, user-supplied, and tool-output content.
+- [ ] Include prompt-injection regression fixtures for instruction-like and policy-changing text.
+- [ ] Prove untrusted content cannot change compression policy or become system/developer instructions.
+- [ ] Benchmark regressions before promotion and prefer structural selection, local artifact storage, and exact retrieval by default.
+
 ### Reviewable context-diff compaction gate
 
 Reviewable context-diff compaction must produce human-reviewable diffs plus stable exact handles for every omitted or transformed source. Local receipts and an audit trail must identify source paths or sanitized labels, byte ranges or line ranges when safe, transform policy, and exact re-expand commands. Lossy replacement is allowed only when the user can inspect the diff, retrieve the original, and see the bounded-loss disclosure.
 
 No context-diff compaction may claim hosted token/cost savings from a smaller local diff alone; savings claims require the shared promotion gate and provider-measured matched-task evidence.
 
+Future PR checklist:
+- [ ] Produce human-reviewable diffs for every omitted or transformed source.
+- [ ] Record stable exact handles, local receipts, and an audit trail before compaction output is used.
+- [ ] Identify source paths or sanitized labels plus byte ranges or line ranges when safe.
+- [ ] Emit exact re-expand commands and the transform policy for each compacted source.
+- [ ] Show bounded-loss disclosure whenever lossy replacement is allowed.
+- [ ] Make no hosted token/cost savings claim from a smaller local diff alone.
+
 ### Opt-in local proxy constraints gate
 
 Local proxy constraints are opt-in and local-only. They must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
 
 A future proxy-related PR must show configuration that keeps external forwarding disabled unless the user explicitly opts in, must preserve privacy/reversibility expectations, and must not convert local proxy metrics into hosted API token/cost savings without provider-measured evidence.
+
+Future PR checklist:
+- [ ] Require explicit opt-in before any local proxy behavior is enabled.
+- [ ] Document the local-only service boundary and state no hidden external forwarding.
+- [ ] Keep external forwarding disabled unless the user explicitly opts in.
+- [ ] Preserve privacy and reversibility expectations for all proxy-managed data.
+- [ ] Record shifted-cost accounting for local services, subagents, model servers, and proxy infrastructure.
+- [ ] Make no hosted API token/cost savings claim from proxy byte reductions, cache hits, or local latency alone.
 
 
 ## Graduated local experiment — receipt-backed output trimming
