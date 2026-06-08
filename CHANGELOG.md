@@ -2,6 +2,11 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.4.3] - 2026-06-08
+
+- Fixed the Homebrew formula template so packaged helper paths are handled as Pathname objects during install.
+- Supersedes the unpublished `0.4.2` npm candidate after Brew install validation caught the formula issue.
+
 ## [0.4.2] - 2026-06-08
 
 - Polished Korean README, plugin README, kit README, and GitHub Pages copy with Claude-assisted proofreading while preserving conservative token/cost claim boundaries.

@@ -5,7 +5,7 @@ class ContextGuard < Formula
 
   desc "Local-first context guardrails for AI coding agents"
   homepage "https://github.com/ictechgy/context-guard"
-  url "https://github.com/ictechgy/context-guard/archive/refs/tags/v0.4.2.tar.gz"
+  url "https://github.com/ictechgy/context-guard/archive/refs/tags/v0.4.3.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
   license "Apache-2.0"
 
@@ -17,7 +17,8 @@ class ContextGuard < Formula
     libexec.install "plugins"
 
     python_shebang = detected_python_shebang
-    Dir[libexec/"plugins/context-guard/bin/*"].each do |command|
+    Dir[libexec/"plugins/context-guard/bin/*"].each do |path|
+      command = Pathname(path)
       next unless command.file?
 
       first_line = command.open { |file| file.gets.to_s }
