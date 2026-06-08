@@ -99,7 +99,7 @@ When you need a savings claim, measure it on your own tasks:
 
 - full-file reads versus symbol or line-range reads
 - raw logs versus digest output or artifact receipts
-- transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals
+- transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals and `cache_layout_advice` experiment priorities
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
 - `context-guard cost preflight` estimates for Anthropic request JSON, followed by `context-guard cost observe` using provider usage fields (`cache_creation_input_tokens`, `cache_read_input_tokens`) after the call
 - matched successful baseline/variant runs from `context-guard-bench`
@@ -339,7 +339,7 @@ JSON
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts, so a corrupt trace cannot dominate memory or hide scan gaps. JSON output also includes `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes. They can flag likely volatile content near the prompt prefix, stable-prefix candidates, cache-miss hypotheses, and TTL/headroom evidence gaps, but they do not print raw prompt text, do not prove provider cache hits, and may be `missing`, `partial`, `hypothesis`, or `unavailable` when transcript schemas do not expose enough evidence.
+The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts, so a corrupt trace cannot dominate memory or hide scan gaps. JSON output also includes `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes. The sibling `cache_layout_advice` field turns those signals into ranked **checks/experiments** such as splitting long sessions or stabilizing early prompt prefixes, while keeping observed issues separate from hypothesized or corroborated causes. These fields can flag likely volatile content near the prompt prefix, stable-prefix candidates, cache-miss hypotheses, and TTL/headroom evidence gaps, but they do not print raw prompt text, do not prove provider cache hits, and may be `missing`, `partial`, `hypothesis`, or `unavailable` when transcript schemas do not expose enough evidence.
 
 ### Watch context and cache health in the statusline
 

@@ -11904,6 +11904,178 @@ for malformed in malformed_values:
             self.assertLess(data["cache_friendliness"]["signals"]["volatile_prefix_share"], 0.66)
             self.assertNotIn("volatile run evidence", proc.stdout)
 
+    def test_transcript_audit_cache_layout_advice_prioritizes_prefix_stabilization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            secret = "sk-ant-" + ("A" * 24)
+            raw_path = str(Path(tmp) / "secret" / "repo")
+            raw_command = f"pytest --token={secret} {raw_path}"
+            records = []
+            for idx in range(4):
+                prompt = "\n".join([
+                    "Stable policy header",
+                    f"volatile runtime reminder {idx} {secret}",
+                    f"volatile command {idx}: {raw_command}",
+                    "Stable reusable instruction tail",
+                    "Stable reusable policy tail",
+                    "Stable reusable verification tail",
+                ])
+                records.append(json.dumps({
+                    "timestamp": f"2026-06-06T00:0{idx}:00Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 17_000,
+                            "cache_creation_input_tokens": 60_000,
+                            "cache_read_input_tokens": 240_000,
+                            "output_tokens": 2_250,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--json", "--recommend"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    advice = data["cache_layout_advice"]
+                    self.assertEqual(advice["schema_version"], "contextguard.cache-layout-advice.v1")
+                    self.assertEqual(advice["status"], "available")
+                    self.assertEqual(advice["confidence"], "hypothesis")
+                    self.assertEqual(advice["observed_issue"], "volatile_prefix_breaker")
+                    self.assertIn(advice["priority"], {"P0", "P1"})
+                    self.assertEqual(advice["corroborated_causes"], [])
+                    cause_ids = {cause["id"] for cause in advice["hypothesized_causes"]}
+                    self.assertIn("prefix-position-churn", cause_ids)
+                    self.assertNotIn("startup-context-churn", cause_ids)
+                    self.assertNotIn("tool-or-mcp-catalog-churn", cause_ids)
+                    check = advice["next_checks"][0]
+                    self.assertEqual(check["id"], "inspect-startup-context-size")
+                    self.assertIn("context-guard-diet scan <repo>", check["command_templates"])
+                    experiment_ids = [item["id"] for item in advice["recommended_experiments"]]
+                    self.assertIn("stabilize-cache-prefix", experiment_ids)
+                    self.assertIn("run-context-diet-checks", experiment_ids)
+                    self.assertIn("defer-longer-ttl-until-prefix-stable", experiment_ids)
+                    self.assertLess(
+                        experiment_ids.index("stabilize-cache-prefix"),
+                        experiment_ids.index("defer-longer-ttl-until-prefix-stable"),
+                    )
+                    self.assertEqual([item["order"] for item in advice["recommended_experiments"]], list(range(1, len(experiment_ids) + 1)))
+                    recs_by_id = {rec["id"]: rec for rec in data["recommendations"]}
+                    self.assertIn("prioritize-cache-prefix-stabilization", recs_by_id)
+                    self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(raw_path, proc.stdout)
+                    self.assertNotIn(raw_command, proc.stdout)
+                    self.assertNotIn("volatile runtime reminder", proc.stdout)
+                    self.assertNotIn("Stable reusable instruction tail", proc.stdout)
+
+    def test_transcript_audit_cache_layout_advice_stable_prefix_does_not_confirm_startup_churn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            records = []
+            for idx in range(3):
+                prompt = "\n".join([
+                    "Stable policy header",
+                    "Stable reusable instruction",
+                    "Stable reusable workflow",
+                    f"volatile run evidence {idx}",
+                    f"volatile diff evidence {idx}",
+                    f"volatile command output {idx}",
+                ])
+                records.append(json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cache_creation_input_tokens": 20_000,
+                            "cache_read_input_tokens": 80_000,
+                        },
+                    },
+                }))
+            sample.write_text("\n".join(records) + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            advice = data["cache_layout_advice"]
+            self.assertNotEqual(advice["observed_issue"], "volatile_prefix_breaker")
+            self.assertEqual(advice["corroborated_causes"], [])
+            all_cause_ids = {cause["id"] for cause in advice["hypothesized_causes"] + advice["corroborated_causes"]}
+            self.assertNotIn("startup-context-churn", all_cause_ids)
+            rec_ids = {rec["id"] for rec in data["recommendations"]}
+            self.assertNotIn("prioritize-cache-prefix-stabilization", rec_ids)
+            self.assertNotIn("move-volatile-context-after-stable-prefix", rec_ids)
+
+    def test_transcript_audit_cache_layout_advice_partial_without_prompt_segments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cache_creation_input_tokens": 25_000,
+                            "cache_read_input_tokens": 100,
+                        },
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--json", "--recommend"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            advice = data["cache_layout_advice"]
+            self.assertEqual(advice["status"], "partial")
+            self.assertEqual(advice["confidence"], "partial")
+            self.assertNotEqual(advice["observed_issue"], "volatile_prefix_breaker")
+            self.assertEqual(advice["hypothesized_causes"], [])
+            self.assertEqual(advice["corroborated_causes"], [])
+            rec_ids = {rec["id"] for rec in data["recommendations"]}
+            self.assertNotIn("prioritize-cache-prefix-stabilization", rec_ids)
+
+    def test_transcript_audit_feasibility_lists_cache_layout_advice_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable prefix\nStable middle\nStable tail"}],
+                        "usage": {"input_tokens": 10, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--feasibility-json"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertIn("cache_layout_advice", data["consumer_contract"]["stable_top_level_fields"])
+            self.assertIn("cache_layout_advice", data)
+            self.assertIn("cache_layout_advice", data["summary"])
+            advice = data["cache_layout_advice"]
+            self.assertEqual(advice["schema_version"], "contextguard.cache-layout-advice.v1")
+            self.assertIn(advice["status"], {"available", "partial", "missing"})
+            self.assertIn(advice["confidence"], {"hypothesis", "partial", "unavailable"})
+            self.assertIn(advice["priority"], {"P0", "P1", "P2"})
+            self.assertIn(advice["observed_issue"], {"volatile_prefix_breaker", "long_session_accumulation", "low_cache_reuse", "missing_cache_fields", "unknown"})
+
     def test_transcript_audit_cache_telemetry_alone_does_not_trigger_layout_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"

@@ -99,7 +99,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 - 전체 파일 읽기와 심볼·줄 범위 읽기의 차이
 - 원본 로그와 요약 출력 또는 로컬 보관 요약 기록의 차이
-- `context-guard-audit`가 보고한 대화 기록 사용량 집중 지점과 `cache_friendliness` 프롬프트 배치 신호
+- `context-guard-audit`가 보고한 대화 기록 사용량 집중 지점, `cache_friendliness` 프롬프트 배치 신호, `cache_layout_advice` 실험 우선순위
 - 상태표시줄의 `cache` / `reuse` 값: ContextGuard가 직접 만든 절감 효과가 아니라 관찰된 대화 기록·provider cache 신호입니다.
 - `context-guard cost preflight`로 Anthropic 요청 JSON의 추정 비용을 보고, 호출 뒤 `context-guard cost observe`로 provider usage 필드(`cache_creation_input_tokens`, `cache_read_input_tokens`)를 대조합니다.
 - `context-guard-bench`로 성공한 기준/변형 실행을 쌍으로 맞춰 비교한 결과
@@ -300,7 +300,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다. JSON 출력에는 `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md)도 포함됩니다. 이는 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단이며, 자주 바뀌는 내용이 프롬프트 앞부분에 있는지, 안정 prefix 후보가 있는지, cache miss 가설과 TTL/headroom 증거 공백이 무엇인지 알릴 수 있습니다. 원문 프롬프트는 출력하지 않고 provider cache hit를 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
+감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다. JSON 출력에는 `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md)도 포함됩니다. 이는 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다. sibling `cache_layout_advice`는 이 신호를 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다. 원문 프롬프트는 출력하지 않고 provider cache hit를 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
 
 ### 상태표시줄에서 컨텍스트와 캐시 상태 확인
 

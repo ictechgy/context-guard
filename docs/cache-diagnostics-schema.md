@@ -2,7 +2,9 @@
 
 `cache_diagnostics` is the nested diagnostic object emitted by `context-guard-audit --json` and by top-level `cache_diagnostics` in `context-guard-audit --feasibility-json`. The committed schema file, [`cache-diagnostics.schema.json`](cache-diagnostics.schema.json), describes that nested object only; it is not the full CLI response envelope.
 
-The object is for GUI and external consumers that need stable cache-read, prefix-layout, TTL-evidence, and headroom-boundary fields without scraping prose. It is a local transcript diagnostic contract, not a billing source, not provider telemetry verification, and not a token or cost savings promise.
+The object is for GUI and external consumers that need stable cache-read, prefix-layout, TTL-evidence, and headroom-boundary fields without scraping prose. It is a local transcript diagnostic contract, not a billing source, not provider telemetry verification, and not a token or cost savings promise. It does not guarantee savings, does not prove provider cache hits, and does not infer live headroom.
+
+`context-guard-audit` also emits a top-level sibling `cache_layout_advice` object. That sibling is intentionally separate from `cache_diagnostics`: diagnostics stay evidence-oriented, while advice ranks checks and experiments such as session splitting, prefix stabilization, and context-diet scans. Advice distinguishes an `observed_issue` from `hypothesized_causes`, `corroborated_causes`, and `next_checks`; without diet or structural evidence, volatile prefix positions should be presented as hypotheses to check, not confirmed root causes.
 
 ## Files
 
@@ -13,11 +15,11 @@ The object is for GUI and external consumers that need stable cache-read, prefix
 
 ### `context-guard-audit --json`
 
-The legacy audit JSON includes top-level `cache_diagnostics` beside `cache_metrics` and `cache_friendliness`.
+The legacy audit JSON includes top-level `cache_diagnostics` beside `cache_metrics`, `cache_friendliness`, and the separate `cache_layout_advice` advice object.
 
 ### `context-guard-audit --feasibility-json`
 
-The feasibility JSON includes top-level `cache_diagnostics` and lists `cache_diagnostics` in `consumer_contract.stable_top_level_fields`. GUI consumers should prefer the top-level feasibility field when available and use `summary.cache_diagnostics` only for legacy compatibility.
+The feasibility JSON includes top-level `cache_diagnostics` and `cache_layout_advice`, and lists both in `consumer_contract.stable_top_level_fields`. GUI consumers should prefer the top-level feasibility field when available and use `summary.cache_diagnostics` only for legacy compatibility.
 
 ## Top-level fields
 
@@ -72,4 +74,4 @@ Historical transcript scans do not carry live context-window state. `headroom_di
 
 ## Claim boundaries
 
-`cache_diagnostics` can help users reorganize prompts, find volatile prefix segments, and identify missing evidence. It does not guarantee savings, does not verify provider cache state, is not billing authority, does not prove provider cache hits, and does not infer live headroom from historical token totals.
+`cache_diagnostics` and the sibling `cache_layout_advice` can help users reorganize prompts, find volatile prefix segments, and identify missing evidence or next checks. They do not guarantee savings, do not verify provider cache state, are not billing authority, do not prove provider cache hits, and do not infer live headroom from historical token totals.

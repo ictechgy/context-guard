@@ -49,6 +49,7 @@ TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt", "time", "ts")
 FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.2"
 FEASIBILITY_PRODUCER = "context-guard-audit"
 CACHE_DIAGNOSTICS_SCHEMA_VERSION = "contextguard.cache-diagnostics.v1"
+CACHE_LAYOUT_ADVICE_SCHEMA_VERSION = "contextguard.cache-layout-advice.v1"
 MAX_ERROR_EXAMPLES = 20
 JSON_PARSE_RECURSION_LIMIT = 10_000
 READ_CHUNK_BYTES = 64 * 1024
@@ -184,6 +185,7 @@ class UsageSummary:
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
     cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
     cache_diagnostics_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    cache_layout_advice_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def total_tokens(self) -> int:
@@ -1398,6 +1400,222 @@ def cache_diagnostics_for_summary(summary: UsageSummary) -> dict[str, Any]:
     return build_cache_diagnostics(summary)
 
 
+def _dominant_transcript(summary: UsageSummary) -> dict[str, Any] | None:
+    if summary.total_tokens <= 0 or not summary.by_file:
+        return None
+    _label, tokens = summary.by_file.most_common(1)[0]
+    share = tokens / summary.total_tokens if summary.total_tokens else 0.0
+    return {
+        "tokens": tokens,
+        "share": round(share, 4),
+        "dominates": share >= 0.20 and tokens >= 1_000,
+    }
+
+
+def _first_dynamic_breaker(cache_diagnostics: dict[str, Any]) -> dict[str, Any] | None:
+    breakers = cache_diagnostics.get("dynamic_prefix_breakers") or []
+    if not breakers:
+        return None
+    first = breakers[0]
+    return first if isinstance(first, dict) else None
+
+
+def build_cache_layout_advice(summary: UsageSummary) -> dict[str, Any]:
+    if summary.cache_layout_advice_cache is not None:
+        return summary.cache_layout_advice_cache
+
+    cache_friendliness = cache_friendliness_for_summary(summary)
+    cache_diagnostics = cache_diagnostics_for_summary(summary)
+    signals = cache_friendliness.get("signals") if isinstance(cache_friendliness.get("signals"), dict) else {}
+    dynamic_breaker = _first_dynamic_breaker(cache_diagnostics)
+    dominant = _dominant_transcript(summary)
+    cache_creation = summary.tokens.get("cache_creation", 0)
+    cache_read = summary.tokens.get("cache_read", 0)
+    cache_fields = cache_diagnostics.get("observations", {}).get("cache_fields", {}) if isinstance(cache_diagnostics.get("observations"), dict) else {}
+    cache_status = cache_fields.get("status") if isinstance(cache_fields, dict) else None
+    stable_prefix_share = signals.get("stable_prefix_share")
+    volatile_prefix_share = signals.get("volatile_prefix_share")
+    volatile_tail_share = signals.get("volatile_tail_share")
+    max_prefix_position = dynamic_breaker.get("position") if dynamic_breaker else None
+    max_prefix_position_volatile_share = dynamic_breaker.get("volatile_share") if dynamic_breaker else signals.get("max_prefix_position_volatile_share")
+
+    status = "missing"
+    confidence = "unavailable"
+    observed_issue = "unknown"
+    priority = "P2"
+    hypothesized_causes: list[dict[str, Any]] = []
+    corroborated_causes: list[dict[str, Any]] = []
+    next_checks: list[dict[str, Any]] = []
+    recommended_experiments: list[dict[str, Any]] = []
+
+    has_cache_any = bool(
+        summary.token_field_presence.get("cache_read", 0)
+        or summary.token_field_presence.get("cache_creation", 0)
+    )
+    has_prompt_samples = bool(summary.prompt_cache_audit.samples)
+    if has_cache_any or has_prompt_samples:
+        status = "partial" if (
+            not has_prompt_samples
+            or cache_friendliness.get("status") == "partial"
+            or cache_diagnostics.get("status") == "partial"
+            or summary.skipped_files
+            or summary.skipped_records
+            or summary.parse_errors
+        ) else "available"
+        confidence = "partial" if status == "partial" else "hypothesis"
+
+    volatile_prefix_breaker = bool(
+        dynamic_breaker
+        and cache_creation > 0
+        and (max_prefix_position in {0, 1} or (max_prefix_position_volatile_share or 0) >= PROMPT_PREFIX_VOLATILE_THRESHOLD)
+    )
+    long_session_dominates = bool(dominant and dominant.get("dominates"))
+
+    if volatile_prefix_breaker:
+        observed_issue = "volatile_prefix_breaker"
+        priority = "P0" if cache_creation >= 50_000 and max_prefix_position in {0, 1} else "P1"
+        hypothesized_causes.append({
+            "id": "prefix-position-churn",
+            "confidence": confidence,
+            "evidence": EVIDENCE_INFERRED,
+            "reason": (
+                "A highly volatile redacted prompt segment appears in the early prefix window; "
+                "this identifies a layout issue, not a confirmed source."
+            ),
+            "next_check": "Check whether startup context, generated evidence, or tool/MCP catalog changes are moving before stable policy.",
+        })
+        if cache_diagnostics.get("stable_prefix_candidates"):
+            hypothesized_causes.append({
+                "id": "evidence-before-policy",
+                "confidence": confidence,
+                "evidence": EVIDENCE_INFERRED,
+                "reason": (
+                    "Stable reusable segments appear elsewhere while the early prefix churns; "
+                    "check whether logs, diffs, timestamps, or file evidence precede stable instructions."
+                ),
+                "next_check": "Keep stable policy/instructions first and move generated run evidence later.",
+            })
+        next_checks.append({
+            "id": "inspect-startup-context-size",
+            "confidence": "hypothesis",
+            "command_templates": [
+                "context-guard-diet scan <repo>",
+                "context-guard-diet structural-waste <repo>",
+            ],
+            "evidence_required_for_corroboration": (
+                "Large or duplicate CLAUDE.md/AGENTS.md/GEMINI.md findings from diet output."
+            ),
+        })
+    elif long_session_dominates:
+        observed_issue = "long_session_accumulation"
+        priority = "P1"
+    elif cache_creation >= 10_000 and cache_read > 0 and summary.cache_amortization < 0.5:
+        observed_issue = "low_cache_reuse"
+        priority = "P1"
+    elif cache_status == "missing" or not has_cache_any:
+        observed_issue = "missing_cache_fields"
+        priority = "P2"
+
+    if long_session_dominates:
+        recommended_experiments.append({
+            "id": "split-long-sessions",
+            "order": len(recommended_experiments) + 1,
+            "priority": "P1",
+            "effort": "low",
+            "action": "Use /clear between unrelated tasks and /compact focus on changed files, failing tests, and remaining TODO during long work.",
+            "expected_signal": "Cache creation per comparable task decreases and one transcript no longer dominates observed tokens.",
+            "verification": "Re-run context-guard-audit on a comparable window and compare cache_creation, cache_amortization, and top transcript share.",
+            "evidence": dominant or {},
+        })
+    if volatile_prefix_breaker:
+        recommended_experiments.append({
+            "id": "stabilize-cache-prefix",
+            "order": len(recommended_experiments) + 1,
+            "priority": priority,
+            "effort": "medium",
+            "action": "Keep stable reusable instructions/policy before volatile logs, diffs, timestamps, and generated file evidence.",
+            "expected_signal": "Stable prefix share rises and volatile prefix share falls on matched audit windows.",
+            "verification": "Re-run context-guard-audit --json --recommend and compare cache_layout_advice plus cache_friendliness signals.",
+            "evidence": {
+                "dynamic_prefix_breaker_position": max_prefix_position,
+                "dynamic_prefix_breaker_volatile_share": max_prefix_position_volatile_share,
+            },
+        })
+        recommended_experiments.append({
+            "id": "run-context-diet-checks",
+            "order": len(recommended_experiments) + 1,
+            "priority": "P1",
+            "effort": "low",
+            "action": "Run the generated diet command templates and treat any large/duplicate context-file findings as corroborating evidence before editing instructions.",
+            "expected_signal": "Diet output identifies or rules out oversized/duplicated startup context as a contributor.",
+            "verification": "Record diet JSON separately; do not convert prefix-position evidence alone into a confirmed startup-context cause.",
+            "command_templates": [
+                "context-guard-diet scan <repo> --json > diet.json",
+                "context-guard-diet structural-waste <repo> --json > structural-waste.json",
+            ],
+        })
+    if cache_creation >= 50_000 and summary.cache_amortization_defined and 1.0 <= summary.cache_amortization < 5.0:
+        recommended_experiments.append({
+            "id": "defer-longer-ttl-until-prefix-stable" if volatile_prefix_breaker else "evaluate-longer-ttl-after-stability-check",
+            "order": len(recommended_experiments) + 1,
+            "priority": "P2",
+            "effort": "medium",
+            "action": "Treat longer TTL as secondary; first corroborate stable prefix reuse and current provider TTL/pricing behavior.",
+            "expected_signal": "TTL evaluation happens only after prefix volatility is reduced or ruled out.",
+            "verification": "Use timestamped cache telemetry and provider-measured billing/cost evidence; historical token totals alone are insufficient.",
+        })
+    if not recommended_experiments and status == "partial":
+        next_checks.append({
+            "id": "rerun-narrower-audit",
+            "confidence": "partial",
+            "command_templates": ["context-guard-audit <transcript-or-project-dir> --json --recommend"],
+            "evidence_required_for_corroboration": "Enough uncapped prompt/cache records to classify prefix layout.",
+        })
+    if not recommended_experiments and observed_issue == "missing_cache_fields":
+        next_checks.append({
+            "id": "collect-cache-telemetry",
+            "confidence": "unavailable",
+            "command_templates": ["context-guard-audit ~/.claude/projects --json --recommend"],
+            "evidence_required_for_corroboration": "Transcript records with cache_read/cache_creation fields.",
+        })
+
+    advice = {
+        "schema_version": CACHE_LAYOUT_ADVICE_SCHEMA_VERSION,
+        "status": status,
+        "confidence": confidence,
+        "heuristic": True,
+        "observed_issue": observed_issue,
+        "priority": priority,
+        "observed_summary": {
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
+            "cache_amortization": round(summary.cache_amortization, 4) if summary.cache_amortization_defined else None,
+            "stable_prefix_share": stable_prefix_share,
+            "volatile_prefix_share": volatile_prefix_share,
+            "volatile_tail_share": volatile_tail_share,
+            "max_prefix_position": max_prefix_position,
+            "max_prefix_position_volatile_share": max_prefix_position_volatile_share,
+            "dominant_transcript_share": dominant.get("share") if dominant else None,
+        },
+        "hypothesized_causes": hypothesized_causes,
+        "corroborated_causes": corroborated_causes,
+        "next_checks": next_checks,
+        "recommended_experiments": recommended_experiments,
+        "caveats": [
+            "Cache layout advice is a local transcript heuristic, not billing authority or provider-cache proof.",
+            "Observed issues come from cache fields and redacted segment statistics; causes remain hypotheses until corroborated by diet/structural evidence.",
+            "Generated command templates use placeholders and must not be treated as observed user commands or paths.",
+            "Use matched before/after audits before making token or cost savings claims.",
+        ],
+    }
+    summary.cache_layout_advice_cache = advice
+    return advice
+
+
+def cache_layout_advice_for_summary(summary: UsageSummary) -> dict[str, Any]:
+    return build_cache_layout_advice(summary)
+
+
 def build_metric_caveats(summary: UsageSummary) -> list[str]:
     caveats = [
         "Values are observed from local Claude Code transcript JSON/JSONL fields and are not official billing records.",
@@ -1433,6 +1651,7 @@ def feasibility_json(
     stable_total_tokens = sum(stable_tokens.values())
     cache_friendliness = cache_friendliness_for_summary(summary)
     cache_diagnostics = cache_diagnostics_for_summary(summary)
+    cache_layout_advice = cache_layout_advice_for_summary(summary)
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -1452,6 +1671,7 @@ def feasibility_json(
                 "headroom_availability",
                 "cache_friendliness",
                 "cache_diagnostics",
+                "cache_layout_advice",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
@@ -1480,6 +1700,7 @@ def feasibility_json(
         "headroom_availability": availability["headroom"],
         "cache_friendliness": cache_friendliness,
         "cache_diagnostics": cache_diagnostics,
+        "cache_layout_advice": cache_layout_advice,
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,
@@ -1531,6 +1752,36 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
     input_ratio = input_tokens / total
     cache_friendliness = cache_friendliness_for_summary(summary)
     cache_diagnostics = cache_diagnostics_for_summary(summary)
+    cache_layout_advice = cache_layout_advice_for_summary(summary)
+    if cache_layout_advice.get("observed_issue") == "volatile_prefix_breaker":
+        evidence = {
+            "observed_issue": cache_layout_advice.get("observed_issue"),
+            "priority": cache_layout_advice.get("priority"),
+            "confidence": cache_layout_advice.get("confidence"),
+            "cache_creation_tokens": cache_creation,
+            "cache_read_tokens": cache_read,
+        }
+        observed_summary = cache_layout_advice.get("observed_summary")
+        if isinstance(observed_summary, dict):
+            for key in ("max_prefix_position", "max_prefix_position_volatile_share", "stable_prefix_share", "volatile_prefix_share"):
+                evidence[key] = observed_summary.get(key)
+        rec = recommendation(
+            "prioritize-cache-prefix-stabilization",
+            "Prioritize cache-prefix stabilization before TTL or output trimming",
+            (
+                "Cache reads are present but cache creation remains material, and redacted segment statistics show "
+                "a volatile early prefix; this is an experiment-prioritization signal, not a confirmed root cause."
+            ),
+            (
+                "First split long sessions when one transcript dominates, then check startup/context size and keep "
+                "stable policy before volatile logs, diffs, timestamps, and generated evidence."
+            ),
+            str(cache_layout_advice.get("priority") or "P1"),
+            evidence,
+        )
+        rec["heuristic"] = True
+        rec["confidence"] = cache_layout_advice.get("confidence")
+        recs.append(rec)
     for finding in cache_friendliness.get("findings", []):
         if isinstance(finding, dict) and finding.get("id") == "volatile-content-near-prefix":
             evidence = dict(finding.get("evidence") or {})
@@ -1754,6 +2005,7 @@ def summary_json(
         "top_tools": counter_json(summary.by_tool, top),
         "cache_friendliness": cache_friendliness_for_summary(summary),
         "cache_diagnostics": cache_diagnostics_for_summary(summary),
+        "cache_layout_advice": cache_layout_advice_for_summary(summary),
     }
     if include_recommendations:
         data["recommendations"] = build_recommendations(summary, top)
@@ -1886,6 +2138,26 @@ def main() -> int:
     print(f"  ttl_status              {ttl.get('status')} ({ttl.get('confidence')})")
     headroom = cache_diagnostics.get("headroom_diagnostics") or {}
     print(f"  headroom_status         {headroom.get('status')} ({headroom.get('evidence')})")
+
+    cache_layout_advice = cache_layout_advice_for_summary(summary)
+    if cache_layout_advice.get("status") != "missing" or cache_layout_advice.get("observed_issue") != "unknown":
+        print("\nCache layout advice")
+        print(f"  status                  {cache_layout_advice.get('status')}")
+        print(f"  confidence              {cache_layout_advice.get('confidence')}")
+        print(f"  observed_issue          {cache_layout_advice.get('observed_issue')}")
+        print(f"  priority                {cache_layout_advice.get('priority')}")
+        experiments = cache_layout_advice.get("recommended_experiments") or []
+        if experiments:
+            first = experiments[0]
+            print(f"  first_experiment        {first.get('id')} ({first.get('priority')})")
+            print(f"  experiment_action       {first.get('action')}")
+        checks = cache_layout_advice.get("next_checks") or []
+        if checks:
+            first = checks[0]
+            print(f"  next_check              {first.get('id')}")
+            templates = first.get("command_templates") or []
+            if templates:
+                print(f"  command_template        {templates[0]}")
 
     model_totals = Counter({model: sum(tokens.values()) for model, tokens in summary.by_model.items()})
     print_counter("By model", model_totals, args.top)

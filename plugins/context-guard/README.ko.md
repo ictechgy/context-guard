@@ -95,7 +95,7 @@ context-guard-statusline-merged
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보, 가림 처리된 failure signature, 중복 라인 그룹, 다음 조회 제안이 담긴 요약을 만들 수 있습니다.
 - **민감정보 가림 도구**는 검색, diff, 로그 출력에서 자격 증명 패턴, 비공개 키 블록, 인증 헤더, 자격 증명이 포함된 URL, 민감해 보이는 경로를 가립니다.
 - **상태표시줄**은 모델, 컨텍스트, 비용 신호를 짧게 보여주고, 대화 기록 데이터가 있으면 캐시 읽기와 캐시 재사용 신호도 함께 표시합니다.
-- **대화 기록 감사**는 usage/cost/cache bucket을 집계하고, 토큰 집중 지점과 `cache_friendliness` 프롬프트 배치 신호를 제한된 가림 처리된 segment hash로 보고합니다. 원문 프롬프트는 출력하지 않습니다.
+- **대화 기록 감사**는 usage/cost/cache bucket을 집계하고, 토큰 집중 지점, `cache_friendliness` 프롬프트 배치 신호, `cache_layout_advice` 확인/실험 우선순위를 제한된 가림 처리된 segment hash로 보고합니다. 원문 프롬프트는 출력하지 않습니다.
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
 - **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리로 기록합니다.
 
@@ -109,7 +109,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 ## 절감 수치를 과장하지 않습니다
 
-이 헬퍼들은 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이지만, 고정된 절감률을 보장하지 않습니다. 실제 전후 비교 증거가 필요하면 `context-guard-bench --ledger-jsonl ... --report-json ...`로 본인 작업에서 측정하세요. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산하며, report의 `matched_pair_evidence`가 성공한 baseline/variant task bucket을 transform, quality gate, 측정 가능 여부, claim boundary와 연결합니다. wall-time과 provider-cache 필드는 진단용 텔레메트리이지 단독 절감 증거가 아닙니다. 감사의 `cache_friendliness`와 [`cache_diagnostics`](https://github.com/ictechgy/context-guard/blob/main/docs/cache-diagnostics-schema.md)는 관측/추론/가설/불가 경계를 둔 휴리스틱 배치·cache-read 신호이며 청구 기준이나 provider-cache 증명이 아닙니다. 벤치마크 CSV 스키마는 엄격하므로 헬퍼 업그레이드 후에는 새 CSV를 시작하거나 헤더를 마이그레이션하세요. 작업 유형별 합성 예시는 [`docs/benchmark-workflow-examples.md`](https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md)에 있고, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md)에 있습니다.
+이 헬퍼들은 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이지만, 고정된 절감률을 보장하지 않습니다. 실제 전후 비교 증거가 필요하면 `context-guard-bench --ledger-jsonl ... --report-json ...`로 본인 작업에서 측정하세요. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산하며, report의 `matched_pair_evidence`가 성공한 baseline/variant task bucket을 transform, quality gate, 측정 가능 여부, claim boundary와 연결합니다. wall-time과 provider-cache 필드는 진단용 텔레메트리이지 단독 절감 증거가 아닙니다. 감사의 `cache_friendliness`, [`cache_diagnostics`](https://github.com/ictechgy/context-guard/blob/main/docs/cache-diagnostics-schema.md), `cache_layout_advice`는 관측/추론/가설/불가 경계를 둔 휴리스틱 배치·cache-read 신호와 순위화된 확인/실험이며 청구 기준이나 provider-cache 증명이 아닙니다. 벤치마크 CSV 스키마는 엄격하므로 헬퍼 업그레이드 후에는 새 CSV를 시작하거나 헤더를 마이그레이션하세요. 작업 유형별 합성 예시는 [`docs/benchmark-workflow-examples.md`](https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md)에 있고, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md)에 있습니다.
 
 ContextGuard는 모델 토큰을 줄이기 위해 작업을 외부 AI 서비스로 전송하지 않습니다. 모든 헬퍼 명령은 로컬에서 동작합니다. 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움될 수 있지만 provider prompt cache를 대체하지 않습니다. Anthropic 배포나 청구 설명 전에는 공식 prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
 
