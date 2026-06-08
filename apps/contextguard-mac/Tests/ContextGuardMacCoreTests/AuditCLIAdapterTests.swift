@@ -106,7 +106,7 @@ final class AuditCLIAdapterTests: XCTestCase {
 
         let report = try adapter.loadReport(transcriptDirectory: temp)
 
-        XCTAssertEqual(report.schemaVersion, "contextguard.metric-feasibility.v1.1")
+        XCTAssertEqual(report.schemaVersion, contextGuardLatestFeasibilitySchemaVersion)
         XCTAssertEqual(report.totals.tokens.cacheRead, 800)
     }
 

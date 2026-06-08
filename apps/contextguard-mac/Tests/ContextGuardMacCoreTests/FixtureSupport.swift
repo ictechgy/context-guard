@@ -18,7 +18,7 @@ func feasibilityFixture(
       "producer": "context-guard-audit",
       "generated_at": "2026-06-01T02:02:12Z",
       "consumer_contract": {
-        "stable_top_level_fields": ["schema_version", "producer", "generated_at", "source_kind", "source_freshness", "scan_integrity", "metric_availability", "metric_caveats", "redaction_mode", "context_availability", "totals"],
+        "stable_top_level_fields": ["schema_version", "producer", "generated_at", "source_kind", "source_freshness", "scan_integrity", "metric_availability", "metric_caveats", "redaction_mode", "context_availability", "headroom_availability", "mac_visibility", "totals"],
         "diagnostic_fields": ["summary"],
         "summary_contract": "summary is diagnostic"
       },
@@ -39,6 +39,8 @@ func feasibilityFixture(
       ],
       "redaction_mode": {"paths": "basename_plus_stable_hash_by_default", "commands": "command_category_plus_stable_hash_by_default", "secret_like_values": "pattern_redacted", "raw_path_and_command_flags": ["--show-paths", "--show-commands"]},
       "context_availability": {"status": "\#(contextStatus)", "reason": "Transcript scans do not include live Claude Code context_window data."},
+      "headroom_availability": {"status": "missing", "evidence": "unavailable", "observable_via": "live_statusline_snapshot"},
+      "mac_visibility": {"schema_version": "contextguard.mac-visibility.v1", "surface_kind": "local_macos_visibility_contract", "readiness": {"status": "ready", "reason": "Transcript token totals are available and the scan completed within configured limits."}, "bind_to_top_level_fields": ["source_kind", "source_freshness", "scan_integrity", "metric_availability", "metric_caveats", "redaction_mode", "context_availability", "headroom_availability", "totals"], "diagnostic_only_fields": ["summary"], "primary_cards": [], "missing_live_observations": [{"id": "live_headroom", "required_observation": "live_statusline_snapshot"}], "claim_boundaries": ["Local transcript observations are not invoice-grade billing records."], "redaction_required": true},
       "totals": {"total_tokens": 1150, "tokens": {"input": 100, "output": 50, "cache_read": 800, "cache_creation": 200}, "cost_usd_observed": \#(observedCost), "cache_read_share": 0.7272727272727273, "cache_reuse_ratio": \#(cacheReuseRatio)}
       \#(summary)
     }
