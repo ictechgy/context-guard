@@ -1837,9 +1837,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn(term, later_section)
 
         def extract_gate_body(markdown: str, heading: str) -> str:
+            # Normalize inside the helper so the checklist contract stays
+            # case-insensitive even if a future caller passes raw Markdown.
+            normalized_markdown = markdown.lower()
+            normalized_heading = heading.lower()
             match = re.search(
-                rf"^### {re.escape(heading)}\n(?P<body>.*?)(?=^### |^## |\Z)",
-                markdown,
+                rf"^### {re.escape(normalized_heading)}\n(?P<body>.*?)(?=^### |^## |\Z)",
+                normalized_markdown,
                 re.MULTILINE | re.DOTALL,
             )
             self.assertIsNotNone(match, heading)
@@ -1847,9 +1851,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         def extract_future_pr_checklist(markdown: str, heading: str) -> list[str]:
             body = extract_gate_body(markdown, heading)
-            self.assertEqual(body.count("future pr checklist:"), 1, heading)
-            self.assertNotIn("- [x]", body, heading)
-            lines = body.splitlines()
+            body_lower = body.lower()
+            self.assertEqual(body_lower.count("future pr checklist:"), 1, heading)
+            self.assertNotIn("- [x]", body_lower, heading)
+            lines = body_lower.splitlines()
             checklist_start = next(
                 (index for index, line in enumerate(lines) if line.strip() == "future pr checklist:"),
                 None,
@@ -1910,7 +1915,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for heading, checklist_terms in gate_checklist_requirements.items():
             items = extract_future_pr_checklist(radar_text, heading)
             checklist_text = "\n".join(items)
-            with self.subTest(heading=heading, checklist_items=heading):
+            with self.subTest(heading=heading, checklist_items=items):
                 self.assertTrue(all(item.startswith("- [ ] ") for item in items))
             for term in checklist_terms:
                 with self.subTest(heading=heading, checklist_term=term):
