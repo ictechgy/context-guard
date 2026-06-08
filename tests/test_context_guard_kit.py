@@ -1710,8 +1710,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertRegex(text, r"self-hosted[^\n]+memory/latency")
         self.assertRegex(text, r"not hosted api token-savings claims?")
         benchmark_text = (ROOT / "research" / "benchmark-plan.md").read_text(encoding="utf-8").lower()
+        plain_benchmark_text = re.sub(r"[*_`]+", "", benchmark_text)
         self.assertIn("10%p", benchmark_text)
         self.assertRegex(text, r"benchmark-plan\.md[^\n]+10(?:%p|\s+percentage\s+points)")
+        for claim_gate in (
+            "matched successful task",
+            "failure-rate guardrail",
+            "shifted-cost",
+            "proxy",
+            "artifact receipt",
+        ):
+            with self.subTest(benchmark_claim_gate=claim_gate):
+                self.assertIn(claim_gate, plain_benchmark_text)
+        for identifier in (
+            "human_corrections_per_task",
+            "external_tokens",
+            "external_cost_usd",
+            "bytes_before/bytes_after",
+            "total_cost_with_shift_usd",
+        ):
+            with self.subTest(benchmark_identifier=identifier):
+                self.assertIn(identifier, benchmark_text)
+        self.assertIn("실제 `total_tokens`", benchmark_text)
+        self.assertIn("primary token/cost", plain_benchmark_text)
+        self.assertIn("matched successful task", plain_benchmark_text)
+        self.assertRegex(plain_benchmark_text, r"exact\s+re-expand")
+        self.assertIn("hosted api token/cost 절감 증거가 아니", plain_benchmark_text)
+        for forbidden_claim in (
+            r"guarantees?\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"guaranteed\s+(?:hosted\s+api\s+)?(?:token|cost)\s+savings",
+            r"fixed\s+\d+%\s+(?:token|cost)\s+savings",
+            r"reduces?\s+tokens?\s+by\s+\d+%",
+            r"cuts?\s+costs?\s+by\s+\d+%",
+        ):
+            with self.subTest(benchmark_forbidden_claim=forbidden_claim):
+                self.assertNotRegex(plain_benchmark_text, forbidden_claim)
+
 
     def test_experimental_radar_user_docs_are_claim_safe(self):
         docs = [
@@ -16257,6 +16291,21 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "_bench_runner_test_experimental_fixtures_plugin",
         )
 
+        expected_prompt_fragments = {
+            "visual_ocr": {
+                "baseline_full_visual_fixture": "Full visual evidence",
+                "fixture_only_cropped_or_ocr_evidence": "Cropped or OCR-derived evidence",
+            },
+            "learned_compression": {
+                "baseline_uncompressed_fixture": "Sanitized context pack",
+                "fixture_only_learned_compression_candidate": "Compressed digest candidate",
+            },
+            "output_transform": {
+                "baseline_raw_output_fixture": "Raw sanitized command output",
+                "fixture_only_digest_artifact_receipt": "Digest of sanitized command output",
+            },
+        }
+
         combined_fixture_text = guide.read_text(encoding="utf-8").lower()
         for lane, (task_path, variant_path) in fixture_pairs.items():
             with self.subTest(lane=lane):
@@ -16292,31 +16341,27 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(parsed_variants), len(variant_raw))
                     self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
                     self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
-                    for task in parsed_tasks:
+                    tasks_by_id = {task.id: task for task in parsed_tasks}
+                    for raw_task in task_raw:
+                        task = tasks_by_id[raw_task["id"]]
                         self.assertIn("replace success_command", task.success_command)
-                    if lane == "visual_ocr":
-                        visual_task = parsed_tasks[0]
-                        self.assertIn("baseline_full_visual_fixture", visual_task.variant_prompt_texts)
-                        self.assertIn("fixture_only_cropped_or_ocr_evidence", visual_task.variant_prompt_texts)
-                        self.assertIn("Full visual evidence", visual_task.variant_prompt_texts["baseline_full_visual_fixture"])
-                        self.assertIn("Cropped or OCR-derived evidence", visual_task.variant_prompt_texts["fixture_only_cropped_or_ocr_evidence"])
-                    elif lane == "learned_compression":
-                        learned_task = parsed_tasks[0]
-                        self.assertIn("baseline_uncompressed_fixture", learned_task.variant_prompt_texts)
-                        self.assertIn("fixture_only_learned_compression_candidate", learned_task.variant_prompt_texts)
-                        self.assertIn("Sanitized context pack", learned_task.variant_prompt_texts["baseline_uncompressed_fixture"])
-                        self.assertIn("Compressed digest candidate", learned_task.variant_prompt_texts["fixture_only_learned_compression_candidate"])
-                    elif lane == "output_transform":
-                        output_task = parsed_tasks[0]
-                        self.assertIn("baseline_raw_output_fixture", output_task.variant_prompt_texts)
-                        self.assertIn("fixture_only_digest_artifact_receipt", output_task.variant_prompt_texts)
-                        self.assertIn("Raw sanitized command output", output_task.variant_prompt_texts["baseline_raw_output_fixture"])
-                        self.assertIn("Digest of sanitized command output", output_task.variant_prompt_texts["fixture_only_digest_artifact_receipt"])
+                        placeholder_success, placeholder_note = module.run_success_command(task, ROOT)
+                        self.assertFalse(placeholder_success)
+                        self.assertIn("exit=", placeholder_note)
+
+                        expected_mapping = raw_task.get("variant_prompt_files", {})
+                        self.assertEqual(set(task.variant_prompt_texts), set(expected_mapping))
+                        for variant in parsed_variants:
+                            argv_prompt = module.build_claude_argv("claude", task, variant)[-1]
+                            if variant.name in expected_mapping:
+                                self.assertEqual(argv_prompt, task.variant_prompt_texts[variant.name])
+                                expected_fragment = expected_prompt_fragments[lane][variant.name]
+                                self.assertIn(expected_fragment, task.variant_prompt_texts[variant.name])
+                            else:
+                                self.assertEqual(argv_prompt, task.prompt)
+
                     for variant in parsed_variants:
                         self.assertEqual(variant.extra_args, [])
-                    placeholder_success, placeholder_note = module.run_success_command(parsed_tasks[0], ROOT)
-                    self.assertFalse(placeholder_success)
-                    self.assertIn("exit=", placeholder_note)
 
                 combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
                 combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
@@ -16368,6 +16413,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             PLUGIN_DIR / "README.md",
             PLUGIN_DIR / "README.ko.md",
             ROOT / "docs" / "benchmark-workflow-examples.md",
+            ROOT / "research" / "benchmark-plan.md",
             ROOT / "research" / "experimental-token-reduction-radar.md",
             guide,
         )
