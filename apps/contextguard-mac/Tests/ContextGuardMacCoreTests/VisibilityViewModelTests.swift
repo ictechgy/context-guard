@@ -12,7 +12,12 @@ final class VisibilityViewModelTests: XCTestCase {
         XCTAssertTrue(snapshot.cards.contains(MetricCard(title: "Cache-read share", value: "72.7%", detail: "cache_read / (input + cache_read + cache_creation)", isAvailable: true)))
         XCTAssertTrue(snapshot.cards.contains(MetricCard(title: "Reuse ratio", value: "4.00×", detail: "cache_read / cache_creation", isAvailable: true)))
         XCTAssertTrue(snapshot.cards.contains { $0.title == "Observed cost" && $0.value == "$0.1234" && ($0.detail?.contains("not invoice-grade billing") ?? false) })
+        XCTAssertTrue(snapshot.cards.contains { $0.title == "Headroom availability" && $0.value == "missing" && ($0.detail?.contains("live_statusline_snapshot") ?? false) })
+        XCTAssertTrue(snapshot.cards.contains { $0.title == "Cache layout advice" && $0.value == "available" && ($0.detail?.contains("Fixture cache advice only") ?? false) })
+        XCTAssertTrue(snapshot.cards.contains { $0.title == "Cache layout advice" && ($0.detail?.contains("Cache-friendliness score: 0.82") ?? false) })
         XCTAssertFalse(snapshot.cards.contains { $0.title.lowercased().contains("hit rate") })
+        XCTAssertTrue(snapshot.caveats.contains("Historical transcript totals do not infer live context headroom or remaining tokens."))
+        XCTAssertTrue(snapshot.caveats.contains("This contract does not guarantee token or cost savings."))
     }
 
     func testPartialScanChangesStatusButStillRendersValues() throws {

@@ -134,7 +134,19 @@ public enum VisibilityViewModel {
             MetricCard(title: "Scan integrity", value: report.scanIntegrity.status, detail: scanDetail(report.scanIntegrity)),
             MetricCard(title: "Context availability", value: report.contextAvailability.status, detail: report.contextAvailability.reason, isAvailable: report.contextAvailability.isAvailableOrPartial)
         ]
+        if let headroomAvailability = report.headroomAvailability {
+            cards.append(MetricCard(
+                title: "Headroom availability",
+                value: headroomAvailability.status,
+                detail: headroomDetail(headroomAvailability, macVisibility: report.macVisibility),
+                isAvailable: headroomAvailability.isAvailableOrPartial
+            ))
+        }
+        if let cacheLayoutCard = cacheLayoutAdviceCard(report: report) {
+            cards.append(cacheLayoutCard)
+        }
         cards.removeAll { !$0.isAvailable && ($0.title == "Observed cost") }
+        let caveats = report.metricCaveats + (report.macVisibility?.claimBoundaries ?? [])
 
         return VisibilitySnapshot(
             statusTitle: statusTitle,
@@ -143,7 +155,7 @@ public enum VisibilityViewModel {
             sourceMessage: sourceMessage,
             contextMessage: contextMessage,
             cards: cards,
-            caveats: report.metricCaveats
+            caveats: caveats
         )
     }
 
@@ -167,6 +179,70 @@ public enum VisibilityViewModel {
         "files \(integrity.filesScanned), records \(integrity.recordsScanned), skipped files \(integrity.skippedFiles), skipped records \(integrity.skippedRecords), parse errors \(integrity.parseErrorCount)"
     }
 
+    private static func headroomDetail(_ status: MetricStatus, macVisibility: MacVisibilityContract?) -> String? {
+        if let missingHeadroom = macVisibility?.missingLiveObservations.first(where: { $0.id == "live_headroom" }) {
+            let observation = "\(missingHeadroom.reason ?? "Historical transcript scans do not include live headroom observations.") Required observation: \(missingHeadroom.requiredObservation)."
+            if let reason = status.reason, !reason.isEmpty {
+                return "\(reason) \(observation)"
+            }
+            return observation
+        }
+        if let reason = status.reason {
+            return reason
+        }
+        if let observableVia = status.observableVia {
+            return "Observable via \(observableVia)."
+        }
+        return nil
+    }
+
+    private static func cacheLayoutAdviceCard(report: FeasibilityReport) -> MetricCard? {
+        guard let advice = report.cacheLayoutAdvice else {
+            return nil
+        }
+        let contractCard = report.macVisibility?.primaryCards.first { $0.id == "cache_layout_advice" }
+        let title = contractCard?.title ?? "Cache layout advice"
+        return MetricCard(
+            title: title,
+            value: advice.status,
+            detail: cacheLayoutAdviceDetail(
+                advice: advice,
+                friendliness: report.cacheFriendliness,
+                diagnostics: report.cacheDiagnostics
+            ),
+            isAvailable: advice.isAvailableOrPartial
+        )
+    }
+
+    private static func cacheLayoutAdviceDetail(
+        advice: CacheLayoutAdvice,
+        friendliness: CacheFriendliness?,
+        diagnostics: CacheDiagnostics?
+    ) -> String {
+        var parts: [String] = []
+        if let summary = advice.summary, !summary.isEmpty {
+            parts.append(summary)
+        } else if let observedIssue = advice.observedIssue, !observedIssue.isEmpty {
+            parts.append("Observed issue: \(observedIssue).")
+        }
+        if let priority = advice.priority, !priority.isEmpty {
+            parts.append("Priority: \(priority).")
+        }
+        if let action = (advice.recommendedExperiments.first?.action ?? advice.recommendations.first?.action ?? advice.nextChecks.first?.action),
+           !action.isEmpty {
+            parts.append(action)
+        }
+        if let breaker = diagnostics?.dynamicPrefixBreakers.first, let position = breaker.position {
+            parts.append("Dynamic prefix breaker position: \(position).")
+        }
+        if let score = friendliness?.score {
+            parts.append(String(format: "Cache-friendliness score: %.2f.", score))
+        }
+        let caveat = advice.caveats.first ?? "Cache layout advice is a local transcript heuristic, not billing authority or provider-cache proof."
+        parts.append(caveat)
+        return parts.joined(separator: " ")
+    }
+
     private static func formatInteger(_ value: Int) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -186,5 +262,12 @@ public enum VisibilityViewModel {
     private static func formatCost(_ value: Double?) -> String {
         guard let value else { return "Unavailable" }
         return String(format: "$%.4f", value)
+    }
+}
+
+private extension CacheLayoutAdvice {
+    var isAvailableOrPartial: Bool {
+        let normalized = status.lowercased()
+        return normalized == "available" || normalized == "partial"
     }
 }

@@ -1,6 +1,11 @@
 import XCTest
 @testable import ContextGuardMacCore
 
+private enum ProducerGoldenTestError: Error {
+    case missingRepoLocalAuditExecutable
+    case missingPython3
+}
+
 final class AuditCLIAdapterTests: XCTestCase {
     func testFallbackCLIProducesDecodedReport() throws {
         let temp = try temporaryDirectory()
@@ -110,6 +115,31 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertEqual(report.totals.tokens.cacheRead, 800)
     }
 
+    func testRepoProducerFeasibilityJSONDecodesMacVisibilityContract() throws {
+        let temp = try temporaryDirectory()
+        let sample = temp.appendingPathComponent("session.jsonl")
+        try """
+        {"timestamp":"2026-06-08T12:00:00Z","message":{"model":"claude-sonnet-test","role":"user","content":[{"type":"text","text":"Stable policy\\nStable workflow\\nRun-specific evidence"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":800,"cache_creation_input_tokens":200}},"total_cost_usd":0.1234}
+
+        """.write(to: sample, atomically: true, encoding: .utf8)
+        let adapter = AuditCLIAdapter(
+            fallbackExecutableURL: try repoLocalAuditExecutable(),
+            timeout: 5,
+            environment: ["PATH": try pythonOnlyPATH(in: temp)]
+        )
+
+        let report = try adapter.loadReport(transcriptDirectory: temp)
+        let snapshot = VisibilityViewModel.snapshot(report: report)
+
+        XCTAssertEqual(report.schemaVersion, contextGuardLatestFeasibilitySchemaVersion)
+        XCTAssertEqual(report.cacheFriendliness?.status, "partial")
+        XCTAssertEqual(report.cacheDiagnostics?.status, "partial")
+        XCTAssertEqual(report.cacheLayoutAdvice?.status, "partial")
+        XCTAssertEqual(report.macVisibility?.primaryCards.map(\.id).contains("cache_layout_advice"), true)
+        XCTAssertTrue(snapshot.cards.contains { $0.title == "Cache layout advice" && $0.value == "partial" })
+        XCTAssertTrue(snapshot.caveats.contains("This contract does not guarantee token or cost savings."))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("contextguard-mac-tests-")
@@ -126,6 +156,37 @@ final class AuditCLIAdapterTests: XCTestCase {
         try ("#!/bin/sh\n" + body).write(to: helper, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
         return helper
+    }
+
+    private func repoLocalAuditExecutable() throws -> URL {
+        let fileURL = URL(fileURLWithPath: #filePath)
+        var current = fileURL.deletingLastPathComponent()
+        for _ in 0..<10 {
+            let candidate = current.appendingPathComponent("plugins/context-guard/bin/context-guard-audit")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+            current.deleteLastPathComponent()
+        }
+        throw ProducerGoldenTestError.missingRepoLocalAuditExecutable
+    }
+
+    private func pythonOnlyPATH(in directory: URL) throws -> String {
+        let python = [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ].first { FileManager.default.isExecutableFile(atPath: $0) }
+        guard let python else {
+            throw ProducerGoldenTestError.missingPython3
+        }
+        let bin = directory.appendingPathComponent("python-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: bin.appendingPathComponent("python3"),
+            withDestinationURL: URL(fileURLWithPath: python)
+        )
+        return bin.path
     }
 
     private func shellSingleQuoted(_ value: String) -> String {
