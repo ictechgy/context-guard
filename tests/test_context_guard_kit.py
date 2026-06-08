@@ -14901,6 +14901,87 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("could not read prompt file", digest_proc.stderr)
                     self.assertNotIn("Traceback", digest_proc.stderr)
 
+    def test_variant_prompt_files_defer_unselected_task_reads(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    selected_prompt = root / "selected-digest.prompt.md"
+                    selected_prompt.write_text("selected digest prompt evidence", encoding="utf-8")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "selected",
+                                "prompt": "selected fallback prompt evidence",
+                                "max_turns": 1,
+                                "variant_prompt_files": {"digest": selected_prompt.name},
+                            },
+                            {
+                                "id": "unselected",
+                                "prompt": "unselected fallback prompt",
+                                "max_turns": 1,
+                                "variant_prompt_files": {"digest": "missing-unselected.prompt.md"},
+                            },
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([
+                            {"name": "baseline", "extra_args": []},
+                            {"name": "digest", "extra_args": []},
+                        ]),
+                        encoding="utf-8",
+                    )
+
+                    selected_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--task-id",
+                            "selected",
+                            "--variant",
+                            "digest",
+                            "--csv",
+                            str(root / "selected.csv"),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("selected digest prompt evidence", selected_proc.stdout)
+                    self.assertNotIn("selected fallback prompt evidence", selected_proc.stdout)
+                    self.assertNotIn("missing-unselected", selected_proc.stderr)
+
+                    unselected_digest_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--task-id",
+                            "unselected",
+                            "--variant",
+                            "digest",
+                            "--csv",
+                            str(root / "unselected.csv"),
+                            "--dry-run",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(unselected_digest_proc.returncode, 0)
+                    self.assertIn("could not read prompt file", unselected_digest_proc.stderr)
+                    self.assertNotIn("Traceback", unselected_digest_proc.stderr)
+
     def test_variant_prompt_files_defer_unselected_oversized_prompt_file(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -16076,6 +16157,109 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(report["claim_status"], "baseline_only")
                     self.assertNotIn("self_hosted_metrics", json.dumps(report, sort_keys=True))
 
+    def test_benchmark_runner_self_hosted_metrics_multi_row_ledger_sidecars(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_self_hosted_metrics_multi_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = root / "fake-claude"
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import json, sys\n"
+                        "prompt = sys.argv[-1]\n"
+                        "is_second = 'task two' in prompt\n"
+                        "payload = {\n"
+                        "    'message': {'usage': {'input_tokens': 100 + (50 if is_second else 0), 'output_tokens': 20}},\n"
+                        "    'total_cost_usd': 0.02,\n"
+                        "    'self_hosted_metrics': {\n"
+                        "        'model_server': 'local model server',\n"
+                        "        'optimization': 'prefix cache reuse',\n"
+                        "        'latency_ms': 456.0 if is_second else 123.0,\n"
+                        "        'peak_memory_mb': 4096 if is_second else 2048,\n"
+                        "        'quality_score': 0.97 if is_second else 0.99,\n"
+                        "    },\n"
+                        "}\n"
+                        "sys.stdout.write(json.dumps(payload))\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {
+                            "id": "t01",
+                            "prompt": "task one",
+                            "model": "sonnet",
+                            "max_turns": 1,
+                            "success_command": "true",
+                            "success_cwd": ".",
+                        },
+                        {
+                            "id": "t02",
+                            "prompt": "task two",
+                            "model": "sonnet",
+                            "max_turns": 1,
+                            "success_command": "true",
+                            "success_cwd": ".",
+                        },
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                    ]))
+                    csv_path = root / "results.csv"
+                    ledger_path = root / "ledger.jsonl"
+                    report_path = root / "report.json"
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(root / "tasks.json"),
+                            "--variants",
+                            str(root / "variants.json"),
+                            "--csv",
+                            str(csv_path),
+                            "--ledger-jsonl",
+                            str(ledger_path),
+                            "--report-json",
+                            str(report_path),
+                            "--claude-bin",
+                            str(fake),
+                            "--project-root",
+                            str(root),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+
+                    with csv_path.open(encoding="utf-8", newline="") as f:
+                        reader = csv.DictReader(f)
+                        self.assertEqual(reader.fieldnames, module.CSV_COLUMNS)
+                        rows = list(reader)
+                    self.assertEqual([row["task_id"] for row in rows], ["t01", "t02"])
+                    self.assertTrue(all("self_hosted_metrics" not in row for row in rows))
+
+                    ledger_rows = [
+                        json.loads(line)
+                        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    self.assertEqual([row["task_id"] for row in ledger_rows], ["t01", "t02"])
+                    self.assertTrue(all(row["measurement_availability"]["self_hosted_metrics"] for row in ledger_rows))
+                    self.assertEqual(
+                        [row["self_hosted_metrics"]["metrics"]["latency_ms"] for row in ledger_rows],
+                        [123.0, 456.0],
+                    )
+                    for ledger_row in ledger_rows:
+                        sidecar = ledger_row["self_hosted_metrics"]
+                        self.assertEqual(sidecar["schema_version"], "contextguard.bench.self-hosted-metrics.v1")
+                        self.assertEqual(sidecar["source"], "explicit_provider_payload.self_hosted_metrics")
+                        self.assertFalse(sidecar["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+                        self.assertFalse(sidecar["claim_boundary"]["hosted_api_cost_savings_claim_allowed"])
+
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    self.assertNotIn("self_hosted_metrics", json.dumps(report, sort_keys=True))
+
     def test_benchmark_runner_self_hosted_metrics_strict_contract(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -16490,12 +16674,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn('ROOT / "docs" / "benchmark-workflow-examples.md"', prepublish)
         self.assertIn('ROOT / "docs" / "benchmark-workflows"', prepublish)
 
-    def test_experimental_benchmark_fixtures_are_parseable_claim_safe_and_packaged(self):
+    def _experimental_benchmark_fixture_paths(self):
         fixture_dir = ROOT / "docs" / "benchmark-fixtures"
         guide = ROOT / "docs" / "experimental-benchmark-fixtures.md"
-        self.assertTrue(guide.is_file())
-        self.assertTrue(fixture_dir.is_dir())
-
         fixture_pairs = {
             "visual_ocr": (
                 fixture_dir / "visual-ocr.tasks.example.json",
@@ -16510,11 +16691,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 fixture_dir / "output-transform.variants.example.json",
             ),
         }
-        self.assertEqual(
-            {path.name for path in fixture_dir.glob("*.example.json")},
-            {path.name for pair in fixture_pairs.values() for path in pair},
-        )
-        prompt_fixture_names = {
+        return fixture_dir, guide, fixture_pairs
+
+    def _experimental_benchmark_prompt_fixture_names(self):
+        return {
             "learned-compression-baseline-context-pack.prompt.example.md",
             "learned-compression-candidate-digest.prompt.example.md",
             "output-transform-baseline-raw-output.prompt.example.md",
@@ -16522,18 +16702,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "visual-ocr-full-visual.prompt.example.md",
             "visual-ocr-cropped-ocr.prompt.example.md",
         }
-        self.assertEqual(
-            {path.name for path in fixture_dir.glob("*.prompt.example.md")},
-            prompt_fixture_names,
-        )
 
-        kit_module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_experimental_fixtures_kit")
-        plugin_module = load_python_script_module(
-            PLUGIN_BIN / "context-guard-bench",
-            "_bench_runner_test_experimental_fixtures_plugin",
-        )
-
-        expected_prompt_fragments = {
+    def _experimental_benchmark_expected_prompt_fragments(self):
+        return {
             "visual_ocr": {
                 "baseline_full_visual_fixture": "Full visual evidence",
                 "fixture_only_cropped_or_ocr_evidence": "Cropped or OCR-derived evidence",
@@ -16548,7 +16719,83 @@ class BenchmarkRunnerTests(unittest.TestCase):
             },
         }
 
-        combined_fixture_text = guide.read_text(encoding="utf-8").lower()
+    def _experimental_benchmark_runner_modules(self):
+        return {
+            KIT_DIR / "benchmark_runner.py": load_module_from_path(
+                KIT_DIR / "benchmark_runner.py",
+                "_bench_runner_test_experimental_fixtures_kit",
+            ),
+            PLUGIN_BIN / "context-guard-bench": load_python_script_module(
+                PLUGIN_BIN / "context-guard-bench",
+                "_bench_runner_test_experimental_fixtures_plugin",
+            ),
+        }
+
+    def _combined_experimental_benchmark_fixture_text(self, guide, fixture_dir, fixture_pairs):
+        combined = guide.read_text(encoding="utf-8").lower()
+        for task_path, variant_path in fixture_pairs.values():
+            combined += "\n" + task_path.read_text(encoding="utf-8").lower()
+            combined += "\n" + variant_path.read_text(encoding="utf-8").lower()
+        for prompt_path in sorted(fixture_dir.glob("*.prompt.example.md")):
+            combined += "\n" + prompt_path.read_text(encoding="utf-8").lower()
+        return combined
+
+    def test_experimental_benchmark_fixtures_are_packaged_and_linked(self):
+        fixture_dir, guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        self.assertTrue(guide.is_file())
+        self.assertTrue(fixture_dir.is_dir())
+        self.assertEqual(
+            {path.name for path in fixture_dir.glob("*.example.json")},
+            {path.name for pair in fixture_pairs.values() for path in pair},
+        )
+        self.assertEqual(
+            {path.name for path in fixture_dir.glob("*.prompt.example.md")},
+            self._experimental_benchmark_prompt_fixture_names(),
+        )
+
+        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
+        self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
+        self.assertIn("docs/benchmark-fixtures/*.example.json", package_files)
+        self.assertIn("docs/benchmark-fixtures/*.prompt.example.md", package_files)
+
+        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
+        for expected in (
+            "docs/experimental-benchmark-fixtures.md",
+            "docs/benchmark-fixtures/learned-compression.tasks.example.json",
+            "docs/benchmark-fixtures/learned-compression.variants.example.json",
+            "docs/benchmark-fixtures/learned-compression-baseline-context-pack.prompt.example.md",
+            "docs/benchmark-fixtures/learned-compression-candidate-digest.prompt.example.md",
+            "docs/benchmark-fixtures/output-transform.tasks.example.json",
+            "docs/benchmark-fixtures/output-transform.variants.example.json",
+            "docs/benchmark-fixtures/output-transform-baseline-raw-output.prompt.example.md",
+            "docs/benchmark-fixtures/output-transform-digest-receipt.prompt.example.md",
+            "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
+            "docs/benchmark-fixtures/visual-ocr.variants.example.json",
+            "docs/benchmark-fixtures/visual-ocr-full-visual.prompt.example.md",
+            "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
+            'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
+            'ROOT / "docs" / "benchmark-fixtures"',
+        ):
+            with self.subTest(prepublish_expected=expected):
+                self.assertIn(expected, prepublish)
+
+        for doc, expected_link in (
+            (ROOT / "README.md", "docs/experimental-benchmark-fixtures.md"),
+            (ROOT / "README.ko.md", "docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
+            (PLUGIN_DIR / "README.ko.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
+            (KIT_DIR / "README.md", "../docs/experimental-benchmark-fixtures.md"),
+            (ROOT / "docs" / "benchmark-workflow-examples.md", "experimental-benchmark-fixtures.md"),
+            (ROOT / "research" / "experimental-token-reduction-radar.md", "../docs/experimental-benchmark-fixtures.md"),
+        ):
+            with self.subTest(doc=doc):
+                self.assertIn(expected_link, doc.read_text(encoding="utf-8"))
+
+    def test_experimental_benchmark_fixtures_parse_and_bind_prompt_files(self):
+        _, _, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        modules = self._experimental_benchmark_runner_modules()
+        expected_prompt_fragments = self._experimental_benchmark_expected_prompt_fragments()
+
         for lane, (task_path, variant_path) in fixture_pairs.items():
             with self.subTest(lane=lane):
                 task_raw = json.loads(task_path.read_text(encoding="utf-8"))
@@ -16569,51 +16816,49 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("extra_args", item)
                     self.assertIsInstance(item["extra_args"], list)
 
-                if lane in {"visual_ocr", "learned_compression", "output_transform"}:
-                    self.assertTrue(any("variant_prompt_files" in item for item in task_raw))
-                    variant_names = {item["name"] for item in variant_raw}
-                    for task_item in task_raw:
-                        if "variant_prompt_files" in task_item:
-                            self.assertEqual(set(task_item["variant_prompt_files"]), variant_names)
+                self.assertTrue(any("variant_prompt_files" in item for item in task_raw))
+                variant_names = {item["name"] for item in variant_raw}
+                for task_item in task_raw:
+                    if "variant_prompt_files" in task_item:
+                        self.assertEqual(set(task_item["variant_prompt_files"]), variant_names)
 
-                for module in (kit_module, plugin_module):
-                    parsed_variants = module.parse_variants(variant_path)
-                    parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
-                    module.load_variant_prompt_files_for_targets(
-                        module.filter_targets(parsed_tasks, parsed_variants, None, None),
-                        task_file_dir=task_path.parent,
-                    )
-                    self.assertEqual(len(parsed_tasks), len(task_raw))
-                    self.assertEqual(len(parsed_variants), len(variant_raw))
-                    self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
-                    self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
-                    tasks_by_id = {task.id: task for task in parsed_tasks}
-                    for raw_task in task_raw:
-                        task = tasks_by_id[raw_task["id"]]
-                        self.assertIn("replace success_command", task.success_command)
-                        placeholder_success, placeholder_note = module.run_success_command(task, ROOT)
-                        self.assertFalse(placeholder_success)
-                        self.assertIn("exit=", placeholder_note)
+                for script, module in modules.items():
+                    with self.subTest(script=script):
+                        parsed_variants = module.parse_variants(variant_path)
+                        parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
+                        module.load_variant_prompt_files_for_targets(
+                            module.filter_targets(parsed_tasks, parsed_variants, None, None),
+                            task_file_dir=task_path.parent,
+                        )
+                        self.assertEqual(len(parsed_tasks), len(task_raw))
+                        self.assertEqual(len(parsed_variants), len(variant_raw))
+                        self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
+                        self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
+                        tasks_by_id = {task.id: task for task in parsed_tasks}
+                        for raw_task in task_raw:
+                            task = tasks_by_id[raw_task["id"]]
+                            self.assertIn("replace success_command", task.success_command)
+                            placeholder_success, placeholder_note = module.run_success_command(task, ROOT)
+                            self.assertFalse(placeholder_success)
+                            self.assertIn("exit=", placeholder_note)
 
-                        expected_mapping = raw_task.get("variant_prompt_files", {})
-                        self.assertEqual(set(task.variant_prompt_texts), set(expected_mapping))
+                            expected_mapping = raw_task.get("variant_prompt_files", {})
+                            self.assertEqual(set(task.variant_prompt_texts), set(expected_mapping))
+                            for variant in parsed_variants:
+                                argv_prompt = module.build_claude_argv("claude", task, variant)[-1]
+                                if variant.name in expected_mapping:
+                                    self.assertEqual(argv_prompt, task.variant_prompt_texts[variant.name])
+                                    expected_fragment = expected_prompt_fragments[lane][variant.name]
+                                    self.assertIn(expected_fragment, task.variant_prompt_texts[variant.name])
+                                else:
+                                    self.assertEqual(argv_prompt, task.prompt)
+
                         for variant in parsed_variants:
-                            argv_prompt = module.build_claude_argv("claude", task, variant)[-1]
-                            if variant.name in expected_mapping:
-                                self.assertEqual(argv_prompt, task.variant_prompt_texts[variant.name])
-                                expected_fragment = expected_prompt_fragments[lane][variant.name]
-                                self.assertIn(expected_fragment, task.variant_prompt_texts[variant.name])
-                            else:
-                                self.assertEqual(argv_prompt, task.prompt)
+                            self.assertEqual(variant.extra_args, [])
 
-                    for variant in parsed_variants:
-                        self.assertEqual(variant.extra_args, [])
-
-                combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
-                combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
-        for prompt_path in sorted(fixture_dir.glob("*.prompt.example.md")):
-            combined_fixture_text += "\n" + prompt_path.read_text(encoding="utf-8").lower()
-
+    def test_experimental_benchmark_fixtures_are_claim_safe(self):
+        fixture_dir, guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        combined_fixture_text = self._combined_experimental_benchmark_fixture_text(guide, fixture_dir, fixture_pairs)
         for required in (
             "fixture-only",
             "synthetic",
@@ -16712,10 +16957,6 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertNotIn(forbidden_helper, json.dumps(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))))
                 self.assertNotIn(forbidden_helper, public_doc_text)
 
-        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
-        self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
-        self.assertIn("docs/benchmark-fixtures/*.example.json", package_files)
-        self.assertIn("docs/benchmark-fixtures/*.prompt.example.md", package_files)
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         package_metadata = " ".join(
             [str(package.get("description", ""))]
@@ -16725,40 +16966,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
             with self.subTest(package_metadata_pattern=pattern):
                 self.assertIsNone(re.search(pattern, package_metadata))
 
-        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
-        for expected in (
-            "docs/experimental-benchmark-fixtures.md",
-            "docs/benchmark-fixtures/learned-compression.tasks.example.json",
-            "docs/benchmark-fixtures/learned-compression.variants.example.json",
-            "docs/benchmark-fixtures/learned-compression-baseline-context-pack.prompt.example.md",
-            "docs/benchmark-fixtures/learned-compression-candidate-digest.prompt.example.md",
-            "docs/benchmark-fixtures/output-transform.tasks.example.json",
-            "docs/benchmark-fixtures/output-transform.variants.example.json",
-            "docs/benchmark-fixtures/output-transform-baseline-raw-output.prompt.example.md",
-            "docs/benchmark-fixtures/output-transform-digest-receipt.prompt.example.md",
-            "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
-            "docs/benchmark-fixtures/visual-ocr.variants.example.json",
-            "docs/benchmark-fixtures/visual-ocr-full-visual.prompt.example.md",
-            "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
-            'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
-            'ROOT / "docs" / "benchmark-fixtures"',
-        ):
-            with self.subTest(prepublish_expected=expected):
-                self.assertIn(expected, prepublish)
+    def test_experimental_benchmark_fixtures_selected_dry_runs_and_placeholders(self):
+        _, _, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        modules = self._experimental_benchmark_runner_modules()
 
-        for doc, expected_link in (
-            (ROOT / "README.md", "docs/experimental-benchmark-fixtures.md"),
-            (ROOT / "README.ko.md", "docs/experimental-benchmark-fixtures.md"),
-            (PLUGIN_DIR / "README.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
-            (PLUGIN_DIR / "README.ko.md", "https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md"),
-            (KIT_DIR / "README.md", "../docs/experimental-benchmark-fixtures.md"),
-            (ROOT / "docs" / "benchmark-workflow-examples.md", "experimental-benchmark-fixtures.md"),
-            (ROOT / "research" / "experimental-token-reduction-radar.md", "../docs/experimental-benchmark-fixtures.md"),
-        ):
-            with self.subTest(doc=doc):
-                self.assertIn(expected_link, doc.read_text(encoding="utf-8"))
-
-        for script in (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"):
+        for script, module in modules.items():
             for lane, (task_path, variant_path) in fixture_pairs.items():
                 with self.subTest(script=script, lane=lane):
                     task_raw = json.loads(task_path.read_text(encoding="utf-8"))
@@ -16790,51 +17002,50 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         self.assertIn("dry-run; CSV not updated", proc.stdout)
                         self.assertFalse(csv_path.exists())
 
-                        if lane in {"visual_ocr", "learned_compression", "output_transform"}:
-                            dry_runs = {}
-                            for variant_name in (item["name"] for item in variant_raw):
-                                variant_proc = subprocess.run(
-                                    [
-                                        sys.executable,
-                                        str(script),
-                                        "--tasks",
-                                        str(task_path),
-                                        "--variants",
-                                        str(variant_path),
-                                        "--task-id",
-                                        target_task,
-                                        "--variant",
-                                        variant_name,
-                                        "--csv",
-                                        str(Path(tmp) / f"{variant_name}.csv"),
-                                        "--dry-run",
-                                    ],
-                                    text=True,
-                                    capture_output=True,
-                                    check=True,
-                                )
-                                dry_runs[variant_name] = variant_proc.stdout
-                            if lane == "visual_ocr":
-                                self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
-                                self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
-                                self.assertNotEqual(
-                                    dry_runs["baseline_full_visual_fixture"],
-                                    dry_runs["fixture_only_cropped_or_ocr_evidence"],
-                                )
-                            elif lane == "learned_compression":
-                                self.assertIn("Sanitized context pack", dry_runs["baseline_uncompressed_fixture"])
-                                self.assertIn("Compressed digest candidate", dry_runs["fixture_only_learned_compression_candidate"])
-                                self.assertNotEqual(
-                                    dry_runs["baseline_uncompressed_fixture"],
-                                    dry_runs["fixture_only_learned_compression_candidate"],
-                                )
-                            else:
-                                self.assertIn("Raw sanitized command output", dry_runs["baseline_raw_output_fixture"])
-                                self.assertIn("Digest of sanitized command output", dry_runs["fixture_only_digest_artifact_receipt"])
-                                self.assertNotEqual(
-                                    dry_runs["baseline_raw_output_fixture"],
-                                    dry_runs["fixture_only_digest_artifact_receipt"],
-                                )
+                        dry_runs = {}
+                        for variant_name in (item["name"] for item in variant_raw):
+                            variant_proc = subprocess.run(
+                                [
+                                    sys.executable,
+                                    str(script),
+                                    "--tasks",
+                                    str(task_path),
+                                    "--variants",
+                                    str(variant_path),
+                                    "--task-id",
+                                    target_task,
+                                    "--variant",
+                                    variant_name,
+                                    "--csv",
+                                    str(Path(tmp) / f"{variant_name}.csv"),
+                                    "--dry-run",
+                                ],
+                                text=True,
+                                capture_output=True,
+                                check=True,
+                            )
+                            dry_runs[variant_name] = variant_proc.stdout
+                        if lane == "visual_ocr":
+                            self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
+                            self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_full_visual_fixture"],
+                                dry_runs["fixture_only_cropped_or_ocr_evidence"],
+                            )
+                        elif lane == "learned_compression":
+                            self.assertIn("Sanitized context pack", dry_runs["baseline_uncompressed_fixture"])
+                            self.assertIn("Compressed digest candidate", dry_runs["fixture_only_learned_compression_candidate"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_uncompressed_fixture"],
+                                dry_runs["fixture_only_learned_compression_candidate"],
+                            )
+                        else:
+                            self.assertIn("Raw sanitized command output", dry_runs["baseline_raw_output_fixture"])
+                            self.assertIn("Digest of sanitized command output", dry_runs["fixture_only_digest_artifact_receipt"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_raw_output_fixture"],
+                                dry_runs["fixture_only_digest_artifact_receipt"],
+                            )
 
                         fake = Path(tmp) / "fake-claude"
                         sentinel = Path(tmp) / "provider-called.txt"
@@ -16872,7 +17083,6 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         self.assertFalse(sentinel.exists())
                         self.assertFalse(real_csv.exists())
 
-                        module = kit_module if script == KIT_DIR / "benchmark_runner.py" else plugin_module
                         resume_csv = Path(tmp) / "resume.csv"
                         row = {column: "" for column in module.CSV_COLUMNS}
                         row.update({
