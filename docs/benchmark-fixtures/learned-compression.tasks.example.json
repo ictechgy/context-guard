@@ -8,7 +8,11 @@
     "max_budget_usd": 1.0,
     "allowed_tools": [],
     "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
-    "success_cwd": "."
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_uncompressed_fixture": "learned-compression-baseline-context-pack.prompt.example.md",
+      "fixture_only_learned_compression_candidate": "learned-compression-candidate-digest.prompt.example.md"
+    }
   },
   {
     "id": "learned_compression_artifact_digest_fixture",
