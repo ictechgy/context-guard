@@ -2,6 +2,10 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.4.2] - 2026-06-08
+
+- Polished Korean README, plugin README, kit README, and GitHub Pages copy with Claude-assisted proofreading while preserving conservative token/cost claim boundaries.
+
 ## [0.4.1] - 2026-06-05
 
 - Publish the cross-agent distribution release under a fresh npm version because `0.4.0` is unavailable on the registry while still returning a public 404.
