@@ -21,6 +21,25 @@ The legacy audit JSON includes top-level `cache_diagnostics` beside `cache_metri
 
 The feasibility JSON includes top-level `cache_diagnostics` and `cache_layout_advice`, and lists both in `consumer_contract.stable_top_level_fields`. GUI consumers should prefer the top-level feasibility field when available and use `summary.cache_diagnostics` only for legacy compatibility.
 
+## Sibling `cache_layout_advice` fields
+
+`cache_layout_advice` is a stable top-level sibling of `cache_diagnostics`, but it is deliberately not part of `cache-diagnostics.schema.json`. It is an advice contract over local transcript heuristics.
+
+| Field | Meaning | Consumer note |
+| --- | --- | --- |
+| `schema_version` | Stable version string, currently `contextguard.cache-layout-advice.v1`. | Treat unknown versions conservatively. |
+| `status` | Advice availability: `available`, `partial`, or `missing`. | `partial` means prompt/cache evidence was capped, skipped, or incomplete. |
+| `confidence` | Overall advice confidence: `hypothesis`, `partial`, or `unavailable`. | Never present as provider truth or billing proof. |
+| `heuristic` | Always `true` for v1. | UI should label advice as heuristic. |
+| `observed_issue` | Primary observed layout issue: `volatile_prefix_breaker`, `long_session_accumulation`, `low_cache_reuse`, `missing_cache_fields`, or `unknown`. | This is an observed/audited symptom, not a confirmed cause. |
+| `priority` | Suggested priority bucket (`P0`, `P1`, or `P2`). | Use for ordering checks, not for savings claims. |
+| `observed_summary` | Sanitized numeric summary such as cache creation/read tokens, prefix shares, breaker position, and dominant transcript share. | Contains aggregate counts/shares only, not raw prompt text. |
+| `hypothesized_causes` | Candidate causes to investigate, each with `id`, `confidence`, `evidence`, `reason`, and `next_check`. | Keep separate from confirmed causes. |
+| `corroborated_causes` | Causes supported by independent evidence beyond prefix-position heuristics. | Empty means no cause has been confirmed. |
+| `next_checks` | Evidence-gathering checks with `id`, `confidence`, `command_templates`, and `evidence_required_for_corroboration`. | Templates use placeholders such as `<repo>` and must not embed observed local paths. |
+| `recommended_experiments` | Ordered experiments with `id`, `order`, `priority`, `effort`, `action`, `expected_signal`, and `verification`. | Run in `order`; compare matched audit windows before claiming improvement. |
+| `caveats` | User-facing boundaries for claims and evidence limits. | Preserve these in GUI summaries and reports. |
+
 ## Top-level fields
 
 | Field | Meaning | Consumer note |

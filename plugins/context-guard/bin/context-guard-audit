@@ -1769,12 +1769,12 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
             "prioritize-cache-prefix-stabilization",
             "Prioritize cache-prefix stabilization before TTL or output trimming",
             (
-                "Cache reads are present but cache creation remains material, and redacted segment statistics show "
-                "a volatile early prefix; this is an experiment-prioritization signal, not a confirmed root cause."
+                "Cache creation remains material and redacted segment statistics show a volatile early prefix; "
+                "this is an experiment-prioritization signal, not a confirmed root cause."
             ),
             (
-                "First split long sessions when one transcript dominates, then check startup/context size and keep "
-                "stable policy before volatile logs, diffs, timestamps, and generated evidence."
+                "If one transcript dominates, split unrelated work into shorter sessions; then check startup/context "
+                "size and keep stable policy before volatile logs, diffs, timestamps, and generated evidence."
             ),
             str(cache_layout_advice.get("priority") or "P1"),
             evidence,
