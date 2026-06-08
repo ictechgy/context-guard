@@ -6,7 +6,7 @@ Sanitized evidence only: private paths, endpoints, screenshots, secrets, raw cre
 
 Compressed digest candidate:
 - candidate id: fixture-compression-alpha
-- digest summary: sample_module.py branch returns retry after three attempts
+- digest summary: sample_module.py branch returns quoted string `retry` after numeric constant `3` attempts
 - protected evidence preserved exactly: identifier `sample_status`, numeric constant `3`, quoted string `retry`, JSON key `status`, and stack frame label `sample_module:31`
 - omitted protected context: sample_helper.py lines 1:80
 - receipt fallback: fixture-receipt-alpha
