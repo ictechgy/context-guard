@@ -200,6 +200,7 @@ EXPECTED_NPM_PACK_FILES = {
     "docs/benchmark-workflows/context-pack-byte-proxy.example.json",
     "docs/benchmark-workflows/measured-token-workflow.example.json",
     "docs/benchmark-workflows/provider-cache-telemetry.example.json",
+    "docs/benchmark-workflows/self-hosted-metrics-ledger.example.jsonl",
     "docs/experimental-benchmark-fixtures.md",
     "docs/benchmark-fixtures/learned-compression.tasks.example.json",
     "docs/benchmark-fixtures/learned-compression.variants.example.json",
