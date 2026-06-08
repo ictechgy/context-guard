@@ -9,7 +9,7 @@ Sanitized context pack:
 - source summary: sample_module.py lines 10:42 contain the decision branch
 - protected evidence kept exact: identifier `sample_status`, numeric constant `3`, quoted string `retry`, JSON key `status`, and stack frame label `sample_module:31`
 - omitted source: sample_helper.py lines 1:80
-- exact retrieval fallback: context-guard-pack slice --file sample_helper.py --lines 1:80
+- exact retrieval fallback: context-guard-pack slice --path sample_helper.py --lines 1:80
 
 Task:
 1. Identify which source should be inspected next.

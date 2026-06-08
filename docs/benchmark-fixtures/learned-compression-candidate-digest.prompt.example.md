@@ -10,7 +10,7 @@ Compressed digest candidate:
 - protected evidence preserved exactly: identifier `sample_status`, numeric constant `3`, quoted string `retry`, JSON key `status`, and stack frame label `sample_module:31`
 - omitted protected context: sample_helper.py lines 1:80
 - receipt fallback: fixture-receipt-alpha
-- exact retrieval fallback: context-guard-pack slice --file sample_helper.py --lines 1:80
+- exact retrieval fallback: context-guard-pack slice --path sample_helper.py --lines 1:80
 
 Task:
 1. Decide whether required evidence is exact or receipt-retrievable.
