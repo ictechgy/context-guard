@@ -2,6 +2,10 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [Unreleased]
+
+- Added a package-visible `mac_visibility` feasibility contract for future local macOS-visible surfaces without building a GUI or inferring live headroom from historical transcript scans.
+
 ## [0.4.4] - 2026-06-08
 
 - Added top-level `cache_layout_advice` to transcript audit JSON and feasibility output so cache-prefix instability can be prioritized without mixing advice into evidence-only diagnostics.

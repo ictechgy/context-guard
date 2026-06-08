@@ -11591,7 +11591,7 @@ for malformed in malformed_values:
                         check=True,
                     )
                     feasible_data = json.loads(feasible.stdout)
-                    self.assertEqual(feasible_data["schema_version"], "contextguard.metric-feasibility.v1.2")
+                    self.assertEqual(feasible_data["schema_version"], "contextguard.metric-feasibility.v1.3")
                     self.assertIn("summary", feasible_data)
                     self.assertIn("cache_diagnostics", feasible_data["consumer_contract"]["stable_top_level_fields"])
                     self.assertIn("cache_diagnostics", feasible_data)
@@ -11769,7 +11769,7 @@ for malformed in malformed_values:
                         check=True,
                     )
                     data = json.loads(proc.stdout)
-                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.2")
+                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.3")
                     self.assertEqual(data["producer"], "context-guard-audit")
                     self.assertIn("summary", data["consumer_contract"]["diagnostic_fields"])
                     self.assertIn("metric_availability", data["consumer_contract"]["stable_top_level_fields"])
@@ -11786,6 +11786,173 @@ for malformed in malformed_values:
                     self.assertIn("recommendations", data["summary"])
                     self.assertNotIn(str(root), proc.stdout)
                     self.assertNotIn(secret, proc.stdout)
+
+    def test_transcript_audit_feasibility_json_exposes_mac_visibility_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "session.jsonl"
+            secret = "sk-ant-" + ("A" * 24)
+            sample.write_text(
+                json.dumps({
+                    "timestamp": "2026-06-08T12:00:00Z",
+                    "message": {
+                        "model": "claude-sonnet-test",
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable policy\nStable workflow\nRun-specific evidence"}],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 200,
+                        },
+                    },
+                    "command": f"pytest tests -q --token={secret}",
+                    "total_cost_usd": 0.1234,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            expected_card_ids = [
+                "source_freshness",
+                "scan_integrity",
+                "token_totals",
+                "cache_reuse",
+                "observed_cost",
+                "context_availability",
+                "headroom_availability",
+                "cache_layout_advice",
+            ]
+            expected_keys = {
+                "schema_version",
+                "surface_kind",
+                "readiness",
+                "bind_to_top_level_fields",
+                "diagnostic_only_fields",
+                "primary_cards",
+                "missing_live_observations",
+                "claim_boundaries",
+                "redaction_required",
+            }
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(sample), "--feasibility-json", "--recommend", "--top", "3"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.3")
+                    self.assertIn("mac_visibility", data["consumer_contract"]["stable_top_level_fields"])
+                    mac_visibility = data["mac_visibility"]
+                    self.assertEqual(set(mac_visibility), expected_keys)
+                    self.assertEqual(mac_visibility["schema_version"], "contextguard.mac-visibility.v1")
+                    self.assertEqual(mac_visibility["surface_kind"], "local_macos_visibility_contract")
+                    self.assertIn(mac_visibility["readiness"]["status"], {"ready", "partial", "missing"})
+                    self.assertEqual(mac_visibility["diagnostic_only_fields"], ["summary"])
+                    self.assertNotIn("summary", mac_visibility["bind_to_top_level_fields"])
+                    self.assertTrue(mac_visibility["redaction_required"])
+
+                    cards = mac_visibility["primary_cards"]
+                    self.assertEqual([card["id"] for card in cards], expected_card_ids)
+                    for card in cards:
+                        self.assertLessEqual(set(card), {"id", "title", "status", "binding_paths", "required_observation"})
+                        self.assertTrue(card["title"])
+                        self.assertTrue(card["binding_paths"])
+                        self.assertFalse(
+                            any(path == "summary" or path.startswith("summary.") for path in card["binding_paths"]),
+                            card,
+                        )
+                    cards_by_id = {card["id"]: card for card in cards}
+                    self.assertEqual(cards_by_id["token_totals"]["binding_paths"], [
+                        "totals.total_tokens",
+                        "totals.tokens.input",
+                        "totals.tokens.output",
+                        "totals.tokens.cache_read",
+                        "totals.tokens.cache_creation",
+                    ])
+                    self.assertEqual(cards_by_id["context_availability"]["required_observation"], "live_statusline_snapshot")
+                    self.assertEqual(cards_by_id["headroom_availability"]["required_observation"], "live_statusline_snapshot")
+                    missing = {item["id"]: item for item in mac_visibility["missing_live_observations"]}
+                    self.assertEqual(set(missing), {"live_context_window", "live_headroom"})
+                    for item in missing.values():
+                        self.assertEqual(item["required_observation"], "live_statusline_snapshot")
+                    self.assertNotIn("remaining_tokens", json.dumps(mac_visibility, sort_keys=True))
+                    self.assertIn("not invoice-grade billing", " ".join(mac_visibility["claim_boundaries"]))
+                    self.assertIn("do not prove provider cache hits", " ".join(mac_visibility["claim_boundaries"]))
+                    self.assertNotIn(str(root), proc.stdout)
+                    self.assertNotIn(secret, proc.stdout)
+
+    def test_transcript_audit_mac_visibility_docs_and_package_contract(self):
+        guide_path = ROOT / "docs" / "mac-visibility-feasibility-schema.md"
+        example_path = ROOT / "docs" / "mac-visibility-feasibility.example.json"
+        guide = guide_path.read_text(encoding="utf-8")
+        example = json.loads(example_path.read_text(encoding="utf-8"))
+        self.assertEqual(example["schema_version"], "contextguard.metric-feasibility.v1.3")
+        self.assertEqual(example["mac_visibility"]["schema_version"], "contextguard.mac-visibility.v1")
+        self.assertIn("mac_visibility", example["consumer_contract"]["stable_top_level_fields"])
+        self.assertNotIn("summary", example["mac_visibility"]["bind_to_top_level_fields"])
+        self.assertEqual(example["mac_visibility"]["diagnostic_only_fields"], ["summary"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "session.jsonl"
+            sample.write_text(
+                json.dumps({
+                    "timestamp": "2026-06-08T12:00:00Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Stable policy\nStable workflow\nRun-specific evidence"}],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 200,
+                        },
+                    },
+                    "total_cost_usd": 0.1234,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "claude_transcript_cost_audit.py"), str(sample), "--feasibility-json", "--recommend", "--top", "3"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            generated = json.loads(proc.stdout)["mac_visibility"]
+        self.assertEqual(set(example["mac_visibility"]), set(generated))
+        self.assertEqual(
+            [card["id"] for card in example["mac_visibility"]["primary_cards"]],
+            [card["id"] for card in generated["primary_cards"]],
+        )
+        self.assertEqual(
+            example["mac_visibility"]["bind_to_top_level_fields"],
+            generated["bind_to_top_level_fields"],
+        )
+
+        package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
+        for packaged_doc in (
+            "docs/mac-visibility-feasibility-schema.md",
+            "docs/mac-visibility-feasibility.example.json",
+        ):
+            self.assertIn(packaged_doc, package_files)
+        prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
+        for expected in (
+            "docs/mac-visibility-feasibility-schema.md",
+            "docs/mac-visibility-feasibility.example.json",
+            'ROOT / "docs" / "mac-visibility-feasibility-schema.md"',
+            'ROOT / "docs" / "mac-visibility-feasibility.example.json"',
+        ):
+            self.assertIn(expected, prepublish)
+
+        docs_text = (guide + "\n" + json.dumps(example, sort_keys=True)).lower()
+        for forbidden in ("guaranteed savings", "guarantees savings", "provider-cache proof", "provider cache proof", "pays off"):
+            self.assertNotIn(forbidden, docs_text)
+        self.assertIn("does not guarantee token or cost savings", docs_text)
+        self.assertIn("do not prove provider cache hits", docs_text)
+        self.assertIn("not invoice-grade billing", docs_text)
+        self.assertIn("live_statusline_snapshot", docs_text)
+        self.assertNotIn("sk-ant-", docs_text)
+        self.assertNotIn(str(Path.home()).lower(), docs_text)
 
     def test_transcript_audit_cache_friendliness_stable_prefix_no_layout_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -12222,7 +12389,7 @@ for malformed in malformed_values:
             self.assertIn("cache_friendliness", data["consumer_contract"]["stable_top_level_fields"])
             self.assertIn("cache_friendliness", data)
             self.assertEqual(data["cache_friendliness"]["status"], "partial")
-            self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.2")
+            self.assertEqual(data["schema_version"], "contextguard.metric-feasibility.v1.3")
 
     def test_transcript_audit_cache_friendliness_marks_low_record_evidence_partial_confidence(self):
         with tempfile.TemporaryDirectory() as tmp:

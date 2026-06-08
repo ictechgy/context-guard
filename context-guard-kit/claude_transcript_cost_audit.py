@@ -46,7 +46,8 @@ COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
 MODEL_KEYS = ("model", "model_id", "modelId")
 QUERY_SOURCE_KEYS = ("query_source", "querySource")
 TIMESTAMP_KEYS = ("timestamp", "created_at", "createdAt", "time", "ts")
-FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.2"
+FEASIBILITY_SCHEMA_VERSION = "contextguard.metric-feasibility.v1.3"
+MAC_VISIBILITY_SCHEMA_VERSION = "contextguard.mac-visibility.v1"
 FEASIBILITY_PRODUCER = "context-guard-audit"
 CACHE_DIAGNOSTICS_SCHEMA_VERSION = "contextguard.cache-diagnostics.v1"
 CACHE_LAYOUT_ADVICE_SCHEMA_VERSION = "contextguard.cache-layout-advice.v1"
@@ -1635,6 +1636,168 @@ def build_metric_caveats(summary: UsageSummary) -> list[str]:
     return caveats
 
 
+def _mac_card(
+    card_id: str,
+    title: str,
+    status: str,
+    binding_paths: list[str],
+    *,
+    required_observation: str | None = None,
+) -> dict[str, Any]:
+    card: dict[str, Any] = {
+        "id": card_id,
+        "title": title,
+        "status": status,
+        "binding_paths": binding_paths,
+    }
+    if required_observation:
+        card["required_observation"] = required_observation
+    return card
+
+
+def build_mac_visibility_contract(
+    *,
+    availability: dict[str, Any],
+    integrity: dict[str, Any],
+    cache_layout_advice: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the pre-GUI macOS visibility binding contract.
+
+    This is intentionally a thin index over already-emitted stable feasibility
+    fields. It does not recompute metrics, read diagnostic summary data, or infer
+    live context/headroom from historical transcript totals.
+    """
+    token_status = str((availability.get("tokens") or {}).get("status", "missing"))
+    scan_status = str(integrity.get("status", "partial"))
+    if token_status == "available" and scan_status == "complete":
+        readiness_status = "ready"
+        readiness_reason = "Transcript token totals are available and the scan completed within configured limits."
+    elif token_status in {"available", "partial"}:
+        readiness_status = "partial"
+        readiness_reason = "Some stable fields can be shown, but scan integrity or metric availability is partial."
+    else:
+        readiness_status = "missing"
+        readiness_reason = "Token totals are missing from the transcript scan; show setup or unavailable state."
+
+    context_status = str((availability.get("context") or {}).get("status", "missing"))
+    headroom_status = str((availability.get("headroom") or {}).get("status", "missing"))
+    cache_status = str((availability.get("cache") or {}).get("status", "missing"))
+    cost_status = str((availability.get("cost") or {}).get("status", "missing"))
+    advice_status = str(cache_layout_advice.get("status", "missing"))
+
+    missing_live_observations: list[dict[str, Any]] = []
+    if context_status == "missing":
+        missing_live_observations.append({
+            "id": "live_context_window",
+            "required_observation": "live_statusline_snapshot",
+            "affects": ["context_availability", "metric_availability.context"],
+            "reason": "Historical transcript scans do not include live Claude Code context_window data.",
+        })
+    if headroom_status == "missing":
+        missing_live_observations.append({
+            "id": "live_headroom",
+            "required_observation": "live_statusline_snapshot",
+            "affects": ["headroom_availability", "cache_diagnostics.headroom_diagnostics"],
+            "reason": "Historical transcript totals are not remaining-token or live headroom observations.",
+        })
+
+    return {
+        "schema_version": MAC_VISIBILITY_SCHEMA_VERSION,
+        "surface_kind": "local_macos_visibility_contract",
+        "readiness": {
+            "status": readiness_status,
+            "reason": readiness_reason,
+        },
+        "bind_to_top_level_fields": [
+            "source_kind",
+            "source_freshness",
+            "scan_integrity",
+            "metric_availability",
+            "metric_caveats",
+            "redaction_mode",
+            "context_availability",
+            "headroom_availability",
+            "cache_friendliness",
+            "cache_diagnostics",
+            "cache_layout_advice",
+            "totals",
+        ],
+        "diagnostic_only_fields": ["summary"],
+        "primary_cards": [
+            _mac_card(
+                "source_freshness",
+                "Source freshness",
+                "available",
+                ["source_kind", "source_freshness.status", "source_freshness.generated_at"],
+            ),
+            _mac_card(
+                "scan_integrity",
+                "Scan integrity",
+                scan_status,
+                [
+                    "scan_integrity.status",
+                    "scan_integrity.files_scanned",
+                    "scan_integrity.records_scanned",
+                    "scan_integrity.skipped_files",
+                    "scan_integrity.skipped_records",
+                ],
+            ),
+            _mac_card(
+                "token_totals",
+                "Token totals",
+                token_status,
+                [
+                    "totals.total_tokens",
+                    "totals.tokens.input",
+                    "totals.tokens.output",
+                    "totals.tokens.cache_read",
+                    "totals.tokens.cache_creation",
+                ],
+            ),
+            _mac_card(
+                "cache_reuse",
+                "Cache-read share and reuse ratio",
+                cache_status,
+                ["totals.cache_read_share", "totals.cache_reuse_ratio", "metric_availability.cache"],
+            ),
+            _mac_card(
+                "observed_cost",
+                "Observed transcript cost",
+                cost_status,
+                ["totals.cost_usd_observed", "metric_availability.cost"],
+            ),
+            _mac_card(
+                "context_availability",
+                "Context availability",
+                context_status,
+                ["context_availability", "metric_availability.context"],
+                required_observation="live_statusline_snapshot" if context_status == "missing" else None,
+            ),
+            _mac_card(
+                "headroom_availability",
+                "Headroom availability",
+                headroom_status,
+                ["headroom_availability", "cache_diagnostics.headroom_diagnostics"],
+                required_observation="live_statusline_snapshot" if headroom_status == "missing" else None,
+            ),
+            _mac_card(
+                "cache_layout_advice",
+                "Cache layout advice",
+                advice_status,
+                ["cache_layout_advice", "cache_friendliness", "cache_diagnostics.dynamic_prefix_breakers"],
+            ),
+        ],
+        "missing_live_observations": missing_live_observations,
+        "claim_boundaries": [
+            "Local transcript observations are not invoice-grade billing records.",
+            "Provider cache fields are telemetry, not ContextGuard-caused token reduction and do not prove provider cache hits.",
+            "Historical transcript totals do not infer live context headroom or remaining tokens.",
+            "This contract does not guarantee token or cost savings.",
+        ],
+        "redaction_required": True,
+    }
+
+
 def feasibility_json(
     summary: UsageSummary,
     top: int = 15,
@@ -1652,6 +1815,11 @@ def feasibility_json(
     cache_friendliness = cache_friendliness_for_summary(summary)
     cache_diagnostics = cache_diagnostics_for_summary(summary)
     cache_layout_advice = cache_layout_advice_for_summary(summary)
+    mac_visibility = build_mac_visibility_contract(
+        availability=availability,
+        integrity=integrity,
+        cache_layout_advice=cache_layout_advice,
+    )
     return {
         "schema_version": FEASIBILITY_SCHEMA_VERSION,
         "producer": FEASIBILITY_PRODUCER,
@@ -1672,6 +1840,7 @@ def feasibility_json(
                 "cache_friendliness",
                 "cache_diagnostics",
                 "cache_layout_advice",
+                "mac_visibility",
                 "totals",
             ],
             "diagnostic_fields": ["summary"],
@@ -1701,6 +1870,7 @@ def feasibility_json(
         "cache_friendliness": cache_friendliness,
         "cache_diagnostics": cache_diagnostics,
         "cache_layout_advice": cache_layout_advice,
+        "mac_visibility": mac_visibility,
         "totals": {
             "total_tokens": stable_total_tokens,
             "tokens": stable_tokens,

@@ -1,9 +1,11 @@
 import Foundation
 
 public let contextGuardFeasibilitySchemaVersion = "contextguard.metric-feasibility.v1"
-public let contextGuardLatestFeasibilitySchemaVersion = "contextguard.metric-feasibility.v1.1"
+public let contextGuardLatestFeasibilitySchemaVersion = "contextguard.metric-feasibility.v1.3"
 public let contextGuardSupportedFeasibilitySchemaVersions: Set<String> = [
     contextGuardFeasibilitySchemaVersion,
+    "contextguard.metric-feasibility.v1.1",
+    "contextguard.metric-feasibility.v1.2",
     contextGuardLatestFeasibilitySchemaVersion,
 ]
 

@@ -33,7 +33,7 @@ final class FeasibilityReportTests: XCTestCase {
     func testAdditiveMinorSchemaIsAccepted() throws {
         let report = try decodeFixture(feasibilityFixture(schemaVersion: contextGuardLatestFeasibilitySchemaVersion))
 
-        XCTAssertEqual(report.schemaVersion, "contextguard.metric-feasibility.v1.1")
+        XCTAssertEqual(report.schemaVersion, contextGuardLatestFeasibilitySchemaVersion)
         XCTAssertNoThrow(try report.validateSupportedSchema())
     }
 

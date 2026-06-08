@@ -1,0 +1,130 @@
+{
+  "schema_version": "contextguard.metric-feasibility.v1.3",
+  "producer": "context-guard-audit",
+  "generated_at": "2026-06-08T12:00:00Z",
+  "consumer_contract": {
+    "stable_top_level_fields": [
+      "schema_version",
+      "producer",
+      "generated_at",
+      "source_kind",
+      "source_freshness",
+      "scan_integrity",
+      "metric_availability",
+      "metric_caveats",
+      "redaction_mode",
+      "context_availability",
+      "headroom_availability",
+      "cache_friendliness",
+      "cache_diagnostics",
+      "cache_layout_advice",
+      "mac_visibility",
+      "totals"
+    ],
+    "diagnostic_fields": ["summary"],
+    "summary_contract": "summary is the legacy audit JSON payload for diagnostics and backward compatibility; new GUI prototypes should bind to stable top-level feasibility fields first."
+  },
+  "source_kind": "historical_transcript_scan",
+  "source_freshness": {
+    "status": "snapshot_at_scan_time",
+    "live": false,
+    "generated_at": "2026-06-08T12:00:00Z",
+    "description": "Local transcript files were scanned when this report was generated; this is not a live statusline snapshot."
+  },
+  "scan_integrity": {
+    "status": "complete",
+    "files_scanned": 1,
+    "records_scanned": 1,
+    "skipped_files": 0,
+    "skipped_records": 0,
+    "parse_error_count": 0,
+    "complete": true
+  },
+  "metric_availability": {
+    "tokens": {"status": "available", "present_fields": {"input": 1, "output": 1, "cache_read": 1, "cache_creation": 1}, "evidence": "observed"},
+    "cache": {"status": "available", "present_fields": {"cache_read": 1, "cache_creation": 1}, "zero_values_observed": {"cache_read": false, "cache_creation": false}, "evidence": "observed"},
+    "cost": {"status": "available", "present_count": 1, "observed_cost_usd": 0.1234, "evidence": "observed"},
+    "context": {"status": "missing", "evidence": "unavailable", "reason": "Transcript scans do not include live Claude Code context_window data. Pass a live statusline snapshot in a future surface to populate context availability."},
+    "headroom": {"status": "missing", "evidence": "unavailable", "reason": "Transcript scans do not carry live context-window or remaining-token data, so context headroom cannot be observed or conservatively inferred from history alone.", "observable_via": "live_statusline_snapshot"}
+  },
+  "metric_caveats": [
+    "Values are observed from local Claude Code transcript JSON/JSONL fields and are not official billing records.",
+    "cache-read share is cache_read / (input + cache_read + cache_creation), not a provider billing hit-rate."
+  ],
+  "redaction_mode": {
+    "paths": "basename_plus_stable_hash_by_default",
+    "commands": "command_category_plus_stable_hash_by_default",
+    "secret_like_values": "pattern_redacted",
+    "raw_path_and_command_flags": ["--show-paths", "--show-commands"]
+  },
+  "context_availability": {"status": "missing", "evidence": "unavailable", "reason": "Transcript scans do not include live Claude Code context_window data. Pass a live statusline snapshot in a future surface to populate context availability."},
+  "headroom_availability": {"status": "missing", "evidence": "unavailable", "observable_via": "live_statusline_snapshot", "reason": "Transcript scans do not carry live context-window or remaining-token data, so context headroom cannot be observed or conservatively inferred from history alone."},
+  "cache_friendliness": {"status": "partial", "confidence": "partial", "evidence": "observed", "heuristic": true},
+  "cache_diagnostics": {
+    "schema_version": "contextguard.cache-diagnostics.v1",
+    "status": "partial",
+    "confidence": "hypothesis",
+    "evidence": "inferred",
+    "heuristic": true,
+    "dynamic_prefix_breakers": [],
+    "headroom_diagnostics": {"status": "missing", "evidence": "unavailable", "observable_via": "live_statusline_snapshot", "required_observation": "live_statusline_snapshot", "historical_total_tokens_are_not_headroom": true}
+  },
+  "cache_layout_advice": {
+    "schema_version": "contextguard.cache-layout-advice.v1",
+    "status": "partial",
+    "confidence": "partial",
+    "priority": "P1",
+    "observed_issue": "long_session_accumulation"
+  },
+  "mac_visibility": {
+    "schema_version": "contextguard.mac-visibility.v1",
+    "surface_kind": "local_macos_visibility_contract",
+    "readiness": {
+      "status": "ready",
+      "reason": "Transcript token totals are available and the scan completed within configured limits."
+    },
+    "bind_to_top_level_fields": [
+      "source_kind",
+      "source_freshness",
+      "scan_integrity",
+      "metric_availability",
+      "metric_caveats",
+      "redaction_mode",
+      "context_availability",
+      "headroom_availability",
+      "cache_friendliness",
+      "cache_diagnostics",
+      "cache_layout_advice",
+      "totals"
+    ],
+    "diagnostic_only_fields": ["summary"],
+    "primary_cards": [
+      {"id": "source_freshness", "title": "Source freshness", "status": "available", "binding_paths": ["source_kind", "source_freshness.status", "source_freshness.generated_at"]},
+      {"id": "scan_integrity", "title": "Scan integrity", "status": "complete", "binding_paths": ["scan_integrity.status", "scan_integrity.files_scanned", "scan_integrity.records_scanned", "scan_integrity.skipped_files", "scan_integrity.skipped_records"]},
+      {"id": "token_totals", "title": "Token totals", "status": "available", "binding_paths": ["totals.total_tokens", "totals.tokens.input", "totals.tokens.output", "totals.tokens.cache_read", "totals.tokens.cache_creation"]},
+      {"id": "cache_reuse", "title": "Cache-read share and reuse ratio", "status": "available", "binding_paths": ["totals.cache_read_share", "totals.cache_reuse_ratio", "metric_availability.cache"]},
+      {"id": "observed_cost", "title": "Observed transcript cost", "status": "available", "binding_paths": ["totals.cost_usd_observed", "metric_availability.cost"]},
+      {"id": "context_availability", "title": "Context availability", "status": "missing", "binding_paths": ["context_availability", "metric_availability.context"], "required_observation": "live_statusline_snapshot"},
+      {"id": "headroom_availability", "title": "Headroom availability", "status": "missing", "binding_paths": ["headroom_availability", "cache_diagnostics.headroom_diagnostics"], "required_observation": "live_statusline_snapshot"},
+      {"id": "cache_layout_advice", "title": "Cache layout advice", "status": "partial", "binding_paths": ["cache_layout_advice", "cache_friendliness", "cache_diagnostics.dynamic_prefix_breakers"]}
+    ],
+    "missing_live_observations": [
+      {"id": "live_context_window", "required_observation": "live_statusline_snapshot", "affects": ["context_availability", "metric_availability.context"], "reason": "Historical transcript scans do not include live Claude Code context_window data."},
+      {"id": "live_headroom", "required_observation": "live_statusline_snapshot", "affects": ["headroom_availability", "cache_diagnostics.headroom_diagnostics"], "reason": "Historical transcript totals are not remaining-token or live headroom observations."}
+    ],
+    "claim_boundaries": [
+      "Local transcript observations are not invoice-grade billing records.",
+      "Provider cache fields are telemetry, not ContextGuard-caused token reduction and do not prove provider cache hits.",
+      "Historical transcript totals do not infer live context headroom or remaining tokens.",
+      "This contract does not guarantee token or cost savings."
+    ],
+    "redaction_required": true
+  },
+  "totals": {
+    "total_tokens": 1150,
+    "tokens": {"input": 100, "output": 50, "cache_read": 800, "cache_creation": 200},
+    "cost_usd_observed": 0.1234,
+    "cache_read_share": 0.7272727272727273,
+    "cache_reuse_ratio": 4.0
+  }
+}

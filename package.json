@@ -55,6 +55,8 @@
     "docs/cache-diagnostics-schema.md",
     "docs/cache-diagnostics.schema.json",
     "docs/cache-diagnostics.example.json",
+    "docs/mac-visibility-feasibility-schema.md",
+    "docs/mac-visibility-feasibility.example.json",
     "docs/benchmark-workflows/*.example.json",
     "docs/benchmark-workflows/*.example.jsonl",
     "docs/benchmark-workflow-examples.md",
