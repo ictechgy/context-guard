@@ -2,6 +2,12 @@
 
 All notable changes for the ContextGuard plugin are documented here.
 
+## [0.4.4] - 2026-06-08
+
+- Added top-level `cache_layout_advice` to transcript audit JSON and feasibility output so cache-prefix instability can be prioritized without mixing advice into evidence-only diagnostics.
+- Documented the `cache_layout_advice` consumer contract and conservative cause boundaries for volatile-prefix findings.
+- Refined cache-prefix recommendation wording after quad-review so advice does not overclaim cache reads or session-splitting evidence.
+
 ## [0.4.3] - 2026-06-08
 
 - Fixed the Homebrew formula template so packaged helper paths are handled as Pathname objects during install.
