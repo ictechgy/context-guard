@@ -14,7 +14,7 @@ Install and activation are separate. Installing ContextGuard only puts local hel
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Run `/context-guard:setup` inside the project. |
 | Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan`, then rerun with `--yes`. |
 | Other rule-file agents | npm/npx install above | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
-| macOS/Homebrew users | planned release path: `brew tap ictechgy/contextguard && brew install context-guard` | Same `context-guard setup ...` commands after install. |
+| macOS/Homebrew users | release path: `brew install ictechgy/tap/context-guard` | Same `context-guard setup ...` commands after install. |
 
 Common commands:
 
@@ -191,15 +191,14 @@ Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skil
 
 ## Homebrew release path
 
-Homebrew is documented as the macOS release path once formula publishing is wired to a verified release artifact:
+Homebrew is available through the shared `ictechgy/tap` tap:
 
 ```bash
-brew tap ictechgy/contextguard
-brew install context-guard
+brew install ictechgy/tap/context-guard
 context-guard --version
 ```
 
-Until the tap is published, use npm/npx or the Claude plugin install path above.
+If you already tapped `ictechgy/tap`, `brew install context-guard` also works.
 
 ## Helper commands
 

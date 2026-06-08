@@ -13,7 +13,7 @@ ContextGuard separates **install** from **activation**.
 | Claude Code plugin | shipped | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Best native Claude Code workflow. |
 | npm global | added | `npm install -g @ictechgy/context-guard` | Installs `context-guard` and helper aliases on PATH. |
 | npx/npm exec | added | `npx @ictechgy/context-guard --version` | One-off usage; activation still requires explicit setup. |
-| Homebrew | draft | `brew tap ictechgy/contextguard && brew install context-guard` | Formula template exists under `packaging/homebrew/`; publish after release artifact SHA is known. |
+| Homebrew | shipped | `brew install ictechgy/tap/context-guard` | Formula is published in `ictechgy/homebrew-tap`; update it from a tagged release tarball SHA. |
 
 ## Activation examples
 

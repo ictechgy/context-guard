@@ -14,7 +14,7 @@ ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` 후 `/plugin install context-guard@context-guard` | 프로젝트에서 `/context-guard:setup` 실행 |
 | Codex CLI 또는 터미널 기반 에이전트 | `npm install -g @ictechgy/context-guard` 또는 일회성 `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan` 확인 후 `--yes`로 적용 |
 | Gemini/Cursor/Windsurf/Cline/Copilot | npm/npx 설치 | 원하는 에이전트만 `context-guard setup --agent ... --scope project --with-init --plan`으로 확인 후 적용 |
-| macOS/Homebrew 사용자 | 준비 중인 배포 경로: `brew tap ictechgy/contextguard && brew install context-guard` | 설치 후 같은 `context-guard setup ...` 명령 사용 |
+| macOS/Homebrew 사용자 | 배포 경로: `brew install ictechgy/tap/context-guard` | 설치 후 같은 `context-guard setup ...` 명령 사용 |
 
 자주 쓰는 명령은 다음과 같습니다.
 
@@ -188,15 +188,14 @@ npm exec @ictechgy/context-guard -- --version
 
 ## Homebrew 배포 경로
 
-Homebrew는 검증된 릴리스 산출물과 formula가 준비된 뒤 macOS 사용자를 위한 배포 경로로 사용할 예정입니다.
+Homebrew는 공유 `ictechgy/tap` tap을 통해 macOS 배포 경로로 사용할 수 있습니다.
 
 ```bash
-brew tap ictechgy/contextguard
-brew install context-guard
+brew install ictechgy/tap/context-guard
 context-guard --version
 ```
 
-tap이 공개되기 전에는 npm/npx 또는 Claude 플러그인 설치 경로를 사용하세요.
+이미 `ictechgy/tap`을 tap했다면 `brew install context-guard`도 사용할 수 있습니다.
 
 ## 자주 쓰는 헬퍼 명령
 
