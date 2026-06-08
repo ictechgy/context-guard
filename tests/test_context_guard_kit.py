@@ -15447,6 +15447,157 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     )
                     self.assertIn("Wall time", report["caveat"])
 
+    def test_benchmark_runner_self_hosted_metrics_ledger_sidecar(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_self_hosted_metrics_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = root / "fake-claude"
+                    payload = {
+                        "message": {"usage": {"input_tokens": 100, "output_tokens": 20}},
+                        "total_cost_usd": 0.02,
+                        "self_hosted_metrics": {
+                            "model_server": "local dev sk-ant-secret-token",
+                            "optimization": "prefix cache reuse",
+                            "latency_ms": 123.5,
+                            "peak_memory_mb": 2048,
+                            "quality_score": 0.98,
+                            "quality_metric": "golden task pass rate",
+                        },
+                    }
+                    fake.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import json, sys\n"
+                        f"sys.stdout.write({json.dumps(payload)!r})\n",
+                        encoding="utf-8",
+                    )
+                    fake.chmod(0o755)
+                    (root / "tasks.json").write_text(json.dumps([
+                        {
+                            "id": "t01",
+                            "prompt": "echo hi",
+                            "model": "sonnet",
+                            "max_turns": 1,
+                            "success_command": "true",
+                            "success_cwd": ".",
+                        }
+                    ]))
+                    (root / "variants.json").write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                    ]))
+                    csv_path = root / "results.csv"
+                    ledger_path = root / "ledger.jsonl"
+                    report_path = root / "report.json"
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(root / "tasks.json"),
+                            "--variants",
+                            str(root / "variants.json"),
+                            "--csv",
+                            str(csv_path),
+                            "--ledger-jsonl",
+                            str(ledger_path),
+                            "--report-json",
+                            str(report_path),
+                            "--claude-bin",
+                            str(fake),
+                            "--project-root",
+                            str(root),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+
+                    with csv_path.open(encoding="utf-8", newline="") as f:
+                        reader = csv.DictReader(f)
+                        self.assertEqual(reader.fieldnames, module.CSV_COLUMNS)
+                        rows = list(reader)
+                    self.assertEqual(len(rows), 1)
+                    self.assertNotIn("self_hosted_metrics", rows[0])
+
+                    ledger_row = json.loads(ledger_path.read_text(encoding="utf-8"))
+                    self.assertTrue(ledger_row["measurement_availability"]["self_hosted_metrics"])
+                    sidecar = ledger_row["self_hosted_metrics"]
+                    self.assertEqual(sidecar["schema_version"], "contextguard.bench.self-hosted-metrics.v1")
+                    self.assertEqual(sidecar["source"], "explicit_provider_payload.self_hosted_metrics")
+                    self.assertEqual(sidecar["metrics"]["latency_ms"], 123.5)
+                    self.assertEqual(sidecar["metrics"]["peak_memory_mb"], 2048.0)
+                    self.assertEqual(sidecar["metrics"]["quality_score"], 0.98)
+                    self.assertTrue(sidecar["measurement_availability"]["latency_ms"])
+                    self.assertTrue(sidecar["measurement_availability"]["peak_memory_mb"])
+                    self.assertTrue(sidecar["measurement_availability"]["quality_score"])
+                    self.assertIn("[REDACTED]", sidecar["labels"]["model_server"])
+                    self.assertNotIn("sk-ant", json.dumps(sidecar))
+                    self.assertEqual(
+                        sidecar["claim_boundary"]["id"],
+                        "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings",
+                    )
+                    self.assertFalse(sidecar["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+                    self.assertFalse(sidecar["claim_boundary"]["hosted_api_cost_savings_claim_allowed"])
+                    self.assertTrue(
+                        sidecar["claim_boundary"]["requires_provider_measured_matched_tasks_for_hosted_claims"]
+                    )
+
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    self.assertEqual(report["schema"], "context-guard-bench-report-v1")
+                    self.assertEqual(report["claim_status"], "baseline_only")
+                    self.assertNotIn("self_hosted_metrics", json.dumps(report, sort_keys=True))
+
+    def test_benchmark_runner_self_hosted_metrics_strict_contract(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_self_hosted_contract_{index}")
+                self.assertIsNone(module.collect_self_hosted_metrics({"self_hosted_latency_ms": 10}))
+                self.assertIsNone(
+                    module.collect_self_hosted_metrics({
+                        "message": {
+                            "content": [
+                                {
+                                    "self_hosted_metrics": {
+                                        "latency_ms": 123,
+                                        "peak_memory_mb": 456,
+                                        "quality_score": 0.9,
+                                    }
+                                }
+                            ]
+                        }
+                    })
+                )
+                self.assertIsNone(
+                    module.collect_self_hosted_metrics({
+                        "self_hosted_metrics": {
+                            "model_server": "labels only",
+                            "latency_ms": -1,
+                            "peak_memory_mb": 10_000_001,
+                            "quality_score": 1.1,
+                        }
+                    })
+                )
+                self.assertIsNone(
+                    module.collect_self_hosted_metrics({
+                        "outer": {"self_hosted_metrics": {"latency_ms": "123.5"}}
+                    })
+                )
+                nested = module.collect_self_hosted_metrics({
+                    "metrics": {
+                        "self_hosted_metrics": {
+                            "latency_ms": 321,
+                            "peak_memory_mb": 4096,
+                            "quality_score": 1.0,
+                            "optimization": "=" + ("x" * 200),
+                        }
+                    }
+                })
+                self.assertIsNotNone(nested)
+                self.assertEqual(nested["source"], "explicit_provider_payload.metrics.self_hosted_metrics")
+                self.assertEqual(nested["metrics"]["latency_ms"], 321.0)
+                self.assertLessEqual(len(nested["labels"]["optimization"]), 120)
+
     def test_benchmark_report_matched_pair_evidence_disables_claims_without_measurements(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -15757,6 +15908,28 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(provider_cache["summary_by_variant"]["cache_layout_check"]["observed_telemetry"]["provider_cache"], "observed")
         self.assertEqual(provider_cache["comparisons"][0]["token_savings_pct"], 0.0)
 
+        self_hosted_path = examples_dir / "self-hosted-metrics-ledger.example.jsonl"
+        self.assertTrue(self_hosted_path.is_file())
+        self_hosted_rows = [
+            json.loads(line)
+            for line in self_hosted_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(self_hosted_rows), 1)
+        self_hosted = self_hosted_rows[0]
+        self.assertEqual(self_hosted["schema_version"], "contextguard.bench.run-evidence.v1")
+        sidecar = self_hosted["self_hosted_metrics"]
+        self.assertEqual(sidecar["schema_version"], "contextguard.bench.self-hosted-metrics.v1")
+        self.assertTrue(self_hosted["measurement_availability"]["self_hosted_metrics"])
+        self.assertFalse(sidecar["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+        self.assertFalse(sidecar["claim_boundary"]["hosted_api_cost_savings_claim_allowed"])
+        self.assertIn("not hosted api token or cost telemetry", sidecar["claim_boundary"]["reason"].lower())
+        self.assertIn("latency_ms", sidecar["metrics"])
+        self.assertIn("peak_memory_mb", sidecar["metrics"])
+        self.assertIn("quality_score", sidecar["metrics"])
+        for phrase in forbidden:
+            self.assertNotIn(phrase, json.dumps(self_hosted, sort_keys=True).lower())
+
         measured = examples["measured-token-workflow.example.json"]
         self.assertEqual(measured["comparisons"][0]["paired_token_task_count"], 1)
         self.assertGreater(measured["comparisons"][0]["token_savings_pct"], 0)
@@ -15769,6 +15942,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn("matched successful", guide)
         self.assertIn("not independent savings proof", guide.lower())
         self.assertIn("not a general savings promise", guide.lower())
+        self.assertIn("self-hosted-metrics-ledger.example.jsonl", guide)
+        self.assertIn("local/model-server latency", guide)
+        self.assertIn("do not fold them into hosted API token/cost savings claims", guide)
 
         for doc in (ROOT / "README.md", ROOT / "README.ko.md", PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md"):
             self.assertIn("benchmark-workflow-examples.md", doc.read_text(encoding="utf-8"), str(doc))
@@ -15778,9 +15954,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
         package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
         self.assertIn("docs/benchmark-workflow-examples.md", package_files)
         self.assertIn("docs/benchmark-workflows/*.example.json", package_files)
+        self.assertIn("docs/benchmark-workflows/*.example.jsonl", package_files)
         prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
         for filename in examples:
             self.assertIn(f"docs/benchmark-workflows/{filename}", prepublish)
+        self.assertIn("docs/benchmark-workflows/self-hosted-metrics-ledger.example.jsonl", prepublish)
         self.assertIn('ROOT / "docs" / "benchmark-workflow-examples.md"', prepublish)
         self.assertIn('ROOT / "docs" / "benchmark-workflows"', prepublish)
 

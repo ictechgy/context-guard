@@ -184,6 +184,12 @@ MAX_USAGE_COST_USD = 10**9
 TOKEN_PROXY_BYTES_PER_TOKEN = 4
 BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
 MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
+SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
+SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
+SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
+MAX_SELF_HOSTED_LABEL_CHARS = 120
+MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
+MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
@@ -390,6 +396,7 @@ class RunResult:
     provider_cached_tokens: int = 0
     provider_cached_tokens_measured: bool = False
     primary_tokens_measured: bool = False
+    self_hosted_metrics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -791,6 +798,102 @@ def collect_shift_metrics(payload: Any) -> dict[str, int | float | bool]:
     return metrics
 
 
+def normalize_self_hosted_metric(value: Any, *, maximum: float) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or number > maximum:
+        return None
+    return number
+
+
+def sanitize_self_hosted_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = sanitize_note_text(value)
+    if not text:
+        return None
+    if len(text) > MAX_SELF_HOSTED_LABEL_CHARS:
+        text = text[:MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
+    return text
+
+
+def normalize_self_hosted_metrics(raw: Any, *, source: str) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    metrics: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    availability = {
+        "latency_ms": False,
+        "peak_memory_mb": False,
+        "quality_score": False,
+    }
+    latency = normalize_self_hosted_metric(raw.get("latency_ms"), maximum=MAX_SELF_HOSTED_LATENCY_MS)
+    if latency is not None:
+        metrics["latency_ms"] = latency
+        availability["latency_ms"] = True
+    peak_memory = normalize_self_hosted_metric(raw.get("peak_memory_mb"), maximum=MAX_SELF_HOSTED_MEMORY_MB)
+    if peak_memory is not None:
+        metrics["peak_memory_mb"] = peak_memory
+        availability["peak_memory_mb"] = True
+    quality = normalize_self_hosted_metric(raw.get("quality_score"), maximum=1.0)
+    if quality is not None:
+        metrics["quality_score"] = quality
+        availability["quality_score"] = True
+    for key in ("model_server", "optimization", "quality_metric"):
+        label = sanitize_self_hosted_label(raw.get(key))
+        if label is not None:
+            labels[key] = label
+    if not metrics:
+        return None
+    return {
+        "schema_version": SELF_HOSTED_METRICS_SCHEMA_VERSION,
+        "source": source,
+        "metrics": metrics,
+        "labels": labels,
+        "measurement_availability": availability,
+        "claim_boundary": {
+            "id": SELF_HOSTED_METRICS_CLAIM_BOUNDARY,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+            "requires_provider_measured_matched_tasks_for_hosted_claims": True,
+            "reason": (
+                "Self-hosted local/model-server latency, memory, and quality metrics "
+                "are not hosted API token or cost telemetry."
+            ),
+        },
+    }
+
+
+def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
+    """Collect explicit self-hosted metric sidecars without broad key inference.
+
+    Only explicit top-level telemetry envelopes are considered.  Do not infer
+    from incidental keys like `self_hosted_latency_ms` or arbitrary nested model
+    message content: that would make local/model-server telemetry too easy to
+    mix into hosted API claim surfaces.
+    """
+    if not isinstance(payload, dict):
+        return None
+    candidates = [
+        (
+            payload.get(SELF_HOSTED_METRICS_KEY),
+            f"explicit_provider_payload.{SELF_HOSTED_METRICS_KEY}",
+        )
+    ]
+    metrics_envelope = payload.get("metrics")
+    if isinstance(metrics_envelope, dict):
+        candidates.append((
+            metrics_envelope.get(SELF_HOSTED_METRICS_KEY),
+            f"explicit_provider_payload.metrics.{SELF_HOSTED_METRICS_KEY}",
+        ))
+    for raw, source in candidates:
+        normalized = normalize_self_hosted_metrics(raw, source=source)
+        if normalized is not None:
+            return normalized
+    return None
+
+
 def claude_version(claude_bin: str) -> str:
     try:
         proc = run_bounded_command(
@@ -1077,6 +1180,7 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
     tokens, cost, cost_measured, primary_tokens_measured = collect_usage(payload)
     provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(payload)
     shift_metrics = collect_shift_metrics(payload)
+    self_hosted_metrics = collect_self_hosted_metrics(payload)
     success, success_note = run_success_command(task, project_root)
     return RunResult(
         task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
@@ -1095,6 +1199,7 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
         external_cost_measured=bool(shift_metrics["external_cost_measured"]),
         provider_cached_tokens=provider_cached_tokens,
         provider_cached_tokens_measured=provider_cached_tokens_measured,
+        self_hosted_metrics=self_hosted_metrics,
     )
 
 
@@ -1243,6 +1348,7 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
             "provider_cache": result.provider_cached_tokens_measured,
             "byte_metrics": byte_metrics_observed,
             "wall_time": result.wall_time_seconds >= 0,
+            "self_hosted_metrics": result.self_hosted_metrics is not None,
         },
         "proxy_metrics": {
             "byte_metrics_observed": byte_metrics_observed,
@@ -1251,6 +1357,8 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
             "claim_boundary": "proxy_only_not_hosted_token_savings",
         },
     }
+    if result.self_hosted_metrics is not None:
+        payload["self_hosted_metrics"] = result.self_hosted_metrics
     with csv_file_lock(path, create_parent=True):
         fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600, create_parent=True)
         try:
