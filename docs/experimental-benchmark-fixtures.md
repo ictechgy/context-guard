@@ -12,9 +12,11 @@ Use them when designing an experiment that starts from ContextGuard's existing b
 5. Treat byte counts, image dimensions, OCR confidence, and local compressor ratios as proxy evidence. Real token/cost claims require **provider-measured** primary token/cost fields on both sides.
 6. Keep private screenshots, raw secrets, and external service endpoints out of fixture files.
 
-## Current runner limitation
+## Runner-native variant prompt files
 
-The current `context-guard-bench` task schema has one `task.prompt` per task, while variants only add `extra_args`. A fixture variant does **not** automatically swap raw evidence for digest evidence, cropped evidence, OCR text, or compressed evidence. For real non-dry-run output-transform experiments, use separate sanitized baseline/digest task files with matched logical task IDs, or add a future runner-native preflight before making any provider call.
+`context-guard-bench` supports optional file-backed `variant_prompt_files` in task fixtures. The map is keyed by variant name and lets a single logical task swap sanitized prompt evidence per variant, for example a baseline raw-output prompt versus a digest plus artifact receipt prompt. Prompt files are resolved relative to the task JSON, must be relative paths, and are read with the same no-follow/symlink-safe posture as task and variant fixtures.
+
+This runner-native swap only proves command shape and prompt selection until the user supplies real sanitized tasks, success checks, and provider telemetry. It does **not** make dry-run output, artifact receipts, byte counts, or digest metadata into token/cost savings evidence. For real non-dry-run output-transform experiments, keep task IDs matched across baseline and digest variants and require provider-measured primary token/cost fields on matched successful tasks before making any comparison claim.
 
 ## Included fixture sets
 
@@ -22,7 +24,7 @@ The current `context-guard-bench` task schema has one `task.prompt` per task, wh
 | --- | --- | --- | --- |
 | Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized artifacts and provider telemetry. |
 | Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare baseline context packs or artifact digests against a future learned-compression candidate after quality gates and shifted costs are measured. |
-| Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after matched task files, success checks, and provider telemetry are supplied. |
+| Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
 
@@ -34,7 +36,7 @@ The learned-compression fixtures describe already-sanitized context-pack or arti
 
 ## Reversible output-transform fixture notes
 
-The output-transform fixtures describe already-sanitized command output comparisons. They do not execute `context-guard-trim-output`, store artifacts, call `context-guard-artifact`, or invoke a provider. Future experiments should compare raw sanitized output against `--digest` output plus an `--artifact-receipt`, verify the receipt's exact re-expand command retrieves the omitted sanitized lines, and record bytes before/after, primary provider tokens, cost, success, corrections, artifact-store usage, and any external/local processing cost.
+The output-transform fixtures describe already-sanitized command output comparisons and now demonstrate `variant_prompt_files` for raw sanitized output versus digest plus artifact receipt prompt evidence. They do not execute `context-guard-trim-output`, store artifacts, call `context-guard-artifact`, or invoke a provider. Future experiments should compare raw sanitized output against `--digest` output plus an `--artifact-receipt`, verify the receipt's exact re-expand command retrieves the omitted sanitized lines, and record bytes before/after, primary provider tokens, cost, success, corrections, artifact-store usage, and any external/local processing cost.
 
 ## Safe wording
 

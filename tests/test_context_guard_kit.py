@@ -14409,6 +14409,129 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     with self.assertRaises(OSError):
                         module.parse_variants(parent_link / "variants.json")
 
+    def test_variant_prompt_files_select_prompt_and_fallback(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_select_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompt_file = root / "digest.prompt.md"
+                    prompt_file.write_text("digest prompt evidence", encoding="utf-8")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt evidence",
+                                "variant_prompt_files": {"digest": prompt_file.name},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([
+                            {"name": "baseline", "extra_args": []},
+                            {"name": "digest", "extra_args": []},
+                        ]),
+                        encoding="utf-8",
+                    )
+
+                    variants = module.parse_variants(variants_path)
+                    tasks = module.parse_tasks(tasks_path, variants=variants)
+                    task = tasks[0]
+                    baseline = next(variant for variant in variants if variant.name == "baseline")
+                    digest = next(variant for variant in variants if variant.name == "digest")
+                    self.assertEqual(
+                        module.build_claude_argv("claude", task, baseline)[-1],
+                        "fallback prompt evidence",
+                    )
+                    self.assertEqual(
+                        module.build_claude_argv("claude", task, digest)[-1],
+                        "digest prompt evidence",
+                    )
+
+    def test_variant_prompt_files_reject_unsafe_and_unknown_before_read(self):
+        cases = (
+            (
+                "absolute",
+                {"variant_prompt_files": {"digest": "/tmp/never-read.prompt.md"}},
+                "relative",
+            ),
+            (
+                "parent",
+                {"variant_prompt_files": {"digest": "../never-read.prompt.md"}},
+                "must not contain",
+            ),
+            (
+                "inline_unsupported",
+                {"variant_prompts": {"digest": "inline prompt"}},
+                "variant_prompts is not supported",
+            ),
+            (
+                "unknown_before_read",
+                {"variant_prompt_files": {"typo_variant": "/tmp/never-read.prompt.md"}},
+                "unknown variant",
+            ),
+        )
+        for index, script in enumerate(BENCH_SCRIPTS):
+            module = load_python_script_module(script, f"_bench_runner_variant_prompt_reject_{index}")
+            for name, extra, expected in cases:
+                with self.subTest(script=script, case=name):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        tasks_path = root / "tasks.json"
+                        variants_path = root / "variants.json"
+                        task = {"id": "t01", "prompt": "fallback prompt"}
+                        task.update(extra)
+                        tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+                        variants_path.write_text(
+                            json.dumps([
+                                {"name": "baseline", "extra_args": []},
+                                {"name": "digest", "extra_args": []},
+                            ]),
+                            encoding="utf-8",
+                        )
+                        variants = module.parse_variants(variants_path)
+                        with self.assertRaises(SystemExit) as ctx:
+                            module.parse_tasks(tasks_path, variants=variants)
+                        self.assertIn(expected, str(ctx.exception))
+                        if name == "unknown_before_read":
+                            self.assertNotIn("relative", str(ctx.exception))
+
+    def test_variant_prompt_files_reject_symlink_prompt_files(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_variant_prompt_symlink_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real_prompt = root / "real.prompt.md"
+                    real_prompt.write_text("digest prompt evidence", encoding="utf-8")
+                    link_prompt = root / "link.prompt.md"
+                    try:
+                        link_prompt.symlink_to(real_prompt)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {
+                                "id": "t01",
+                                "prompt": "fallback prompt",
+                                "variant_prompt_files": {"digest": link_prompt.name},
+                            }
+                        ]),
+                        encoding="utf-8",
+                    )
+                    variants_path.write_text(
+                        json.dumps([{"name": "digest", "extra_args": []}]),
+                        encoding="utf-8",
+                    )
+                    variants = module.parse_variants(variants_path)
+                    with self.assertRaises(OSError):
+                        module.parse_tasks(tasks_path, variants=variants)
+
     def test_csv_access_rejects_symlink_targets_and_parents(self):
         for index, script in enumerate(BENCH_SCRIPTS):
             with self.subTest(script=script):
@@ -15685,6 +15808,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
             {path.name for path in fixture_dir.glob("*.example.json")},
             {path.name for pair in fixture_pairs.values() for path in pair},
         )
+        prompt_fixture_names = {
+            "output-transform-baseline-raw-output.prompt.example.md",
+            "output-transform-digest-receipt.prompt.example.md",
+        }
+        self.assertEqual(
+            {path.name for path in fixture_dir.glob("*.prompt.example.md")},
+            prompt_fixture_names,
+        )
 
         kit_module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_experimental_fixtures_kit")
         plugin_module = load_python_script_module(
@@ -15713,15 +15844,27 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("extra_args", item)
                     self.assertIsInstance(item["extra_args"], list)
 
+                if lane == "output_transform":
+                    self.assertTrue(any("variant_prompt_files" in item for item in task_raw))
+                    variant_names = {item["name"] for item in variant_raw}
+                    prompt_keys = set(task_raw[0]["variant_prompt_files"])
+                    self.assertEqual(prompt_keys, variant_names)
+
                 for module in (kit_module, plugin_module):
-                    parsed_tasks = module.parse_tasks(task_path)
                     parsed_variants = module.parse_variants(variant_path)
+                    parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
                     self.assertEqual(len(parsed_tasks), len(task_raw))
                     self.assertEqual(len(parsed_variants), len(variant_raw))
                     self.assertTrue(any("baseline" in variant.name for variant in parsed_variants))
                     self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
                     for task in parsed_tasks:
                         self.assertIn("replace success_command", task.success_command)
+                    if lane == "output_transform":
+                        output_task = parsed_tasks[0]
+                        self.assertIn("baseline_raw_output_fixture", output_task.variant_prompt_texts)
+                        self.assertIn("fixture_only_digest_artifact_receipt", output_task.variant_prompt_texts)
+                        self.assertIn("Raw sanitized command output", output_task.variant_prompt_texts["baseline_raw_output_fixture"])
+                        self.assertIn("Digest of sanitized command output", output_task.variant_prompt_texts["fixture_only_digest_artifact_receipt"])
                     for variant in parsed_variants:
                         self.assertEqual(variant.extra_args, [])
                     placeholder_success, placeholder_note = module.run_success_command(parsed_tasks[0], ROOT)
@@ -15730,6 +15873,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
                 combined_fixture_text += "\n" + task_path.read_text(encoding="utf-8").lower()
                 combined_fixture_text += "\n" + variant_path.read_text(encoding="utf-8").lower()
+        for prompt_path in sorted(fixture_dir.glob("*.prompt.example.md")):
+            combined_fixture_text += "\n" + prompt_path.read_text(encoding="utf-8").lower()
 
         for required in (
             "fixture-only",
@@ -15743,8 +15888,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "shifted-cost accounting",
             "artifact receipt",
             "exact re-expand",
-            "current runner limitation",
-            "one `task.prompt` per task",
+            "runner-native variant prompt files",
+            "variant_prompt_files",
+            "file-backed",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, combined_fixture_text)
@@ -15813,6 +15959,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
         package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
         self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
         self.assertIn("docs/benchmark-fixtures/*.example.json", package_files)
+        self.assertIn("docs/benchmark-fixtures/*.prompt.example.md", package_files)
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         package_metadata = " ".join(
             [str(package.get("description", ""))]
@@ -15829,6 +15976,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "docs/benchmark-fixtures/learned-compression.variants.example.json",
             "docs/benchmark-fixtures/output-transform.tasks.example.json",
             "docs/benchmark-fixtures/output-transform.variants.example.json",
+            "docs/benchmark-fixtures/output-transform-baseline-raw-output.prompt.example.md",
+            "docs/benchmark-fixtures/output-transform-digest-receipt.prompt.example.md",
             "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
             "docs/benchmark-fixtures/visual-ocr.variants.example.json",
             'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
@@ -15880,6 +16029,37 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         )
                         self.assertIn("dry-run; CSV not updated", proc.stdout)
                         self.assertFalse(csv_path.exists())
+
+                        if lane == "output_transform":
+                            dry_runs = {}
+                            for variant_name in (item["name"] for item in variant_raw):
+                                variant_proc = subprocess.run(
+                                    [
+                                        sys.executable,
+                                        str(script),
+                                        "--tasks",
+                                        str(task_path),
+                                        "--variants",
+                                        str(variant_path),
+                                        "--task-id",
+                                        target_task,
+                                        "--variant",
+                                        variant_name,
+                                        "--csv",
+                                        str(Path(tmp) / f"{variant_name}.csv"),
+                                        "--dry-run",
+                                    ],
+                                    text=True,
+                                    capture_output=True,
+                                    check=True,
+                                )
+                                dry_runs[variant_name] = variant_proc.stdout
+                            self.assertIn("Raw sanitized command output", dry_runs["baseline_raw_output_fixture"])
+                            self.assertIn("Digest of sanitized command output", dry_runs["fixture_only_digest_artifact_receipt"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_raw_output_fixture"],
+                                dry_runs["fixture_only_digest_artifact_receipt"],
+                            )
 
                         fake = Path(tmp) / "fake-claude"
                         sentinel = Path(tmp) / "provider-called.txt"

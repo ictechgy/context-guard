@@ -27,6 +27,7 @@ Task fixture (`tasks.json`): 각 task 는 다음 필드를 가진다.
     "max_turns": 3,
     "max_budget_usd": 1.0,
     "allowed_tools": ["Read", "Edit", "Bash(npm test*)"],
+    "variant_prompt_files": {"context_hygiene": "t01.context_hygiene.prompt.md"},
     "success_command": "npm test -- auth/session",
     "success_cwd": "."
   }
@@ -354,6 +355,8 @@ class TaskFixture:
     allowed_tools: list[str] = field(default_factory=list)
     success_command: str | None = None
     success_cwd: str = "."
+    variant_prompt_files: dict[str, str] = field(default_factory=dict)
+    variant_prompt_texts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -433,6 +436,22 @@ def parse_string_list(value: Any, *, field: str, owner: str) -> list[str]:
     return items
 
 
+def parse_string_map(value: Any, *, field: str, owner: str) -> dict[str, str]:
+    """Parse a JSON fixture field that must be an object of non-empty string values."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SystemExit(f"{owner} {field} must be a JSON object of strings")
+    items: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise SystemExit(f"{owner} {field} keys must be non-empty strings")
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise SystemExit(f"{owner} {field}.{raw_key} must be a non-empty string")
+        items[raw_key] = raw_value
+    return items
+
+
 def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[str]:
     for index, arg in enumerate(extra_args):
         flag = arg.split("=", 1)[0]
@@ -441,6 +460,49 @@ def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[st
                 f"{owner} extra_args[{index}] must not override runner-controlled Claude flags: {flag}"
             )
     return extra_args
+
+
+def validate_variant_prompt_file_path(raw_path: str, *, owner: str) -> Path:
+    """Return a safe relative prompt-file path, or fail before any file read."""
+    rel_path = Path(raw_path)
+    if rel_path.is_absolute():
+        raise SystemExit(f"{owner} variant_prompt_files path must be relative: {raw_path}")
+    if not rel_path.parts or rel_path == Path("."):
+        raise SystemExit(f"{owner} variant_prompt_files path must name a file")
+    if any(part in ("", ".", "..") for part in rel_path.parts):
+        raise SystemExit(f"{owner} variant_prompt_files path must not contain '.', '..', or empty components: {raw_path}")
+    return rel_path
+
+
+def load_variant_prompt_files(
+    tasks: list[TaskFixture],
+    variants: list["Variant"],
+    *,
+    task_file_dir: Path,
+) -> None:
+    """Validate variant prompt-file keys first, then read file-backed prompts no-follow.
+
+    Unknown variant keys are rejected before dereferencing their mapped prompt files.
+    This preserves the benchmark runner's no-follow fixture safety while making prompt
+    evidence swaps explicit and reviewable.
+    """
+    known_variants = {variant.name for variant in variants}
+    for task in tasks:
+        unknown = sorted(set(task.variant_prompt_files) - known_variants)
+        if unknown:
+            raise SystemExit(
+                f"task {task.id} variant_prompt_files references unknown variant(s): {', '.join(unknown)}"
+            )
+
+    for task in tasks:
+        loaded: dict[str, str] = {}
+        for variant_name, raw_path in task.variant_prompt_files.items():
+            rel_path = validate_variant_prompt_file_path(
+                raw_path,
+                owner=f"task {task.id} variant {variant_name}",
+            )
+            loaded[variant_name] = _read_text_no_follow(task_file_dir / rel_path)
+        task.variant_prompt_texts = loaded
 
 
 def normalize_usage_token(value: Any) -> int | None:
@@ -469,7 +531,7 @@ def normalize_usage_cost(value: Any) -> float | None:
     return numeric
 
 
-def parse_tasks(path: Path) -> list[TaskFixture]:
+def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[TaskFixture]:
     raw = json.loads(_read_text_no_follow(path))
     if not isinstance(raw, list):
         raise SystemExit(f"tasks file must be a JSON list: {path}")
@@ -488,21 +550,33 @@ def parse_tasks(path: Path) -> list[TaskFixture]:
                 raise SystemExit(f"task {item.get('id')} max_budget_usd must be finite and > 0 (use null for unlimited)")
         else:
             budget = None
+        task_id = str(item["id"])
+        if "variant_prompts" in item:
+            raise SystemExit(
+                f"task {task_id} variant_prompts is not supported; use file-backed variant_prompt_files"
+            )
         fixtures.append(TaskFixture(
-            id=str(item["id"]),
+            id=task_id,
             prompt=str(item["prompt"]),
             model=str(item.get("model", "sonnet")),
             effort=str(effort_raw) if effort_raw is not None else None,
-            max_turns=parse_positive_int(item.get("max_turns", 3), field="max_turns", owner=f"task {item.get('id')}"),
+            max_turns=parse_positive_int(item.get("max_turns", 3), field="max_turns", owner=f"task {task_id}"),
             max_budget_usd=budget,
             allowed_tools=parse_string_list(
                 item.get("allowed_tools", []),
                 field="allowed_tools",
-                owner=f"task {item.get('id')}",
+                owner=f"task {task_id}",
             ),
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
+            variant_prompt_files=parse_string_map(
+                item.get("variant_prompt_files"),
+                field="variant_prompt_files",
+                owner=f"task {task_id}",
+            ),
         ))
+    if variants is not None:
+        load_variant_prompt_files(fixtures, variants, task_file_dir=path.parent)
     return fixtures
 
 
@@ -747,7 +821,7 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
         argv.extend(["--allowedTools", ",".join(task.allowed_tools)])
     argv.extend(variant.extra_args)
     argv.append("--")
-    argv.append(task.prompt)
+    argv.append(task.variant_prompt_texts.get(variant.name, task.prompt))
     return argv
 
 
@@ -2090,8 +2164,8 @@ def main() -> int:
     require_no_follow_file_ops_supported()
     validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json)
 
-    tasks = parse_tasks(args.tasks)
     variants = parse_variants(args.variants)
+    tasks = parse_tasks(args.tasks, variants=variants)
     targets = filter_targets(tasks, variants, args.task_id, args.variant)
     if not targets:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
