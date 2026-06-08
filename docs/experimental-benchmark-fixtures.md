@@ -22,13 +22,13 @@ This runner-native swap only proves command shape and prompt selection until the
 
 | Fixture set | Task file | Variant file | Intended future experiment |
 | --- | --- | --- | --- |
-| Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized artifacts and provider telemetry. |
+| Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized textual evidence, missed-context notes, crop/OCR telemetry, and provider telemetry. |
 | Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
 | Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
 
-The visual/OCR fixtures describe placeholder evidence only. They do not crop images, run OCR, prune visual tokens, or call a model. Future experiments should record image dimensions, crop area, OCR confidence/error notes, provider image/text token telemetry when available, task success, corrections, and any external/local processing cost.
+The visual/OCR fixtures describe sanitized textual visual evidence only and now demonstrate `variant_prompt_files` for full visual evidence versus cropped/OCR-derived evidence. They do not include image assets, crop images, run OCR, prune visual tokens, or call a model. Future experiments should record image dimensions, crop area, visible area, omitted or missed context, OCR confidence/error notes, full visual fallback conditions, provider image/text token telemetry when available, task success, corrections, and any external/local processing cost.
 
 ## Learned-compression fixture notes
 

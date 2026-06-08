@@ -211,6 +211,8 @@ EXPECTED_NPM_PACK_FILES = {
     "docs/benchmark-fixtures/output-transform-digest-receipt.prompt.example.md",
     "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
     "docs/benchmark-fixtures/visual-ocr.variants.example.json",
+    "docs/benchmark-fixtures/visual-ocr-full-visual.prompt.example.md",
+    "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
     "package.json",
     "packaging/homebrew/context-guard.rb.template",
     "plugins/context-guard/.claude-plugin/plugin.json",

@@ -8,7 +8,11 @@
     "max_budget_usd": 1.0,
     "allowed_tools": [],
     "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
-    "success_cwd": "."
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_visual_fixture": "visual-ocr-full-visual.prompt.example.md",
+      "fixture_only_cropped_or_ocr_evidence": "visual-ocr-cropped-ocr.prompt.example.md"
+    }
   },
   {
     "id": "visual_ocr_table_status_fixture",

@@ -15813,6 +15813,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "learned-compression-candidate-digest.prompt.example.md",
             "output-transform-baseline-raw-output.prompt.example.md",
             "output-transform-digest-receipt.prompt.example.md",
+            "visual-ocr-full-visual.prompt.example.md",
+            "visual-ocr-cropped-ocr.prompt.example.md",
         }
         self.assertEqual(
             {path.name for path in fixture_dir.glob("*.prompt.example.md")},
@@ -15846,7 +15848,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("extra_args", item)
                     self.assertIsInstance(item["extra_args"], list)
 
-                if lane in {"learned_compression", "output_transform"}:
+                if lane in {"visual_ocr", "learned_compression", "output_transform"}:
                     self.assertTrue(any("variant_prompt_files" in item for item in task_raw))
                     variant_names = {item["name"] for item in variant_raw}
                     for task_item in task_raw:
@@ -15862,7 +15864,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertTrue(any("fixture_only" in variant.name for variant in parsed_variants))
                     for task in parsed_tasks:
                         self.assertIn("replace success_command", task.success_command)
-                    if lane == "learned_compression":
+                    if lane == "visual_ocr":
+                        visual_task = parsed_tasks[0]
+                        self.assertIn("baseline_full_visual_fixture", visual_task.variant_prompt_texts)
+                        self.assertIn("fixture_only_cropped_or_ocr_evidence", visual_task.variant_prompt_texts)
+                        self.assertIn("Full visual evidence", visual_task.variant_prompt_texts["baseline_full_visual_fixture"])
+                        self.assertIn("Cropped or OCR-derived evidence", visual_task.variant_prompt_texts["fixture_only_cropped_or_ocr_evidence"])
+                    elif lane == "learned_compression":
                         learned_task = parsed_tasks[0]
                         self.assertIn("baseline_uncompressed_fixture", learned_task.variant_prompt_texts)
                         self.assertIn("fixture_only_learned_compression_candidate", learned_task.variant_prompt_texts)
@@ -15905,6 +15913,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "runner-native variant prompt files",
             "variant_prompt_files",
             "file-backed",
+            "missed context",
+            "omitted context",
+            "crop area",
+            "image dimensions",
+            "ocr confidence",
+            "ocr error notes",
+            "full visual fallback",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, combined_fixture_text)
@@ -15951,6 +15966,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
             str(Path.home()).lower(),
             ".png",
             ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".heic",
+            ".tiff",
             "api_key",
             "client_secret",
         ):
@@ -15996,6 +16016,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "docs/benchmark-fixtures/output-transform-digest-receipt.prompt.example.md",
             "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
             "docs/benchmark-fixtures/visual-ocr.variants.example.json",
+            "docs/benchmark-fixtures/visual-ocr-full-visual.prompt.example.md",
+            "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
             'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
             'ROOT / "docs" / "benchmark-fixtures"',
         ):
@@ -16046,7 +16068,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         self.assertIn("dry-run; CSV not updated", proc.stdout)
                         self.assertFalse(csv_path.exists())
 
-                        if lane in {"learned_compression", "output_transform"}:
+                        if lane in {"visual_ocr", "learned_compression", "output_transform"}:
                             dry_runs = {}
                             for variant_name in (item["name"] for item in variant_raw):
                                 variant_proc = subprocess.run(
@@ -16070,7 +16092,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                     check=True,
                                 )
                                 dry_runs[variant_name] = variant_proc.stdout
-                            if lane == "learned_compression":
+                            if lane == "visual_ocr":
+                                self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
+                                self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
+                                self.assertNotEqual(
+                                    dry_runs["baseline_full_visual_fixture"],
+                                    dry_runs["fixture_only_cropped_or_ocr_evidence"],
+                                )
+                            elif lane == "learned_compression":
                                 self.assertIn("Sanitized context pack", dry_runs["baseline_uncompressed_fixture"])
                                 self.assertIn("Compressed digest candidate", dry_runs["fixture_only_learned_compression_candidate"])
                                 self.assertNotEqual(
