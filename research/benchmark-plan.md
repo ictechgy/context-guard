@@ -65,6 +65,10 @@ C. Model/effort routing
 D. Output-budget hooks
 
 - test/build/log 명령을 `trim_command_output.py`로 감싸기
+- reversible output transform A/B는 raw sanitized output task와 digest+artifact-receipt task를
+  별도 task 파일로 고정한다. 현재 benchmark runner는 task마다 `prompt`가 하나이고 variant는
+  `extra_args`만 더하므로, fixture variant만으로 raw/digest evidence가 자동 교체된다고
+  해석하지 않는다.
 
 E. Context diet
 
@@ -119,6 +123,12 @@ date,claude_version,task_id,variant,model,effort,total_tokens,input_tokens,outpu
 `claim_status`는 실제 성공 run의 token/cost 지표를 기준으로 하며, byte 절감은 별도 caveat로
 분리된다. cost field가 0이거나 없으면 token 절감만 별도 상태로 표시하고 shifted-cost
 절감을 주장하지 않는다.
+
+reversible output-transform 실험은 `context-guard-trim-output --digest ... --artifact-receipt`
+가 저장한 sanitized output의 `artifact_id`, `stored_output.sha256`, `stored=true`, exact
+re-expand CLI가 모두 검증된 경우에만 digest 변형으로 기록한다. Artifact receipt나 byte 감소는
+재확장 가능성/프록시 증거이지 hosted API token/cost 절감 증거가 아니며, provider-measured
+primary token/cost와 matched successful task가 없으면 절감 claim을 만들지 않는다.
 
 ## 7. Experimental radar 연계
 

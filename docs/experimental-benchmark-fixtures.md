@@ -1,6 +1,6 @@
 # Experimental benchmark fixtures
 
-These fixtures are **fixture-only** starter scaffolds for future visual/OCR and learned-compression experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not a shipped runtime feature**, not an OCR/compression implementation, and not a hosted API savings claim.
+These fixtures are **fixture-only** starter scaffolds for future visual/OCR, learned-compression, and reversible output-transform experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not shipped benchmark results**, not OCR/compression implementations, and not hosted API savings claims.
 
 Use them when designing an experiment that starts from ContextGuard's existing benchmark discipline:
 
@@ -12,12 +12,17 @@ Use them when designing an experiment that starts from ContextGuard's existing b
 5. Treat byte counts, image dimensions, OCR confidence, and local compressor ratios as proxy evidence. Real token/cost claims require **provider-measured** primary token/cost fields on both sides.
 6. Keep private screenshots, raw secrets, and external service endpoints out of fixture files.
 
+## Current runner limitation
+
+The current `context-guard-bench` task schema has one `task.prompt` per task, while variants only add `extra_args`. A fixture variant does **not** automatically swap raw evidence for digest evidence, cropped evidence, OCR text, or compressed evidence. For real non-dry-run output-transform experiments, use separate sanitized baseline/digest task files with matched logical task IDs, or add a future runner-native preflight before making any provider call.
+
 ## Included fixture sets
 
 | Fixture set | Task file | Variant file | Intended future experiment |
 | --- | --- | --- | --- |
 | Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized artifacts and provider telemetry. |
 | Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare baseline context packs or artifact digests against a future learned-compression candidate after quality gates and shifted costs are measured. |
+| Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after matched task files, success checks, and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
 
@@ -27,10 +32,14 @@ The visual/OCR fixtures describe placeholder evidence only. They do not crop ima
 
 The learned-compression fixtures describe already-sanitized context-pack or artifact-digest comparisons. They do not invoke LLMLingua-style, gist-token, latent-context, or reranking implementations. Future experiments should preserve exact retrieval for lossy transforms where possible and record bytes before/after, primary provider tokens, cost, success, corrections, compressor latency, and external cost.
 
+## Reversible output-transform fixture notes
+
+The output-transform fixtures describe already-sanitized command output comparisons. They do not execute `context-guard-trim-output`, store artifacts, call `context-guard-artifact`, or invoke a provider. Future experiments should compare raw sanitized output against `--digest` output plus an `--artifact-receipt`, verify the receipt's exact re-expand command retrieves the omitted sanitized lines, and record bytes before/after, primary provider tokens, cost, success, corrections, artifact-store usage, and any external/local processing cost.
+
 ## Safe wording
 
 Use language like:
 
 > This synthetic fixture validates benchmark task/variant shape only. A real claim needs provider-measured token/cost data for matched successful baseline and variant tasks, plus failure-rate, correction, and shifted-cost guardrails.
 
-Avoid language that presents dry-run output, bytes saved, OCR text, or compressor ratios as hosted API token/cost savings evidence.
+Avoid language that presents dry-run output, bytes saved, OCR text, artifact receipts, exact re-expand handles, or compressor ratios as hosted API token/cost savings evidence.

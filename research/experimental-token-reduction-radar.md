@@ -53,6 +53,8 @@ A future proxy-related PR must show configuration that keeps external forwarding
 
 `context-guard-trim-output --digest ... --artifact-receipt` is the first reversible local transform experiment promoted from this roadmap. It stores only sanitized command output in the existing local artifact store and emits exact re-expand commands for omitted details. It is opt-in, does not change default trimming behavior, and does not create a hosted API token/cost savings claim; benchmark reports must still use matched successful tasks and provider-measured primary token fields before reporting token savings.
 
+The package-visible output-transform benchmark fixture is only a dry-run starter for this lane. The current benchmark runner has one `task.prompt` per task and variants only add `extra_args`, so a real A/B run must provide separate sanitized raw-output and digest-plus-receipt task evidence, or wait for a future runner-native preflight that can swap evidence before provider invocation.
+
 ## Graduated local experiment — protected-zone transform policy
 
 `context-guard-compress --protected-policy` and `context-guard cost compile` now expose opt-in policy metadata for semantic-sensitive zones: code fences, diffs, identifiers, numeric constants, hashes, paths, stack frames, quoted strings, and JSON keys. The policy denies semantic/paraphrase rewrites, allows structural dedupe/window/truncate plus exact local retrieval, and keeps protected+volatile sections ordered by volatility rather than treating protection as provider-cache stability. This is a local guardrail and metadata layer only; it does not claim hosted token/cost savings or replace provider prompt caching.
@@ -110,5 +112,5 @@ Recommended first experiment: document how to record self-hosted latency/memory 
 
 ## Current status
 
-This radar is intentionally documentation-only. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, and benchmark evidence. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers or hosted API savings evidence.
+This radar is intentionally documentation-only. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, and benchmark evidence. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.

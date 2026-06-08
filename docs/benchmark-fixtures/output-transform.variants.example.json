@@ -1,0 +1,10 @@
+[
+  {
+    "name": "baseline_raw_output_fixture",
+    "extra_args": []
+  },
+  {
+    "name": "fixture_only_digest_artifact_receipt",
+    "extra_args": []
+  }
+]

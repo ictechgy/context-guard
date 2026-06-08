@@ -6181,18 +6181,24 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("sanitizer fallback active", proc.stderr)
                     self.assertIn(expected_stderr, proc.stderr)
 
-    def test_trim_digest_artifact_receipt_exactly_reexpands_sanitized_output(self):
+    def test_trim_output_digest_artifact_receipt_exactly_reexpands_sanitized_output(self):
         secret = "ghp_" + ("A" * 36)
-        code = (
-            "print('line 1')\n"
-            f"print('API_TOKEN={secret}')\n"
-            "print('ERROR bad widget')\n"
-        )
-        expected_sanitized = "line 1\nAPI_TOKEN=[REDACTED]\nERROR bad widget\n"
         for index, script in enumerate(TRIM_SCRIPTS):
             with self.subTest(script=script):
                 artifact_script = ARTIFACT_SCRIPTS[index]
                 with tempfile.TemporaryDirectory() as tmp:
+                    raw_path = str(Path(tmp) / "private" / "checkout.log")
+                    raw_path_hash = hashlib.sha256(raw_path.encode("utf-8", errors="replace")).hexdigest()[:12]
+                    code = (
+                        f"print('line 1 from {raw_path}')\n"
+                        f"print('API_TOKEN={secret}')\n"
+                        "print('ERROR bad widget')\n"
+                    )
+                    expected_sanitized = (
+                        f"line 1 from checkout.log#path:{raw_path_hash}\n"
+                        "API_TOKEN=[REDACTED]\n"
+                        "ERROR bad widget\n"
+                    )
                     artifact_dir = Path(tmp) / "artifacts"
                     proc = subprocess.run(
                         [
@@ -6217,6 +6223,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         check=True,
                     )
                     self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(raw_path, proc.stdout)
                     data = json.loads(proc.stdout)
                     self.assertTrue(data["raw_output"]["truncated"])
                     receipt = data["artifact_receipt"]
@@ -6239,7 +6246,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(stat.S_IMODE(content_path.stat().st_mode), 0o600)
                     self.assertEqual(stat.S_IMODE(metadata_path.stat().st_mode), 0o600)
                     self.assertEqual(content_path.read_text(encoding="utf-8"), expected_sanitized)
-                    self.assertNotIn(secret, metadata_path.read_text(encoding="utf-8"))
+                    metadata_text = metadata_path.read_text(encoding="utf-8")
+                    self.assertNotIn(secret, metadata_text)
+                    self.assertNotIn(raw_path, metadata_text)
 
                     query = subprocess.run(
                         [
@@ -6261,6 +6270,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(query_data["content"], expected_sanitized)
                     self.assertEqual(query_data["stored_output"]["sha256"], stored["sha256"])
                     self.assertNotIn(secret, query.stdout)
+                    self.assertNotIn(raw_path, query.stdout)
 
                     emitted_parts = shlex.split(receipt["exact_reexpand"]["cli"])
                     emitted_query = subprocess.run(
@@ -6271,6 +6281,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertEqual(emitted_query.stdout, expected_sanitized)
                     self.assertNotIn(secret, emitted_query.stdout)
+                    self.assertNotIn(raw_path, emitted_query.stdout)
 
     def test_trim_artifact_receipt_requires_digest_mode(self):
         proc = subprocess.run(
@@ -15665,6 +15676,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 fixture_dir / "learned-compression.tasks.example.json",
                 fixture_dir / "learned-compression.variants.example.json",
             ),
+            "output_transform": (
+                fixture_dir / "output-transform.tasks.example.json",
+                fixture_dir / "output-transform.variants.example.json",
+            ),
         }
         self.assertEqual(
             {path.name for path in fixture_dir.glob("*.example.json")},
@@ -15726,6 +15741,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "failure-rate guardrail",
             "human corrections",
             "shifted-cost accounting",
+            "artifact receipt",
+            "exact re-expand",
+            "current runner limitation",
+            "one `task.prompt` per task",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, combined_fixture_text)
@@ -15808,6 +15827,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "docs/experimental-benchmark-fixtures.md",
             "docs/benchmark-fixtures/learned-compression.tasks.example.json",
             "docs/benchmark-fixtures/learned-compression.variants.example.json",
+            "docs/benchmark-fixtures/output-transform.tasks.example.json",
+            "docs/benchmark-fixtures/output-transform.variants.example.json",
             "docs/benchmark-fixtures/visual-ocr.tasks.example.json",
             "docs/benchmark-fixtures/visual-ocr.variants.example.json",
             'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
@@ -15829,108 +15850,113 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertIn(expected_link, doc.read_text(encoding="utf-8"))
 
         for script in (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"):
-            task_path, variant_path = fixture_pairs["visual_ocr"]
-            with tempfile.TemporaryDirectory() as tmp:
-                csv_path = Path(tmp) / "dry-run.csv"
-                proc = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "--tasks",
-                        str(task_path),
-                        "--variants",
-                        str(variant_path),
-                        "--task-id",
-                        "visual_ocr_nav_error_fixture",
-                        "--variant",
-                        "baseline_full_visual_fixture",
-                        "--csv",
-                        str(csv_path),
-                        "--dry-run",
-                    ],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                )
-                self.assertIn("dry-run; CSV not updated", proc.stdout)
-                self.assertFalse(csv_path.exists())
+            for lane, (task_path, variant_path) in fixture_pairs.items():
+                with self.subTest(script=script, lane=lane):
+                    task_raw = json.loads(task_path.read_text(encoding="utf-8"))
+                    variant_raw = json.loads(variant_path.read_text(encoding="utf-8"))
+                    target_task = task_raw[0]["id"]
+                    target_variant = variant_raw[0]["name"]
+                    with tempfile.TemporaryDirectory() as tmp:
+                        csv_path = Path(tmp) / "dry-run.csv"
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "--tasks",
+                                str(task_path),
+                                "--variants",
+                                str(variant_path),
+                                "--task-id",
+                                target_task,
+                                "--variant",
+                                target_variant,
+                                "--csv",
+                                str(csv_path),
+                                "--dry-run",
+                            ],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        self.assertIn("dry-run; CSV not updated", proc.stdout)
+                        self.assertFalse(csv_path.exists())
 
-                fake = Path(tmp) / "fake-claude"
-                sentinel = Path(tmp) / "provider-called.txt"
-                fake.write_text(
-                    "#!/usr/bin/env python3\n"
-                    "import pathlib, sys\n"
-                    f"pathlib.Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n"
-                    "sys.stdout.write('{}')\n",
-                    encoding="utf-8",
-                )
-                fake.chmod(0o755)
-                real_csv = Path(tmp) / "real-run.csv"
-                real_proc = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "--tasks",
-                        str(task_path),
-                        "--variants",
-                        str(variant_path),
-                        "--task-id",
-                        "visual_ocr_nav_error_fixture",
-                        "--variant",
-                        "baseline_full_visual_fixture",
-                        "--csv",
-                        str(real_csv),
-                        "--claude-bin",
-                        str(fake),
-                    ],
-                    text=True,
-                    capture_output=True,
-                )
-                self.assertNotEqual(real_proc.returncode, 0)
-                self.assertIn("fixture-only placeholder", real_proc.stderr)
-                self.assertFalse(sentinel.exists())
-                self.assertFalse(real_csv.exists())
+                        fake = Path(tmp) / "fake-claude"
+                        sentinel = Path(tmp) / "provider-called.txt"
+                        fake.write_text(
+                            "#!/usr/bin/env python3\n"
+                            "import pathlib, sys\n"
+                            f"pathlib.Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n"
+                            "sys.stdout.write('{}')\n",
+                            encoding="utf-8",
+                        )
+                        fake.chmod(0o755)
+                        real_csv = Path(tmp) / "real-run.csv"
+                        real_proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "--tasks",
+                                str(task_path),
+                                "--variants",
+                                str(variant_path),
+                                "--task-id",
+                                target_task,
+                                "--variant",
+                                target_variant,
+                                "--csv",
+                                str(real_csv),
+                                "--claude-bin",
+                                str(fake),
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertNotEqual(real_proc.returncode, 0)
+                        self.assertIn("fixture-only placeholder", real_proc.stderr)
+                        self.assertFalse(sentinel.exists())
+                        self.assertFalse(real_csv.exists())
 
-                module = kit_module if script == KIT_DIR / "benchmark_runner.py" else plugin_module
-                resume_csv = Path(tmp) / "resume.csv"
-                row = {column: "" for column in module.CSV_COLUMNS}
-                row.update({
-                    "date": "2026-01-01T00:00:00Z",
-                    "claude_version": "skipped",
-                    "task_id": "visual_ocr_nav_error_fixture",
-                    "variant": "baseline_full_visual_fixture",
-                    "success": "true",
-                })
-                with resume_csv.open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
-                    writer.writeheader()
-                    writer.writerow(row)
-                sentinel.unlink(missing_ok=True)
-                resume_proc = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "--tasks",
-                        str(task_path),
-                        "--variants",
-                        str(variant_path),
-                        "--task-id",
-                        "visual_ocr_nav_error_fixture",
-                        "--variant",
-                        "baseline_full_visual_fixture",
-                        "--csv",
-                        str(resume_csv),
-                        "--claude-bin",
-                        str(fake),
-                        "--resume",
-                    ],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                )
-                self.assertIn("skip visual_ocr_nav_error_fixture/baseline_full_visual_fixture", resume_proc.stdout)
-                self.assertIn("completed 0 run(s)", resume_proc.stdout)
-                self.assertFalse(sentinel.exists())
+                        module = kit_module if script == KIT_DIR / "benchmark_runner.py" else plugin_module
+                        resume_csv = Path(tmp) / "resume.csv"
+                        row = {column: "" for column in module.CSV_COLUMNS}
+                        row.update({
+                            "date": "2026-01-01T00:00:00Z",
+                            "claude_version": "skipped",
+                            "task_id": target_task,
+                            "variant": target_variant,
+                            "success": "true",
+                        })
+                        with resume_csv.open("w", encoding="utf-8", newline="") as handle:
+                            writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                            writer.writeheader()
+                            writer.writerow(row)
+                        sentinel.unlink(missing_ok=True)
+                        resume_proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "--tasks",
+                                str(task_path),
+                                "--variants",
+                                str(variant_path),
+                                "--task-id",
+                                target_task,
+                                "--variant",
+                                target_variant,
+                                "--csv",
+                                str(resume_csv),
+                                "--claude-bin",
+                                str(fake),
+                                "--resume",
+                            ],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        self.assertIn(f"skip {target_task}/{target_variant}", resume_proc.stdout)
+                        self.assertIn("completed 0 run(s)", resume_proc.stdout)
+                        self.assertFalse(sentinel.exists())
 
     def test_benchmark_report_keeps_provider_cache_telemetry_out_of_savings_claims(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_test_provider_cache_claims")
