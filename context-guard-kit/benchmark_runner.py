@@ -818,7 +818,7 @@ def sanitize_self_hosted_label(value: Any) -> str | None:
     return text
 
 
-def normalize_self_hosted_metrics(raw: Any) -> dict[str, Any] | None:
+def normalize_self_hosted_metrics(raw: Any, *, source: str) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     metrics: dict[str, float] = {}
@@ -848,7 +848,7 @@ def normalize_self_hosted_metrics(raw: Any) -> dict[str, Any] | None:
         return None
     return {
         "schema_version": SELF_HOSTED_METRICS_SCHEMA_VERSION,
-        "source": f"explicit_provider_payload.{SELF_HOSTED_METRICS_KEY}",
+        "source": source,
         "metrics": metrics,
         "labels": labels,
         "measurement_availability": availability,
@@ -868,21 +868,29 @@ def normalize_self_hosted_metrics(raw: Any) -> dict[str, Any] | None:
 def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
     """Collect explicit self-hosted metric sidecars without broad key inference.
 
-    Only a nested object named exactly `self_hosted_metrics` is considered.  Do
-    not infer from incidental keys like `self_hosted_latency_ms`: that would make
-    local/model-server telemetry too easy to mix into hosted API claim surfaces.
+    Only explicit top-level telemetry envelopes are considered.  Do not infer
+    from incidental keys like `self_hosted_latency_ms` or arbitrary nested model
+    message content: that would make local/model-server telemetry too easy to
+    mix into hosted API claim surfaces.
     """
-    queue: collections.deque[Any] = collections.deque([payload])
-    while queue:
-        cur = queue.popleft()
-        if isinstance(cur, dict):
-            if SELF_HOSTED_METRICS_KEY in cur:
-                normalized = normalize_self_hosted_metrics(cur.get(SELF_HOSTED_METRICS_KEY))
-                if normalized is not None:
-                    return normalized
-            queue.extend(cur.values())
-        elif isinstance(cur, list):
-            queue.extend(cur)
+    if not isinstance(payload, dict):
+        return None
+    candidates = [
+        (
+            payload.get(SELF_HOSTED_METRICS_KEY),
+            f"explicit_provider_payload.{SELF_HOSTED_METRICS_KEY}",
+        )
+    ]
+    metrics_envelope = payload.get("metrics")
+    if isinstance(metrics_envelope, dict):
+        candidates.append((
+            metrics_envelope.get(SELF_HOSTED_METRICS_KEY),
+            f"explicit_provider_payload.metrics.{SELF_HOSTED_METRICS_KEY}",
+        ))
+    for raw, source in candidates:
+        normalized = normalize_self_hosted_metrics(raw, source=source)
+        if normalized is not None:
+            return normalized
     return None
 
 

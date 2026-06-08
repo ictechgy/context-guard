@@ -15555,6 +15555,21 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertIsNone(module.collect_self_hosted_metrics({"self_hosted_latency_ms": 10}))
                 self.assertIsNone(
                     module.collect_self_hosted_metrics({
+                        "message": {
+                            "content": [
+                                {
+                                    "self_hosted_metrics": {
+                                        "latency_ms": 123,
+                                        "peak_memory_mb": 456,
+                                        "quality_score": 0.9,
+                                    }
+                                }
+                            ]
+                        }
+                    })
+                )
+                self.assertIsNone(
+                    module.collect_self_hosted_metrics({
                         "self_hosted_metrics": {
                             "model_server": "labels only",
                             "latency_ms": -1,
@@ -15569,7 +15584,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     })
                 )
                 nested = module.collect_self_hosted_metrics({
-                    "outer": {
+                    "metrics": {
                         "self_hosted_metrics": {
                             "latency_ms": 321,
                             "peak_memory_mb": 4096,
@@ -15579,6 +15594,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     }
                 })
                 self.assertIsNotNone(nested)
+                self.assertEqual(nested["source"], "explicit_provider_payload.metrics.self_hosted_metrics")
                 self.assertEqual(nested["metrics"]["latency_ms"], 321.0)
                 self.assertLessEqual(len(nested["labels"]["optimization"]), 120)
 
