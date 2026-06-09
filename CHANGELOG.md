@@ -4,6 +4,14 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-06-10
+
+- Hardened local cost ledger/key storage against symlink traversal, unsafe permissions, and partial writes while improving recent-ledger loading performance.
+- Replaced Pages publishing with least-privilege GitHub Pages artifact deployment and pinned first-party Actions.
+- Hardened the macOS audit adapter execution boundary, output caps, temp directory permissions, and Swift CI coverage.
+- Made context pack outputs and receipts use atomic same-directory writes.
+- Added `scripts/sync_plugin_copies.py` so duplicated plugin bin/lib copies are reproducible, symlink-safe, mode-checked, and covered by release gates.
+
 ## [0.4.5] - 2026-06-09
 
 - Added a package-visible `mac_visibility` feasibility contract for future local macOS-visible surfaces without building a GUI or inferring live headroom from historical transcript scans.
