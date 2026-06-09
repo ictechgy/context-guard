@@ -2300,6 +2300,119 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertFalse(stale_lib_pyc.exists())
         self.assertFalse(stale_lib_cache_pyc.exists())
 
+    def test_sync_plugin_copies_check_and_temp_write(self):
+        sync = load_module_from_path(ROOT / "scripts" / "sync_plugin_copies.py", "sync_plugin_copies_test")
+
+        check = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "sync_plugin_copies.py"), "--check"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertIn("plugin copies synchronized", check.stdout)
+
+        conflicting_flags = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "sync_plugin_copies.py"), "--check", "--write"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(conflicting_flags.returncode, 2)
+        self.assertIn("not allowed with argument", conflicting_flags.stderr)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.py"
+            target = root / "bin" / "target"
+            helper_source = root / "helper.py"
+            helper_target = root / "lib" / "helper.py"
+            target.parent.mkdir()
+            helper_target.parent.mkdir()
+            source.write_text("#!/usr/bin/env python3\nprint('new')\n", encoding="utf-8")
+            target.write_text("old\n", encoding="utf-8")
+            target.chmod(0o600)
+            helper_source.write_text("VALUE = 'new'\n", encoding="utf-8")
+            helper_target.write_text("VALUE = 'old'\n", encoding="utf-8")
+
+            specs = [
+                sync.CopySpec(source, target, 0o755, root),
+                sync.CopySpec(helper_source, helper_target, 0o644, root),
+            ]
+            pending = sync.sync_specs(specs, write=True)
+
+            self.assertEqual([item.reason for item in pending], ["content", "content"])
+            self.assertEqual(target.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
+            self.assertEqual(helper_target.read_text(encoding="utf-8"), helper_source.read_text(encoding="utf-8"))
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(helper_target.stat().st_mode), 0o644)
+            self.assertEqual(sync.sync_specs(specs, write=False), [])
+
+            target.chmod(0o600)
+            mode_pending = sync.sync_specs([sync.CopySpec(source, target, 0o755, root)], write=False)
+            self.assertEqual(len(mode_pending), 1)
+            self.assertTrue(mode_pending[0].reason.startswith("mode "), mode_pending[0].reason)
+            sync.sync_specs([sync.CopySpec(source, target, 0o755, root)], write=True)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+
+            if not hasattr(os, "symlink"):
+                self.skipTest("symlink support is unavailable")
+
+            real_bin = root / "real-bin"
+            linked_bin = root / "linked-bin"
+            real_bin.mkdir()
+            try:
+                linked_bin.symlink_to(real_bin, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink support is unavailable: {exc}")
+            redirected_target = linked_bin / "redirected"
+            with self.assertRaises(sync.SyncError):
+                sync.sync_specs([sync.CopySpec(source, redirected_target, 0o755, root)], write=True)
+            self.assertFalse((real_bin / "redirected").exists())
+
+            race_parent = root / "race-bin"
+            race_real = root / "race-real"
+            race_parent.mkdir()
+            race_real.mkdir()
+            race_target = race_parent / "target"
+            original_reject = sync.reject_symlink_components
+            swapped_parent = False
+
+            def swapping_reject(path, *, label, root=None):
+                nonlocal swapped_parent
+                original_reject(path, label=label, root=root)
+                if label == "target" and Path(path) == race_target and not swapped_parent:
+                    shutil.rmtree(race_parent)
+                    race_parent.symlink_to(race_real, target_is_directory=True)
+                    swapped_parent = True
+
+            sync.reject_symlink_components = swapping_reject
+            try:
+                with self.assertRaises(sync.SyncError):
+                    sync.sync_specs([sync.CopySpec(source, race_target, 0o755, root)], write=True)
+            finally:
+                sync.reject_symlink_components = original_reject
+            self.assertFalse((race_real / "target").exists())
+
+            stale_temp_target = root / "stale-temp-target"
+            old_fixed_temp = target.with_name(f".{target.name}.sync-tmp")
+            old_fixed_temp.symlink_to(stale_temp_target)
+            source.write_text("#!/usr/bin/env python3\nprint('safer temp')\n", encoding="utf-8")
+            sync.sync_specs([sync.CopySpec(source, target, 0o755, root)], write=True)
+            self.assertFalse(stale_temp_target.exists())
+            self.assertTrue(old_fixed_temp.is_symlink())
+            old_fixed_temp.unlink()
+
+            real_source_dir = root / "real-source"
+            linked_source_dir = root / "linked-source"
+            real_source_dir.mkdir()
+            (real_source_dir / "source.py").write_text("print('real')\n", encoding="utf-8")
+            linked_source_dir.symlink_to(real_source_dir, target_is_directory=True)
+            with self.assertRaises(sync.SyncError):
+                sync.sync_specs([sync.CopySpec(linked_source_dir / "source.py", target, 0o755, root)], write=False)
+
     @unittest.skipIf(shutil.which("bash") is None, "bash is required for shell syntax gate")
     def test_prepublish_check_rejects_shell_syntax_errors(self):
         prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_shell_syntax_test")

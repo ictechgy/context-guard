@@ -4,9 +4,10 @@ This repository ships a Claude Code plugin plus standalone helper entrypoints. U
 
 ## Release gates
 
-Run both local gates from the repository root:
+Run the copy check and both local gates from the repository root:
 
 ```bash
+python3 scripts/sync_plugin_copies.py --check
 python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
@@ -18,13 +19,13 @@ prepublish check: OK
 release smoke: OK
 ```
 
-`prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. It must also keep failure diagnostics safe to copy into issues: secret-shaped package artifact names, credential-like path labels, URL userinfo, control-character labels, and maintainer-local override paths should be redacted or summarized rather than printed raw. `release_smoke.py` first stages a clean copy of the plugin package, rejects symlinked package entries, then executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
+`sync_plugin_copies.py --check` verifies the maintainer-facing exact-copy contract before the heavier gates. If a source helper under `context-guard-kit/` changed, run `python3 scripts/sync_plugin_copies.py --write` first to refresh the packaged `plugins/context-guard/bin` and `plugins/context-guard/lib` copies while applying the package mode contract: executable bin entrypoints are `0755`, lib helper copies are `0644`. `prepublish_check.py` verifies package invariants, manifest consistency, synchronized plugin binaries, forbidden package artifacts, Python compile checks, and the regression test suite. It must also keep failure diagnostics safe to copy into issues: secret-shaped package artifact names, credential-like path labels, URL userinfo, control-character labels, and maintainer-local override paths should be redacted or summarized rather than printed raw. `release_smoke.py` first stages a clean copy of the plugin package, rejects symlinked package entries, then executes representative packaged plugin entrypoints in a temporary project with isolated `HOME`, `XDG_*`, `TMP*`, and a minimal environment so local credentials or optimizer config cannot affect the result.
 
 ## PR release workflow
 
 1. Start from up-to-date `main`.
 2. Make one focused, reviewable change.
-3. Keep duplicated kit/plugin entrypoints synchronized when a helper changes.
+3. Keep duplicated kit/plugin entrypoints synchronized when a helper changes with `python3 scripts/sync_plugin_copies.py --write`.
 4. Run the local release gates.
 5. Commit using the Lore commit protocol.
 6. Push a branch and open a PR.
@@ -40,6 +41,7 @@ Claude review track may be unavailable on a machine that has not logged in to th
 Before merge or publish, capture enough evidence that another maintainer can reproduce the release decision:
 
 - Local commands run and their success sentinels:
+  - `python3 scripts/sync_plugin_copies.py --check`
   - `python3 scripts/prepublish_check.py`
   - `python3 scripts/release_smoke.py`
 - GitHub Actions check names and final status:
@@ -64,6 +66,7 @@ Before publishing a versioned artifact, verify:
 - Repository-root `.claude-plugin/marketplace.json` lists the same plugin version and `Apache-2.0` license.
 - Repository-root `CHANGELOG.md` contains a release-notes entry for that exact plugin version.
 - `scripts/prepublish_check.py` passes without path overrides.
+- `scripts/sync_plugin_copies.py --check` reports `plugin copies synchronized`.
 - No generated caches, logs, or symlinks are inside `plugins/context-guard/`.
 
 ## Clean-install smoke coverage
