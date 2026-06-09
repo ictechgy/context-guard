@@ -4336,6 +4336,60 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertFalse(no_artifact["artifact"]["stored"])
 
+    def test_context_pack_pack_out_rename_failure_preserves_existing_file(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_atomic_pack_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    output = root / "pack.md"
+                    output.write_text("old pack\n", encoding="utf-8")
+                    real_rename = module.os.rename
+
+                    def failing_rename(*_args, **_kwargs):
+                        raise OSError(errno.EIO, "simulated rename failure")
+
+                    patched_supports = set(module.os.supports_dir_fd)
+                    patched_supports.discard(real_rename)
+                    patched_supports.add(failing_rename)
+                    with mock.patch.object(module.os, "rename", failing_rename), mock.patch.object(module.os, "supports_dir_fd", patched_supports):
+                        with self.assertRaises(module.PackError) as ctx:
+                            module.write_text_under_root(root, "pack.md", "new pack\n", "--pack-out")
+
+                    self.assertIn("simulated rename failure", str(ctx.exception))
+                    self.assertEqual(output.read_text(encoding="utf-8"), "old pack\n")
+                    self.assertEqual(list(root.glob(".context-guard-pack-*.tmp")), [])
+
+    def test_context_pack_receipt_rename_failure_cleans_temp_without_receipt(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_atomic_receipt_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real_rename = module.os.rename
+
+                    def failing_rename(*_args, **_kwargs):
+                        raise OSError(errno.EIO, "simulated receipt rename failure")
+
+                    patched_supports = set(module.os.supports_dir_fd)
+                    patched_supports.discard(real_rename)
+                    patched_supports.add(failing_rename)
+                    result = {
+                        "tool": "context-guard-pack",
+                        "version": 1,
+                        "pack_id": "a" * 20,
+                        "pack": "receipt body\n",
+                        "artifact": {"stored": False, "path": None, "bytes": 0, "capped": False, "cap_bytes": 64_000},
+                    }
+                    with mock.patch.object(module.os, "rename", failing_rename), mock.patch.object(module.os, "supports_dir_fd", patched_supports):
+                        artifact = module.store_receipt(root, result)
+
+                    pack_dir = root / ".context-guard" / "packs"
+                    self.assertFalse(artifact["stored"])
+                    self.assertEqual(artifact["error"], "artifact_write_failed")
+                    self.assertFalse((pack_dir / f"{'a' * 20}.json").exists())
+                    self.assertEqual(list(pack_dir.glob(".context-guard-pack-*.tmp")), [])
+
     def test_context_pack_omits_retrieval_when_root_arg_contains_secret(self):
         secret_component = "ghp_" + ("R" * 36)
         for script in PACK_SCRIPTS:

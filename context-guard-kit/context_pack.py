@@ -729,29 +729,95 @@ def ensure_private_pack_dir(root: Path) -> tuple[Path | None, int | None, str | 
                 pass
 
 
-def write_private_json_at(dir_fd: int, filename: str, data: dict[str, Any]) -> None:
-    if "/" in filename or filename in {"", ".", ".."}:
-        raise PackError("unsafe_artifact_path")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+def atomic_write_ops_supported() -> bool:
+    return (
+        os.open in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def fsync_dir_fd(dir_fd: int) -> None:
+    os.fsync(dir_fd)
+
+
+def validate_existing_output_target_at(dir_fd: int, filename: str, option_name: str) -> None:
+    flags = os.O_WRONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    fd = os.open(filename, flags, 0o600, dir_fd=dir_fd)
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    file_fd = -1
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-    except Exception:
+        file_fd = os.open(filename, flags, dir_fd=dir_fd)
+        st = os.fstat(file_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PackError(f"invalid {option_name}: unsafe_path")
+    except FileNotFoundError:
+        return
+    except IsADirectoryError as exc:
+        raise PackError(f"invalid {option_name}: unsafe_path") from exc
+    except OSError as exc:
+        raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+
+
+def write_text_atomic_at(dir_fd: int, filename: str, content: str, *, mode: int, option_name: str) -> None:
+    if "/" in filename or filename in {"", ".", ".."}:
+        raise PackError(f"invalid {option_name}: unsafe_path")
+    if not atomic_write_ops_supported():
+        raise PackError(f"invalid {option_name}: atomic_write_unsupported")
+    validate_existing_output_target_at(dir_fd, filename, option_name)
+    digest = hashlib.sha256(f"{filename}:{os.getpid()}:{time.time_ns()}".encode("utf-8", "replace")).hexdigest()[:16]
+    temp_name = f".context-guard-pack-{digest}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd = -1
+    temp_created = False
+    try:
+        fd = os.open(temp_name, flags, mode, dir_fd=dir_fd)
+        temp_created = True
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            fd = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        fsync_dir_fd(dir_fd)
+        os.rename(temp_name, filename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        temp_created = False
         try:
-            os.close(fd)
-        except OSError:
+            os.chmod(filename, mode, dir_fd=dir_fd, follow_symlinks=False)
+        except (OSError, TypeError, NotImplementedError):
             pass
-        raise
-    try:
-        os.chmod(filename, 0o600, dir_fd=dir_fd, follow_symlinks=False)
-    except (OSError, TypeError, NotImplementedError):
-        pass
+        fsync_dir_fd(dir_fd)
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp_created:
+            try:
+                os.unlink(temp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+
+
+def write_private_json_at(dir_fd: int, filename: str, data: dict[str, Any]) -> None:
+    if "/" in filename or filename in {"", ".", ".."}:
+        raise PackError("unsafe_artifact_path")
+    content = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    write_text_atomic_at(dir_fd, filename, content, mode=0o600, option_name="artifact receipt")
 
 
 def finalize_receipt_size(receipt: dict[str, Any]) -> int:
@@ -1453,27 +1519,13 @@ def write_text_under_root(root: Path, raw_path: str, content: str, option_name: 
     parent_parts = rel.parts[:-1]
     filename = rel.parts[-1]
     current_fd: int | None = None
-    file_fd = -1
     try:
         current_fd = open_dir_no_follow(root)
         for part in parent_parts:
             next_fd = open_dir_no_follow(part, dir_fd=current_fd)
             os.close(current_fd)
             current_fd = next_fd
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
-        if hasattr(os, "O_NONBLOCK"):
-            flags |= os.O_NONBLOCK
-        file_fd = os.open(filename, flags, 0o600, dir_fd=current_fd)
-        st = os.fstat(file_fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise PackError(f"invalid {option_name}: unsafe_path")
-        with os.fdopen(file_fd, "w", encoding="utf-8") as handle:
-            file_fd = -1
-            handle.write(content)
+        write_text_atomic_at(current_fd, filename, content, mode=0o600, option_name=option_name)
     except PackError:
         raise
     except FileNotFoundError as exc:
@@ -1481,11 +1533,6 @@ def write_text_under_root(root: Path, raw_path: str, content: str, option_name: 
     except OSError as exc:
         raise PackError(f"invalid {option_name}: {exc.strerror or exc.__class__.__name__}") from exc
     finally:
-        if file_fd >= 0:
-            try:
-                os.close(file_fd)
-            except OSError:
-                pass
         if current_fd is not None:
             try:
                 os.close(current_fd)
