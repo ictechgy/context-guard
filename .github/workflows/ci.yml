@@ -52,3 +52,8 @@ jobs:
 
       - name: Run staged plugin release smoke
         run: python scripts/release_smoke.py
+
+      - name: Run ContextGuard Mac Swift tests
+        timeout-minutes: 15
+        working-directory: apps/contextguard-mac
+        run: swift test

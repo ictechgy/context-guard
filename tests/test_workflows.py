@@ -42,6 +42,17 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertTrue(all(FULL_SHA_ACTION_RE.fullmatch(line) for line in uses_lines))
         self.assertEqual(combined.count("persist-credentials: false"), combined.count("actions/checkout@"))
 
+    def test_ci_runs_swift_tests_in_macos_package_job(self):
+        ci = read(".github/workflows/ci.yml")
+        self.assertIn("  test-and-prepublish-macos:", ci)
+        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
+
+        self.assertNotIn("swift test", ubuntu_job)
+        self.assertIn("runs-on: macos-latest", macos_job)
+        self.assertEqual(ci.count("run: swift test"), 1)
+        self.assertIn("timeout-minutes: 15", macos_job)
+        self.assertIn("working-directory: apps/contextguard-mac\n        run: swift test", macos_job)
+
 
 if __name__ == "__main__":
     unittest.main()
