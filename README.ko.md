@@ -125,13 +125,16 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 | Claude Code 플러그인 스킬 | 설정 마법사, 최적화 점검, 대화 기록 사용량 감사를 Claude Code 안에서 실행합니다. |
 | 프로젝트 단위 설정 마법사 | 전역 설정은 그대로 두고 권장 `.claude/settings.json` 옵션을 프로젝트에 적용합니다. |
 | 컨텍스트 관리 스캐너 | 누락된 가드레일, 과도한 훅 출력, 넓은 읽기 범위, 큰 컨텍스트 파일, 민감해 보이는 파일, 과도한 MCP 서버, 비용이 큰 기본값을 찾습니다. |
+| 구조적 낭비 진단 | 중복 규칙, stale import 후보, 쓰이지 않는 skill 후보, 과도한 tool schema, 반복 read/tool-call loop를 읽기 전용으로 진단합니다. |
 | 대용량 읽기 가드와 심볼 리더 | 파일 전체 읽기 대신 `rg`, 심볼 단위 읽기, 작은 줄 범위 읽기를 사용하도록 안내합니다. |
 | 출력 축약과 민감정보 가림 | 테스트·빌드·검색·diff 출력을 작게 만들고, 에이전트 컨텍스트에 들어가기 전에 민감해 보이는 값을 가립니다. |
+| 선언형 출력 필터 | 사용자 정의 JSON DSL로 성공 출력만 명시적으로 줄이고, 보호해야 하는 실패 출력은 원문 stdout/stderr와 종료 코드를 보존합니다. |
 | 로컬 로그 보관소 | 큰 로그를 대화 밖 로컬 저장소에 보관하고, 요약 정보나 요청한 줄 범위만 다시 가져옵니다. |
 | Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 저장하며, `--enforce`를 명시하지 않으면 경고만 합니다. |
 | 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`으로 짧은 로컬 선택 이유를 덧붙일 수 있습니다. |
 | Tool/MCP schema pruner | 로컬 catalog에서 bounded top-k tool/schema 자문 리포트를 만들고, compact 요약 기록과 전체 가림 처리된 payload 재조회 경로를 남깁니다. |
 | 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. |
+| 보호 영역 정책 기록 | `context-guard-compress --protected-policy`와 `context-guard cost compile`이 코드·diff·path·hash·JSON/literal zone을 structural-only 변환 대상으로 표시하고 정확한 재조회 경계를 남깁니다. |
 | 반복 실패 알림 | Bash 실패가 반복되면 실패 로그가 컨텍스트를 채우기 전에 전략을 바꾸도록 안내합니다. |
 | 상태표시줄, 감사, 벤치마크 | 컨텍스트·캐시·비용 신호를 보여주고, 사용량과 캐시 친화성 집중 지점을 찾고, 보수적인 전후 비교 증거를 남깁니다. |
 
@@ -300,7 +303,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다. JSON 출력에는 `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md)도 포함됩니다. 이는 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다. sibling `cache_layout_advice`는 이 신호를 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다. 원문 프롬프트는 출력하지 않고 provider cache hit를 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
+감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다. JSON 출력에는 `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md)도 포함됩니다. 이는 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다. sibling `cache_layout_advice`는 이 신호를 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다. `--feasibility-json` 출력에는 로컬 macOS 가시화 surface가 바인딩할 수 있는 [`mac_visibility`](docs/mac-visibility-feasibility-schema.md) 계약도 포함됩니다. 이 계약은 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다. 원문 프롬프트는 출력하지 않고 provider cache hit나 live headroom을 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
 
 ### 상태표시줄에서 컨텍스트와 캐시 상태 확인
 
@@ -318,7 +321,17 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-보고서는 성공한 기준/변형 실행을 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교합니다. 바이트 감소는 간접 증거로만 기록하며, 그 자체를 절감 증명으로 보지 않습니다. 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다. `matched_pair_evidence`는 성공한 기준/변형 task bucket을 transform, 측정 가능 여부, quality gate, claim boundary와 연결하므로 절감 문구를 쓰기 전에 이 항목을 먼저 확인해야 합니다. `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다. 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다. 절감 주장은 양쪽 모두 성공한 태스크 대응 기준이며, 실패율 가드레일이 악화되면 경고 수준으로 조정합니다. CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요. 최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을, 작업 유형별 합성 예시와 안전한 해석 경계는 [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md)을, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md)을 참고하세요.
+보고서를 읽을 때는 먼저 claim boundary를 확인하세요.
+
+- 성공한 기준/변형 실행은 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교하고, 바이트 감소는 간접 증거로만 기록합니다.
+- 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다.
+- `matched_pair_evidence`는 성공한 task bucket을 transform, 측정 가능 여부, quality gate, claim boundary와 연결하므로 절감 문구를 쓰기 전에 먼저 확인해야 합니다.
+- `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다.
+- 선택적 `self_hosted_metrics`는 run별 JSONL ledger sidecar로만 기록하고 CSV/report 요약에는 넣지 않으며, hosted API token/cost 절감 주장의 근거로 포함해서는 안 됩니다.
+- 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다.
+- CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요.
+
+최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을, 작업 유형별 합성 예시와 안전한 해석 경계는 [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md)을, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md)을 참고하세요.
 
 ## 아직 제공하지 않는 기능
 
