@@ -1338,9 +1338,153 @@ class ClaudeTokenKitTests(unittest.TestCase):
             store.mkdir(parents=True)
             key_path = store / "hmac.key"
             key_path.write_text(valid_key, encoding="utf-8")
-            os.chmod(key_path, 0o600)
+            os.chmod(key_path, 0o644)
             proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
             self.assertEqual(proc.returncode, 0, proc.stderr)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
+
+    def test_cost_guard_rejects_symlinked_store_key_and_ledger(self):
+        request = cost_guard_request(cacheable_text="symlink hardening prefix " + ("x" * 5000))
+        valid_key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_store = root / "real-ledger"
+            real_store.mkdir()
+            link_store = root / "link-ledger"
+            try:
+                link_store.symlink_to(real_store, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(link_store), "--json"], request)
+            self.assertEqual(proc.returncode, 2)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("must not traverse symlinks", combined)
+            self.assertNotIn(str(link_store), combined)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            target = Path(tmp) / "target.key"
+            target.write_text(valid_key, encoding="utf-8")
+            os.chmod(target, 0o600)
+            try:
+                (store / "hmac.key").symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["preflight", "--store-dir", str(store), "--json"], request)
+            self.assertEqual(proc.returncode, 2)
+            combined = proc.stdout + proc.stderr
+            self.assertIn("must not be a symlink", combined)
+            self.assertNotIn(str(target), combined)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_ledger_symlink_test")
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            target = Path(tmp) / "external-ledger.jsonl"
+            target.write_text("", encoding="utf-8")
+            try:
+                (store / "ledger.jsonl").symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(module.CostGuardError) as ctx:
+                module.append_ledger(store, {"kind": "observe"})
+            self.assertIn("local HMAC ledger file", str(ctx.exception))
+            self.assertNotIn(str(target), str(ctx.exception))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_parent_traversal_test")
+            store = Path(tmp) / "safe" / ".." / "ledger"
+            with self.assertRaises(module.CostGuardError) as ctx:
+                module.ensure_private_dir(store)
+            message = str(ctx.exception)
+            self.assertIn("parent traversal", message)
+            self.assertNotIn(str(Path(tmp)), message)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_lock_symlink_test")
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            target = Path(tmp) / "external-lock"
+            target.mkdir()
+            link_lock = store / "hmac.key.lock"
+            try:
+                link_lock.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(module.CostGuardError) as ctx:
+                module.write_key_lock_metadata(link_lock)
+            message = str(ctx.exception)
+            self.assertIn("local HMAC key lock directory", message)
+            self.assertIn("must not traverse symlinks", message)
+            self.assertNotIn(str(target), message)
+
+    def test_cost_guard_read_secures_mode_via_open_fd(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_fd_read_mode_test")
+        valid_key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            key_path = store / "hmac.key"
+            key_path.write_text(valid_key, encoding="utf-8")
+            os.chmod(key_path, 0o600)
+            with mock.patch.object(module.os, "chmod", side_effect=AssertionError("path chmod must not run on read")):
+                self.assertEqual(module.read_hmac_key(key_path), b"k" * 32)
+
+    def test_cost_guard_append_ledger_handles_short_writes(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_short_ledger_write_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            writes: list[bytes] = []
+            real_write = module.os.write
+
+            def short_write(fd: int, data) -> int:
+                chunk_size = max(1, min(5, len(data)))
+                writes.append(bytes(data[:chunk_size]))
+                return real_write(fd, data[:chunk_size])
+
+            entry = {"kind": "observe", "created_at_unix": 123, "fingerprints": []}
+            with mock.patch.object(module.os, "write", side_effect=short_write):
+                module.append_ledger(store, entry)
+
+            self.assertGreater(len(writes), 1)
+            rows = [json.loads(line) for line in (store / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows, [entry])
+
+    def test_cost_guard_append_ledger_locks_during_write_when_available(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_ledger_lock_test")
+        if module.fcntl is None:
+            self.skipTest("fcntl unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            calls: list[int] = []
+            real_flock = module.fcntl.flock
+
+            def record_flock(fd: int, operation: int):
+                calls.append(operation)
+                return real_flock(fd, operation)
+
+            with mock.patch.object(module.fcntl, "flock", side_effect=record_flock):
+                module.append_ledger(store, {"kind": "observe"})
+
+            self.assertIn(module.fcntl.LOCK_EX, calls)
+            self.assertIn(module.fcntl.LOCK_UN, calls)
+
+    def test_cost_guard_append_ledger_fails_closed_without_file_locking(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_no_flock_test")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(module, "fcntl", None):
+            with self.assertRaises(module.CostGuardError) as ctx:
+                module.append_ledger(Path(tmp) / "ledger", {"kind": "observe"})
+            self.assertIn("platform file locking unavailable", str(ctx.exception))
+
+    def test_cost_guard_private_storage_fails_closed_without_no_follow(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_no_follow_test")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(module, "NO_FOLLOW_SUPPORTED", False):
+            with self.assertRaises(module.CostGuardError) as ctx:
+                module.append_ledger(Path(tmp) / "ledger", {"kind": "observe"})
+            self.assertIn("requires O_NOFOLLOW support", str(ctx.exception))
 
     def test_cost_guard_hmac_key_creation_fchmod_fallbacks(self):
         for label, exc in (("attribute", AttributeError("missing fchmod")), ("oserror", OSError(errno.EPERM, "no fchmod"))):
@@ -1357,6 +1501,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 if os.name == "posix":
                     self.assertEqual(stat.S_IMODE(key_path.stat().st_mode), 0o600)
 
+    def test_cost_guard_hmac_key_creation_uses_verified_store_dir_fd_for_replace(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_key_replace_dir_fd_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            real_replace = module.os.replace
+            replace_kwargs = []
+
+            def record_replace(src, dst, *args, **kwargs):
+                replace_kwargs.append(kwargs)
+                return real_replace(src, dst, *args, **kwargs)
+
+            with mock.patch.object(module.os, "replace", side_effect=record_replace):
+                key = module.load_or_create_hmac_key(store)
+
+            self.assertEqual(len(key), 32)
+            self.assertTrue(replace_kwargs)
+            self.assertIsNotNone(replace_kwargs[-1].get("src_dir_fd"))
+            self.assertEqual(replace_kwargs[-1].get("src_dir_fd"), replace_kwargs[-1].get("dst_dir_fd"))
+
     def test_cost_guard_hmac_open_replace_and_parent_fsync_errors_are_deterministic(self):
         for label in ("open", "replace"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
@@ -1372,7 +1535,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                     patchers = [mock.patch.object(module.os, "open", side_effect=fail_open)]
                 else:
-                    def fail_replace(src, dst):
+                    def fail_replace(src, dst, *args, **kwargs):
                         raise OSError(errno.EACCES, "permission denied", str(dst))
 
                     patchers = [mock.patch.object(module.os, "replace", side_effect=fail_replace)]

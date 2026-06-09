@@ -11,6 +11,10 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
+    fcntl = None
 import hashlib
 import hmac
 import json
@@ -47,6 +51,12 @@ MAX_LEDGER_ROWS = 20_000
 TTL_SECONDS = {"5m": 5 * 60, "1h": 60 * 60}
 ANTHROPIC_DOCS_URL = "https://docs.anthropic.com/en/build-with-claude/prompt-caching"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
+ALLOWED_FIRST_COMPONENT_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+DIR_FD_OPEN_SUPPORTED = os.open in getattr(os, "supports_dir_fd", set())
+NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
 
 SECRET_RE = re.compile(
     r"(?is)("
@@ -449,11 +459,24 @@ def extract_cache_breakpoints(request: Any) -> tuple[list[CacheBreakpoint], dict
 
 
 def ensure_private_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+    path = reject_symlink_components(path, label="local HMAC ledger directory")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = reject_symlink_components(path, label="local HMAC ledger directory")
+    if not path.is_dir():
+        fail("local HMAC ledger directory must be a directory")
     try:
         os.chmod(path, 0o700)
-    except OSError:
-        pass
+    except OSError as exc:
+        if os.name == "posix":
+            fail(f"could not secure local HMAC ledger directory: {os_error_detail(exc)}")
+        return
+    if os.name == "posix":
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError as exc:
+            fail(f"could not verify local HMAC ledger directory privacy: {os_error_detail(exc)}")
+        if mode != 0o700:
+            fail("could not verify local HMAC ledger directory privacy: expected mode 0700")
 
 
 def os_error_detail(exc: OSError) -> str:
@@ -463,33 +486,232 @@ def os_error_detail(exc: OSError) -> str:
     return detail
 
 
+def _base_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def _no_follow_flag() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        fail("private local cost storage requires O_NOFOLLOW support")
+    return os.O_NOFOLLOW
+
+
+def _directory_open_flags(*, follow_final: bool = False) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if not follow_final:
+        flags |= _no_follow_flag()
+    return flags
+
+
+def dir_fd_open_supported() -> bool:
+    return DIR_FD_OPEN_SUPPORTED
+
+
+def _private_leaf_name(path: Path, *, label: str) -> str:
+    name = path.name
+    if name in {"", ".", ".."}:
+        fail(f"{label} must name a private file")
+    return name
+
+
+def _normalized_link_target(anchor: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if target.is_absolute():
+        return Path(os.path.normpath(str(target)))
+    return Path(os.path.normpath(str(anchor / target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Normalize macOS /tmp and /var first-component symlinks only.
+
+    Other symlink components are refused before reading or writing private local
+    ledger/key material.
+    """
+
+    if not path.is_absolute():
+        return path
+    parts = path.parts
+    if len(parts) < 2:
+        return path
+    first = parts[1]
+    expected = ALLOWED_FIRST_COMPONENT_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if link.is_symlink() and _normalized_link_target(Path(path.anchor), os.readlink(link)) == expected:
+            return expected.joinpath(*parts[2:])
+    except OSError:
+        return path
+    return path
+
+
+def reject_symlink_components(path: Path, *, label: str) -> Path:
+    path = normalize_allowed_first_absolute_symlink(path)
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    for part in parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            fail(f"{label} must not contain parent traversal")
+        current = current / part
+        try:
+            if current.is_symlink():
+                fail(f"{label} must not traverse symlinks")
+        except OSError as exc:
+            fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    return path
+
+
+def open_private_directory(path: Path, *, label: str) -> int:
+    """Open an existing directory without following symlink path components."""
+
+    if not dir_fd_open_supported():
+        fail(f"{label} requires dir_fd support for symlink-safe private storage")
+    path = reject_symlink_components(path, label=label)
+    flags = _directory_open_flags()
+    if path.is_absolute():
+        anchor = path.anchor or os.sep
+        parts = path.parts[1:]
+        try:
+            current_fd = os.open(anchor, _directory_open_flags(follow_final=True))
+        except OSError as exc:
+            fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    else:
+        parts = path.parts
+        try:
+            current_fd = os.open(".", flags)
+        except OSError as exc:
+            fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                fail(f"{label} must not contain parent traversal")
+            next_fd = -1
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+                st = os.fstat(next_fd)
+                if not stat.S_ISDIR(st.st_mode):
+                    fail(f"{label} must not traverse non-directory components")
+            except CostGuardError:
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                raise
+            except OSError as exc:
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                fail(f"could not inspect {label}: {os_error_detail(exc)}")
+            finally:
+                try:
+                    os.close(current_fd)
+                except OSError:
+                    pass
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+
+def fsync_directory_fd(fd: int) -> None:
+    if os.name != "posix":
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+
+
 def lock_guidance() -> str:
     return f"<store-dir>/{KEY_NAME}.lock"
 
 
-def ensure_hmac_key_private_mode(key_path: Path) -> None:
+def ensure_hmac_key_private_mode(key_path: Path, *, label: str = "local HMAC key file") -> None:
     try:
         os.chmod(key_path, 0o600)
     except OSError as exc:
         if os.name == "posix":
-            fail(f"could not secure local HMAC key file: {os_error_detail(exc)}")
+            fail(f"could not secure {label}: {os_error_detail(exc)}")
         return
     if os.name == "posix":
         try:
             mode = stat.S_IMODE(key_path.stat().st_mode)
         except OSError as exc:
-            fail(f"could not verify local HMAC key file privacy: {os_error_detail(exc)}")
+            fail(f"could not verify {label} privacy: {os_error_detail(exc)}")
         if mode != 0o600:
-            fail("could not verify local HMAC key file privacy: expected mode 0600")
+            fail(f"could not verify {label} privacy: expected mode 0600")
+
+
+def open_private_regular_file_for_read(path: Path, *, label: str):
+    path = normalize_allowed_first_absolute_symlink(path)
+    leaf_name = _private_leaf_name(path, label=label)
+    try:
+        if path.is_symlink():
+            fail(f"{label} must not be a symlink")
+    except OSError as exc:
+        fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    parent_fd = -1
+    fd = -1
+    try:
+        parent_fd = open_private_directory(path.parent, label=f"{label} parent")
+        fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(), dir_fd=parent_fd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail(f"{label} must be a regular file")
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        st = os.fstat(fd)
+        if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
+            fail(f"could not verify {label} privacy: expected mode 0600")
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        return handle
+    except CostGuardError:
+        raise
+    except OSError as exc:
+        fail(f"could not read {label}: {os_error_detail(exc)}")
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 def read_hmac_key(key_path: Path) -> bytes:
     try:
-        raw = key_path.read_text(encoding="utf-8")
+        with open_private_regular_file_for_read(key_path, label="local HMAC key file") as handle:
+            raw = handle.read()
     except UnicodeError:
         fail("invalid local HMAC key file: expected UTF-8 canonical URL-safe base64 text")
-    except OSError as exc:
-        fail(f"could not read local HMAC key file: {os_error_detail(exc)}")
     try:
         raw_ascii = raw.encode("ascii")
     except UnicodeEncodeError:
@@ -504,7 +726,6 @@ def read_hmac_key(key_path: Path) -> bytes:
         fail("invalid local HMAC key file: expected canonical URL-safe 32-byte key")
     if len(key) != 32:
         fail("invalid local HMAC key file: expected 32 decoded bytes")
-    ensure_hmac_key_private_mode(key_path)
     return key
 
 
@@ -532,8 +753,27 @@ def write_all(fd: int, data: bytes) -> None:
     while total < len(data):
         written = os.write(fd, view[total:])
         if written <= 0:
-            raise OSError("short write to local HMAC key file")
+            raise OSError("short write to local private file")
         total += written
+
+
+def lock_file_exclusive(fd: int, *, label: str) -> bool:
+    if fcntl is None:
+        fail(f"could not lock {label}: platform file locking unavailable")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        fail(f"could not lock {label}: {os_error_detail(exc)}")
+    return True
+
+
+def unlock_file(fd: int) -> None:
+    if fcntl is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
 
 
 @dataclass(frozen=True)
@@ -543,20 +783,51 @@ class KeyLock:
 
 
 def write_key_lock_metadata(lock_dir: Path) -> KeyLock:
+    reject_symlink_components(lock_dir, label="local HMAC key lock directory")
     nonce = secrets.token_hex(8)
     metadata = {
         "pid": os.getpid(),
         "created_at_unix": time.time(),
         "nonce": nonce,
     }
-    path = lock_dir / LOCK_OWNER_NAME
+    lock_fd = -1
+    fd = -1
     try:
-        path.write_text(json_bytes(metadata), encoding="utf-8")
-        os.chmod(path, 0o600)
-        fsync_parent_dir(path)
+        lock_fd = open_private_directory(lock_dir, label="local HMAC key lock directory")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _no_follow_flag()
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(LOCK_OWNER_NAME, flags, 0o600, dir_fd=lock_fd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail("local HMAC key lock metadata must be a regular file")
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        st = os.fstat(fd)
+        if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
+            fail("could not verify local HMAC key lock metadata privacy: expected mode 0600")
+        write_all(fd, json_bytes(metadata).encode("utf-8"))
+        write_all(fd, b"\n")
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        fsync_directory_fd(lock_fd)
         return KeyLock(nonce=nonce, metadata_written=True)
     except OSError:
         return KeyLock(nonce=nonce, metadata_written=False)
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if lock_fd >= 0:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 def key_lock_age_seconds(lock_dir: Path, now: float | None = None) -> float:
@@ -694,6 +965,7 @@ def acquire_key_lock(lock_dir: Path, key_path: Path) -> KeyLock | None:
 
 
 def load_or_create_hmac_key(store_dir: Path) -> bytes:
+    store_dir = normalize_allowed_first_absolute_symlink(store_dir)
     ensure_private_dir(store_dir)
     cleanup_orphaned_stale_key_locks(store_dir)
     key_path = store_dir / KEY_NAME
@@ -705,25 +977,38 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
     if locked is None:
         return read_hmac_key(key_path)
 
-    tmp_path: Path | None = None
+    store_fd = -1
+    tmp_leaf: str | None = None
     try:
         if key_path.exists():
             return read_hmac_key(key_path)
         key = secrets.token_bytes(32)
         encoded = base64.urlsafe_b64encode(key)
-        tmp_path = store_dir / f"{KEY_NAME}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        store_fd = open_private_directory(store_dir, label="local HMAC ledger directory")
+        tmp_leaf = f"{KEY_NAME}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
         try:
-            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _no_follow_flag()
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            fd = os.open(tmp_leaf, flags, 0o600, dir_fd=store_fd)
         except OSError as exc:
             fail(f"could not create local HMAC key file: {os_error_detail(exc)}")
         close_error: OSError | None = None
         try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                fail("local HMAC key file must be a regular file")
             try:
                 os.fchmod(fd, 0o600)
             except (AttributeError, OSError):
                 pass
+            st = os.fstat(fd)
+            if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
+                fail("could not verify local HMAC key file privacy: expected mode 0600")
             write_all(fd, encoded)
             os.fsync(fd)
+        except CostGuardError:
+            raise
         except OSError as exc:
             fail(f"could not write local HMAC key file: {os_error_detail(exc)}")
         finally:
@@ -733,25 +1018,34 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
                 close_error = exc
         if close_error is not None:
             fail(f"could not write local HMAC key file: {os_error_detail(close_error)}")
-        ensure_hmac_key_private_mode(tmp_path)
         if locked.metadata_written and not key_lock_owner_matches(lock_dir, locked):
             if key_path.exists():
                 return read_hmac_key(key_path)
             fail("lost local HMAC key lock; retry")
         try:
-            os.replace(tmp_path, key_path)
+            os.replace(tmp_leaf, KEY_NAME, src_dir_fd=store_fd, dst_dir_fd=store_fd)
+        except TypeError:
+            fail("could not persist local HMAC key file: platform dir_fd replace unavailable")
         except OSError as exc:
             fail(f"could not persist local HMAC key file: {os_error_detail(exc)}")
-        tmp_path = None
-        fsync_parent_dir(key_path)
+        tmp_leaf = None
+        fsync_directory_fd(store_fd)
         # Re-read the persisted file so callers always use the same bytes future
         # ledger lookups will use. The lock prevents first-use races without
         # relying on hard links or replacing another process's winner key.
         return read_hmac_key(key_path)
     finally:
-        if tmp_path is not None:
+        if tmp_leaf is not None:
             try:
-                tmp_path.unlink()
+                if store_fd >= 0:
+                    os.unlink(tmp_leaf, dir_fd=store_fd)
+                else:
+                    (store_dir / tmp_leaf).unlink()
+            except OSError:
+                pass
+        if store_fd >= 0:
+            try:
+                os.close(store_fd)
             except OSError:
                 pass
         cleanup_key_lock(lock_dir, locked)
@@ -765,12 +1059,61 @@ def ledger_path(store_dir: Path) -> Path:
     return store_dir / LEDGER_NAME
 
 
+def open_private_regular_file_for_append(path: Path, *, label: str) -> int:
+    path = normalize_allowed_first_absolute_symlink(path)
+    leaf_name = _private_leaf_name(path, label=label)
+    try:
+        if path.is_symlink():
+            fail(f"{label} must not be a symlink")
+    except OSError as exc:
+        fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | _no_follow_flag()
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    parent_fd = -1
+    fd = -1
+    try:
+        parent_fd = open_private_directory(path.parent, label=f"{label} parent")
+        fd = os.open(leaf_name, flags, 0o600, dir_fd=parent_fd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail(f"{label} must be a regular file")
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        st = os.fstat(fd)
+        if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
+            fail(f"could not verify {label} privacy: expected mode 0600")
+        owned_fd = fd
+        fd = -1
+        return owned_fd
+    except CostGuardError:
+        raise
+    except OSError as exc:
+        fail(f"could not open {label}: {os_error_detail(exc)}")
+    finally:
+        if fd >= 0:
+            # Ownership transfers to the caller only on the successful return
+            # above. On errors, close before surfacing a deterministic message.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+
 def load_ledger(store_dir: Path) -> list[dict[str, Any]]:
+    store_dir = normalize_allowed_first_absolute_symlink(store_dir)
     path = ledger_path(store_dir)
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
+    with open_private_regular_file_for_read(path, label="local HMAC ledger file") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -785,22 +1128,23 @@ def load_ledger(store_dir: Path) -> list[dict[str, Any]]:
 
 
 def append_ledger(store_dir: Path, entry: dict[str, Any]) -> None:
+    store_dir = normalize_allowed_first_absolute_symlink(store_dir)
     ensure_private_dir(store_dir)
     path = ledger_path(store_dir)
-    # JSONL is append-only. Use a single O_APPEND write plus fsync so concurrent
-    # local wrappers cannot interleave bytes; load_ledger also tolerates any
-    # pre-existing malformed/partial line by skipping it.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    fd = os.open(path, flags, 0o600)
+    # JSONL is append-only. Hold an advisory file lock while looping over
+    # os.write so short writes do not interleave with cooperating local wrappers;
+    # load_ledger also tolerates any pre-existing malformed/partial line by
+    # skipping it.
+    fd = open_private_regular_file_for_append(path, label="local HMAC ledger file")
+    locked = False
     try:
-        os.write(fd, (json_bytes(entry) + "\n").encode("utf-8"))
+        locked = lock_file_exclusive(fd, label="local HMAC ledger file")
+        write_all(fd, (json_bytes(entry) + "\n").encode("utf-8"))
         os.fsync(fd)
     finally:
+        if locked:
+            unlock_file(fd)
         os.close(fd)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
 
 
 def latest_fingerprint_rows(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
