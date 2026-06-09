@@ -1,0 +1,28 @@
+[
+  {
+    "id": "visual_ocr_nav_error_fixture",
+    "prompt": "Fixture-only synthetic visual/OCR task. Given a sanitized placeholder screenshot description for a checkout page, identify the navigation control associated with the visible validation error. Do not call OCR or image services from this fixture; future real runs must supply sanitized evidence and provider-measured token/cost telemetry.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_visual_fixture": "visual-ocr-full-visual.prompt.example.md",
+      "fixture_only_cropped_or_ocr_evidence": "visual-ocr-cropped-ocr.prompt.example.md"
+    }
+  },
+  {
+    "id": "visual_ocr_table_status_fixture",
+    "prompt": "Fixture-only synthetic visual/OCR task. Compare a placeholder full-table visual description with a cropped or OCR-derived summary and answer which row status changed. This fixture is not a shipped runtime feature and real claims require matched successful tasks, human corrections, failure-rate guardrail, shifted-cost accounting, and provider-measured fields.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": "."
+  }
+]

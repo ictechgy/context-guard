@@ -1,0 +1,28 @@
+[
+  {
+    "id": "learned_compression_context_pack_fixture",
+    "prompt": "Fixture-only synthetic learned-compression task. Review a sanitized context-pack summary and answer which source file should be inspected next. No learned compressor, latent-context helper, or provider call is executed by this fixture; future real runs must record provider-measured tokens/costs for matched successful tasks.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_uncompressed_fixture": "learned-compression-baseline-context-pack.prompt.example.md",
+      "fixture_only_learned_compression_candidate": "learned-compression-candidate-digest.prompt.example.md"
+    }
+  },
+  {
+    "id": "learned_compression_artifact_digest_fixture",
+    "prompt": "Fixture-only synthetic learned-compression task. Compare a baseline artifact digest with a compressed digest candidate and state whether required evidence is still retrievable. Real claims need matched successful baseline and variant runs, failure-rate guardrail, human corrections, shifted-cost accounting, and provider-measured primary token/cost fields.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": "."
+  }
+]

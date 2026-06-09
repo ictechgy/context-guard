@@ -1,0 +1,28 @@
+[
+  {
+    "id": "output_transform_trim_digest_fixture",
+    "prompt": "Fixture-only synthetic reversible output-transform task. Compare a placeholder raw command log with a digest plus artifact receipt and answer whether omitted sanitized lines can be exactly re-expanded. This fixture does not run a provider, trim command output, or fetch artifacts; future real runs must supply sanitized raw and digest evidence, artifact receipt metadata, provider-measured token/cost telemetry, matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_raw_output_fixture": "output-transform-baseline-raw-output.prompt.example.md",
+      "fixture_only_digest_artifact_receipt": "output-transform-digest-receipt.prompt.example.md"
+    }
+  },
+  {
+    "id": "output_transform_failure_summary_fixture",
+    "prompt": "Fixture-only synthetic reversible output-transform task. Given a placeholder failure summary and a receipt-backed sanitized output handle, identify the failing command and describe which exact re-expand step would retrieve the omitted context. This fixture is dry-run-only until prompts, success checks, provider-measured primary token/cost fields, human corrections, and shifted-cost accounting are supplied for matched successful tasks.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": "."
+  }
+]

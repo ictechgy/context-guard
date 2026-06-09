@@ -1,0 +1,125 @@
+{
+  "schema": "context-guard-bench-report-v1",
+  "baseline_variant": "baseline",
+  "claim_status": "token_savings_observed_cost_unmeasured",
+  "summary_by_variant": {
+    "baseline": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 1000,
+      "primary_tokens_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 12.4,
+      "wall_time_seconds_measured_successful": 1,
+      "provider_cached_tokens_successful": 0,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    },
+    "context_hygiene": {
+      "successful_runs": 1,
+      "tokens_per_successful_task": 650,
+      "primary_tokens_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 10.8,
+      "wall_time_seconds_measured_successful": 1,
+      "provider_cached_tokens_successful": 120,
+      "provider_cached_tokens_measured_successful": 1,
+      "observed_telemetry": {
+        "tokens": "observed",
+        "primary_cost": "unavailable",
+        "external_tokens": "observed",
+        "byte_savings": "observed",
+        "token_proxy": "inferred",
+        "wall_time": "observed",
+        "provider_cache": "observed"
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "variant": "context_hygiene",
+      "baseline_variant": "baseline",
+      "quality_gate": "pass",
+      "matched_successful_task_count": 1,
+      "paired_token_task_count": 1,
+      "paired_wall_time_task_count": 1,
+      "token_savings_pct": 35.0,
+      "cost_savings_pct_with_shift": null,
+      "wall_time_change_pct": -12.9
+    }
+  ],
+  "matched_pair_evidence": [
+    {
+      "schema_version": "contextguard.bench.matched-pair.v1",
+      "task_id": "t01",
+      "baseline_variant": "baseline",
+      "variant": "context_hygiene",
+      "transform_id": "context_hygiene",
+      "quality_gate": "pass",
+      "evidence_kind": "matched_successful_task_bucket",
+      "measurements": {
+        "baseline": {
+          "run_count": 1,
+          "row_indices": [
+            1
+          ],
+          "primary_tokens": {
+            "measured": true,
+            "average": 1000,
+            "total": 1000
+          },
+          "bytes": {
+            "measurement": "observed",
+            "before_total": 12000,
+            "after_total": 12000,
+            "delta_total": 0,
+            "token_proxy_delta": 0,
+            "token_proxy": "chars_div_4_proxy_only"
+          }
+        },
+        "variant": {
+          "run_count": 1,
+          "row_indices": [
+            2
+          ],
+          "primary_tokens": {
+            "measured": true,
+            "average": 650,
+            "total": 650
+          },
+          "bytes": {
+            "measurement": "observed",
+            "before_total": 12000,
+            "after_total": 8600,
+            "delta_total": -3400,
+            "token_proxy_delta": -850,
+            "token_proxy": "chars_div_4_proxy_only"
+          }
+        }
+      },
+      "delta": {
+        "primary_tokens_average": -350,
+        "token_savings_pct": 35.0,
+        "total_cost_with_shift_usd_average": null,
+        "cost_savings_pct_with_shift": null,
+        "bytes_after_total": -3400,
+        "token_proxy_after_total": -850,
+        "proxy_measurement": "chars_div_4_proxy_only"
+      },
+      "claim_boundary": {
+        "quality_gate": "pass",
+        "token_savings_claim_allowed": true,
+        "shifted_cost_claim_allowed": false,
+        "byte_proxy_only": true,
+        "requires_matched_successful_tasks": true,
+        "raw_estimate_only_claim_allowed": false
+      }
+    }
+  ],
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; byte_proxy_only applies only to byte/token-proxy deltas, while token_savings_claim_allowed is driven by measured primary tokens on both matched sides and a passing quality gate. Shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. Provider-cache discounts must stay separate from token-reduction claims. Inspect matched_pair_evidence[*].claim_boundary before making any savings statement; it links each task bucket to the quality gate and measurement flags that gate each claim. This example documents report shape only; make real savings claims only from your own matched successful task runs."
+}

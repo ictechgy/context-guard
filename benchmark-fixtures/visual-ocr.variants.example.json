@@ -1,0 +1,10 @@
+[
+  {
+    "name": "baseline_full_visual_fixture",
+    "extra_args": []
+  },
+  {
+    "name": "fixture_only_cropped_or_ocr_evidence",
+    "extra_args": []
+  }
+]
