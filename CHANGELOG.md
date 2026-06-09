@@ -4,7 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-09
+
 - Added a package-visible `mac_visibility` feasibility contract for future local macOS-visible surfaces without building a GUI or inferring live headroom from historical transcript scans.
+- Clarified README, plugin README, kit README, and GitHub Pages measurement boundaries for self-hosted metrics sidecars, benchmark evidence, mac visibility contracts, and experimental fixtures.
 
 ## [0.4.4] - 2026-06-08
 
