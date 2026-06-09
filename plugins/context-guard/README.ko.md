@@ -97,7 +97,7 @@ context-guard-statusline-merged
 - **상태표시줄**은 모델, 컨텍스트, 비용 신호를 짧게 보여주고, 대화 기록 데이터가 있으면 캐시 읽기와 캐시 재사용 신호도 함께 표시합니다.
 - **대화 기록 감사**는 usage/cost/cache bucket을 집계하고, 토큰 집중 지점, `cache_friendliness` 프롬프트 배치 신호, `cache_layout_advice` 확인/실험 우선순위를 제한된 가림 처리된 segment hash로 보고합니다. 원문 프롬프트는 출력하지 않습니다.
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
-- **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리로 기록합니다.
+- **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리, 파일 기반 `variant_prompt_files`, 선택적 run별 `self_hosted_metrics` JSONL ledger sidecar를 기록합니다. 이 sidecar는 hosted API 절감 주장에 합치지 않습니다.
 
 비용 가드의 로컬 HMAC 키는 기본적으로 `.context-guard/cost-ledger/hmac.key`에 자동 생성됩니다. 관리자가 직접 주입하는 경우 파일에는 필수 padding을 포함한 canonical URL-safe base64 32바이트 키만 정확히 들어 있어야 하며, trailing newline이나 공백은 허용하지 않습니다. 리포트는 키와 원문 프롬프트를 출력하지 않고, 로컬 ledger는 Anthropic/provider prompt cache를 대체하지 않습니다.
 

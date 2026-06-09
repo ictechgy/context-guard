@@ -284,6 +284,7 @@
         <a href="#features">기능</a>
         <a href="#positioning">도구 차이</a>
         <a href="#fit">효과적인 경우</a>
+        <a href="#measurement">측정</a>
         <a href="#setup">설치</a>
         <a href="#trust">보수적 원칙</a>
         <a href="https://github.com/ictechgy/context-guard/blob/main/README.md">English README</a>
@@ -348,7 +349,7 @@
         <article class="card"><span class="icon">▣</span><h3>로컬 로그 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
         <article class="card"><span class="icon">⊡</span><h3>예산 기반 컨텍스트 팩</h3><p>우선순위가 있는 로컬 파일을 바이트 예산 안의 Markdown 팩으로 조립하고, <code>--explain</code>으로 짧은 로컬 선택 이유를 함께 남깁니다.</p></article>
         <article class="card"><span class="icon">◎</span><h3>설치 전 상태 점검</h3><p><code>doctor</code>와 <code>setup --verify</code>로 변경 없이 누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 확인합니다.</p></article>
-        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량과 절감 근거를 확인합니다.</p></article>
+        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량, 캐시 신호, claim boundary를 확인합니다.</p></article>
         <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>대화 기록의 프롬프트 배치를 점검해 캐시에 불리한 구성과 안정적인 prefix 후보를 알려줍니다.</p></article>
         <article class="card"><span class="icon">₩</span><h3>Anthropic 비용 가드</h3><p>호출 전 cache breakpoint별 위험과 낮음/중간/높음 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
@@ -392,6 +393,19 @@
             <li>직접 측정 없이 고정된 토큰·비용 절감률을 기대하는 경우</li>
           </ul>
         </article>
+      </div>
+    </section>
+
+    <section id="measurement" class="shell">
+      <div class="section-head">
+        <h2>절감 수치를 해석하기 전, 측정 경계를 먼저 확인하세요.</h2>
+        <p>벤치마크와 감사 결과는 숫자를 보여주지만, 어떤 숫자가 절감 근거이고 어떤 숫자가 진단용 텔레메트리인지 분리해 읽어야 합니다.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="card"><span class="icon">B</span><h3>기준/변형 쌍 비교 벤치마크</h3><p><code>context-guard-bench --ledger-jsonl ... --report-json ...</code>는 성공한 baseline/variant task를 맞춰 비교합니다. <a href="https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md">workflow examples</a>의 claim boundary를 먼저 확인하세요.</p></article>
+        <article class="card"><span class="icon">S</span><h3>self-hosted sidecar</h3><p><code>self_hosted_metrics</code>는 run별 JSONL ledger sidecar입니다. CSV/report 요약에는 섞지 않고, hosted API token/cost savings claim의 근거로 쓰지 않습니다.</p></article>
+        <article class="card"><span class="icon">V</span><h3>측정 결과 binding 계약</h3><p><code>--feasibility-json</code>은 <a href="https://github.com/ictechgy/context-guard/blob/main/docs/mac-visibility-feasibility-schema.md"><code>mac_visibility</code> 스키마</a> 같은 stable top-level binding 계약을 제공합니다. historical transcript scan은 live headroom이나 billing hit rate를 증명하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">R</span><h3>실험 fixture는 출발점입니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md">fixture-only starter</a>와 <a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">experimental-token-reduction-radar</a>는 matched successful task, provider-measured evidence, later-roadmap gate가 없으면 제공 기능이 아닙니다.</p></article>
       </div>
     </section>
 
