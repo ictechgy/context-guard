@@ -41,6 +41,28 @@ final class AuditCLIAdapterTests: XCTestCase {
         }
     }
 
+    func testRelativePathEntriesAreIgnoredDuringExecutableResolution() throws {
+        let temp = try temporaryDirectory()
+        let relativeBin = temp.appendingPathComponent("relative-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: relativeBin, withIntermediateDirectories: true)
+        _ = try writeHelper(in: relativeBin, body: "echo should-not-resolve\n")
+
+        let adapter = AuditCLIAdapter(timeout: 1, environment: ["PATH": "relative-bin"])
+
+        XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .executableNotFound)
+        }
+    }
+
+    func testFallbackDirectoryIsRejectedAsExecutable() throws {
+        let temp = try temporaryDirectory()
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: temp, timeout: 1, environment: ["PATH": ""])
+
+        XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .fallbackNotExecutable(temp.path))
+        }
+    }
+
     func testInvalidJSONIsReported() throws {
         let temp = try temporaryDirectory()
         let helper = try writeHelper(in: temp, body: "echo 'not json'\n")
@@ -71,6 +93,32 @@ final class AuditCLIAdapterTests: XCTestCase {
         }
     }
 
+    func testStdoutOutputOverCapFailsClosed() throws {
+        let temp = try temporaryDirectory()
+        let payload = String(repeating: "x", count: 2_048)
+        let payloadFile = temp.appendingPathComponent("too-large-stdout.txt")
+        try payload.write(to: payloadFile, atomically: true, encoding: .utf8)
+        let helper = try writeHelper(in: temp, body: "/bin/cat \(shellSingleQuoted(payloadFile.path))\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, maxOutputBytes: 128, environment: ["PATH": ""])
+
+        XCTAssertThrowsError(try adapter.runRaw(transcriptDirectory: temp)) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .outputTooLarge("stdout", limit: 128))
+        }
+    }
+
+    func testStderrOutputOverCapFailsClosed() throws {
+        let temp = try temporaryDirectory()
+        let payload = String(repeating: "x", count: 2_048)
+        let payloadFile = temp.appendingPathComponent("too-large-stderr.txt")
+        try payload.write(to: payloadFile, atomically: true, encoding: .utf8)
+        let helper = try writeHelper(in: temp, body: "/bin/cat \(shellSingleQuoted(payloadFile.path)) >&2\nexit 7\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, maxOutputBytes: 128, environment: ["PATH": ""])
+
+        XCTAssertThrowsError(try adapter.runRaw(transcriptDirectory: temp)) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .outputTooLarge("stderr", limit: 128))
+        }
+    }
+
     func testRunRawDrainsLargeStdoutWhileProcessIsRunning() throws {
         let temp = try temporaryDirectory()
         let payload = String(repeating: "x", count: 200_000)
@@ -84,6 +132,16 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertEqual(output.count, payload.count)
     }
 
+    func testTemporaryOutputDirectoryIsPrivateWorkingDirectory() throws {
+        let temp = try temporaryDirectory()
+        let helper = try writeHelper(in: temp, body: "/usr/bin/stat -f '%Lp' .\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 2, environment: ["PATH": ""])
+
+        let mode = try adapter.runRaw(transcriptDirectory: temp).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertEqual(mode, "700")
+    }
+
     func testTimeoutDoesNotHang() throws {
         let temp = try temporaryDirectory()
         let helper = try writeHelper(in: temp, body: "/bin/sleep 2\n")
@@ -92,6 +150,18 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertThrowsError(try adapter.runRaw(transcriptDirectory: temp)) { error in
             XCTAssertEqual(error as? AuditCLIAdapterError, .timedOut(0.1))
         }
+    }
+
+    func testTimeoutDoesNotHangWhenProcessIgnoresTerminate() throws {
+        let temp = try temporaryDirectory()
+        let helper = try writeHelper(in: temp, body: "trap '' TERM\n/bin/sleep 5\n")
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: helper, timeout: 0.1, environment: ["PATH": ""])
+        let start = Date()
+
+        XCTAssertThrowsError(try adapter.runRaw(transcriptDirectory: temp)) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .timedOut(0.1))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0)
     }
 
     func testUnsupportedSchemaFromCLIIsRejected() throws {

@@ -7,6 +7,7 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
     case executableNotFound
     case fallbackNotExecutable(String)
     case timedOut(TimeInterval)
+    case outputTooLarge(String, limit: Int)
     case nonZeroExit(Int32, stderr: String)
     case invalidUTF8
     case invalidJSON(String)
@@ -20,6 +21,8 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
             return "Configured context-guard-audit fallback is not executable: \(path)"
         case .timedOut(let timeout):
             return "context-guard-audit timed out after \(timeout) seconds."
+        case .outputTooLarge(let stream, let limit):
+            return "context-guard-audit \(stream) exceeded \(limit) bytes."
         case .nonZeroExit(let code, let stderr):
             return "context-guard-audit exited with status \(code): \(stderr)"
         case .invalidUTF8:
@@ -35,17 +38,20 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
 public struct AuditCLIAdapter {
     public var fallbackExecutableURL: URL?
     public var timeout: TimeInterval
+    public var maxOutputBytes: Int
     public var environment: [String: String]
     public var fileManager: FileManager
 
     public init(
         fallbackExecutableURL: URL? = nil,
         timeout: TimeInterval = 30,
+        maxOutputBytes: Int = 1_000_000,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) {
         self.fallbackExecutableURL = fallbackExecutableURL
         self.timeout = timeout
+        self.maxOutputBytes = max(1, maxOutputBytes)
         self.environment = environment
         self.fileManager = fileManager
     }
@@ -53,16 +59,20 @@ public struct AuditCLIAdapter {
     public func resolveExecutable() throws -> URL {
         if let pathValue = environment["PATH"] {
             for entry in pathValue.split(separator: ":", omittingEmptySubsequences: true) {
-                let candidate = URL(fileURLWithPath: String(entry)).appendingPathComponent("context-guard-audit")
-                if fileManager.isExecutableFile(atPath: candidate.path) {
-                    return candidate
+                let entryPath = String(entry)
+                guard entryPath.hasPrefix("/") else {
+                    continue
+                }
+                let candidate = URL(fileURLWithPath: entryPath, isDirectory: true).appendingPathComponent("context-guard-audit")
+                if let executable = validatedExecutable(candidate) {
+                    return executable
                 }
             }
         }
 
         if let fallbackExecutableURL {
-            if fileManager.isExecutableFile(atPath: fallbackExecutableURL.path) {
-                return fallbackExecutableURL
+            if let executable = validatedExecutable(fallbackExecutableURL) {
+                return executable
             }
             throw AuditCLIAdapterError.fallbackNotExecutable(fallbackExecutableURL.path)
         }
@@ -103,12 +113,21 @@ public struct AuditCLIAdapter {
         process.executableURL = executableURL
         process.arguments = [transcriptDirectory.path, "--feasibility-json"] + (includeRecommendations ? ["--recommend"] : [])
         process.environment = environment
+        process.currentDirectoryURL = outputDirectory
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
 
         try process.run()
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
+            if try outputFileExceedsLimit(stdoutURL) {
+                terminate(process)
+                throw AuditCLIAdapterError.outputTooLarge("stdout", limit: maxOutputBytes)
+            }
+            if try outputFileExceedsLimit(stderrURL) {
+                terminate(process)
+                throw AuditCLIAdapterError.outputTooLarge("stderr", limit: maxOutputBytes)
+            }
             Thread.sleep(forTimeInterval: 0.02)
         }
 
@@ -119,8 +138,16 @@ public struct AuditCLIAdapter {
 
         try stdoutHandle.close()
         try stderrHandle.close()
-        let stdoutData = try Data(contentsOf: stdoutURL)
-        let stderrData = try Data(contentsOf: stderrURL)
+        let stdoutRead = try cappedData(contentsOf: stdoutURL)
+        let stderrRead = try cappedData(contentsOf: stderrURL)
+        if stdoutRead.truncated {
+            throw AuditCLIAdapterError.outputTooLarge("stdout", limit: maxOutputBytes)
+        }
+        if stderrRead.truncated {
+            throw AuditCLIAdapterError.outputTooLarge("stderr", limit: maxOutputBytes)
+        }
+        let stdoutData = stdoutRead.data
+        let stderrData = stderrRead.data
         guard let stdoutText = String(data: stdoutData, encoding: .utf8) else {
             throw AuditCLIAdapterError.invalidUTF8
         }
@@ -135,7 +162,12 @@ public struct AuditCLIAdapter {
     private func makeTemporaryOutputDirectory() throws -> URL {
         let directory = fileManager.temporaryDirectory
             .appendingPathComponent("contextguard-audit-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         return directory
     }
 
@@ -150,7 +182,49 @@ public struct AuditCLIAdapter {
             kill(process.processIdentifier, SIGKILL)
         }
 #endif
-        process.waitUntilExit()
+        let killDeadline = Date().addingTimeInterval(0.5)
+        while process.isRunning && Date() < killDeadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if !process.isRunning {
+            process.waitUntilExit()
+        }
+    }
+
+    private func validatedExecutable(_ url: URL) -> URL? {
+        guard url.isFileURL, url.path.hasPrefix("/") else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return nil
+        }
+        guard fileManager.isExecutableFile(atPath: url.path) else {
+            return nil
+        }
+        let resolved = url.resolvingSymlinksInPath()
+        guard fileManager.isExecutableFile(atPath: resolved.path) else {
+            return nil
+        }
+        return resolved
+    }
+
+    private func outputFileExceedsLimit(_ url: URL) throws -> Bool {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            return false
+        }
+        return size.intValue > maxOutputBytes
+    }
+
+    private func cappedData(contentsOf url: URL) throws -> (data: Data, truncated: Bool) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maxOutputBytes + 1) ?? Data()
+        if data.count > maxOutputBytes {
+            return (Data(data.prefix(maxOutputBytes)), true)
+        }
+        return (data, false)
     }
 
     private func bounded(_ value: String, limit: Int = 4_000) -> String {
