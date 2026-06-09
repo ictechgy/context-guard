@@ -1283,6 +1283,58 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(payload["cache_risk"]["summary"]["predicted_miss"], 0)
             self.assertGreaterEqual(payload["cache_risk"]["breakpoints"][0].get("age_seconds", 0), 0)
 
+    def test_cost_guard_load_ledger_reads_recent_tail_without_full_parse(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_tail_ledger_test")
+        module.MAX_LEDGER_ROWS = 3
+        module.LEDGER_TAIL_INITIAL_BYTES = 160
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            ledger = store / "ledger.jsonl"
+            ledger.write_text(
+                "\n".join(json.dumps({"kind": "observe", "seq": i}, sort_keys=True) for i in range(100)) + "\n",
+                encoding="utf-8",
+            )
+            real_loads = module.json.loads
+            parsed_lines = 0
+
+            def counting_loads(*args, **kwargs):
+                nonlocal parsed_lines
+                parsed_lines += 1
+                return real_loads(*args, **kwargs)
+
+            with mock.patch.object(module.json, "loads", side_effect=counting_loads):
+                rows = module.load_ledger(store)
+
+            self.assertEqual([row["seq"] for row in rows], [97, 98, 99])
+            self.assertLess(parsed_lines, 25)
+
+    def test_cost_guard_load_ledger_expands_tail_past_malformed_lines(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_tail_malformed_ledger_test")
+        module.MAX_LEDGER_ROWS = 4
+        module.LEDGER_TAIL_INITIAL_BYTES = 40
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            store.mkdir()
+            ledger = store / "ledger.jsonl"
+            ledger.write_bytes(
+                b"\n".join(
+                    [
+                        json.dumps({"kind": "observe", "seq": 0}).encode("utf-8"),
+                        b"{malformed json",
+                        json.dumps({"kind": "observe", "seq": 1}).encode("utf-8"),
+                        b"\xff\xfe\xfd",
+                        json.dumps({"kind": "observe", "seq": 2}).encode("utf-8"),
+                        b"{partial",
+                        json.dumps({"kind": "observe", "seq": 3}).encode("utf-8"),
+                    ]
+                )
+            )
+
+            rows = module.load_ledger(store)
+
+            self.assertEqual([row["seq"] for row in rows], [0, 1, 2, 3])
+
     def test_cost_guard_rejects_invalid_hmac_key_deterministically(self):
         request = cost_guard_request(cacheable_text="invalid key fixture prefix " + ("x" * 5000))
         valid_key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")

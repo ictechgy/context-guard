@@ -48,6 +48,7 @@ DEFAULT_USD_TO_KRW = 1350.0
 DEFAULT_SAFETY_FACTOR = 1.25
 DEFAULT_LARGE_SECTION_BYTES = 64_000
 MAX_LEDGER_ROWS = 20_000
+LEDGER_TAIL_INITIAL_BYTES = 64 * 1024
 TTL_SECONDS = {"5m": 5 * 60, "1h": 60 * 60}
 ANTHROPIC_DOCS_URL = "https://docs.anthropic.com/en/build-with-claude/prompt-caching"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -663,7 +664,7 @@ def ensure_hmac_key_private_mode(key_path: Path, *, label: str = "local HMAC key
             fail(f"could not verify {label} privacy: expected mode 0600")
 
 
-def open_private_regular_file_for_read(path: Path, *, label: str):
+def open_private_regular_fd_for_read(path: Path, *, label: str) -> int:
     path = normalize_allowed_first_absolute_symlink(path)
     leaf_name = _private_leaf_name(path, label=label)
     try:
@@ -686,9 +687,9 @@ def open_private_regular_file_for_read(path: Path, *, label: str):
         st = os.fstat(fd)
         if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
             fail(f"could not verify {label} privacy: expected mode 0600")
-        handle = os.fdopen(fd, "r", encoding="utf-8")
+        owned_fd = fd
         fd = -1
-        return handle
+        return owned_fd
     except CostGuardError:
         raise
     except OSError as exc:
@@ -702,6 +703,20 @@ def open_private_regular_file_for_read(path: Path, *, label: str):
         if parent_fd >= 0:
             try:
                 os.close(parent_fd)
+            except OSError:
+                pass
+
+
+def open_private_regular_file_for_read(path: Path, *, label: str):
+    fd = open_private_regular_fd_for_read(path, label=label)
+    try:
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        return handle
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
             except OSError:
                 pass
 
@@ -1059,6 +1074,59 @@ def ledger_path(store_dir: Path) -> Path:
     return store_dir / LEDGER_NAME
 
 
+def parse_ledger_line(raw_line: bytes) -> dict[str, Any] | None:
+    try:
+        line = raw_line.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    if not line:
+        return None
+    try:
+        row = json.loads(line, parse_constant=reject_json_constant)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(row, dict):
+        return row
+    return None
+
+
+def parse_ledger_lines(raw_lines: list[bytes]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_line in raw_lines:
+        row = parse_ledger_line(raw_line)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def tail_recent_ledger_rows(handle, *, initial_bytes: int, max_rows: int) -> list[dict[str, Any]]:
+    if max_rows <= 0:
+        return []
+    handle.seek(0, os.SEEK_END)
+    size = handle.tell()
+    if size <= 0:
+        return []
+    window = max(1, int(initial_bytes))
+    while True:
+        start = max(0, size - window)
+        handle.seek(start)
+        data = handle.read(size - start)
+        if start > 0:
+            newline_at = data.find(b"\n")
+            if newline_at < 0:
+                candidate_lines: list[bytes] = []
+            else:
+                candidate_lines = data[newline_at + 1 :].split(b"\n")
+        else:
+            candidate_lines = data.split(b"\n")
+        rows = parse_ledger_lines(candidate_lines)
+        if start == 0:
+            return rows[-max_rows:]
+        if len(rows) >= max_rows:
+            return rows[-max_rows:]
+        window = min(size, window * 2)
+
+
 def open_private_regular_file_for_append(path: Path, *, label: str) -> int:
     path = normalize_allowed_first_absolute_symlink(path)
     leaf_name = _private_leaf_name(path, label=label)
@@ -1113,17 +1181,17 @@ def load_ledger(store_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
-    with open_private_regular_file_for_read(path, label="local HMAC ledger file") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
+    fd = open_private_regular_fd_for_read(path, label="local HMAC ledger file")
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            rows = tail_recent_ledger_rows(fh, initial_bytes=LEDGER_TAIL_INITIAL_BYTES, max_rows=MAX_LEDGER_ROWS)
+    finally:
+        if fd >= 0:
             try:
-                row = json.loads(line, parse_constant=reject_json_constant)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
+                os.close(fd)
+            except OSError:
+                pass
     return rows[-MAX_LEDGER_ROWS:]
 
 
