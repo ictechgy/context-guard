@@ -790,14 +790,15 @@ def check_python_compiles() -> None:
 def run_tests() -> None:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    proc = subprocess.run(
-        [sys.executable, str(ROOT / "tests" / "test_context_guard_kit.py")],
-        cwd=ROOT,
-        text=True,
-        env=env,
-    )
-    if proc.returncode != 0:
-        fail(f"test suite failed with exit code {proc.returncode}")
+    for test_path in (ROOT / "tests" / "test_context_guard_kit.py", ROOT / "tests" / "test_workflows.py"):
+        proc = subprocess.run(
+            [sys.executable, str(test_path)],
+            cwd=ROOT,
+            text=True,
+            env=env,
+        )
+        if proc.returncode != 0:
+            fail(f"test suite {safe_path_label(test_path)} failed with exit code {proc.returncode}")
 
 
 def main() -> int:
