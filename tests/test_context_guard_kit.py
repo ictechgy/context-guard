@@ -2569,6 +2569,121 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(enforced_payload["enforcement"], "enforced")
                     self.assertNotIn("Traceback", enforced.stderr)
 
+    def test_cost_guard_json_file_inputs_reject_symlink_targets_and_parents(self):
+        def write_target(target: str, path: Path) -> None:
+            if target == "request":
+                data = cost_guard_request(cacheable_text="symlink input hardening prefix " + ("x" * 800))
+            elif target == "usage":
+                data = {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 1}}
+            elif target == "manifest":
+                data = {"sections": [{"id": "stable", "ttl": "1h", "bytes": 10}]}
+            elif target == "pricing":
+                data = cost_guard_pricing()
+            else:  # pragma: no cover - defensive test helper guard.
+                raise AssertionError(target)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+        def run_target(script: Path, target: str, path: Path, tmp: Path) -> subprocess.CompletedProcess[str]:
+            if target == "request":
+                return run_cost_guard(script, ["preflight", "--request", str(path), "--store-dir", str(tmp / "ledger"), "--json"])
+            if target == "usage":
+                return run_cost_guard(script, ["observe", "--usage", str(path), "--json"])
+            if target == "manifest":
+                return run_cost_guard(script, ["compile", "--manifest", str(path), "--json"])
+            if target == "pricing":
+                return run_cost_guard(
+                    script,
+                    ["preflight", "--pricing-profile", str(path), "--store-dir", str(tmp / "ledger"), "--json"],
+                    {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            raise AssertionError(target)  # pragma: no cover
+
+        for script in COST_GUARD_SCRIPTS:
+            for target in ("request", "usage", "manifest", "pricing"):
+                with self.subTest(script=script, target=target, shape="final-symlink"):
+                    with tempfile.TemporaryDirectory() as tmp_raw:
+                        tmp = Path(tmp_raw)
+                        real = tmp / "real.json"
+                        write_target(target, real)
+                        link = tmp / "link.json"
+                        try:
+                            link.symlink_to(real)
+                        except OSError as exc:
+                            self.skipTest(f"symlink creation unavailable: {exc}")
+                        proc = run_target(script, target, link, tmp)
+                        self.assertEqual(proc.returncode, 2)
+                        combined = proc.stdout + proc.stderr
+                        self.assertIn("must not traverse symlinks", combined)
+                        self.assertNotIn("Traceback", combined)
+
+                with self.subTest(script=script, target=target, shape="parent-symlink"):
+                    with tempfile.TemporaryDirectory() as tmp_raw:
+                        tmp = Path(tmp_raw)
+                        real_dir = tmp / "real"
+                        real_dir.mkdir()
+                        real = real_dir / "input.json"
+                        write_target(target, real)
+                        link_dir = tmp / "link-dir"
+                        try:
+                            link_dir.symlink_to(real_dir, target_is_directory=True)
+                        except OSError as exc:
+                            self.skipTest(f"symlink creation unavailable: {exc}")
+                        proc = run_target(script, target, link_dir / "input.json", tmp)
+                        self.assertEqual(proc.returncode, 2)
+                        combined = proc.stdout + proc.stderr
+                        self.assertIn("must not traverse symlinks", combined)
+                        self.assertNotIn("Traceback", combined)
+
+    def test_cost_guard_json_file_inputs_are_bounded_and_accept_normal_files(self):
+        regular_inputs: dict[str, Any] = {
+            "request": cost_guard_request(cacheable_text="regular file hardening prefix " + ("x" * 800)),
+            "usage": {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 1}},
+            "manifest": {"sections": [{"id": "stable", "ttl": "1h", "bytes": 10}]},
+            "pricing": cost_guard_pricing(),
+        }
+
+        def run_regular(script: Path, target: str, path: Path, tmp: Path, extra: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+            extra = extra or []
+            if target == "request":
+                return run_cost_guard(script, ["preflight", "--request", str(path), "--store-dir", str(tmp / "ledger"), "--json", *extra])
+            if target == "usage":
+                return run_cost_guard(script, ["observe", "--usage", str(path), "--json", *extra])
+            if target == "manifest":
+                return run_cost_guard(script, ["compile", "--manifest", str(path), "--json", *extra])
+            if target == "pricing":
+                return run_cost_guard(
+                    script,
+                    ["preflight", "--pricing-profile", str(path), "--store-dir", str(tmp / "ledger"), "--json", *extra],
+                    {"model": "x"},
+                )
+            raise AssertionError(target)  # pragma: no cover
+
+        for script in COST_GUARD_SCRIPTS:
+            for target, data in regular_inputs.items():
+                with self.subTest(script=script, target=target, shape="regular-0644"):
+                    with tempfile.TemporaryDirectory() as tmp_raw:
+                        tmp = Path(tmp_raw)
+                        path = tmp / f"{target}.json"
+                        path.write_text(json.dumps(data), encoding="utf-8")
+                        os.chmod(path, 0o644)
+                        proc = run_regular(script, target, path, tmp)
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+                        self.assertNotIn("Traceback", proc.stderr)
+
+                with self.subTest(script=script, target=target, shape="oversized"):
+                    with tempfile.TemporaryDirectory() as tmp_raw:
+                        tmp = Path(tmp_raw)
+                        path = tmp / f"{target}-large.json"
+                        path.write_text(json.dumps({"large": "x" * 200}), encoding="utf-8")
+                        proc = run_regular(script, target, path, tmp, ["--max-bytes", "64"])
+                        self.assertEqual(proc.returncode, 2)
+                        combined = proc.stdout + proc.stderr
+                        if target == "pricing":
+                            self.assertIn("pricing profile exceeded max bytes", combined)
+                        else:
+                            self.assertIn("JSON input exceeded max bytes", combined)
+                        self.assertNotIn("Traceback", combined)
+
     def test_cost_guard_privacy_omits_raw_prompt_secret_path_and_hmac_key(self):
         sentinel = "UNIQUE_RAW_PROMPT_SENTINEL_9c7b1"
         secret = "sk-ant-unit-test-secret-abcdefghijklmnopqrstuvwxyz"
@@ -6366,6 +6481,42 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(data["query"]["returned_lines"], 2)
                     self.assertEqual(data["content"], "TOKEN=[REDACTED]\nthree\n")
                     self.assertNotIn(secret, proc.stdout)
+
+    def test_context_pack_caches_sanitizer_factory_not_instances(self):
+        sanitizer_body = (
+            "class LineSanitizer:\n"
+            "    instances = 0\n"
+            "    def __init__(self, *, show_paths=False):\n"
+            "        type(self).instances += 1\n"
+            "        self.show_paths = show_paths\n"
+            "        self.redactions = 0\n"
+            "    def sanitize(self, raw_line):\n"
+            "        if 'SECRET_VALUE' in raw_line:\n"
+            "            self.redactions += 1\n"
+            "            return raw_line.replace('SECRET_VALUE', f'[REDACTED:{self.redactions}]'), True\n"
+            "        if 'STATE_PROBE' in raw_line:\n"
+            "            return f'state={self.redactions}\\n', False\n"
+            "        return raw_line, False\n"
+        )
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    pack_copy = sandbox / "context_pack.py"
+                    shutil.copy2(script, pack_copy)
+                    (sandbox / "sanitize_output.py").write_text(sanitizer_body, encoding="utf-8")
+                    module = load_python_script_module(pack_copy, f"context_pack_sanitizer_cache_{index}")
+
+                    first, first_redactions = module.sanitize_text("SECRET_VALUE\nSTATE_PROBE\n")
+                    second, second_redactions = module.sanitize_text("SECRET_VALUE\nSTATE_PROBE\n")
+
+                    self.assertEqual(first_redactions, 1)
+                    self.assertEqual(second_redactions, 1)
+                    self.assertIn("[REDACTED:1]", first)
+                    self.assertIn("[REDACTED:1]", second)
+                    self.assertIn("state=1", first)
+                    self.assertIn("state=1", second)
+                    self.assertEqual(module._LINE_SANITIZER_FACTORY_CACHE.instances, 2)
 
     def test_context_pack_redacts_before_pack_and_private_receipt(self):
         secret = "sk-" + ("C" * 32)

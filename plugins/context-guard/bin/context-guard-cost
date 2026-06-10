@@ -148,25 +148,55 @@ def token_proxy_obj(data: Any) -> int:
     return token_proxy_text(json_bytes(data))
 
 
+def read_bounded_regular_path(path: str | Path, *, max_bytes: int, label: str) -> tuple[str, bool]:
+    if max_bytes < 1 or max_bytes > MAX_MAX_BYTES:
+        fail(f"max bytes must be between 1 and {MAX_MAX_BYTES}")
+    p = reject_symlink_components(Path(path), label=label)
+    leaf_name = _private_leaf_name(p, label=label)
+    parent_fd = -1
+    fd = -1
+    try:
+        parent_fd = open_private_directory(p.parent, label=f"{label} parent")
+        fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(label=label), dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fail(f"{label} must be a regular file")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    except CostGuardError:
+        raise
+    except OSError as exc:
+        fail(f"could not read {label}: {os_error_detail(exc)}")
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+    truncated = len(raw) > max_bytes
+    if truncated:
+        raw = raw[:max_bytes]
+    return raw.decode("utf-8", errors="replace"), truncated
+
+
 def read_text_path(path: str, *, max_bytes: int = DEFAULT_MAX_BYTES) -> tuple[str, bool]:
     if max_bytes < 1 or max_bytes > MAX_MAX_BYTES:
         fail(f"max bytes must be between 1 and {MAX_MAX_BYTES}")
     if path == "-":
         raw = sys.stdin.buffer.read(max_bytes + 1)
     else:
-        p = Path(path)
-        try:
-            st = p.stat()
-        except OSError as exc:
-            fail(f"could not read input file: {exc}")
-        if not stat.S_ISREG(st.st_mode):
-            fail("input path must be a regular file")
-        if st.st_size > max_bytes + 1:
-            # Read only the bounded prefix so large requests cannot exhaust memory.
-            with p.open("rb") as fh:
-                raw = fh.read(max_bytes + 1)
-        else:
-            raw = p.read_bytes()
+        return read_bounded_regular_path(path, max_bytes=max_bytes, label="input file")
     truncated = len(raw) > max_bytes
     if truncated:
         raw = raw[:max_bytes]
@@ -494,20 +524,20 @@ def _base_open_flags() -> int:
     return flags
 
 
-def _no_follow_flag() -> int:
+def _no_follow_flag(*, label: str = "private local cost storage") -> int:
     if not NO_FOLLOW_SUPPORTED:
-        fail("private local cost storage requires O_NOFOLLOW support")
+        fail(f"{label} requires O_NOFOLLOW support")
     return os.O_NOFOLLOW
 
 
-def _directory_open_flags(*, follow_final: bool = False) -> int:
+def _directory_open_flags(*, follow_final: bool = False, label: str = "private local cost storage") -> int:
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
     if not follow_final:
-        flags |= _no_follow_flag()
+        flags |= _no_follow_flag(label=label)
     return flags
 
 
@@ -578,12 +608,12 @@ def open_private_directory(path: Path, *, label: str) -> int:
     if not dir_fd_open_supported():
         fail(f"{label} requires dir_fd support for symlink-safe private storage")
     path = reject_symlink_components(path, label=label)
-    flags = _directory_open_flags()
+    flags = _directory_open_flags(label=label)
     if path.is_absolute():
         anchor = path.anchor or os.sep
         parts = path.parts[1:]
         try:
-            current_fd = os.open(anchor, _directory_open_flags(follow_final=True))
+            current_fd = os.open(anchor, _directory_open_flags(follow_final=True, label=label))
         except OSError as exc:
             fail(f"could not inspect {label}: {os_error_detail(exc)}")
     else:
@@ -676,7 +706,7 @@ def open_private_regular_fd_for_read(path: Path, *, label: str) -> int:
     fd = -1
     try:
         parent_fd = open_private_directory(path.parent, label=f"{label} parent")
-        fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(), dir_fd=parent_fd)
+        fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(label=label), dir_fd=parent_fd)
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             fail(f"{label} must be a regular file")
@@ -1280,7 +1310,7 @@ def default_pricing_profile() -> dict[str, Any]:
     }
 
 
-def load_pricing_profile(raw: str | None) -> dict[str, Any]:
+def load_pricing_profile(raw: str | None, *, max_bytes: int = DEFAULT_MAX_BYTES) -> dict[str, Any]:
     profile = default_pricing_profile()
     if not raw:
         return profile
@@ -1288,7 +1318,12 @@ def load_pricing_profile(raw: str | None) -> dict[str, Any]:
         if raw.lstrip().startswith("{"):
             override = json.loads(raw, parse_constant=reject_json_constant)
         else:
-            override = json.loads(Path(raw).read_text(encoding="utf-8"), parse_constant=reject_json_constant)
+            text, truncated = read_bounded_regular_path(raw, max_bytes=max_bytes, label="pricing profile")
+            if truncated:
+                fail("pricing profile exceeded max bytes")
+            override = json.loads(text, parse_constant=reject_json_constant)
+    except CostGuardError:
+        raise
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         fail(f"could not load pricing profile: {exc}")
     if not isinstance(override, dict):
@@ -1542,7 +1577,7 @@ def annotate_cache_state(
 def preflight_command(args: argparse.Namespace) -> int:
     request_raw, _truncated = load_json_input(args.request, max_bytes=args.max_bytes)
     request = require_json_object(request_raw, "request")
-    profile = load_pricing_profile(args.pricing_profile)
+    profile = load_pricing_profile(args.pricing_profile, max_bytes=args.max_bytes)
     if args.usd_to_krw is not None:
         profile["usd_to_krw"] = usd_to_krw(profile, args.usd_to_krw)
     if args.budget_usd is not None:
@@ -1809,7 +1844,7 @@ def observe_command(args: argparse.Namespace) -> int:
         usage = usage_raw
     if not isinstance(usage, dict):
         fail("usage must be a JSON object or an object containing a usage object")
-    profile = load_pricing_profile(args.pricing_profile)
+    profile = load_pricing_profile(args.pricing_profile, max_bytes=args.max_bytes)
     if args.usd_to_krw is not None:
         profile["usd_to_krw"] = usd_to_krw(profile, args.usd_to_krw)
     model = str(args.model or (usage_raw.get("model") if isinstance(usage_raw, dict) else "") or "unknown")

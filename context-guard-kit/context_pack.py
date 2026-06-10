@@ -183,7 +183,13 @@ class FallbackLineSanitizer:
         return line, bool(count)
 
 
-def load_line_sanitizer(show_paths: bool = False) -> object:
+_LINE_SANITIZER_FACTORY_CACHE: Any | None = None
+
+
+def load_line_sanitizer_factory() -> Any:
+    global _LINE_SANITIZER_FACTORY_CACHE
+    if _LINE_SANITIZER_FACTORY_CACHE is not None:
+        return _LINE_SANITIZER_FACTORY_CACHE
     script_dir = Path(__file__).resolve().parent
     for name in ("sanitize_output.py", "context-guard-sanitize-output", "claude-sanitize-output"):
         candidate = script_dir / name
@@ -196,10 +202,17 @@ def load_line_sanitizer(show_paths: bool = False) -> object:
                 raise RuntimeError("import spec unavailable")
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
-            return module.LineSanitizer(show_paths=show_paths)
+            _LINE_SANITIZER_FACTORY_CACHE = module.LineSanitizer
+            return _LINE_SANITIZER_FACTORY_CACHE
         except Exception as exc:
             raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
-    return FallbackLineSanitizer(show_paths=show_paths)
+    _LINE_SANITIZER_FACTORY_CACHE = FallbackLineSanitizer
+    return _LINE_SANITIZER_FACTORY_CACHE
+
+
+def load_line_sanitizer(show_paths: bool = False) -> object:
+    sanitizer_factory = load_line_sanitizer_factory()
+    return sanitizer_factory(show_paths=show_paths)
 
 
 def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
