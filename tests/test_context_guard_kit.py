@@ -2663,6 +2663,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 with self.subTest(script=script, target=target, shape="regular-0644"):
                     with tempfile.TemporaryDirectory() as tmp_raw:
                         tmp = Path(tmp_raw)
+                        if os.name == "posix":
+                            os.chmod(tmp, 0o755)
                         path = tmp / f"{target}.json"
                         path.write_text(json.dumps(data), encoding="utf-8")
                         os.chmod(path, 0o644)

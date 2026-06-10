@@ -156,7 +156,7 @@ def read_bounded_regular_path(path: str | Path, *, max_bytes: int, label: str) -
     parent_fd = -1
     fd = -1
     try:
-        parent_fd = open_private_directory(p.parent, label=f"{label} parent")
+        parent_fd = open_directory_no_follow(p.parent, label=f"{label} parent")
         fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(label=label), dir_fd=parent_fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             fail(f"{label} must be a regular file")
@@ -602,11 +602,11 @@ def reject_symlink_components(path: Path, *, label: str) -> Path:
     return path
 
 
-def open_private_directory(path: Path, *, label: str) -> int:
+def open_directory_no_follow(path: Path, *, label: str) -> int:
     """Open an existing directory without following symlink path components."""
 
     if not dir_fd_open_supported():
-        fail(f"{label} requires dir_fd support for symlink-safe private storage")
+        fail(f"{label} requires dir_fd support for symlink-safe directory traversal")
     path = reject_symlink_components(path, label=label)
     flags = _directory_open_flags(label=label)
     if path.is_absolute():
@@ -663,6 +663,12 @@ def open_private_directory(path: Path, *, label: str) -> int:
                 os.close(current_fd)
             except OSError:
                 pass
+
+
+def open_private_directory(path: Path, *, label: str) -> int:
+    """Open an existing private-storage directory without following symlinks."""
+
+    return open_directory_no_follow(path, label=label)
 
 
 def fsync_directory_fd(fd: int) -> None:
