@@ -766,10 +766,20 @@ def cap_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + marker, True
 
 
-def query_content(content: str, *, line_range: tuple[int, int] | None, pattern: str | None, max_lines: int) -> tuple[str, dict[str, object]]:
+def query_content(
+    content: str,
+    *,
+    line_range: tuple[int, int] | None,
+    pattern: str | None,
+    max_lines: int,
+    full: bool = False,
+) -> tuple[str, dict[str, object]]:
     lines = content.splitlines(True)
     selected: list[tuple[int, str]] = []
-    if line_range is not None:
+    if full:
+        selected = list(enumerate(lines, start=1))
+        selector = {"type": "full"}
+    elif line_range is not None:
         start, end = line_range
         selected = list(enumerate(lines[start - 1 : end], start=start))
         selector = {"type": "lines", "start": start, "end": end}
@@ -780,15 +790,18 @@ def query_content(content: str, *, line_range: tuple[int, int] | None, pattern: 
         selected = list(enumerate(lines[:max_lines], start=1))
         selector = {"type": "head", "max_lines": max_lines}
     total_matches = len(selected)
-    selected = selected[:max_lines]
+    if not full:
+        selected = selected[:max_lines]
     text = "".join(line for _idx, line in selected)
     return text, {"selector": selector, "returned_lines": len(selected), "matched_lines": total_matches, "total_lines": len(lines)}
 
 
 def get_command(args: argparse.Namespace) -> int:
     artifact_id = args.artifact_id
-    max_chars = bounded_int(args.max_chars, DEFAULT_MAX_CHARS, 1, 1_000_000)
+    full = bool(getattr(args, "full", False))
     try:
+        if full and (args.lines or args.pattern or args.max_lines is not None):
+            raise ValueError("--full cannot be combined with --lines, --pattern, or --max-lines")
         last_missing: FileNotFoundError | None = None
         for directory in artifact_read_directories(args.dir):
             try:
@@ -815,12 +828,14 @@ def get_command(args: argparse.Namespace) -> int:
         actual_sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
         if actual_sha != expected_sha:
             raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
+        default_max_chars = max(DEFAULT_MAX_CHARS, expected_bytes) if full else DEFAULT_MAX_CHARS
+        max_chars = bounded_int(args.max_chars, default_max_chars, 1, MAX_MAX_BYTES)
         line_range = parse_line_range(args.lines)
         if line_range is not None and args.max_lines is None:
             max_lines = min(line_range[1] - line_range[0] + 1, MAX_QUERY_LINES)
         else:
             max_lines = bounded_int(args.max_lines, DEFAULT_MAX_LINES, 1, MAX_QUERY_LINES)
-        selected, query = query_content(content, line_range=line_range, pattern=args.pattern, max_lines=max_lines)
+        selected, query = query_content(content, line_range=line_range, pattern=args.pattern, max_lines=max_lines, full=full)
         selected, capped = cap_text(selected, max_chars)
     except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"context-guard-artifact: {exc}", file=sys.stderr)
@@ -895,7 +910,8 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--lines", help="1-based inclusive line range, e.g. 10:40")
     get.add_argument("--pattern", help="literal substring filter")
     get.add_argument("--max-lines", type=int, default=None)
-    get.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
+    get.add_argument("--full", action="store_true", help="return full stored artifact content; cannot be combined with selectors")
+    get.add_argument("--max-chars", type=int, default=None)
     get.add_argument("--json", action="store_true", help="emit query JSON with content")
     get.set_defaults(func=get_command)
 

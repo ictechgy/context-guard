@@ -809,28 +809,46 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
-LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*```")
-LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ )")
-LEARNED_IDENTIFIER_RE = re.compile(r"\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][A-Z0-9_]{2,})\b")
+LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
+LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ |[+-]\S)")
+LEARNED_IDENTIFIER_RE = re.compile(
+    r"\b(?:"
+    r"[A-Za-z]+_[A-Za-z0-9_]*"
+    r"|[a-z]+[A-Z][A-Za-z0-9]*"
+    r"|[A-Z][a-z]+[A-Z][A-Za-z0-9]*"
+    r"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
+    r"|[A-Z][A-Z0-9_]{2,}"
+    r")\b"
+)
 LEARNED_PATH_RE = re.compile(
     r"(?x)(?:"
     r"(?<![\w.-])/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+"
     r"|"
     r"\b[A-Za-z]:\\(?:[^\\\s:\"'<>|]+\\)*[^\\\s:\"'<>|]+"
+    r"|"
+    r"\b(?:\.{1,2}/)?(?:[A-Za-z0-9._@%+=:-]+/)+[A-Za-z0-9._@%+=:-]+\b"
+    r"|"
+    r"\b[A-Za-z0-9._-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|kt|swift|json|ya?ml|toml|md|txt|log|sh|bash|zsh|sql|html|css)\b"
     r")"
 )
-LEARNED_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{32,}|sha256:[0-9a-fA-F]{32,})\b")
+LEARNED_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{32,}|sha256:[0-9a-fA-F]{32,}|[0-9a-fA-F]{7,12})\b")
 LEARNED_STACK_FRAME_RE = re.compile(
     r"(?m)^\s*(?:File\s+\"[^\"]+\",\s+line\s+\d+,\s+in\s+\S+|at\s+\S+.*\([^)]*:\d+(?::\d+)?\))"
 )
-LEARNED_JSON_KEY_RE = re.compile(r'"(?:[^"\\]|\\.)*"\s*:')
-LEARNED_QUOTED_STRING_RE = re.compile(r"""(?x)"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'""")
-LEARNED_NUMERIC_CONSTANT_RE = re.compile(r"(?<![\w.])[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?)(?![\w.])")
+LEARNED_JSON_KEY_RE = re.compile(r"""(?x)"(?:[^"\\]|\\.)*"\s*:|'(?:[^'\\]|\\.)*'\s*:""")
+LEARNED_QUOTED_STRING_RE = re.compile(
+    r'''(?x)"""(?:.|\n)*?"""|''' + r"""'''(?:.|\n)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"""
+)
+LEARNED_NUMERIC_CONSTANT_RE = re.compile(
+    r"(?<![\w.])(?:\d+(?:\.\d+){2,}|[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?))(?![\w.])"
+)
 LEARNED_PROMPT_LIKE_RE = re.compile(
     r"(?i)\b(?:ignore (?:all )?(?:previous|prior) instructions|system prompt|developer message|"
     r"you are chatgpt|act as|jailbreak|do not follow|override instructions)\b"
 )
-LEARNED_URL_RE = re.compile(r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local)(?:/|\b))")
+LEARNED_URL_RE = re.compile(
+    r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local|ai|edu|gov|mil|co|info|biz|kr|jp|uk|cn|xyz)(?:/|\b))"
+)
 LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
 
 
@@ -903,11 +921,11 @@ def valid_learned_reexpand_command(receipt_id: str | None, command: str | None) 
         argv = shlex.split(command)
     except ValueError:
         return False, "invalid_reexpand_command"
-    if len(argv) < 3:
+    if len(argv) < 4:
         return False, "invalid_reexpand_command"
-    if argv[:3] == ["context-guard-artifact", "get", receipt_id]:
+    if argv == ["context-guard-artifact", "get", receipt_id, "--full"]:
         return True, None
-    if len(argv) >= 4 and argv[:4] == ["context-guard", "artifact", "get", receipt_id]:
+    if argv == ["context-guard", "artifact", "get", receipt_id, "--full"]:
         return True, None
     return False, "invalid_reexpand_command"
 
