@@ -3913,6 +3913,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIn(module.fcntl.LOCK_EX, calls)
             self.assertIn(module.fcntl.LOCK_UN, calls)
 
+    def test_cost_guard_append_ledger_retries_transient_create_enoent(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_ledger_retry_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "ledger"
+            real_open = module.os.open
+            failures: list[str] = []
+
+            def transient_enoent(path, flags, mode=0o777, *args, **kwargs):
+                if str(path) == module.LEDGER_NAME and flags & module.os.O_CREAT and not failures:
+                    failures.append(str(path))
+                    raise OSError(errno.ENOENT, "simulated transient create race", str(path))
+                return real_open(path, flags, mode, *args, **kwargs)
+
+            entry = {"kind": "observe", "created_at_unix": 123, "fingerprints": []}
+            with mock.patch.object(module.os, "open", side_effect=transient_enoent), mock.patch.object(
+                module.time, "sleep", return_value=None
+            ):
+                module.append_ledger(store, entry)
+
+            self.assertEqual(failures, [module.LEDGER_NAME])
+            rows = [json.loads(line) for line in (store / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(rows, [entry])
+
     def test_cost_guard_append_ledger_fails_closed_without_file_locking(self):
         module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_no_flock_test")
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(module, "fcntl", None):

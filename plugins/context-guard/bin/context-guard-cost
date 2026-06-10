@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 try:
     import fcntl
 except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
@@ -49,6 +50,8 @@ DEFAULT_SAFETY_FACTOR = 1.25
 DEFAULT_LARGE_SECTION_BYTES = 64_000
 MAX_LEDGER_ROWS = 20_000
 LEDGER_TAIL_INITIAL_BYTES = 64 * 1024
+LEDGER_OPEN_RETRY_ATTEMPTS = 5
+LEDGER_OPEN_RETRY_SECONDS = 0.01
 TTL_SECONDS = {"5m": 5 * 60, "1h": 60 * 60}
 ANTHROPIC_DOCS_URL = "https://docs.anthropic.com/en/build-with-claude/prompt-caching"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -1191,41 +1194,47 @@ def open_private_regular_file_for_append(path: Path, *, label: str) -> int:
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | _no_follow_flag()
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
-    parent_fd = -1
-    fd = -1
-    try:
-        parent_fd = open_private_directory(path.parent, label=f"{label} parent")
-        fd = os.open(leaf_name, flags, 0o600, dir_fd=parent_fd)
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            fail(f"{label} must be a regular file")
-        try:
-            os.fchmod(fd, 0o600)
-        except (AttributeError, OSError):
-            pass
-        st = os.fstat(fd)
-        if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
-            fail(f"could not verify {label} privacy: expected mode 0600")
-        owned_fd = fd
+    for attempt in range(LEDGER_OPEN_RETRY_ATTEMPTS):
+        parent_fd = -1
         fd = -1
-        return owned_fd
-    except CostGuardError:
-        raise
-    except OSError as exc:
-        fail(f"could not open {label}: {os_error_detail(exc)}")
-    finally:
-        if fd >= 0:
-            # Ownership transfers to the caller only on the successful return
-            # above. On errors, close before surfacing a deterministic message.
+        try:
+            parent_fd = open_private_directory(path.parent, label=f"{label} parent")
+            fd = os.open(leaf_name, flags, 0o600, dir_fd=parent_fd)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                fail(f"{label} must be a regular file")
             try:
-                os.close(fd)
-            except OSError:
+                os.fchmod(fd, 0o600)
+            except (AttributeError, OSError):
                 pass
-        if parent_fd >= 0:
-            try:
-                os.close(parent_fd)
-            except OSError:
-                pass
+            st = os.fstat(fd)
+            if os.name == "posix" and stat.S_IMODE(st.st_mode) != 0o600:
+                fail(f"could not verify {label} privacy: expected mode 0600")
+            owned_fd = fd
+            fd = -1
+            return owned_fd
+        except CostGuardError:
+            raise
+        except OSError as exc:
+            if exc.errno == errno.ENOENT and attempt + 1 < LEDGER_OPEN_RETRY_ATTEMPTS:
+                time.sleep(LEDGER_OPEN_RETRY_SECONDS)
+                continue
+            fail(f"could not open {label}: {os_error_detail(exc)}")
+        finally:
+            if fd >= 0:
+                # Ownership transfers to the caller only on the successful
+                # return above. On errors, close before surfacing a
+                # deterministic message.
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if parent_fd >= 0:
+                try:
+                    os.close(parent_fd)
+                except OSError:
+                    pass
+    fail(f"could not open {label}: exhausted retry attempts")
 
 
 def load_ledger(store_dir: Path) -> list[dict[str, Any]]:
