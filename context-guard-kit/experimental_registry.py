@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import re
 import shlex
 from pathlib import Path
@@ -25,6 +26,18 @@ DEFAULT_CONFIG = Path(".context-guard") / "experiments.json"
 MAX_CONTEXT_DIFF_INPUT_BYTES = 256_000
 MAX_VISUAL_OCR_TEXT_BYTES = 64_000
 MAX_LEARNED_COMPRESSION_INPUT_BYTES = 128_000
+MAX_SELF_HOSTED_METRICS_INPUT_BYTES = 64_000
+SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
+SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
+SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
+BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
+MAX_SELF_HOSTED_LABEL_CHARS = 120
+MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
+MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
+MAX_SELF_HOSTED_ENERGY_WH = 1_000_000
+MAX_SELF_HOSTED_LOCAL_COST_USD = 1_000_000
+MAX_SELF_HOSTED_TOKENS_PER_SECOND = 10_000_000
+TOKEN_PROXY_BYTES_PER_TOKEN = 4
 
 
 @dataclass(frozen=True)
@@ -178,14 +191,34 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment(
         id="self-hosted-metrics-ledger",
         name="Self-hosted metrics ledger",
-        summary="Future ledger-compatible recording for local latency, memory, quality, energy, and shifted costs.",
+        summary="Dry-run checker for self-hosted/local metrics ledger sidecars kept separate from hosted API claims.",
         stability="experimental",
         default_enabled=False,
         risk_level="low",
         claim_boundary="Self-hosted memory/latency metrics must stay separate from hosted API token/cost claims.",
         gate_requirements=("explicit opt-in", "separate ledger fields", "shifted-cost accounting"),
-        runtime_status="advisory-planned",
-        evidence_contract="Future ledger evidence only; self-hosted metrics remain separate from hosted API token/cost savings.",
+        runtime_status="available-dry-run",
+        commands=("context-guard experiments plan self-hosted-metrics-ledger",),
+        opt_in_flags=(
+            "plan self-hosted-metrics-ledger",
+            "--input",
+            "--latency-ms",
+            "--peak-memory-mb",
+            "--quality-score",
+            "--energy-wh",
+            "--local-cost-usd",
+            "--tokens-per-second",
+            "--model-server",
+            "--optimization",
+        ),
+        config_effect=(
+            "Registry enablement records project-local intent only; self-hosted metrics planning remains a dry-run "
+            "ledger-preview surface and does not write ledgers or alter benchmark/report behavior."
+        ),
+        evidence_contract=(
+            "Real evidence belongs in context-guard-bench JSONL ledger sidecars; self-hosted metrics remain separate "
+            "from hosted API token/cost savings."
+        ),
     ),
     Experiment(
         id="local-proxy",
@@ -809,6 +842,322 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
+SECRET_LABEL_RE = re.compile(
+    r"(?i)(sk-(?:ant-|proj-)?[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{12,}|xox[baprs]-[A-Za-z0-9-]{10,})"
+)
+
+
+def sanitize_self_hosted_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = SECRET_LABEL_RE.sub("[REDACTED]", value).strip()
+    if not text:
+        return None
+    if len(text) > MAX_SELF_HOSTED_LABEL_CHARS:
+        text = text[: MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
+    return text
+
+
+def normalize_self_hosted_metric(value: Any, *, maximum: float) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or number > maximum:
+        return None
+    return number
+
+
+SELF_HOSTED_METRIC_LIMITS: dict[str, float] = {
+    "latency_ms": MAX_SELF_HOSTED_LATENCY_MS,
+    "peak_memory_mb": MAX_SELF_HOSTED_MEMORY_MB,
+    "quality_score": 1.0,
+    "energy_wh": MAX_SELF_HOSTED_ENERGY_WH,
+    "local_cost_usd": MAX_SELF_HOSTED_LOCAL_COST_USD,
+    "tokens_per_second": MAX_SELF_HOSTED_TOKENS_PER_SECOND,
+}
+SELF_HOSTED_LABEL_KEYS = ("model_server", "optimization", "quality_metric", "hardware", "runtime", "dataset")
+
+
+def normalize_self_hosted_metrics(raw: Any, *, source: str) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+    invalid_keys: list[str] = []
+    ignored_keys: list[str] = []
+    if not isinstance(raw, dict):
+        return None, ["self_hosted_metrics_not_object"], ignored_keys
+    metrics: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    availability = {key: False for key in SELF_HOSTED_METRIC_LIMITS}
+    for key, value in raw.items():
+        if key in SELF_HOSTED_METRIC_LIMITS:
+            metric = normalize_self_hosted_metric(value, maximum=SELF_HOSTED_METRIC_LIMITS[key])
+            if metric is None:
+                invalid_keys.append(key)
+            else:
+                metrics[key] = metric
+                availability[key] = True
+        elif key in SELF_HOSTED_LABEL_KEYS:
+            label = sanitize_self_hosted_label(value)
+            if label is not None:
+                labels[key] = label
+            elif value is not None:
+                invalid_keys.append(key)
+        else:
+            ignored_keys.append(str(key))
+    if not metrics:
+        return None, invalid_keys, ignored_keys
+    return {
+        "schema_version": SELF_HOSTED_METRICS_SCHEMA_VERSION,
+        "source": source,
+        "metrics": metrics,
+        "labels": labels,
+        "measurement_availability": availability,
+        "claim_boundary": {
+            "id": SELF_HOSTED_METRICS_CLAIM_BOUNDARY,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+            "requires_provider_measured_matched_tasks_for_hosted_claims": True,
+            "reason": (
+                "Self-hosted local/model-server latency, memory, quality, energy, and local cost metrics "
+                "are not hosted API token or cost telemetry."
+            ),
+        },
+    }, invalid_keys, ignored_keys
+
+
+def cli_self_hosted_metrics(args: argparse.Namespace) -> dict[str, Any]:
+    raw: dict[str, Any] = {}
+    for arg_name, metric_name in (
+        ("latency_ms", "latency_ms"),
+        ("peak_memory_mb", "peak_memory_mb"),
+        ("quality_score", "quality_score"),
+        ("energy_wh", "energy_wh"),
+        ("local_cost_usd", "local_cost_usd"),
+        ("tokens_per_second", "tokens_per_second"),
+    ):
+        value = getattr(args, arg_name)
+        if value is not None:
+            raw[metric_name] = value
+    for arg_name in SELF_HOSTED_LABEL_KEYS:
+        value = getattr(args, arg_name)
+        if value is not None:
+            raw[arg_name] = value
+    return raw
+
+
+def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
+    source_label = args.source_label
+    if args.input:
+        path = Path(args.input)
+        source_label = source_label or str(path)
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
+        except OSError as exc:
+            raise RegistryError(f"could not read self-hosted metrics input: {path}: {exc}") from exc
+    else:
+        source_label = source_label or "stdin"
+        raw = sys.stdin.buffer.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
+    if len(raw) > MAX_SELF_HOSTED_METRICS_INPUT_BYTES:
+        return None, {
+            "source_label": source_label,
+            "bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+            "sha256": hashlib.sha256(raw[:MAX_SELF_HOSTED_METRICS_INPUT_BYTES]).hexdigest(),
+            "truncated": True,
+            "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+            "envelope_source": None,
+            "invalid_metric_keys": [],
+            "ignored_keys": [],
+        }
+    if not raw.strip():
+        return None, {
+            "source_label": source_label,
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "truncated": False,
+            "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+            "envelope_source": None,
+            "invalid_metric_keys": [],
+            "ignored_keys": [],
+        }
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RegistryError(f"could not parse self-hosted metrics JSON: {exc.msg}") from exc
+    return payload, {
+        "source_label": source_label,
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "truncated": False,
+        "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+        "envelope_source": None,
+        "invalid_metric_keys": [],
+        "ignored_keys": [],
+    }
+
+
+def select_self_hosted_envelope(payload: Any) -> tuple[Any, str | None, list[str]]:
+    if not isinstance(payload, dict):
+        return None, None, ["input_not_object"]
+    ignored: list[str] = []
+    if SELF_HOSTED_METRICS_KEY in payload:
+        return payload.get(SELF_HOSTED_METRICS_KEY), f"explicit_provider_payload.{SELF_HOSTED_METRICS_KEY}", ignored
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict) and SELF_HOSTED_METRICS_KEY in metrics:
+        return metrics.get(SELF_HOSTED_METRICS_KEY), f"explicit_provider_payload.metrics.{SELF_HOSTED_METRICS_KEY}", ignored
+    if any(key.startswith("self_hosted_") for key in payload):
+        ignored.append("incidental_self_hosted_keys")
+    return None, None, ignored
+
+
+def self_hosted_metrics_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    cli_metrics = cli_self_hosted_metrics(args)
+    if cli_metrics:
+        raw_metrics = cli_metrics
+        source = "cli_flags"
+        ignored_envelope_keys = []
+        input_meta = {
+            "source_label": args.source_label or "cli_flags",
+            "bytes": 0,
+            "sha256": None,
+            "truncated": False,
+            "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+            "envelope_source": source,
+            "invalid_metric_keys": [],
+            "ignored_keys": [],
+        }
+    elif args.input or not sys.stdin.isatty():
+        raw_payload, input_meta = read_self_hosted_payload(args)
+        raw_metrics, source, ignored_envelope_keys = select_self_hosted_envelope(raw_payload)
+    else:
+        raw_metrics = {}
+        source = None
+        ignored_envelope_keys = []
+        input_meta = {
+            "source_label": args.source_label or "cli_flags",
+            "bytes": 0,
+            "sha256": None,
+            "truncated": False,
+            "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
+            "envelope_source": source,
+            "invalid_metric_keys": [],
+            "ignored_keys": [],
+        }
+    if input_meta["truncated"]:
+        sidecar = None
+        invalid_keys: list[str] = []
+        ignored_keys = ignored_envelope_keys
+    elif raw_metrics is None:
+        sidecar = None
+        invalid_keys = []
+        ignored_keys = ignored_envelope_keys
+    else:
+        sidecar, invalid_keys, ignored_keys = normalize_self_hosted_metrics(raw_metrics, source=source or "missing_explicit_envelope")
+    input_meta["envelope_source"] = source
+    input_meta["invalid_metric_keys"] = sorted(set(invalid_keys))
+    input_meta["ignored_keys"] = sorted(set(ignored_keys + ignored_envelope_keys))
+    blockers: list[str] = []
+    if input_meta["truncated"]:
+        blockers.append("input_truncated")
+    if source is None:
+        blockers.append("missing_explicit_self_hosted_metrics_envelope")
+    if sidecar is None:
+        blockers.append("missing_self_hosted_metrics")
+    if invalid_keys:
+        blockers.append("invalid_self_hosted_metrics")
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+    ledger_preview = None
+    if sidecar is not None:
+        ledger_preview = {
+            "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "claude_version": "dry-run",
+            "task_id": "self-hosted-metrics-dry-run",
+            "variant": "self-hosted-metrics-ledger",
+            "transform_id": "self-hosted-metrics-ledger",
+            "success": None,
+            "primary_tokens_measured": False,
+            "primary_tokens": 0,
+            "primary_cost_measured": False,
+            "primary_cost_usd": 0.0,
+            "provider_cached_tokens": None,
+            "provider_cached_tokens_measured": False,
+            "wall_time_seconds": 0.0,
+            "external_tokens_measured": False,
+            "external_tokens": 0,
+            "external_cost_measured": False,
+            "external_cost_usd": 0.0,
+            "total_cost_with_shift_usd": None,
+            "artifacts_used": 0,
+            "bytes_before": 0,
+            "bytes_after": 0,
+            "hook_triggers": 0,
+            "turns": 0,
+            "notes": "dry-run preview; no ledger file written",
+            "measurement_availability": {
+                "primary_tokens": False,
+                "primary_cost": False,
+                "external_tokens": False,
+                "external_cost": False,
+                "shifted_cost": False,
+                "provider_cache": False,
+                "byte_metrics": False,
+                "wall_time": False,
+                "self_hosted_metrics": True,
+            },
+            "self_hosted_metrics": sidecar,
+            "proxy_metrics": {
+                "byte_metrics_observed": False,
+                "token_proxy": "chars_div_4",
+                "bytes_per_token": TOKEN_PROXY_BYTES_PER_TOKEN,
+                "claim_boundary": "proxy_only_not_hosted_token_savings",
+            },
+        }
+    return {
+        "tool": TOOL_NAME,
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "experiment_id": "self-hosted-metrics-ledger",
+        "mode": "dry_run",
+        "status": "ready_for_ledger_review" if ready else "blocked_until_metrics",
+        "input": input_meta,
+        "policy": {
+            "default_off": True,
+            "ledger_write_performed": False,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+            "stable_runtime_behavior_changed": False,
+        },
+        "self_hosted_metrics": sidecar,
+        "ledger_preview": ledger_preview,
+        "review_plan": {
+            "readiness_blockers": blockers,
+            "next_steps": [
+                "Record real run evidence with context-guard-bench --ledger-jsonl when benchmark data exists.",
+                "Keep self-hosted local metrics out of hosted API token/cost savings claims.",
+                "Use provider-measured matched successful tasks for hosted API savings claims.",
+            ],
+        },
+        "claim_boundary": (
+            "Dry-run self-hosted metrics ledger preview only; local/model-server metrics are diagnostic sidecars "
+            "and are not hosted API token or cost savings evidence."
+        ),
+    }
+
+
+def command_plan_self_hosted_metrics_ledger(args: argparse.Namespace) -> int:
+    payload = self_hosted_metrics_plan_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard self-hosted metrics ledger preview (dry-run only)")
+        print("No ledger file was written and no hosted API token/cost savings claim is allowed from these metrics.")
+        print(f"Status: {payload['status']}")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
 LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
 LEARNED_DIFF_RE = re.compile(r"(?m)^\s*(diff --git |@@\s+-|--- |\+\+\+ |[+-].*)")
 LEARNED_IDENTIFIER_RE = re.compile(
@@ -1124,6 +1473,27 @@ def build_parser() -> argparse.ArgumentParser:
     visual_ocr.add_argument("--missed-context-note", action="append", help="Potential context outside crop/OCR text. Repeatable.")
     visual_ocr.add_argument("--json", action="store_true", help="Emit JSON output.")
     visual_ocr.set_defaults(func=command_plan_visual_crop_ocr)
+
+    self_hosted = plan_sub.add_parser(
+        "self-hosted-metrics-ledger",
+        help="Dry-run self-hosted/local metrics ledger sidecar evidence without writing a ledger.",
+    )
+    self_hosted.add_argument("--input", help="Read an explicit self_hosted_metrics JSON envelope from a file instead of stdin.")
+    self_hosted.add_argument("--source-label", help="Safe label to use for the input source in reports.")
+    self_hosted.add_argument("--latency-ms", type=float, default=None, help="Local/model-server latency in milliseconds.")
+    self_hosted.add_argument("--peak-memory-mb", type=float, default=None, help="Peak local/model-server memory in MiB/MB.")
+    self_hosted.add_argument("--quality-score", type=float, default=None, help="Quality score from 0.0 to 1.0.")
+    self_hosted.add_argument("--energy-wh", type=float, default=None, help="Diagnostic local energy use in watt-hours.")
+    self_hosted.add_argument("--local-cost-usd", type=float, default=None, help="Diagnostic local/self-hosted cost in USD.")
+    self_hosted.add_argument("--tokens-per-second", type=float, default=None, help="Diagnostic local throughput.")
+    self_hosted.add_argument("--model-server", help="Sanitized label for local model server/runtime.")
+    self_hosted.add_argument("--optimization", help="Sanitized label for the local optimization under test.")
+    self_hosted.add_argument("--quality-metric", help="Sanitized label for quality metric.")
+    self_hosted.add_argument("--hardware", help="Sanitized local hardware label.")
+    self_hosted.add_argument("--runtime", help="Sanitized local runtime label.")
+    self_hosted.add_argument("--dataset", help="Sanitized dataset label.")
+    self_hosted.add_argument("--json", action="store_true", help="Emit JSON output.")
+    self_hosted.set_defaults(func=command_plan_self_hosted_metrics_ledger)
 
     learned = plan_sub.add_parser(
         "learned-compression",

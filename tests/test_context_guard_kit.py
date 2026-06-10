@@ -750,14 +750,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("does not run learned compressors", learned["config_effect"])
                         self.assertIn("protected", learned["evidence_contract"].lower())
 
-                        for experiment_id in (
-                            "self-hosted-metrics-ledger",
-                            "local-proxy",
-                        ):
-                            future = experiments[experiment_id]
-                            self.assertIn(future["runtime_status"], {"metadata-only", "advisory-planned"})
-                            self.assertEqual(future["commands"], [])
-                            self.assertEqual(future["opt_in_flags"], [])
+                        self_hosted = experiments["self-hosted-metrics-ledger"]
+                        self.assertEqual(self_hosted["runtime_status"], "available-dry-run")
+                        self.assertIn("context-guard experiments plan self-hosted-metrics-ledger", self_hosted["commands"])
+                        self.assertIn("plan self-hosted-metrics-ledger", self_hosted["opt_in_flags"])
+                        self.assertIn("--latency-ms", self_hosted["opt_in_flags"])
+                        self.assertIn("--peak-memory-mb", self_hosted["opt_in_flags"])
+                        self.assertIn("--quality-score", self_hosted["opt_in_flags"])
+                        self.assertIn("--energy-wh", self_hosted["opt_in_flags"])
+                        self.assertIn("--local-cost-usd", self_hosted["opt_in_flags"])
+                        self.assertIn("--tokens-per-second", self_hosted["opt_in_flags"])
+                        self.assertIn("--model-server", self_hosted["opt_in_flags"])
+                        self.assertIn("dry-run", self_hosted["config_effect"])
+                        self.assertIn("does not write ledgers", self_hosted["config_effect"])
+                        self.assertIn("context-guard-bench JSONL ledger sidecars", self_hosted["evidence_contract"])
+                        self.assertIn("hosted API token/cost savings", self_hosted["evidence_contract"])
+
+                        future = experiments["local-proxy"]
+                        self.assertIn(future["runtime_status"], {"metadata-only", "advisory-planned"})
+                        self.assertEqual(future["commands"], [])
+                        self.assertEqual(future["opt_in_flags"], [])
 
     def test_existing_explicit_experiment_flags_work_without_registry_enablement(self):
         for index, script in enumerate(TRIM_SCRIPTS):
@@ -1691,6 +1703,296 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"not shipped|not ship|제공하지|shipped가 아닙니다")
                 self.assertNotIn("context-guard-learned-compression", text)
                 self.assertNotIn("learned compressor runtime is shipped", text)
+
+    def test_experimental_self_hosted_metrics_ledger_plan_json_contract_and_ready_path(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                ready = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "self-hosted-metrics-ledger",
+                        "--latency-ms",
+                        "123.5",
+                        "--peak-memory-mb",
+                        "2048",
+                        "--quality-score",
+                        "0.98",
+                        "--energy-wh",
+                        "12.5",
+                        "--local-cost-usd",
+                        "0.04",
+                        "--tokens-per-second",
+                        "42",
+                        "--model-server",
+                        "local dev sk-ant-secret-token",
+                        "--optimization",
+                        "prefix cache reuse",
+                        "--quality-metric",
+                        "golden task pass rate",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(ready.stdout)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["experiment_id"], "self-hosted-metrics-ledger")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "ready_for_ledger_review")
+                self.assertEqual(payload["input"]["envelope_source"], "cli_flags")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertFalse(payload["policy"]["ledger_write_performed"])
+                self.assertFalse(payload["policy"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(payload["policy"]["hosted_api_cost_savings_claim_allowed"])
+
+                sidecar = payload["self_hosted_metrics"]
+                self.assertEqual(sidecar["schema_version"], "contextguard.bench.self-hosted-metrics.v1")
+                self.assertEqual(sidecar["source"], "cli_flags")
+                self.assertEqual(sidecar["metrics"]["latency_ms"], 123.5)
+                self.assertEqual(sidecar["metrics"]["peak_memory_mb"], 2048.0)
+                self.assertEqual(sidecar["metrics"]["quality_score"], 0.98)
+                self.assertEqual(sidecar["metrics"]["energy_wh"], 12.5)
+                self.assertEqual(sidecar["metrics"]["local_cost_usd"], 0.04)
+                self.assertEqual(sidecar["metrics"]["tokens_per_second"], 42.0)
+                self.assertTrue(sidecar["measurement_availability"]["latency_ms"])
+                self.assertTrue(sidecar["measurement_availability"]["energy_wh"])
+                self.assertIn("[REDACTED]", sidecar["labels"]["model_server"])
+                self.assertEqual(sidecar["labels"]["optimization"], "prefix cache reuse")
+                self.assertNotIn("sk-ant", json.dumps(sidecar))
+                self.assertEqual(
+                    sidecar["claim_boundary"]["id"],
+                    "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings",
+                )
+                self.assertFalse(sidecar["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(sidecar["claim_boundary"]["hosted_api_cost_savings_claim_allowed"])
+
+                ledger_preview = payload["ledger_preview"]
+                self.assertEqual(ledger_preview["schema_version"], "contextguard.bench.run-evidence.v1")
+                self.assertEqual(ledger_preview["variant"], "self-hosted-metrics-ledger")
+                self.assertEqual(ledger_preview["self_hosted_metrics"], sidecar)
+                self.assertTrue(ledger_preview["measurement_availability"]["self_hosted_metrics"])
+                self.assertFalse(ledger_preview["measurement_availability"]["primary_tokens"])
+                self.assertFalse(ledger_preview["measurement_availability"]["primary_cost"])
+                self.assertFalse(ledger_preview["primary_tokens_measured"])
+                self.assertFalse(ledger_preview["primary_cost_measured"])
+                self.assertEqual(ledger_preview["proxy_metrics"]["bytes_per_token"], 4)
+                serialized = json.dumps(payload, sort_keys=True).lower()
+                self.assertNotIn("hosted_api_token_savings_claim_allowed\": true", serialized)
+                self.assertNotIn("hosted_api_cost_savings_claim_allowed\": true", serialized)
+
+                top_level = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input=json.dumps({
+                        "self_hosted_metrics": {
+                            "latency_ms": 1,
+                            "peak_memory_mb": 2,
+                            "quality_score": 0.5,
+                        }
+                    }),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                top_level_payload = json.loads(top_level.stdout)
+                self.assertEqual(top_level_payload["status"], "ready_for_ledger_review")
+                self.assertEqual(
+                    top_level_payload["self_hosted_metrics"]["source"],
+                    "explicit_provider_payload.self_hosted_metrics",
+                )
+
+                nested = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input=json.dumps({
+                        "metrics": {
+                            "self_hosted_metrics": {
+                                "latency_ms": 3,
+                                "peak_memory_mb": 4,
+                                "quality_score": 1.0,
+                            }
+                        }
+                    }),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                nested_payload = json.loads(nested.stdout)
+                self.assertEqual(nested_payload["status"], "ready_for_ledger_review")
+                self.assertEqual(
+                    nested_payload["self_hosted_metrics"]["source"],
+                    "explicit_provider_payload.metrics.self_hosted_metrics",
+                )
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "plan",
+                        "self-hosted-metrics-ledger",
+                        "--latency-ms",
+                        "10",
+                        "--peak-memory-mb",
+                        "512",
+                        "--quality-score",
+                        "1",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "self-hosted-metrics-ledger")
+                self.assertEqual(payload["status"], "ready_for_ledger_review")
+
+    def test_experimental_self_hosted_metrics_ledger_plan_blockers_and_read_only(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                missing = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input="",
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                missing_payload = json.loads(missing.stdout)
+                self.assertEqual(missing_payload["status"], "blocked_until_metrics")
+                self.assertIn(
+                    "missing_explicit_self_hosted_metrics_envelope",
+                    missing_payload["review_plan"]["readiness_blockers"],
+                )
+                self.assertIn("missing_self_hosted_metrics", missing_payload["review_plan"]["readiness_blockers"])
+                self.assertFalse(missing_payload["policy"]["ledger_write_performed"])
+                self.assertIsNone(missing_payload["ledger_preview"])
+
+                incidental = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input=json.dumps({"self_hosted_latency_ms": 10}),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                incidental_payload = json.loads(incidental.stdout)
+                self.assertEqual(incidental_payload["status"], "blocked_until_metrics")
+                self.assertIn("incidental_self_hosted_keys", incidental_payload["input"]["ignored_keys"])
+                self.assertIn(
+                    "missing_explicit_self_hosted_metrics_envelope",
+                    incidental_payload["review_plan"]["readiness_blockers"],
+                )
+
+                nested_message = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input=json.dumps({
+                        "message": {
+                            "content": [
+                                {"self_hosted_metrics": {"latency_ms": 123, "peak_memory_mb": 456}},
+                            ]
+                        }
+                    }),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                nested_message_payload = json.loads(nested_message.stdout)
+                self.assertEqual(nested_message_payload["status"], "blocked_until_metrics")
+                self.assertIn(
+                    "missing_explicit_self_hosted_metrics_envelope",
+                    nested_message_payload["review_plan"]["readiness_blockers"],
+                )
+
+                invalid = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "self-hosted-metrics-ledger",
+                        "--latency-ms",
+                        "nan",
+                        "--peak-memory-mb",
+                        "-1",
+                        "--quality-score",
+                        "1.1",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                invalid_payload = json.loads(invalid.stdout)
+                self.assertEqual(invalid_payload["status"], "blocked_until_metrics")
+                self.assertIn("invalid_self_hosted_metrics", invalid_payload["review_plan"]["readiness_blockers"])
+                self.assertEqual(
+                    invalid_payload["input"]["invalid_metric_keys"],
+                    ["latency_ms", "peak_memory_mb", "quality_score"],
+                )
+
+                bad_json = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input="{bad",
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(bad_json.returncode, 2)
+                self.assertIn("could not parse self-hosted metrics JSON", bad_json.stderr)
+                self.assertNotIn("Traceback", bad_json.stderr + bad_json.stdout)
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    human = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "self-hosted-metrics-ledger",
+                            "--latency-ms",
+                            "10",
+                            "--peak-memory-mb",
+                            "512",
+                            "--quality-score",
+                            "0.9",
+                        ],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("dry-run only", human.stdout)
+                    self.assertIn("No ledger file was written", human.stdout)
+                    self.assertIn("no hosted API token/cost savings claim", human.stdout)
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+
+    def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "docs" / "benchmark-workflow-examples.md",
+            ROOT / "docs" / "index.html",
+        )
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                self.assertIn("self-hosted", text)
+                self.assertIn("self-hosted-metrics-ledger", text)
+                self.assertRegex(text, r"dry-run (?:preview|planner|checker)|dry-run ledger[- ]preview")
+                self.assertRegex(
+                    text,
+                    r"does not write (?:a |the |the benchmark |benchmark )?ledger|never writes a ledger|ledger 파일을 쓰지 않습니다|preview만",
+                )
+                self.assertRegex(text, r"hosted api token/cost savings|hosted api 절감")
+                self.assertNotIn("self-hosted kv/latent runtime optimization is shipped", text)
+                self.assertNotIn("hosted api token/cost savings claim is allowed", text)
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"

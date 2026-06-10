@@ -39,6 +39,6 @@ Avoid language like:
 
 The `.example.json` fixtures intentionally use full `context-guard-bench-report-v1` shapes so tests can catch schema drift and overclaim wording.
 
-The self-hosted metrics example is a JSONL run-evidence sidecar, not a full report shape. Its fields are additive ledger evidence only: `latency_ms`, `peak_memory_mb`, and normalized `quality_score` describe local/model-server behavior and leave hosted API report calculations unchanged.
+The self-hosted metrics example is a JSONL run-evidence sidecar, not a full report shape. Its fields are additive ledger evidence only: `latency_ms`, `peak_memory_mb`, and normalized `quality_score` describe local/model-server behavior and leave hosted API report calculations unchanged. Use `context-guard experiments plan self-hosted-metrics-ledger --json ...` only as a dry-run ledger-preview checker for explicit metrics; it does not write the benchmark ledger.
 
 For task/variant starter fixtures rather than full report-shape examples, see [`experimental-benchmark-fixtures.md`](experimental-benchmark-fixtures.md). Those files are fixture-only and synthetic dry-run-only starters until users replace the placeholder prompts and success checks; they are not shipped OCR, visual-token, learned-compression, or output-transform benchmark results, and real claims still require provider-measured matched successful tasks plus failure-rate, correction, and shifted-cost guardrails.
