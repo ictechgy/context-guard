@@ -848,16 +848,16 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
 SECRET_LABEL_KEY_RE = (
     r"[A-Za-z0-9_.-]*(?:"
     r"api[-_]?key|apikey|token|secret|password|passwd|pwd|client[-_]?secret|"
-    r"credential|credentials|signature|sig|x-amz-signature|x-amz-credential|x-amz-security-token|"
-    r"awsaccesskeyid|(?:aws[-_]?)?access[-_]?key(?:[-_]?id)?|"
+    r"auth|authorization|bearer|basic|pass|credential|credentials|signature|sig|"
+    r"x[-_]?amz[-_]?[a-z0-9_.-]*|aws[a-z0-9_.-]*|(?:aws[-_]?)?access[-_]?key(?:[-_]?id)?|"
     r"private[-_]?key|privatekey|pgp[-_]?private[-_]?key|pgpprivatekey|ssh[-_]?key|sshkey"
     r")[A-Za-z0-9_.-]*"
 )
 SECRET_LABEL_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
 SECRET_LABEL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(rf"(?i)(^|[/\\\s{{,?&#;\[\(<])({SECRET_LABEL_KEY_RE}(?:[:=][^\s,}}&#;\]\)\\/]*)?)"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\bAuthorization\s*:\s*(?:Bearer|Basic|AWS|AWS4-HMAC-SHA256)\s+[^\s,}\]]+(?:\s+[A-Za-z0-9_-]+=[^\s,}\]]+)*"), "Authorization: [REDACTED]"),
+    (re.compile(r"(?i)\b(?:Bearer|Basic)\s*(?:[:=]\s*)?[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\b(?:AWS|AWS4-HMAC-SHA256)\s+[A-Za-z0-9,=:/+._~%-]+"), "[REDACTED]"),
     (re.compile(rf"(?i)([?&#;]({SECRET_LABEL_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
     (
         re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_LABEL_KEY_RE})[\"']?\s*[:=]\s*){SECRET_LABEL_VALUE_RE}"),
@@ -868,6 +868,7 @@ SECRET_LABEL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         r"\1\2[REDACTED]",
     ),
     (re.compile(r"(?i)(^|[\s\"'])((?:-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+    (re.compile(rf"(?i)(^|[/\\\s{{,?&#;\[\(<])({SECRET_LABEL_KEY_RE}(?:[:=][^\s,}}&#;\]\)\\/]*)?)"), r"\1[REDACTED]"),
     (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
@@ -889,6 +890,8 @@ def sanitize_self_hosted_text(value: Any) -> str:
     text = " ".join(text.split())
     for pattern, replacement in SECRET_LABEL_PATTERNS:
         text = pattern.sub(replacement, text)
+    text = re.sub(r"\[REDACTED\]\]+", "[REDACTED]", text)
+    text = re.sub(r"(?:\[REDACTED\]\s*){2,}", "[REDACTED]", text)
     if len(text) > MAX_SELF_HOSTED_LABEL_CHARS:
         text = text[: MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
     return text
@@ -1032,7 +1035,11 @@ def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, A
             with path.open("rb") as handle:
                 raw = handle.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
         except OSError as exc:
-            raise RegistryError(f"could not read self-hosted metrics input: {path}: {exc}") from exc
+            safe_path = sanitize_self_hosted_text(path)
+            detail = exc.strerror or exc.__class__.__name__
+            if exc.errno is not None:
+                detail = f"{detail} (errno {exc.errno})"
+            raise RegistryError(f"could not read self-hosted metrics input: {safe_path}: {detail}") from exc
     else:
         source_label = source_label or "stdin"
         raw = sys.stdin.buffer.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)

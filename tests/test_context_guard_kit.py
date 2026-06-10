@@ -1730,15 +1730,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "--model-server",
                         "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
                         "--optimization",
-                        "prefix cache reuse",
+                        "Authorization: AWS AKIAIOSFODNN7EXAMPLE:qCSF/j50+e9949",
                         "--quality-metric",
-                        "golden task pass rate",
+                        "api_key: my_precious_value_123",
                         "--hardware",
                         "AKIA1234567890ABCDEF",
                         "--runtime",
                         "api_key=runtime-secret-value",
                         "--dataset",
-                        "https://user:pass@example.test/data",
+                        "Bearer: abcdefghijklmnopqrstuvwxyz",
                         "--json",
                     ],
                     text=True,
@@ -1770,7 +1770,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(sidecar["measurement_availability"]["latency_ms"])
                 self.assertTrue(sidecar["measurement_availability"]["energy_wh"])
                 self.assertIn("[REDACTED]", sidecar["labels"]["model_server"])
-                self.assertEqual(sidecar["labels"]["optimization"], "prefix cache reuse")
+                self.assertIn("[REDACTED]", sidecar["labels"]["optimization"])
+                self.assertIn("[REDACTED]", sidecar["labels"]["quality_metric"])
                 self.assertIn("[REDACTED]", sidecar["labels"]["hardware"])
                 self.assertIn("[REDACTED]", sidecar["labels"]["runtime"])
                 self.assertIn("[REDACTED]", sidecar["labels"]["dataset"])
@@ -1780,6 +1781,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "AKIA1234567890ABCDEF",
                     "supersecret",
                     "notredactedmaybe",
+                    "my_precious_value_123",
+                    "qCSF",
                     "runtime-secret-value",
                     "user:pass",
                     "sk-ant",
@@ -1835,6 +1838,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "credential=notredactedmaybe": 98,
                             "X-Amz-Signature=abcdefghijklmnopqrstuvwxyz": 97,
                             "access_key=plain-access-key": 96,
+                            "X-Amz-Date=20260610": 95,
+                            "Authorization=Bearer abcdefghijklmnopqrstuvwxyz": 94,
+                            "Bearer=abcdefghijklmnopqrstuvwxyz": 93,
+                            "Basic=abcdefghijklmnopqrstuvwxyz": 92,
+                            "auth=myvalue": 91,
+                            "pass=myvalue": 90,
                         }
                     }),
                     text=True,
@@ -1850,8 +1859,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "notredactedmaybe",
                     "abcdefghijklmnopqrstuvwxyz",
                     "plain-access-key",
+                    "20260610",
+                    "myvalue",
                     "credential=",
                     "X-Amz-Signature",
+                    "X-Amz-Date",
+                    "Authorization",
                     "access_key",
                 ):
                     self.assertNotIn(secret_fragment, serialized_unknown_key)
@@ -1995,6 +2008,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("could not parse self-hosted metrics JSON", bad_json.stderr)
                 self.assertNotIn("Traceback", bad_json.stderr + bad_json.stdout)
 
+                missing_input = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "self-hosted-metrics-ledger",
+                        "--input",
+                        "/tmp/credential=notredactedmaybe/X-Amz-Signature=abcdefghijklmnopqrstuvwxyz/missing.json",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(missing_input.returncode, 2)
+                self.assertIn("could not read self-hosted metrics input", missing_input.stderr)
+                self.assertIn("[REDACTED]", missing_input.stderr)
+                for secret_fragment in (
+                    "credential=notredactedmaybe",
+                    "X-Amz-Signature",
+                    "abcdefghijklmnopqrstuvwxyz",
+                ):
+                    self.assertNotIn(secret_fragment, missing_input.stderr + missing_input.stdout)
+                self.assertNotIn("Traceback", missing_input.stderr + missing_input.stdout)
+
                 for bad_number in (
                     '{"self_hosted_metrics":{"latency_ms":1,"ignored":NaN}}',
                     '{"self_hosted_metrics":{"latency_ms":1,"ignored":Infinity}}',
@@ -2040,6 +2077,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 module = load_python_script_module(script, f"_experimental_registry_non_string_key_{index}")
                 _, _, ignored_keys = module.select_self_hosted_envelope({1: "x", "self_hosted_latency_ms": 10})
                 self.assertEqual(ignored_keys, ["incidental_self_hosted_keys"])
+                for raw, leaked in (
+                    ("api_key: my_precious_value_123", "my_precious_value_123"),
+                    ("api_key = my_precious_value_123", "my_precious_value_123"),
+                    ("Authorization: AWS AKIAIOSFODNN7EXAMPLE:qCSF/j50+e9949", "qCSF"),
+                    ("X-Amz-Date=20260610", "20260610"),
+                    ("Authorization=Bearer abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+                    ("Bearer: abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+                    ("Basic=abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+                    ("auth=myvalue", "myvalue"),
+                    ("pass=myvalue", "myvalue"),
+                    ("/tmp/credential=notredactedmaybe/missing.json", "notredactedmaybe"),
+                ):
+                    sanitized = module.sanitize_self_hosted_text(raw)
+                    self.assertIn("[REDACTED]", sanitized, msg=raw)
+                    self.assertNotIn(leaked, sanitized, msg=raw)
 
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
