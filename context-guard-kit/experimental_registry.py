@@ -1437,16 +1437,30 @@ def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
 
     upstream_url = sanitize_local_proxy_value(upstream_url_raw) if upstream_url_raw else None
     upstream_host = None
+    upstream_url_valid = True
+    upstream_localhost = True
     upstream_secret_like = False
     if upstream_url_raw:
         upstream_secret_like = local_proxy_secret_like(upstream_url_raw)
         try:
             parsed = urlparse(str(upstream_url_raw))
             upstream_host = parsed.hostname
-            if parsed.port is not None and target_port_raw is None:
-                target_port_raw = parsed.port
         except ValueError:
+            upstream_url_valid = False
             upstream_host = None
+        else:
+            if upstream_host:
+                upstream_localhost = is_localhost_host(upstream_host)
+            else:
+                upstream_url_valid = False
+                upstream_localhost = False
+            try:
+                upstream_port = parsed.port
+            except ValueError:
+                upstream_url_valid = False
+                upstream_port = None
+            if upstream_port is not None and target_port_raw is None:
+                target_port_raw = upstream_port
         if upstream_host and target_host_raw is None:
             target_host_raw = upstream_host
 
@@ -1490,10 +1504,14 @@ def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         blockers.append("invalid_bind_port")
     if not target_port_valid:
         blockers.append("invalid_target_port")
+    if upstream_url_raw and not upstream_url_valid:
+        blockers.append("invalid_upstream_url")
     if not bind_localhost:
         blockers.append("non_localhost_bind_host")
     if not target_localhost:
         blockers.append("non_localhost_target_host")
+    if upstream_url_raw and not upstream_localhost:
+        blockers.append("non_localhost_upstream_url")
     if api_key_provided or authorization_header_provided:
         blockers.append("api_key_material_provided")
     if persist_api_key:

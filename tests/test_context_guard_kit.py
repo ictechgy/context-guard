@@ -2167,6 +2167,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(payload["forwarding"]["future_runtime_gate_required"])
                 self.assertEqual(payload["redaction"]["secret_like_fields"], [])
 
+                loopback_upstream = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--upstream-url",
+                        "http://localhost:8787/proxy",
+                        "--runtime-gate-ack",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                loopback_payload = json.loads(loopback_upstream.stdout)
+                self.assertEqual(loopback_payload["status"], "ready_for_runtime_review")
+                self.assertEqual(loopback_payload["target"]["host"], "localhost")
+                self.assertEqual(loopback_payload["target"]["port"], 8787)
+                self.assertTrue(loopback_payload["target"]["localhost_only"])
+
                 with tempfile.TemporaryDirectory() as tmp:
                     input_path = Path(tmp) / "local-proxy.json"
                     input_path.write_text(
@@ -2271,6 +2292,47 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "my_precious_value_123",
                 ):
                     self.assertNotIn(secret_fragment, serialized)
+
+                masked_external_upstream = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--target-host",
+                        "127.0.0.1",
+                        "--upstream-url",
+                        "https://example.com/path",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                masked_payload = json.loads(masked_external_upstream.stdout)
+                self.assertEqual(masked_payload["status"], "blocked_until_local_proxy_constraints")
+                self.assertIn("non_localhost_upstream_url", masked_payload["review_plan"]["readiness_blockers"])
+                self.assertEqual(masked_payload["target"]["host"], "127.0.0.1")
+                self.assertTrue(masked_payload["target"]["localhost_only"])
+
+                malformed_external_upstream = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--upstream-url",
+                        "https://example.com:notaport/path",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                malformed_payload = json.loads(malformed_external_upstream.stdout)
+                self.assertEqual(malformed_payload["status"], "blocked_until_local_proxy_constraints")
+                self.assertIn("invalid_upstream_url", malformed_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("non_localhost_upstream_url", malformed_payload["review_plan"]["readiness_blockers"])
 
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
