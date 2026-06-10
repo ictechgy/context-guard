@@ -351,6 +351,8 @@ context-guard experiments disable output-receipt-trim --root .
 
 `--runtime-gate-ack` 예시는 advisory metadata만 만들며 forwarding을 켜지 않습니다.
 
+기본적으로 프로젝트 설정은 `.context-guard/experiments.json`에 저장됩니다. 명시적인 프로젝트 로컬 재정의가 필요할 때만 `--config <path>`를 사용하세요. 실험 메타데이터에는 risk level, gate requirement, explicit command/flag surface, claim boundary가 포함되어 provider-measured matched-task evidence 없이는 hosted API token/cost savings claim으로 쓰지 않도록 합니다. `experiments enable`은 의도만 기록하며 helper를 실행하거나 명시 flag를 대체하거나 exact receipt/re-expand evidence 없는 content replacement를 허용하지 않습니다.
+
 | Dry-run 안전성 checker/planner | 출력하는 것 | 넘지 않는 경계 |
 | --- | --- | --- |
 | `context-diff-compaction` | diff에 대한 검토용 compaction 조언. | replacement text를 emit하지 않습니다. 정확한 receipt/re-expand handle은 사람 검토나 future gated review용 메타데이터로만 기록합니다. |
