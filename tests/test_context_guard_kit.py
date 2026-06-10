@@ -2334,6 +2334,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("invalid_upstream_url", malformed_payload["review_plan"]["readiness_blockers"])
                 self.assertIn("non_localhost_upstream_url", malformed_payload["review_plan"]["readiness_blockers"])
 
+                secret_like_ports = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--bind-port",
+                        "sk-ant-secret-secret-secret",
+                        "--target-port",
+                        "Authorization=Bearer abcdefghijklmnopqrstuvwxyz",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                secret_port_payload = json.loads(secret_like_ports.stdout)
+                self.assertEqual(secret_port_payload["status"], "blocked_until_local_proxy_constraints")
+                self.assertIn("invalid_bind_port", secret_port_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("invalid_target_port", secret_port_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("secret_like_proxy_metadata", secret_port_payload["review_plan"]["readiness_blockers"])
+                secret_port_serialized = secret_like_ports.stdout + secret_like_ports.stderr
+                for secret_fragment in ("sk-ant", "abcdefghijklmnopqrstuvwxyz"):
+                    self.assertNotIn(secret_fragment, secret_port_serialized)
+
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
                     before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))

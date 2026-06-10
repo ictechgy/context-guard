@@ -1481,7 +1481,9 @@ def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     secret_like_fields: list[str] = []
     for field, raw in (
         ("bind_host", bind_host_raw),
+        ("bind_port", bind_port_raw),
         ("target_host", target_host_raw),
+        ("target_port", target_port_raw),
         ("upstream_url", upstream_url_raw),
         ("ledger_jsonl", ledger_jsonl_raw),
         ("proxy_label", proxy_label_raw),
@@ -1958,9 +1960,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     local_proxy.add_argument("--input", help="Read a local_proxy JSON envelope from a file instead of CLI flags.")
     local_proxy.add_argument("--bind-host", help="Advisory bind host; must be localhost/loopback.")
-    local_proxy.add_argument("--bind-port", type=int, default=None, help="Advisory bind port; 0 means unspecified/ephemeral.")
+    local_proxy.add_argument("--bind-port", default=None, help="Advisory bind port; 0 means unspecified/ephemeral.")
     local_proxy.add_argument("--target-host", help="Advisory target host; must be localhost/loopback.")
-    local_proxy.add_argument("--target-port", type=int, default=None, help="Advisory target port; 0 means unspecified.")
+    local_proxy.add_argument("--target-port", default=None, help="Advisory target port; 0 means unspecified.")
     local_proxy.add_argument("--upstream-url", help="Advisory upstream URL; host must be localhost/loopback.")
     local_proxy.add_argument("--ledger-jsonl", help="Advisory ledger path preview; dry-run only, not written.")
     local_proxy.add_argument("--proxy-label", help="Safe label for this local proxy plan.")
