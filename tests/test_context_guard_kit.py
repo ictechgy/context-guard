@@ -714,7 +714,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("context-guard-trim-output --digest json --artifact-receipt -- <command>", receipt_trim["commands"])
                         self.assertIn("--digest markdown|json", receipt_trim["opt_in_flags"])
                         self.assertIn("--artifact-receipt", receipt_trim["opt_in_flags"])
-                        self.assertIn("does not activate", receipt_trim["config_effect"] + " does not activate")
+                        self.assertIn("records project-local intent only", receipt_trim["config_effect"])
                         self.assertIn("exact", receipt_trim["evidence_contract"].lower())
 
                         protected = experiments["protected-zone-policy"]
