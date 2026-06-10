@@ -725,8 +725,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("--protected-policy", protected["opt_in_flags"])
                         self.assertIn("semantic", protected["evidence_contract"].lower())
 
+                        context_diff = experiments["context-diff-compaction"]
+                        self.assertEqual(context_diff["runtime_status"], "available-dry-run")
+                        self.assertIn("context-guard experiments plan context-diff-compaction", context_diff["commands"])
+                        self.assertIn("plan context-diff-compaction", context_diff["opt_in_flags"])
+
                         for experiment_id in (
-                            "context-diff-compaction",
                             "visual-crop-ocr",
                             "learned-compression",
                             "self-hosted-metrics-ledger",
@@ -782,7 +786,112 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(payload["metadata"]["protected_zone_policy"]["enabled"])
                     self.assertFalse((Path(tmp) / ".context-guard" / "experiments.json").exists())
 
+    def test_experimental_context_diff_compaction_plan_json_contract(self):
+        diff_text = "diff --git a/app.py b/app.py\n@@ -10,2 +10,2 @@ def run\n-old\n+new\n"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "plan", "context-diff-compaction", "--json"],
+                    input=diff_text,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["experiment_id"], "context-diff-compaction")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "blocked_until_exact_receipt")
+                self.assertEqual(payload["input"]["source_label"], "stdin")
+                self.assertFalse(payload["input"]["truncated"])
+                self.assertFalse(payload["transform_policy"]["automatic_compaction"])
+                self.assertFalse(payload["transform_policy"]["lossy_replacement_allowed"])
+                self.assertFalse(payload["transform_policy"]["semantic_rewrite_allowed"])
+                self.assertTrue(payload["transform_policy"]["human_review_required"])
+                self.assertFalse(payload["exact_retrieval"]["available"])
+                self.assertTrue(payload["exact_retrieval"]["required"])
+                self.assertFalse(payload["exact_retrieval"]["verified"])
+                self.assertIsNone(payload["compacted_replacement"])
+                summary = payload["review_plan"]["summary"]
+                self.assertEqual(summary["file_count"], 1)
+                self.assertEqual(summary["hunk_count"], 1)
+                self.assertEqual(summary["files"][0]["new_path"], "app.py")
+                self.assertIn("no hosted", payload["claim_boundary"].lower())
+
+    def test_experimental_context_diff_compaction_plan_ready_handle_is_unverified(self):
+        diff_text = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        "abc123receipt",
+                        "--reexpand-command",
+                        "context-guard-artifact get abc123receipt --lines 1:4",
+                        "--json",
+                    ],
+                    input=diff_text,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["status"], "ready_for_human_review")
+                self.assertTrue(payload["exact_retrieval"]["available"])
+                self.assertEqual(payload["exact_retrieval"]["artifact_id"], "abc123receipt")
+                self.assertEqual(payload["exact_retrieval"]["cli"], "context-guard-artifact get abc123receipt --lines 1:4")
+                self.assertFalse(payload["exact_retrieval"]["verified"])
+                self.assertIsNone(payload["compacted_replacement"])
+
+    def test_experimental_context_diff_compaction_plan_human_error_truncation_and_read_only(self):
+        diff_text = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    human = subprocess.run(
+                        [sys.executable, str(script), "plan", "context-diff-compaction"],
+                        input=diff_text,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("dry-run only", human.stdout)
+                    self.assertIn("No compaction was performed", human.stdout)
+                    self.assertIn("Exact receipt/re-expand command required", human.stdout)
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+
+                    missing = subprocess.run(
+                        [sys.executable, str(script), "plan", "context-diff-compaction", "--json"],
+                        input="",
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(missing.returncode, 2)
+                    self.assertIn("requires diff input", missing.stderr)
+                    self.assertNotIn("Traceback", missing.stderr + missing.stdout)
+
+                oversized = "diff --git a/a.txt b/a.txt\n" + ("+x\n" * 130000)
+                proc = subprocess.run(
+                    [sys.executable, str(script), "plan", "context-diff-compaction", "--json"],
+                    input=oversized,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertTrue(json.loads(proc.stdout)["input"]["truncated"])
+
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
+        diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
             with self.subTest(dispatcher=dispatcher):
                 proc = subprocess.run(
@@ -793,6 +902,26 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     cwd=ROOT,
                 )
                 self.assertIn("Inspect and manage default-off ContextGuard experimental feature opt-ins", proc.stdout)
+
+                plan = subprocess.run(
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "plan",
+                        "context-diff-compaction",
+                        "--json",
+                    ],
+                    input=diff_text,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                payload = json.loads(plan.stdout)
+                self.assertEqual(payload["experiment_id"], "context-diff-compaction")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertIsNone(payload["compacted_replacement"])
 
     def test_experimental_registry_release_gate_parity_surfaces(self):
         cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_experiments_test")

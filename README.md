@@ -376,11 +376,12 @@ Experimental lanes are **default off**. The registry records project-local inten
 ```bash
 context-guard experiments list
 context-guard experiments status --json
+context-guard experiments plan context-diff-compaction --json < change.diff
 context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
 ```
 
-By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. The registry can discover existing explicit-flag experiments such as `context-guard-trim-output --digest ... --artifact-receipt` and `context-guard-compress --protected-policy`, but `experiments enable` records intent only; it does not run those helpers or remove the need for their explicit flags.
+By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. The registry can discover existing explicit-flag experiments such as `context-guard-trim-output --digest ... --artifact-receipt` and `context-guard-compress --protected-policy`, and it can run dry-run advisory planners such as `context-guard experiments plan context-diff-compaction`. `experiments enable` records intent only; it does not run those helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 
 ## What is not yet shipped
 

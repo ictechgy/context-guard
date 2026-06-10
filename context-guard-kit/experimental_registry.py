@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 from typing import Any, NoReturn
@@ -19,6 +21,7 @@ from typing import Any, NoReturn
 TOOL_NAME = "context-guard-experiments"
 CONFIG_SCHEMA_VERSION = "contextguard.experiments.v1"
 DEFAULT_CONFIG = Path(".context-guard") / "experiments.json"
+MAX_CONTEXT_DIFF_INPUT_BYTES = 256_000
 
 
 @dataclass(frozen=True)
@@ -100,14 +103,23 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment(
         id="context-diff-compaction",
         name="Reviewable context-diff compaction",
-        summary="Future dry-run/advisory lane for human-reviewable compaction plans with stable exact handles.",
+        summary="Dry-run advisory lane for human-reviewable compaction plans with stable exact handles.",
         stability="experimental",
         default_enabled=False,
         risk_level="medium",
         claim_boundary="Smaller local diffs are proxy evidence only; hosted savings require provider-measured matched tasks.",
         gate_requirements=("explicit opt-in", "human-reviewable diff", "local receipt", "exact re-expand handle"),
-        runtime_status="advisory-planned",
-        evidence_contract="Future advisory/dry-run evidence only; no stable runtime command or hosted savings claim is available yet.",
+        runtime_status="available-dry-run",
+        commands=("context-guard experiments plan context-diff-compaction",),
+        opt_in_flags=("plan context-diff-compaction", "--receipt-id", "--reexpand-command"),
+        config_effect=(
+            "Registry enablement records project-local intent only; context-diff compaction remains a dry-run plan "
+            "unless a future story adds an explicit replacement command."
+        ),
+        evidence_contract=(
+            "Dry-run plans require human-reviewable hunks plus user-supplied exact receipt and re-expand handles before "
+            "any future lossy replacement can be reviewed."
+        ),
     ),
     Experiment(
         id="visual-crop-ocr",
@@ -344,6 +356,149 @@ def command_disable(args: argparse.Namespace) -> int:
     return 0
 
 
+
+DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+HUNK_RE = re.compile(r"^@@\s+-(?P<old_start>\d+)(?:,(?P<old_count>\d+))?\s+\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))?\s+@@(?P<section>.*)$")
+
+
+def read_bounded_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    source_label = args.source_label
+    if args.input:
+        path = Path(args.input)
+        source_label = source_label or str(path)
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(MAX_CONTEXT_DIFF_INPUT_BYTES + 1)
+        except OSError as exc:
+            raise RegistryError(f"could not read input: {path}: {exc}") from exc
+    else:
+        source_label = source_label or "stdin"
+        raw = sys.stdin.buffer.read(MAX_CONTEXT_DIFF_INPUT_BYTES + 1)
+    if not raw:
+        raise RegistryError("context-diff-compaction plan requires diff input on stdin or --input")
+    truncated = len(raw) > MAX_CONTEXT_DIFF_INPUT_BYTES
+    raw = raw[:MAX_CONTEXT_DIFF_INPUT_BYTES]
+    text = raw.decode("utf-8", errors="replace")
+    metadata = {
+        "source_label": source_label,
+        "bytes": len(raw),
+        "lines": len(text.splitlines()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "truncated": truncated,
+        "max_bytes": MAX_CONTEXT_DIFF_INPUT_BYTES,
+    }
+    return text, metadata
+
+
+def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    total_hunks = 0
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        match = DIFF_GIT_RE.match(line)
+        if match:
+            if len(files) >= max_files:
+                current = None
+                continue
+            current = {
+                "old_path": match.group(1),
+                "new_path": match.group(2),
+                "diff_header_line": line_number,
+                "hunks": [],
+            }
+            files.append(current)
+            continue
+        hunk = HUNK_RE.match(line)
+        if hunk:
+            total_hunks += 1
+            if current is None:
+                if len(files) >= max_files:
+                    continue
+                current = {"old_path": None, "new_path": None, "diff_header_line": None, "hunks": []}
+                files.append(current)
+            if len(current["hunks"]) < max_hunks:
+                current["hunks"].append(
+                    {
+                        "line": line_number,
+                        "old_start": int(hunk.group("old_start")),
+                        "old_count": int(hunk.group("old_count") or "1"),
+                        "new_start": int(hunk.group("new_start")),
+                        "new_count": int(hunk.group("new_count") or "1"),
+                        "section": hunk.group("section").strip()[:120],
+                    }
+                )
+    return {
+        "file_count": len(files),
+        "hunk_count": total_hunks,
+        "truncated_files": max(0, len([line for line in text.splitlines() if line.startswith("diff --git ")]) - len(files)),
+        "files": files,
+    }
+
+
+def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    text, input_meta = read_bounded_input(args)
+    summary = summarize_diff(text)
+    has_exact_handle = bool(args.receipt_id and args.reexpand_command)
+    status = "ready_for_human_review" if has_exact_handle else "blocked_until_exact_receipt"
+    return {
+        "tool": TOOL_NAME,
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "experiment_id": "context-diff-compaction",
+        "mode": "dry_run",
+        "status": status,
+        "input": input_meta,
+        "transform_policy": {
+            "automatic_compaction": False,
+            "lossy_replacement_allowed": False,
+            "semantic_rewrite_allowed": False,
+            "human_review_required": True,
+            "stable_runtime_behavior_changed": False,
+        },
+        "exact_retrieval": {
+            "required": True,
+            "available": has_exact_handle,
+            "artifact_id": args.receipt_id if args.receipt_id else None,
+            "cli": args.reexpand_command if args.reexpand_command else None,
+            "verified": False,
+            "note": "G003 records user-supplied handles for human review only; it does not verify local receipt storage.",
+        },
+        "review_plan": {
+            "summary": summary,
+            "bounded_loss_disclosure": (
+                "No compacted replacement was produced. Any future lossy replacement must keep this diff reviewable "
+                "and provide exact receipt/re-expand handles before use."
+            ),
+            "next_steps": [
+                "Store exact original evidence with context-guard-artifact or another local receipt before compacting.",
+                "Review file and hunk summaries against the original diff.",
+                "Do not claim hosted token/cost savings from this dry-run plan.",
+            ],
+        },
+        "claim_boundary": "Dry-run local planning only; no hosted API token/cost savings claim without provider-measured matched successful tasks.",
+        "compacted_replacement": None,
+    }
+
+
+def command_plan_context_diff_compaction(args: argparse.Namespace) -> int:
+    payload = context_diff_plan_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard context-diff compaction plan (dry-run only)")
+        print("No compaction was performed and no replacement text was emitted.")
+        print(f"Status: {payload['status']}")
+        print(f"Input: {payload['input']['source_label']} lines={payload['input']['lines']} sha256={payload['input']['sha256']}")
+        print(
+            f"Review summary: files={payload['review_plan']['summary']['file_count']} "
+            f"hunks={payload['review_plan']['summary']['hunk_count']}"
+        )
+        if not payload["exact_retrieval"]["available"]:
+            print("Exact receipt/re-expand command required before any lossy replacement can be reviewed.")
+        else:
+            print("Exact retrieval handle supplied for human review only; verified=false.")
+        print(payload["claim_boundary"])
+    return 0
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", help="Project root for default project-local experiment config (default: cwd).")
     parser.add_argument("--config", help="Project-local config path. Relative paths resolve under --root; absolute paths must stay inside --root.")
@@ -380,6 +535,20 @@ def build_parser() -> argparse.ArgumentParser:
     disable_parser.add_argument("experiment_id")
     add_common_args(disable_parser)
     disable_parser.set_defaults(func=command_disable)
+
+    plan_parser = sub.add_parser("plan", help="Run read-only dry-run planners for experimental lanes.")
+    plan_sub = plan_parser.add_subparsers(dest="plan_command", required=True)
+
+    context_diff = plan_sub.add_parser(
+        "context-diff-compaction",
+        help="Dry-run a reviewable context-diff compaction plan without emitting a replacement.",
+    )
+    context_diff.add_argument("--input", help="Read diff text from a file instead of stdin.")
+    context_diff.add_argument("--source-label", help="Safe label to use for the input source in reports.")
+    context_diff.add_argument("--receipt-id", help="User-supplied exact receipt/artifact id for human review readiness.")
+    context_diff.add_argument("--reexpand-command", help="User-supplied exact re-expand command for human review readiness.")
+    context_diff.add_argument("--json", action="store_true", help="Emit JSON output.")
+    context_diff.set_defaults(func=command_plan_context_diff_compaction)
 
     return parser
 
