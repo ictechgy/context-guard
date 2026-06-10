@@ -648,6 +648,55 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("unknown experiment id", proc.stderr)
                     self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
+    def test_experimental_registry_preserves_unknown_configured_ids(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "project"
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir(parents=True)
+                    config = config_dir / "experiments.json"
+                    config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.experiments.v1",
+                            "enabled": ["future-third-party-lane"],
+                        }),
+                        encoding="utf-8",
+                    )
+
+                    enabled = subprocess.run(
+                        [sys.executable, str(script), "enable", "output-receipt-trim", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    enabled_payload = json.loads(enabled.stdout)
+                    self.assertTrue(enabled_payload["changed"])
+                    self.assertEqual(enabled_payload["unknown_enabled"], ["future-third-party-lane"])
+                    self.assertEqual(
+                        json.loads(config.read_text(encoding="utf-8"))["enabled"],
+                        ["future-third-party-lane", "output-receipt-trim"],
+                    )
+
+                    repeated = subprocess.run(
+                        [sys.executable, str(script), "enable", "output-receipt-trim", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertFalse(json.loads(repeated.stdout)["changed"])
+
+                    disabled = subprocess.run(
+                        [sys.executable, str(script), "disable", "output-receipt-trim", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    disabled_payload = json.loads(disabled.stdout)
+                    self.assertTrue(disabled_payload["changed"])
+                    self.assertEqual(disabled_payload["unknown_enabled"], ["future-third-party-lane"])
+                    self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["enabled"], ["future-third-party-lane"])
+
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
             with self.subTest(dispatcher=dispatcher):

@@ -185,9 +185,12 @@ def write_config(path: Path, enabled: set[str]) -> dict[str, Any]:
     return data
 
 
+def configured_enabled_set(config: dict[str, Any]) -> set[str]:
+    return set(config.get("enabled", []))
+
+
 def enabled_set(config: dict[str, Any]) -> set[str]:
-    enabled = set(config.get("enabled", []))
-    return {item for item in enabled if item in REGISTRY}
+    return {item for item in configured_enabled_set(config) if item in REGISTRY}
 
 
 def unknown_enabled(config: dict[str, Any]) -> list[str]:
@@ -257,11 +260,12 @@ def command_status(args: argparse.Namespace) -> int:
 def command_enable(args: argparse.Namespace) -> int:
     require_known(args.experiment_id)
     root, config_path, config = load_args_context(args)
-    enabled = enabled_set(config)
+    enabled = configured_enabled_set(config)
+    changed = args.experiment_id not in enabled
     enabled.add(args.experiment_id)
     written = write_config(config_path, enabled)
     payload = registry_payload(config_path=config_path, config=written, root=root)
-    payload["changed"] = True
+    payload["changed"] = changed
     payload["experiment_id"] = args.experiment_id
     if args.json:
         emit_json(payload)
@@ -273,7 +277,7 @@ def command_enable(args: argparse.Namespace) -> int:
 def command_disable(args: argparse.Namespace) -> int:
     require_known(args.experiment_id)
     root, config_path, config = load_args_context(args)
-    enabled = enabled_set(config)
+    enabled = configured_enabled_set(config)
     changed = args.experiment_id in enabled
     enabled.discard(args.experiment_id)
     written = write_config(config_path, enabled)
