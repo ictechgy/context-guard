@@ -845,7 +845,7 @@ LEARNED_NUMERIC_CONSTANT_RE = re.compile(
     r"(?<![\w.])(?:[vV]?\d+(?:\.\d+)*|[-+]?0x[0-9A-Fa-f]+)(?![\w.])"
 )
 LEARNED_PROMPT_LIKE_RE = re.compile(
-    r"(?ix)(?:"
+    r"(?imx)(?:"
     r"\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+)?(?:above|earlier|previous|prior)\s+instructions?\b"
     r"|^\s*(?:system|developer|user|assistant)\s*:"
     r"|\b(?:system|developer|user|assistant)\s+instructions?\b"
@@ -868,12 +868,12 @@ LEARNED_CODE_LIKE_RE = re.compile(
     r"|(?:print|raise|return|yield|assert)\b(?:\s*\(|\s+\S+)"
     r"|[A-Za-z_][A-Za-z0-9_]*\s*(?:=|==|!=|<=|>=|\+=|-=|\*=|/=)\s*\S+"
     r"|.*[{};]\s*$"
-    r"|(?:ls|cp|mv|rm|sudo|curl|wget|chmod|chown|git|npm|python3?|pip|node|bash|sh|zsh|cat|grep|sed|awk|make|docker|kubectl)\s+(?:-\S+|\S+)"
+    r"|(?:ls|cp|mv|rm|sudo|curl|wget|chmod|chown|git|npm|npx|pnpm|yarn|python3?|pip|node|bash|sh|zsh|cat|grep|sed|awk|make|cargo|pytest|tox|uv|ruff|mypy|pyright|docker|kubectl)(?:\s+(?:-\S+|\S+))*"
     r"|<[/!]?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>"
     r")"
 )
-LEARNED_INLINE_CODE_RE = re.compile(r"`[^`\n]{1,200}`")
-LEARNED_NON_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]")
+LEARNED_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+LEARNED_NON_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ufffd]")
 LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
 LEARNED_ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
