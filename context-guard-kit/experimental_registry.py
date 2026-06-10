@@ -357,7 +357,7 @@ def command_disable(args: argparse.Namespace) -> int:
 
 
 
-DIFF_GIT_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+DIFF_GIT_RE = re.compile(r"^diff --git (?P<old>\S+) (?P<new>\S+)$")
 HUNK_RE = re.compile(r"^@@\s+-(?P<old_start>\d+)(?:,(?P<old_count>\d+))?\s+\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))?\s+@@(?P<section>.*)$")
 
 
@@ -390,19 +390,28 @@ def read_bounded_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     return text, metadata
 
 
+def strip_diff_prefix(path: str) -> str:
+    if path.startswith(("a/", "b/")):
+        return path[2:]
+    return path
+
+
 def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     total_hunks = 0
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    lines = text.splitlines()
+    diff_header_count = 0
+    for line_number, line in enumerate(lines, start=1):
         match = DIFF_GIT_RE.match(line)
         if match:
+            diff_header_count += 1
             if len(files) >= max_files:
                 current = None
                 continue
             current = {
-                "old_path": match.group(1),
-                "new_path": match.group(2),
+                "old_path": strip_diff_prefix(match.group("old")),
+                "new_path": strip_diff_prefix(match.group("new")),
                 "diff_header_line": line_number,
                 "hunks": [],
             }
@@ -430,7 +439,7 @@ def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> d
     return {
         "file_count": len(files),
         "hunk_count": total_hunks,
-        "truncated_files": max(0, len([line for line in text.splitlines() if line.startswith("diff --git ")]) - len(files)),
+        "truncated_files": max(0, diff_header_count - len(files)),
         "files": files,
     }
 
@@ -438,8 +447,23 @@ def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> d
 def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     text, input_meta = read_bounded_input(args)
     summary = summarize_diff(text)
-    has_exact_handle = bool(args.receipt_id and args.reexpand_command)
-    status = "ready_for_human_review" if has_exact_handle else "blocked_until_exact_receipt"
+    receipt_id = args.receipt_id.strip() if args.receipt_id else None
+    reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
+    has_exact_handle = bool(receipt_id and reexpand_command)
+    readiness_blockers: list[str] = []
+    if not has_exact_handle:
+        readiness_blockers.append("missing_exact_receipt_or_reexpand_command")
+    if input_meta["truncated"]:
+        readiness_blockers.append("input_truncated")
+    if summary["file_count"] == 0 or summary["hunk_count"] == 0:
+        readiness_blockers.append("no_reviewable_diff_hunks")
+    status = (
+        "ready_for_human_review"
+        if not readiness_blockers
+        else "blocked_until_reviewable_diff"
+        if has_exact_handle
+        else "blocked_until_exact_receipt"
+    )
     return {
         "tool": TOOL_NAME,
         "schema_version": CONFIG_SCHEMA_VERSION,
@@ -457,13 +481,14 @@ def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "exact_retrieval": {
             "required": True,
             "available": has_exact_handle,
-            "artifact_id": args.receipt_id if args.receipt_id else None,
-            "cli": args.reexpand_command if args.reexpand_command else None,
+            "artifact_id": receipt_id,
+            "cli": reexpand_command,
             "verified": False,
             "note": "G003 records user-supplied handles for human review only; it does not verify local receipt storage.",
         },
         "review_plan": {
             "summary": summary,
+            "readiness_blockers": readiness_blockers,
             "bounded_loss_disclosure": (
                 "No compacted replacement was produced. Any future lossy replacement must keep this diff reviewable "
                 "and provide exact receipt/re-expand handles before use."
@@ -496,6 +521,8 @@ def command_plan_context_diff_compaction(args: argparse.Namespace) -> int:
             print("Exact receipt/re-expand command required before any lossy replacement can be reviewed.")
         else:
             print("Exact retrieval handle supplied for human review only; verified=false.")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
 

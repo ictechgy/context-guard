@@ -813,6 +813,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(payload["exact_retrieval"]["required"])
                 self.assertFalse(payload["exact_retrieval"]["verified"])
                 self.assertIsNone(payload["compacted_replacement"])
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], ["missing_exact_receipt_or_reexpand_command"])
                 summary = payload["review_plan"]["summary"]
                 self.assertEqual(summary["file_count"], 1)
                 self.assertEqual(summary["hunk_count"], 1)
@@ -846,7 +847,79 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["exact_retrieval"]["artifact_id"], "abc123receipt")
                 self.assertEqual(payload["exact_retrieval"]["cli"], "context-guard-artifact get abc123receipt --lines 1:4")
                 self.assertFalse(payload["exact_retrieval"]["verified"])
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
                 self.assertIsNone(payload["compacted_replacement"])
+
+    def test_experimental_context_diff_compaction_plan_blocks_unreviewable_ready_state(self):
+        valid_diff = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                whitespace = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        " ",
+                        "--reexpand-command",
+                        "\t",
+                        "--json",
+                    ],
+                    input=valid_diff,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                whitespace_payload = json.loads(whitespace.stdout)
+                self.assertEqual(whitespace_payload["status"], "blocked_until_exact_receipt")
+                self.assertFalse(whitespace_payload["exact_retrieval"]["available"])
+                self.assertIn("missing_exact_receipt_or_reexpand_command", whitespace_payload["review_plan"]["readiness_blockers"])
+
+                invalid = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        "abc123receipt",
+                        "--reexpand-command",
+                        "context-guard-artifact get abc123receipt --lines 1:4",
+                        "--json",
+                    ],
+                    input="not a diff\n",
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                invalid_payload = json.loads(invalid.stdout)
+                self.assertEqual(invalid_payload["status"], "blocked_until_reviewable_diff")
+                self.assertTrue(invalid_payload["exact_retrieval"]["available"])
+                self.assertIn("no_reviewable_diff_hunks", invalid_payload["review_plan"]["readiness_blockers"])
+
+                oversized = valid_diff + ("+x\n" * 130000)
+                truncated = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        "abc123receipt",
+                        "--reexpand-command",
+                        "context-guard-artifact get abc123receipt --lines 1:4",
+                        "--json",
+                    ],
+                    input=oversized,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                truncated_payload = json.loads(truncated.stdout)
+                self.assertEqual(truncated_payload["status"], "blocked_until_reviewable_diff")
+                self.assertTrue(truncated_payload["input"]["truncated"])
+                self.assertIn("input_truncated", truncated_payload["review_plan"]["readiness_blockers"])
 
     def test_experimental_context_diff_compaction_plan_human_error_truncation_and_read_only(self):
         diff_text = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
