@@ -2081,6 +2081,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     ("api_key: my_precious_value_123", "my_precious_value_123"),
                     ("api_key = my_precious_value_123", "my_precious_value_123"),
                     ("Authorization: AWS AKIAIOSFODNN7EXAMPLE:qCSF/j50+e9949", "qCSF"),
+                    (
+                        "Authorization: AWS4-HMAC-SHA256 "
+                        "Credential=AKIA1234567890ABCDEF/19990102/us-east-1/s3/aws4_request "
+                        "SignedHeaders=host Signature=abcdef1234567890",
+                        "abcdef1234567890",
+                    ),
                     ("X-Amz-Date=20260610", "20260610"),
                     ("Authorization=Bearer abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
                     ("Bearer: abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
