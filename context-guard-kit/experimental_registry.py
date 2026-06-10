@@ -849,6 +849,14 @@ LEARNED_PROMPT_LIKE_RE = re.compile(
 LEARNED_URL_RE = re.compile(
     r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local|ai|edu|gov|mil|co|info|biz|kr|jp|uk|cn|xyz)(?:/|\b))"
 )
+LEARNED_CODE_LIKE_RE = re.compile(
+    r"(?mx)^\s*(?:"
+    r"(?:from\s+\S+\s+import\s+\S+|import\s+\S+|def\s+[A-Za-z_]\w*\s*\(|class\s+[A-Za-z_]\w*\s*(?:\(|:)|"
+    r"function\s+[A-Za-z_$][\w$]*\s*\(|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=)"
+    r"|(?:rm|sudo|curl|wget|chmod|chown|git|npm|python3?|pip|node|bash|sh|zsh|cat|grep|sed|awk|make)\s+(?:-\S+|\S+)"
+    r"|<[/!]?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>"
+    r")"
+)
 LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
 LEARNED_ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
@@ -888,7 +896,7 @@ def learned_content_type(text: str, counts: dict[str, int]) -> str:
         return "json"
     if counts["protected_diff"]:
         return "diff"
-    if counts["protected_code_fence"] or counts["protected_identifier"] >= 3:
+    if counts["protected_code_fence"] or counts["protected_code_like"] or counts["protected_identifier"] >= 3:
         return "code"
     return "prose"
 
@@ -909,6 +917,7 @@ def learned_signal_counts(text: str) -> dict[str, int]:
         "protected_quoted_string": len(LEARNED_QUOTED_STRING_RE.findall(text)),
         "prompt_like_instruction": len(LEARNED_PROMPT_LIKE_RE.findall(text)),
         "url_or_endpoint": len(LEARNED_URL_RE.findall(text)),
+        "protected_code_like": len(LEARNED_CODE_LIKE_RE.findall(text)),
         "numeric_density_high": numeric_density_high,
     }
 
