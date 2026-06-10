@@ -4,6 +4,13 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-06-11
+
+- Added default-off experimental opt-in registry surfaces for future token-reduction lanes, preserving project-local intent without enabling runtime behavior.
+- Added dry-run checker/planner gates for context-diff compaction, visual crop/OCR metadata, learned compression safety policy, self-hosted metrics ledger previews, and local-proxy advisory metadata.
+- Hardened experimental planners with deny-by-default validation, redaction, exact fallback/receipt requirements, localhost-only proxy constraints, and claim boundaries for hosted API savings.
+- Updated README, Korean README, and GitHub Pages copy to document experimental opt-ins, non-shipped runtime boundaries, and evidence/future-PR gates.
+
 ## [0.4.6] - 2026-06-10
 
 - Hardened local cost ledger/key storage against symlink traversal, unsafe permissions, and partial writes while improving recent-ledger loading performance.
