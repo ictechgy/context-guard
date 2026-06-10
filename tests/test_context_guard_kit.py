@@ -730,8 +730,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("context-guard experiments plan context-diff-compaction", context_diff["commands"])
                         self.assertIn("plan context-diff-compaction", context_diff["opt_in_flags"])
 
+                        visual_ocr = experiments["visual-crop-ocr"]
+                        self.assertEqual(visual_ocr["runtime_status"], "available-dry-run")
+                        self.assertIn("context-guard experiments plan visual-crop-ocr", visual_ocr["commands"])
+                        self.assertIn("plan visual-crop-ocr", visual_ocr["opt_in_flags"])
+                        self.assertIn("--full-evidence-receipt", visual_ocr["opt_in_flags"])
+                        self.assertIn("--ocr-text|--ocr-text-file", visual_ocr["opt_in_flags"])
+                        self.assertIn("does not run OCR", visual_ocr["config_effect"])
+                        self.assertIn("missed-context", visual_ocr["evidence_contract"].lower())
+
                         for experiment_id in (
-                            "visual-crop-ocr",
                             "learned-compression",
                             "self-hosted-metrics-ledger",
                             "local-proxy",
@@ -962,6 +970,309 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertTrue(json.loads(proc.stdout)["input"]["truncated"])
+
+    def test_experimental_visual_crop_ocr_plan_json_contract_and_readiness_matrix(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                blocked = subprocess.run(
+                    [sys.executable, str(script), "plan", "visual-crop-ocr", "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(blocked.stdout)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["experiment_id"], "visual-crop-ocr")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "blocked_until_visual_evidence")
+                self.assertEqual(
+                    payload["review_plan"]["readiness_blockers"],
+                    ["missing_full_evidence_receipt", "missing_missed_context_note", "missing_derived_evidence"],
+                )
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertIsNone(payload["external_services"]["ocr_service"])
+                self.assertIsNone(payload["external_services"]["image_service"])
+                self.assertFalse(payload["external_services"]["network"])
+                self.assertTrue(payload["guardrails"]["original_evidence_required"])
+                self.assertFalse(payload["guardrails"]["external_ocr_service_allowed"])
+                self.assertTrue(payload["guardrails"]["human_review_required"])
+                self.assertFalse(payload["guardrails"]["stable_runtime_behavior_changed"])
+                self.assertIsNone(payload["candidate_replacement"])
+                self.assertFalse(payload["derived_evidence"]["crop"]["available"])
+                self.assertFalse(payload["derived_evidence"]["ocr"]["available"])
+                self.assertGreaterEqual(len(payload["review_plan"]["next_steps"]), 3)
+
+                crop_only = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "visual-crop-ocr",
+                        "--full-evidence-receipt",
+                        "full-visual-123",
+                        "--full-evidence-label",
+                        "invoice screenshot",
+                        "--crop-label",
+                        "total cell",
+                        "--crop-bounds",
+                        "10,20,100,50",
+                        "--image-size",
+                        "300,200",
+                        "--missed-context-note",
+                        "table header outside crop",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                crop_payload = json.loads(crop_only.stdout)
+                self.assertEqual(crop_payload["status"], "ready_for_human_review")
+                self.assertEqual(crop_payload["review_plan"]["readiness_blockers"], [])
+                self.assertTrue(crop_payload["full_visual_evidence"]["available"])
+                self.assertEqual(crop_payload["full_visual_evidence"]["receipt_id"], "full-visual-123")
+                self.assertFalse(crop_payload["full_visual_evidence"]["verified"])
+                self.assertTrue(crop_payload["derived_evidence"]["crop"]["available"])
+                self.assertFalse(crop_payload["derived_evidence"]["ocr"]["available"])
+                self.assertEqual(crop_payload["derived_evidence"]["crop"]["bounds"]["width"], 100)
+
+                inline_ocr = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "visual-crop-ocr",
+                        "--full-evidence-receipt",
+                        "full-visual-456",
+                        "--ocr-text",
+                        "Total $123.45",
+                        "--ocr-confidence",
+                        "0.92",
+                        "--ocr-error-note",
+                        "currency symbol may be uncertain",
+                        "--missed-context-note",
+                        "footer outside OCR text",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                inline_payload = json.loads(inline_ocr.stdout)
+                self.assertEqual(inline_payload["status"], "ready_for_human_review")
+                self.assertFalse(inline_payload["derived_evidence"]["crop"]["available"])
+                self.assertTrue(inline_payload["derived_evidence"]["ocr"]["available"])
+                self.assertEqual(inline_payload["derived_evidence"]["ocr"]["source_label"], "inline")
+                self.assertEqual(inline_payload["derived_evidence"]["ocr"]["text_preview"], "Total $123.45")
+                self.assertEqual(inline_payload["derived_evidence"]["ocr"]["confidence"], 0.92)
+                self.assertFalse(inline_payload["derived_evidence"]["ocr"]["metadata"]["truncated"])
+                self.assertIsNotNone(inline_payload["derived_evidence"]["ocr"]["metadata"]["sha256"])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    ocr_path = Path(tmp) / "visual-ocr.txt"
+                    ocr_path.write_text("OCR file text with possible 8/B ambiguity\n", encoding="utf-8")
+                    combined = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "visual-crop-ocr",
+                            "--full-evidence-receipt",
+                            "full-visual-789",
+                            "--crop-label",
+                            "summary card",
+                            "--crop-bounds",
+                            "0,0,80,40",
+                            "--image-size",
+                            "100,80",
+                            "--ocr-text-file",
+                            str(ocr_path),
+                            "--ocr-confidence",
+                            "1.0",
+                            "--ocr-error-note",
+                            "8 may be B",
+                            "--missed-context-note",
+                            "legend outside crop",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    combined_payload = json.loads(combined.stdout)
+                    self.assertEqual(combined_payload["status"], "ready_for_human_review")
+                    self.assertTrue(combined_payload["derived_evidence"]["crop"]["available"])
+                    self.assertTrue(combined_payload["derived_evidence"]["ocr"]["available"])
+                    self.assertEqual(combined_payload["derived_evidence"]["ocr"]["source_label"], "visual-ocr.txt")
+                    self.assertNotIn(str(tmp), json.dumps(combined_payload))
+
+    def test_experimental_visual_crop_ocr_plan_guardrail_blockers_and_read_only(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                base = [
+                    sys.executable,
+                    str(script),
+                    "plan",
+                    "visual-crop-ocr",
+                    "--full-evidence-receipt",
+                    "full-visual-123",
+                    "--missed-context-note",
+                    "surrounding chart omitted",
+                    "--json",
+                ]
+
+                out_of_bounds = subprocess.run(
+                    [*base, "--crop-label", "bad crop", "--crop-bounds", "90,0,20,10", "--image-size", "100,100"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                out_payload = json.loads(out_of_bounds.stdout)
+                self.assertEqual(out_payload["status"], "blocked_until_visual_evidence")
+                self.assertIn("crop_exceeds_image_bounds", out_payload["review_plan"]["readiness_blockers"])
+
+                invalid_crop = subprocess.run(
+                    [*base, "--crop-label", "bad crop", "--crop-bounds", "-1,0,20,10", "--image-size", "100,100"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("invalid_crop_bounds", json.loads(invalid_crop.stdout)["review_plan"]["readiness_blockers"])
+
+                partial_crop_with_valid_ocr = subprocess.run(
+                    [
+                        *base,
+                        "--crop-bounds",
+                        "0,0,20,10",
+                        "--image-size",
+                        "100,100",
+                        "--ocr-text",
+                        "reviewable OCR",
+                        "--ocr-confidence",
+                        "0.5",
+                        "--ocr-error-note",
+                        "uncertain glyph",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                partial_payload = json.loads(partial_crop_with_valid_ocr.stdout)
+                self.assertEqual(partial_payload["status"], "blocked_until_visual_evidence")
+                self.assertIn("invalid_crop_bounds", partial_payload["review_plan"]["readiness_blockers"])
+
+                missing_confidence = subprocess.run(
+                    [*base, "--ocr-text", "text", "--ocr-error-note", "uncertain"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("missing_ocr_confidence", json.loads(missing_confidence.stdout)["review_plan"]["readiness_blockers"])
+
+                invalid_confidence = subprocess.run(
+                    [*base, "--ocr-text", "text", "--ocr-confidence", "nan", "--ocr-error-note", "uncertain"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("invalid_ocr_confidence", json.loads(invalid_confidence.stdout)["review_plan"]["readiness_blockers"])
+
+                missing_error = subprocess.run(
+                    [*base, "--ocr-text", "text", "--ocr-confidence", "0.5"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("missing_ocr_error_note", json.loads(missing_error.stdout)["review_plan"]["readiness_blockers"])
+
+                whitespace = subprocess.run(
+                    [*base, "--ocr-text", "   ", "--ocr-confidence", "0.5", "--ocr-error-note", "uncertain"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("missing_ocr_text", json.loads(whitespace.stdout)["review_plan"]["readiness_blockers"])
+
+                oversized = subprocess.run(
+                    [*base, "--ocr-text", "x" * 65000, "--ocr-confidence", "0.5", "--ocr-error-note", "uncertain"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                oversized_payload = json.loads(oversized.stdout)
+                self.assertTrue(oversized_payload["derived_evidence"]["ocr"]["metadata"]["truncated"])
+                self.assertIn("ocr_text_truncated", oversized_payload["review_plan"]["readiness_blockers"])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    human = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "visual-crop-ocr",
+                            "--full-evidence-receipt",
+                            "full-visual-123",
+                            "--crop-label",
+                            "total",
+                            "--crop-bounds",
+                            "0,0,20,20",
+                            "--image-size",
+                            "40,40",
+                        ],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("dry-run only", human.stdout)
+                    self.assertIn("No external OCR/image service", human.stdout)
+                    self.assertIn("Readiness blockers", human.stdout)
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+
+    def test_experimental_visual_crop_ocr_dispatcher_and_no_service_surface(self):
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "plan",
+                        "visual-crop-ocr",
+                        "--full-evidence-receipt",
+                        "full-visual-123",
+                        "--crop-label",
+                        "total",
+                        "--crop-bounds",
+                        "0,0,20,20",
+                        "--image-size",
+                        "40,40",
+                        "--missed-context-note",
+                        "page title omitted",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "visual-crop-ocr")
+                self.assertEqual(payload["status"], "ready_for_human_review")
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertIsNone(payload["candidate_replacement"])
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        for name in ("context-guard-ocr", "context-guard-crop", "context-guard-visual-token"):
+            self.assertNotIn(name, package["bin"])
+            self.assertFalse((PLUGIN_BIN / name).exists())
+        source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
+        for forbidden in ("import requests", "urllib.request", "http.client", "import socket", "import subprocess"):
+            self.assertNotIn(forbidden, source)
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"

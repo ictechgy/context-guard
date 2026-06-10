@@ -377,11 +377,12 @@ Experimental lanes are **default off**. The registry records project-local inten
 context-guard experiments list
 context-guard experiments status --json
 context-guard experiments plan context-diff-compaction --json < change.diff
+context-guard experiments plan visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --missed-context-note "outside crop omitted"
 context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
 ```
 
-By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. The registry can discover existing explicit-flag experiments such as `context-guard-trim-output --digest ... --artifact-receipt` and `context-guard-compress --protected-policy`, and it can run dry-run advisory planners such as `context-guard experiments plan context-diff-compaction`. `experiments enable` records intent only; it does not run those helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
+By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. The registry can discover existing explicit-flag experiments such as `context-guard-trim-output --digest ... --artifact-receipt` and `context-guard-compress --protected-policy`, and it can run dry-run advisory planners such as `context-guard experiments plan context-diff-compaction` and `context-guard experiments plan visual-crop-ocr`. The visual planner is shipped only as a metadata/fixture review surface: OCR/crop runtime, screenshot capture, image parsing, and external OCR/image services are not shipped. `experiments enable` records intent only; it does not run those helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 
 ## What is not yet shipped
 
