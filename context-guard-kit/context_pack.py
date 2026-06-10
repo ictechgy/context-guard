@@ -183,6 +183,9 @@ class FallbackLineSanitizer:
         return line, bool(count)
 
 
+# Process-static cache: CLI invocations should not re-import the sanitizer for
+# every file, while each sanitize_text() call still gets a fresh stateful
+# sanitizer instance.
 _LINE_SANITIZER_FACTORY_CACHE: Any | None = None
 
 

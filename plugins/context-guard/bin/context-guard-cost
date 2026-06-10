@@ -2252,7 +2252,7 @@ def emit(data: dict[str, Any], *, json_mode: bool) -> None:
 def add_common_cost_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pricing-profile", help="JSON string or file with input/output rates, cache multipliers, and usd_to_krw")
     parser.add_argument("--usd-to-krw", type=float, help="override USD→KRW exchange rate used for estimates")
-    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help=f"maximum JSON input bytes (default: {DEFAULT_MAX_BYTES})")
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help=f"maximum JSON input and pricing profile file bytes (default: {DEFAULT_MAX_BYTES})")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
 
