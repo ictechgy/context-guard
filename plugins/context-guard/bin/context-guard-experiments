@@ -872,6 +872,8 @@ LEARNED_CODE_LIKE_RE = re.compile(
     r"|<[/!]?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>"
     r")"
 )
+LEARNED_INLINE_CODE_RE = re.compile(r"`[^`\n]{1,200}`")
+LEARNED_NON_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]")
 LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
 LEARNED_ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
@@ -907,6 +909,8 @@ def learned_content_type(text: str, counts: dict[str, int]) -> str:
     stripped = text.strip()
     if not stripped:
         return "empty"
+    if counts["non_text_input"]:
+        return "non_text"
     if counts["protected_json_key"]:
         return "json"
     if counts["protected_diff"]:
@@ -919,6 +923,7 @@ def learned_content_type(text: str, counts: dict[str, int]) -> str:
 def learned_signal_counts(text: str) -> dict[str, int]:
     words = LEARNED_WORD_RE.findall(text)
     numeric_count = len(LEARNED_NUMERIC_CONSTANT_RE.findall(text))
+    code_like_count = len(LEARNED_CODE_LIKE_RE.findall(text)) + len(LEARNED_INLINE_CODE_RE.findall(text))
     numeric_density_high = 1 if words and numeric_count >= 3 and numeric_count / len(words) >= 0.20 else 0
     return {
         "protected_code_fence": len(LEARNED_CODE_FENCE_RE.findall(text)),
@@ -932,7 +937,8 @@ def learned_signal_counts(text: str) -> dict[str, int]:
         "protected_quoted_string": len(LEARNED_QUOTED_STRING_RE.findall(text)),
         "prompt_like_instruction": len(LEARNED_PROMPT_LIKE_RE.findall(text)),
         "url_or_endpoint": len(LEARNED_URL_RE.findall(text)),
-        "protected_code_like": len(LEARNED_CODE_LIKE_RE.findall(text)),
+        "protected_code_like": code_like_count,
+        "non_text_input": len(LEARNED_NON_TEXT_RE.findall(text)),
         "numeric_density_high": numeric_density_high,
     }
 

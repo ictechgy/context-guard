@@ -1432,6 +1432,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             ("if ready:\n    return value\n", "protected_code_like"),
             ("for item in items:\n", "protected_code_like"),
             ("return value\n", "protected_code_like"),
+            ("Please run `cargo build --release` before merging.", "protected_code_like"),
+            ("binary\x00payload", "non_text_input"),
             ("The sanitized note mentions user_id for follow-up.", "protected_identifier"),
             ("The sanitized note mentions ClassName for follow-up.", "protected_identifier"),
             ("The sanitized note mentions _PascalCase for follow-up.", "protected_identifier"),
@@ -1494,6 +1496,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(payload["status"], "blocked_until_safe_input", msg=blocker)
                     self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
                     self.assertFalse(payload["policy"]["eligible_for_human_review"])
+
+                invalid_utf8 = subprocess.run(
+                    [sys.executable, str(script), *base],
+                    input=b"\xff\xfeunsafe binary",
+                    capture_output=True,
+                    check=True,
+                )
+                invalid_payload = json.loads(invalid_utf8.stdout.decode("utf-8"))
+                self.assertEqual(invalid_payload["status"], "blocked_until_safe_input")
+                self.assertIn("non_text_input", invalid_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("non_prose_input", invalid_payload["review_plan"]["readiness_blockers"])
+                self.assertFalse(invalid_payload["policy"]["eligible_for_human_review"])
 
     def test_experimental_learned_compression_plan_fallback_dispatcher_and_read_only(self):
         safe_prose = "This sanitized paragraph summarizes a user-visible workflow without exact protected literals.\n"
