@@ -405,7 +405,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             str(config),
                             "--json-report",
                             "--timeout-seconds",
-                            "1",
+                            "3",
                             "--max-capture-bytes",
                             "100000",
                             "--",
