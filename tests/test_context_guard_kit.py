@@ -697,6 +697,91 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(disabled_payload["unknown_enabled"], ["future-third-party-lane"])
                     self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["enabled"], ["future-third-party-lane"])
 
+    def test_experimental_registry_describes_safe_explicit_flag_surfaces(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    for command in ("list", "status"):
+                        proc = subprocess.run(
+                            [sys.executable, str(script), command, "--root", tmp, "--json"],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        experiments = {item["id"]: item for item in json.loads(proc.stdout)["experiments"]}
+                        receipt_trim = experiments["output-receipt-trim"]
+                        self.assertEqual(receipt_trim["runtime_status"], "available-explicit-flags")
+                        self.assertIn("context-guard-trim-output --digest json --artifact-receipt -- <command>", receipt_trim["commands"])
+                        self.assertIn("--digest markdown|json", receipt_trim["opt_in_flags"])
+                        self.assertIn("--artifact-receipt", receipt_trim["opt_in_flags"])
+                        self.assertIn("does not activate", receipt_trim["config_effect"] + " does not activate")
+                        self.assertIn("exact", receipt_trim["evidence_contract"].lower())
+
+                        protected = experiments["protected-zone-policy"]
+                        self.assertEqual(protected["runtime_status"], "available-explicit-flags")
+                        self.assertIn("context-guard-compress --json --protected-policy", protected["commands"])
+                        self.assertIn("context-guard cost compile --json", protected["commands"])
+                        self.assertIn("context-guard-cost compile --json", protected["commands"])
+                        self.assertIn("--protected-policy", protected["opt_in_flags"])
+                        self.assertIn("semantic", protected["evidence_contract"].lower())
+
+                        for experiment_id in (
+                            "context-diff-compaction",
+                            "visual-crop-ocr",
+                            "learned-compression",
+                            "self-hosted-metrics-ledger",
+                            "local-proxy",
+                        ):
+                            future = experiments[experiment_id]
+                            self.assertIn(future["runtime_status"], {"metadata-only", "advisory-planned"})
+                            self.assertEqual(future["commands"], [])
+                            self.assertEqual(future["opt_in_flags"], [])
+
+    def test_existing_explicit_experiment_flags_work_without_registry_enablement(self):
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    artifact_dir = root / "artifacts"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--digest",
+                            "json",
+                            "--artifact-receipt",
+                            "--artifact-dir",
+                            str(artifact_dir),
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('safe explicit receipt output')",
+                        ],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertTrue(data["artifact_receipt"]["stored"])
+                    self.assertFalse((root / ".context-guard" / "experiments.json").exists())
+
+        raw = "```python\nvalue = 42\n```\npath=/tmp/example.log\n"
+        for script in COMPRESS_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--json", "--protected-policy"],
+                        cwd=tmp,
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertTrue(payload["metadata"]["protected_zone_policy"]["enabled"])
+                    self.assertFalse((Path(tmp) / ".context-guard" / "experiments.json").exists())
+
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
             with self.subTest(dispatcher=dispatcher):

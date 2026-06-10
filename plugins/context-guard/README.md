@@ -132,7 +132,7 @@ context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
 ```
 
-Use `--config <path>` only for an explicit project-local override. Registry entries include risk, gate requirements, and claim boundaries; hosted API token/cost savings still require provider-measured matched-task evidence.
+Use `--config <path>` only for an explicit project-local override. Registry entries include risk, gate requirements, explicit command/flag surfaces, and claim boundaries; hosted API token/cost savings still require provider-measured matched-task evidence. The registry can discover existing explicit-flag experiments such as `context-guard-trim-output --digest ... --artifact-receipt` and `context-guard-compress --protected-policy`, but `experiments enable` records intent only; it does not run those helpers or remove the need for their explicit flags.
 
 Cross-agent rule snippets are advisory: the target agent may ignore them, so measure actual before/after behavior when you need a savings claim.
 

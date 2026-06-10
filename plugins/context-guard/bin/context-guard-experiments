@@ -32,10 +32,17 @@ class Experiment:
     claim_boundary: str
     gate_requirements: tuple[str, ...]
     runtime_status: str = "metadata-only"
+    commands: tuple[str, ...] = ()
+    opt_in_flags: tuple[str, ...] = ()
+    config_effect: str = (
+        "Registry enablement records project-local intent only; helpers still require explicit experimental flags."
+    )
+    evidence_contract: str = "Evidence is local metadata only unless a later story adds a measured runtime gate."
 
     def to_json(self, *, enabled: bool = False) -> dict[str, Any]:
         data = asdict(self)
-        data["gate_requirements"] = list(self.gate_requirements)
+        for key in ("gate_requirements", "commands", "opt_in_flags"):
+            data[key] = list(getattr(self, key))
         data["enabled"] = bool(enabled)
         return data
 
@@ -50,6 +57,20 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="low",
         claim_boundary="Local output-size reduction only; no hosted API token/cost savings claim without provider-measured matched tasks.",
         gate_requirements=("explicit opt-in", "local artifact receipt", "exact re-expand command"),
+        runtime_status="available-explicit-flags",
+        commands=(
+            "context-guard-trim-output --digest markdown --artifact-receipt -- <command>",
+            "context-guard-trim-output --digest json --artifact-receipt -- <command>",
+        ),
+        opt_in_flags=("--digest markdown|json", "--artifact-receipt"),
+        config_effect=(
+            "Registry enablement records project-local intent only; output trimming still runs only when the helper is "
+            "invoked with --digest markdown|json plus --artifact-receipt."
+        ),
+        evidence_contract=(
+            "Stores the exact sanitized full output as a local context-guard-artifact receipt and emits an exact "
+            "re-expand command before omitted details are relied on."
+        ),
     ),
     Experiment(
         id="protected-zone-policy",
@@ -60,6 +81,21 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="low",
         claim_boundary="Policy metadata only; it does not prove provider cache or token savings.",
         gate_requirements=("explicit opt-in", "protected-zone detection", "exact retrieval fallback"),
+        runtime_status="available-explicit-flags",
+        commands=(
+            "context-guard-compress --json --protected-policy",
+            "context-guard cost compile --json",
+            "context-guard-cost compile --json",
+        ),
+        opt_in_flags=("--protected-policy", "protected=true manifest sections for cost compile"),
+        config_effect=(
+            "Registry enablement records project-local intent only; protected-zone policy metadata still appears only "
+            "when explicit helper flags or protected manifest sections are used."
+        ),
+        evidence_contract=(
+            "Denies semantic/paraphrase rewrites for protected classes and requires structural transforms plus exact "
+            "artifact retrieval guidance for protected evidence."
+        ),
     ),
     Experiment(
         id="context-diff-compaction",
@@ -70,6 +106,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="medium",
         claim_boundary="Smaller local diffs are proxy evidence only; hosted savings require provider-measured matched tasks.",
         gate_requirements=("explicit opt-in", "human-reviewable diff", "local receipt", "exact re-expand handle"),
+        runtime_status="advisory-planned",
+        evidence_contract="Future advisory/dry-run evidence only; no stable runtime command or hosted savings claim is available yet.",
     ),
     Experiment(
         id="visual-crop-ocr",
@@ -80,6 +118,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="medium",
         claim_boundary="Image/OCR byte reductions are proxy evidence until provider image/text token fields are measured.",
         gate_requirements=("explicit opt-in", "original evidence preserved", "confidence/error notes", "missed-context guardrail"),
+        runtime_status="advisory-planned",
+        evidence_contract="Future fixture/advisory evidence only; original visual evidence must remain available before promotion.",
     ),
     Experiment(
         id="learned-compression",
@@ -90,6 +130,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="high",
         claim_boundary="Semantic compression cannot claim savings or correctness without matched-task quality and provider token evidence.",
         gate_requirements=("explicit opt-in", "sanitized unprotected prose only", "protected-zone denial", "exact fallback or receipt"),
+        runtime_status="advisory-planned",
+        evidence_contract="Future safety-gate evidence only; semantic compression cannot run on protected or untrusted text.",
     ),
     Experiment(
         id="self-hosted-metrics-ledger",
@@ -100,6 +142,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="low",
         claim_boundary="Self-hosted memory/latency metrics must stay separate from hosted API token/cost claims.",
         gate_requirements=("explicit opt-in", "separate ledger fields", "shifted-cost accounting"),
+        runtime_status="advisory-planned",
+        evidence_contract="Future ledger evidence only; self-hosted metrics remain separate from hosted API token/cost savings.",
     ),
     Experiment(
         id="local-proxy",
@@ -110,6 +154,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         risk_level="high",
         claim_boundary="Proxy metrics are diagnostic only; no hosted savings claim without provider-measured evidence.",
         gate_requirements=("explicit opt-in", "localhost-only default", "no API-key persistence", "no hidden external forwarding"),
+        runtime_status="advisory-planned",
+        evidence_contract="Future advisory/proxy-plan evidence only; no forwarding or API-key persistence is available by default.",
     ),
 )
 
@@ -224,6 +270,13 @@ def emit_human(payload: dict[str, Any], *, include_details: bool = False) -> Non
         print(f"- {experiment['id']}: {state} [{experiment['stability']}, risk={experiment['risk_level']}]")
         if include_details:
             print(f"  {experiment['summary']}")
+            print(f"  Runtime: {experiment['runtime_status']}")
+            if experiment["commands"]:
+                print("  Commands: " + "; ".join(experiment["commands"]))
+            if experiment["opt_in_flags"]:
+                print("  Opt-in flags: " + ", ".join(experiment["opt_in_flags"]))
+            print(f"  Config effect: {experiment['config_effect']}")
+            print(f"  Evidence contract: {experiment['evidence_contract']}")
             print(f"  Claim boundary: {experiment['claim_boundary']}")
     if payload["unknown_enabled"]:
         print("Unknown enabled ids in config: " + ", ".join(payload["unknown_enabled"]))
