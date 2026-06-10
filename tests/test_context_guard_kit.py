@@ -766,10 +766,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("context-guard-bench JSONL ledger sidecars", self_hosted["evidence_contract"])
                         self.assertIn("hosted API token/cost savings", self_hosted["evidence_contract"])
 
-                        future = experiments["local-proxy"]
-                        self.assertIn(future["runtime_status"], {"metadata-only", "advisory-planned"})
-                        self.assertEqual(future["commands"], [])
-                        self.assertEqual(future["opt_in_flags"], [])
+                        local_proxy = experiments["local-proxy"]
+                        self.assertEqual(local_proxy["runtime_status"], "available-dry-run")
+                        self.assertIn("context-guard experiments plan local-proxy", local_proxy["commands"])
+                        self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
+                        self.assertIn("--bind-host", local_proxy["opt_in_flags"])
+                        self.assertIn("--target-host", local_proxy["opt_in_flags"])
+                        self.assertIn("--runtime-gate-ack", local_proxy["opt_in_flags"])
+                        self.assertIn("--external-forwarding-intent", local_proxy["opt_in_flags"])
+                        self.assertIn("--persist-api-key", local_proxy["opt_in_flags"])
+                        self.assertIn("dry-run", local_proxy["config_effect"])
+                        self.assertIn("does not bind sockets", local_proxy["config_effect"])
+                        self.assertIn("forward traffic", local_proxy["config_effect"])
+                        self.assertIn("API-key persistence", local_proxy["evidence_contract"])
 
     def test_existing_explicit_experiment_flags_work_without_registry_enablement(self):
         for index, script in enumerate(TRIM_SCRIPTS):
@@ -2099,6 +2108,222 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("[REDACTED]", sanitized, msg=raw)
                     self.assertNotIn(leaked, sanitized, msg=raw)
 
+    def test_experimental_local_proxy_plan_json_contract_and_ready_path(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                ready = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--bind-host",
+                        "localhost",
+                        "--bind-port",
+                        "8765",
+                        "--target-host",
+                        "127.0.0.1",
+                        "--target-port",
+                        "8787",
+                        "--ledger-jsonl",
+                        ".context-guard/local-proxy/ledger.jsonl",
+                        "--proxy-label",
+                        "local dev proxy",
+                        "--runtime-gate-ack",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(ready.stdout)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["experiment_id"], "local-proxy")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "ready_for_runtime_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertTrue(payload["policy"]["default_off"])
+                self.assertTrue(payload["policy"]["dry_run_only"])
+                self.assertTrue(payload["policy"]["localhost_only"])
+                self.assertTrue(payload["policy"]["runtime_gate_required_before_forwarding"])
+                self.assertTrue(payload["policy"]["runtime_gate_acknowledged"])
+                self.assertEqual(payload["bind"]["host"], "localhost")
+                self.assertEqual(payload["bind"]["port"], 8765)
+                self.assertTrue(payload["bind"]["localhost_only"])
+                self.assertEqual(payload["target"]["host"], "127.0.0.1")
+                self.assertEqual(payload["target"]["port"], 8787)
+                self.assertTrue(payload["target"]["localhost_only"])
+                self.assertFalse(payload["network_actions"]["listener_started"])
+                self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                self.assertFalse(payload["network_actions"]["external_services_called"])
+                self.assertFalse(payload["api_key_persistence"]["performed"])
+                self.assertFalse(payload["api_key_persistence"]["allowed_by_default"])
+                self.assertFalse(payload["ledger_preview"]["ledger_write_performed"])
+                self.assertEqual(payload["ledger_preview"]["schema_version"], "contextguard.experiments.local-proxy-plan.v1")
+                self.assertIn("not_hosted_token_or_cost_savings", payload["ledger_preview"]["claim_boundary"])
+                self.assertFalse(payload["forwarding"]["hidden_external_forwarding"])
+                self.assertTrue(payload["forwarding"]["future_runtime_gate_required"])
+                self.assertEqual(payload["redaction"]["secret_like_fields"], [])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    input_path = Path(tmp) / "local-proxy.json"
+                    input_path.write_text(
+                        json.dumps({
+                            "local_proxy": {
+                                "bind_host": "::1",
+                                "bind_port": 0,
+                                "target_host": "localhost",
+                                "target_port": 9999,
+                                "runtime_gate_ack": True,
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                    input_ready = subprocess.run(
+                        [sys.executable, str(script), "plan", "local-proxy", "--input", str(input_path), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                input_ready_payload = json.loads(input_ready.stdout)
+                self.assertEqual(input_ready_payload["status"], "ready_for_runtime_review")
+                self.assertEqual(input_ready_payload["bind"]["host"], "::1")
+                self.assertTrue(input_ready_payload["target"]["localhost_only"])
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "plan",
+                        "local-proxy",
+                        "--bind-host",
+                        "127.0.0.1",
+                        "--target-host",
+                        "::1",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "local-proxy")
+                self.assertEqual(payload["status"], "ready_for_runtime_review")
+
+    def test_experimental_local_proxy_plan_blockers_redaction_and_read_only(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                blocked = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--bind-host",
+                        "0.0.0.0",
+                        "--target-host",
+                        "example.com",
+                        "--upstream-url",
+                        "https://user:pass@example.com/proxy?X-Amz-Signature=abcdef1234567890",
+                        "--api-key",
+                        "sk-ant-secret-secret-secret",
+                        "--authorization-header",
+                        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+                        "--persist-api-key",
+                        "--external-forwarding-intent",
+                        "--proxy-label",
+                        "api_key: my_precious_value_123",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(blocked.stdout)
+                self.assertEqual(payload["status"], "blocked_until_local_proxy_constraints")
+                blockers = payload["review_plan"]["readiness_blockers"]
+                for blocker in (
+                    "non_localhost_bind_host",
+                    "non_localhost_target_host",
+                    "api_key_material_provided",
+                    "api_key_persistence_requested",
+                    "external_forwarding_intent_not_allowed",
+                    "missing_runtime_gate_ack",
+                    "secret_like_proxy_metadata",
+                ):
+                    self.assertIn(blocker, blockers)
+                self.assertFalse(payload["network_actions"]["listener_started"])
+                self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                self.assertFalse(payload["api_key_persistence"]["performed"])
+                self.assertTrue(payload["api_key_persistence"]["api_key_material_provided"])
+                serialized = json.dumps(payload, sort_keys=True)
+                for secret_fragment in (
+                    "sk-ant",
+                    "abcdefghijklmnopqrstuvwxyz",
+                    "user:pass",
+                    "abcdef1234567890",
+                    "my_precious_value_123",
+                ):
+                    self.assertNotIn(secret_fragment, serialized)
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    human = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--target-host",
+                            "127.0.0.1",
+                        ],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("dry-run only", human.stdout)
+                    self.assertIn("No listener was started", human.stdout)
+                    self.assertIn("no traffic was forwarded", human.stdout)
+                    self.assertIn("no API key was persisted", human.stdout)
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+
+                missing_input = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy",
+                        "--input",
+                        "/tmp/credential=notredactedmaybe/X-Amz-Signature=abcdefghijklmnopqrstuvwxyz/missing.json",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(missing_input.returncode, 2)
+                self.assertIn("could not read local-proxy input", missing_input.stderr)
+                self.assertIn("[REDACTED]", missing_input.stderr)
+                for secret_fragment in ("credential=notredactedmaybe", "X-Amz-Signature", "abcdefghijklmnopqrstuvwxyz"):
+                    self.assertNotIn(secret_fragment, missing_input.stderr + missing_input.stdout)
+                self.assertNotIn("Traceback", missing_input.stderr + missing_input.stdout)
+
+                module = load_python_script_module(script, f"_experimental_registry_local_proxy_{index}")
+                for host in ("localhost", "127.0.0.1", "::1"):
+                    self.assertTrue(module.is_localhost_host(host))
+                for host in ("0.0.0.0", "example.com", "192.168.1.10"):
+                    self.assertFalse(module.is_localhost_host(host))
+
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -2122,6 +2347,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"hosted api token/cost savings|hosted api 절감")
                 self.assertNotIn("self-hosted kv/latent runtime optimization is shipped", text)
                 self.assertNotIn("hosted api token/cost savings claim is allowed", text)
+
+    def test_experimental_local_proxy_docs_surface_boundary(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "docs" / "index.html",
+        )
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                self.assertIn("local proxy", text)
+                self.assertIn("local-proxy", text)
+                self.assertRegex(text, r"dry-run|advisory|드라이런|advisory plan")
+                self.assertRegex(text, r"localhost-only|localhost")
+                self.assertRegex(text, r"no listener|forwards no traffic|proxy forwarding runtime|proxy forwarding|실제 proxy forwarding")
+                self.assertRegex(text, r"api[- ]?key|api key")
+                self.assertNotIn("actual proxy forwarding runtime is shipped", text)
+                self.assertNotIn("persists api keys", text)
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
