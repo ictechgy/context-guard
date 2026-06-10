@@ -16,6 +16,7 @@
     "context-guard": "plugins/context-guard/bin/context-guard",
     "context-guard-setup": "plugins/context-guard/bin/context-guard-setup",
     "context-guard-diet": "plugins/context-guard/bin/context-guard-diet",
+    "context-guard-experiments": "plugins/context-guard/bin/context-guard-experiments",
     "context-guard-audit": "plugins/context-guard/bin/context-guard-audit",
     "context-guard-trim-output": "plugins/context-guard/bin/context-guard-trim-output",
     "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",

@@ -39,6 +39,7 @@ IMPLEMENTATION_PAIRS = [
     (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
     (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
     (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
+    (KIT_DIR / "experimental_registry.py", PLUGIN_BIN / "context-guard-experiments"),
     (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
     (KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "context-guard-guard-read"),
     (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-read-symbol"),
@@ -56,6 +57,7 @@ TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "context-guard-
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "context-guard-sanitize-output"]
 SETUP_SCRIPTS = [KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "context-guard-setup"]
 DIET_SCRIPTS = [KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"]
+EXPERIMENT_SCRIPTS = [KIT_DIR / "experimental_registry.py", PLUGIN_BIN / "context-guard-experiments"]
 READ_GUARD_SCRIPTS = [KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "context-guard-guard-read"]
 READ_SYMBOL_SCRIPTS = [KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-read-symbol"]
 NUDGE_SCRIPTS = [KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"]
@@ -543,6 +545,137 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     cwd=ROOT,
                 )
                 self.assertIn("Validate and apply bounded declarative command-output filters", proc.stdout)
+
+    def test_experimental_registry_list_status_enable_disable(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "project"
+                    root.mkdir()
+                    listed = subprocess.run(
+                        [sys.executable, str(script), "list", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(listed.stdout)
+                    self.assertTrue(payload["default_off"])
+                    experiments = {item["id"]: item for item in payload["experiments"]}
+                    self.assertIn("output-receipt-trim", experiments)
+                    self.assertFalse(experiments["output-receipt-trim"]["enabled"])
+                    self.assertIn("claim_boundary", experiments["output-receipt-trim"])
+
+                    enabled = subprocess.run(
+                        [sys.executable, str(script), "enable", "output-receipt-trim", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    enabled_payload = json.loads(enabled.stdout)
+                    self.assertTrue({item["id"]: item for item in enabled_payload["experiments"]}["output-receipt-trim"]["enabled"])
+                    config = root / ".context-guard" / "experiments.json"
+                    self.assertTrue(config.is_file())
+                    self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["enabled"], ["output-receipt-trim"])
+
+                    disabled = subprocess.run(
+                        [sys.executable, str(script), "disable", "output-receipt-trim", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    disabled_payload = json.loads(disabled.stdout)
+                    self.assertFalse({item["id"]: item for item in disabled_payload["experiments"]}["output-receipt-trim"]["enabled"])
+                    self.assertEqual(json.loads(config.read_text(encoding="utf-8"))["enabled"], [])
+
+    def test_experimental_registry_config_override_is_project_local(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+                    root = Path(tmp) / "project"
+                    root.mkdir()
+                    custom_rel = Path("custom") / "experiments.json"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "enable",
+                            "output-receipt-trim",
+                            "--root",
+                            str(root),
+                            "--config",
+                            str(custom_rel),
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(Path(payload["config_path"]), (root / custom_rel).resolve())
+                    self.assertTrue((root / custom_rel).is_file())
+                    self.assertFalse((root / ".context-guard" / "experiments.json").exists())
+
+                    outside = Path(outside_tmp) / "experiments.json"
+                    rejected = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "enable",
+                            "output-receipt-trim",
+                            "--root",
+                            str(root),
+                            "--config",
+                            str(outside),
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(rejected.returncode, 2)
+                    self.assertIn("config path must stay inside project root", rejected.stderr)
+                    self.assertNotIn("Traceback", rejected.stderr + rejected.stdout)
+
+    def test_experimental_registry_rejects_unknown_id_without_traceback(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "enable", "not-a-real-experiment", "--root", tmp, "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("unknown experiment id", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_experimental_registry_dispatcher_help_routes_to_helper(self):
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [sys.executable, str(dispatcher), "experiments", "--help"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                self.assertIn("Inspect and manage default-off ContextGuard experimental feature opt-ins", proc.stdout)
+
+    def test_experimental_registry_release_gate_parity_surfaces(self):
+        cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_experiments_test")
+        self.assertEqual(cli.HELPER_SUBCOMMANDS["experiments"], ("context-guard-experiments",))
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["bin"]["context-guard-experiments"], "plugins/context-guard/bin/context-guard-experiments")
+
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_experiments_test")
+        self.assertIn(("experimental_registry.py", "context-guard-experiments"), prepublish.IMPLEMENTATION_PAIRS)
+        self.assertIn("context-guard-experiments", prepublish.REQUIRED_NPM_BINS)
+        self.assertIn("context-guard-kit/experimental_registry.py", prepublish.EXPECTED_NPM_PACK_FILES)
+        self.assertIn("plugins/context-guard/bin/context-guard-experiments", prepublish.EXPECTED_NPM_PACK_FILES)
+
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_experiments_test")
+        self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-experiments"]["args"], ["--help"])
+        self.assertIn({"entrypoint": "context-guard", "args": ["experiments", "list", "--json"], "mode": "json"}, smoke.DISPATCHER_SMOKE_COMMANDS)
 
     def test_auxiliary_ai_delegation_is_not_packaged(self):
         self.assertFalse((KIT_DIR / "aux_ai_delegate.py").exists())

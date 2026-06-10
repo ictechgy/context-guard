@@ -47,6 +47,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
     "context-guard-pack": {"args": ["--help"], "mode": "text"},
     "context-guard-tool-prune": {"args": ["--help"], "mode": "text"},
     "context-guard-diet": {"args": ["--help"], "mode": "text"},
+    "context-guard-experiments": {"args": ["--help"], "mode": "text"},
     "context-guard-failed-nudge": {"args": [], "mode": "hook-json"},
     "context-guard-filter": {"args": ["--help"], "mode": "text"},
     "context-guard-guard-read": {"args": [], "mode": "hook-json"},
@@ -72,6 +73,7 @@ ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
 }
 
 DISPATCHER_SMOKE_COMMANDS: tuple[dict[str, Any], ...] = (
+    {"entrypoint": "context-guard", "args": ["experiments", "list", "--json"], "mode": "json"},
     {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["auto", "--help"], "mode": "text"},
@@ -814,7 +816,7 @@ def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mod
     raw_stdout = proc.stdout
     if not raw_stdout.strip():
         fail(f"{command} launch smoke emitted no stdout")
-    if mode == "hook-json":
+    if mode in {"hook-json", "json"}:
         load_json(raw_stdout, command)
     elif mode == "statusline":
         line = raw_stdout[:-1] if raw_stdout.endswith("\n") else raw_stdout

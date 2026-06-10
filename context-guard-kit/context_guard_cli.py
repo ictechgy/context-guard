@@ -22,6 +22,7 @@ HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "doctor": ("context-guard-setup", "--verify"),
     "audit": ("context-guard-audit",),
     "diet": ("context-guard-diet",),
+    "experiments": ("context-guard-experiments",),
     "scan": ("context-guard-diet", "scan"),
     "trim-output": ("context-guard-trim-output",),
     "trim": ("context-guard-trim-output",),

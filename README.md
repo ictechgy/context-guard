@@ -369,6 +369,19 @@ Read the report through its claim boundaries before writing any savings statemen
 
 See [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json) for a minimal report-shape example, [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md) for workflow-specific synthetic examples, and [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md) for fixture-only experimental task/variant starters.
 
+### Manage experimental opt-ins
+
+Experimental lanes are **default off**. The registry records project-local intent and metadata only; enabling an experiment does not activate stable runtime behavior by itself. Later helpers must still require explicit experimental flags before using these lanes.
+
+```bash
+context-guard experiments list
+context-guard experiments status --json
+context-guard experiments enable output-receipt-trim --root .
+context-guard experiments disable output-receipt-trim --root .
+```
+
+By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence.
+
 ## What is not yet shipped
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.

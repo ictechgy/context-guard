@@ -121,6 +121,19 @@ ContextGuard also does not send work to external AI providers to save model toke
 
 Future learned, multimodal, and self-hosted optimization ideas are tracked only in [`research/experimental-token-reduction-radar.md`](https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md), with fixture-only starters in [`docs/experimental-benchmark-fixtures.md`](https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md). That radar and the fixtures are not shipped runtime features and do not claim hosted API savings without provider-measured matched-task evidence. The radar's later-roadmap gates also keep neural/semantic compression, trust-tiered injection-aware compression, context-diff compaction, and local proxy constraints experimental/non-shipped until a separate future PR satisfies those gates.
 
+## Experimental opt-ins
+
+Experimental lanes are default off. The registry is project-local metadata only; enabling an experiment records intent in `.context-guard/experiments.json` and does not activate stable runtime behavior by itself.
+
+```bash
+context-guard experiments list
+context-guard experiments status --json
+context-guard experiments enable output-receipt-trim --root .
+context-guard experiments disable output-receipt-trim --root .
+```
+
+Use `--config <path>` only for an explicit project-local override. Registry entries include risk, gate requirements, and claim boundaries; hosted API token/cost savings still require provider-measured matched-task evidence.
+
 Cross-agent rule snippets are advisory: the target agent may ignore them, so measure actual before/after behavior when you need a savings claim.
 
 ## Local test before publishing
