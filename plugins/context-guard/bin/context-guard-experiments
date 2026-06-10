@@ -621,7 +621,12 @@ def read_visual_ocr_text(args: argparse.Namespace) -> dict[str, Any]:
 
     truncated = len(raw) > MAX_VISUAL_OCR_TEXT_BYTES
     raw = raw[:MAX_VISUAL_OCR_TEXT_BYTES]
-    text = raw.decode("utf-8", errors="replace")
+    try:
+        text = raw.decode("utf-8")
+        valid_encoding = True
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+        valid_encoding = False
     return {
         "source_type": source_type,
         "source_label": source_label,
@@ -630,6 +635,7 @@ def read_visual_ocr_text(args: argparse.Namespace) -> dict[str, Any]:
         "sha256": hashlib.sha256(raw).hexdigest() if raw else None,
         "truncated": truncated,
         "max_bytes": MAX_VISUAL_OCR_TEXT_BYTES,
+        "valid_utf8": valid_encoding,
         "text_preview": text,
         "has_text": bool(text.strip()),
     }
@@ -659,7 +665,13 @@ def visual_crop_ocr_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             bool(ocr_error_notes),
         ]
     )
-    ocr_complete = bool(ocr_text["has_text"] and not ocr_text["truncated"] and confidence_error is None and ocr_error_notes)
+    ocr_complete = bool(
+        ocr_text["has_text"]
+        and ocr_text["valid_utf8"]
+        and not ocr_text["truncated"]
+        and confidence_error is None
+        and ocr_error_notes
+    )
 
     blockers: list[str] = []
     if not full_receipt:
@@ -683,6 +695,8 @@ def visual_crop_ocr_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             blockers.append("missing_ocr_error_note")
         if not ocr_text["has_text"]:
             blockers.append("missing_ocr_text")
+        if not ocr_text["valid_utf8"]:
+            blockers.append("invalid_ocr_text_encoding")
         if ocr_text["truncated"]:
             blockers.append("ocr_text_truncated")
 
@@ -730,6 +744,7 @@ def visual_crop_ocr_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
                     "sha256": ocr_text["sha256"],
                     "truncated": ocr_text["truncated"],
                     "max_bytes": ocr_text["max_bytes"],
+                    "valid_utf8": ocr_text["valid_utf8"],
                 },
                 "confidence": confidence,
                 "error_notes": ocr_error_notes,

@@ -1105,6 +1105,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(combined_payload["derived_evidence"]["crop"]["available"])
                     self.assertTrue(combined_payload["derived_evidence"]["ocr"]["available"])
                     self.assertEqual(combined_payload["derived_evidence"]["ocr"]["source_label"], "visual-ocr.txt")
+                    self.assertTrue(combined_payload["derived_evidence"]["ocr"]["metadata"]["valid_utf8"])
                     self.assertNotIn(str(tmp), json.dumps(combined_payload))
 
     def test_experimental_visual_crop_ocr_plan_guardrail_blockers_and_read_only(self):
@@ -1203,6 +1204,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 oversized_payload = json.loads(oversized.stdout)
                 self.assertTrue(oversized_payload["derived_evidence"]["ocr"]["metadata"]["truncated"])
                 self.assertIn("ocr_text_truncated", oversized_payload["review_plan"]["readiness_blockers"])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    binary_path = Path(tmp) / "ocr.bin"
+                    binary_path.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+                    invalid_encoding = subprocess.run(
+                        [
+                            *base,
+                            "--ocr-text-file",
+                            str(binary_path),
+                            "--ocr-confidence",
+                            "0.5",
+                            "--ocr-error-note",
+                            "binary fixture must not be accepted as OCR text",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    invalid_payload = json.loads(invalid_encoding.stdout)
+                    self.assertEqual(invalid_payload["status"], "blocked_until_visual_evidence")
+                    self.assertFalse(invalid_payload["derived_evidence"]["ocr"]["available"])
+                    self.assertFalse(invalid_payload["derived_evidence"]["ocr"]["metadata"]["valid_utf8"])
+                    self.assertIn("invalid_ocr_text_encoding", invalid_payload["review_plan"]["readiness_blockers"])
 
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
