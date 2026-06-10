@@ -810,7 +810,7 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
 
 
 LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
-LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ |[+-].*)")
+LEARNED_DIFF_RE = re.compile(r"(?m)^\s*(diff --git |@@\s+-|--- |\+\+\+ |[+-].*)")
 LEARNED_IDENTIFIER_RE = re.compile(
     r"\b(?:"
     r"_*[A-Za-z]+_[A-Za-z0-9_]*"
@@ -846,7 +846,7 @@ LEARNED_NUMERIC_CONSTANT_RE = re.compile(
 )
 LEARNED_PROMPT_LIKE_RE = re.compile(
     r"(?ix)(?:"
-    r"\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+)?(?:above|earlier|previous|prior)\s+instructions\b"
+    r"\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+)?(?:above|earlier|previous|prior)\s+instructions?\b"
     r"|^\s*(?:system|developer|user|assistant)\s*:"
     r"|\b(?:system|developer|user|assistant)\s+instructions?\b"
     r"|\b(?:system|developer)\s+message\b"
@@ -864,7 +864,11 @@ LEARNED_CODE_LIKE_RE = re.compile(
     r"(?mx)^\s*(?:"
     r"(?:from\s+\S+\s+import\s+\S+|import\s+\S+|def\s+[A-Za-z_]\w*\s*\(|class\s+[A-Za-z_]\w*\s*(?:\(|:)|"
     r"function\s+[A-Za-z_$][\w$]*\s*\(|(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=)"
-    r"|(?:rm|sudo|curl|wget|chmod|chown|git|npm|python3?|pip|node|bash|sh|zsh|cat|grep|sed|awk|make)\s+(?:-\S+|\S+)"
+    r"|(?:if|elif|else|for|while|try|except|finally|with)\b.*:"
+    r"|(?:print|raise|return|yield|assert)\b(?:\s*\(|\s+\S+)"
+    r"|[A-Za-z_][A-Za-z0-9_]*\s*(?:=|==|!=|<=|>=|\+=|-=|\*=|/=)\s*\S+"
+    r"|.*[{};]\s*$"
+    r"|(?:ls|cp|mv|rm|sudo|curl|wget|chmod|chown|git|npm|python3?|pip|node|bash|sh|zsh|cat|grep|sed|awk|make|docker|kubectl)\s+(?:-\S+|\S+)"
     r"|<[/!]?[A-Za-z][A-Za-z0-9-]*(?:\s+[^<>]*)?>"
     r")"
 )
