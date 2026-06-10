@@ -11,12 +11,15 @@ import argparse
 import codecs
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
+import time
 from typing import Any, Iterable
 
 SCHEMA_VERSION = "contextguard.filter-dsl.v1"
@@ -35,6 +38,8 @@ MAX_EMIT_LINES = 5_000
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
+TIMEOUT_PIPE_DRAIN_GRACE_SECONDS = 5.0
+PIPE_THREAD_CLOSE_GRACE_SECONDS = 1.0
 FILTER_KEYS = {"id", "match", "passthrough_on_exit", "include_regex", "exclude_regex", "head_lines", "tail_lines", "max_lines"}
 MATCH_KEYS = {"argv_prefix", "argv_regex"}
 PROTECTED_BASENAMES = {
@@ -343,6 +348,8 @@ class CommandResult:
 
 
 def write_binary_chunk(stream: Any, chunk: bytes) -> None:
+    if not chunk:
+        return
     stream.flush()
     binary = getattr(stream, "buffer", None)
     if binary is not None:
@@ -415,12 +422,44 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             except OSError:
                 pass
 
+    def terminate_processes(proc: subprocess.Popen[bytes], sig: int) -> None:
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, sig)
+                return
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+        try:
+            if proc.poll() is None:
+                proc.send_signal(sig)
+        except OSError:
+            pass
+
+    def close_pipes(proc: subprocess.Popen[bytes]) -> None:
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is None:
+                continue
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def join_threads_until(threads: tuple[threading.Thread, threading.Thread], deadline: float) -> bool:
+        for thread in threads:
+            remaining = max(0.0, deadline - time.monotonic())
+            thread.join(timeout=remaining)
+        return all(not thread.is_alive() for thread in threads)
+
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        started_at = time.monotonic()
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
         assert proc.stdout is not None
         assert proc.stderr is not None
         stdout_thread = threading.Thread(target=read_pipe, args=(proc.stdout, "stdout"), daemon=True)
         stderr_thread = threading.Thread(target=read_pipe, args=(proc.stderr, "stderr"), daemon=True)
+        reader_threads = (stdout_thread, stderr_thread)
         stdout_thread.start()
         stderr_thread.start()
         timed_out = False
@@ -428,19 +467,37 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             returncode = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.kill()
             returncode = TIMEOUT_EXIT_CODE
+            terminate_processes(proc, signal.SIGTERM)
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
-                pass
-            for pipe in (proc.stdout, proc.stderr):
+                terminate_processes(proc, signal.SIGKILL)
                 try:
-                    pipe.close()
-                except OSError:
+                    proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
                     pass
-        for thread in (stdout_thread, stderr_thread):
-            thread.join(timeout=5)
+            close_pipes(proc)
+        drain_deadline = (
+            time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
+            if timed_out
+            else started_at + float(timeout_seconds)
+        )
+        if not join_threads_until(reader_threads, drain_deadline):
+            timed_out = True
+            returncode = TIMEOUT_EXIT_CODE
+            terminate_processes(proc, signal.SIGTERM)
+            try:
+                proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                terminate_processes(proc, signal.SIGKILL)
+                try:
+                    proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+            close_pipes(proc)
+            for thread in reader_threads:
+                thread.join(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
         if timed_out:
             capture.consume("stderr", f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n".encode("utf-8"))
         stdout_text, stderr_text = ("", "") if capture.capture_limited else capture.text()

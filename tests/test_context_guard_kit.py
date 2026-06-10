@@ -390,6 +390,46 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(report["reason"], "capture-limit")
                     self.assertGreater(report["output_bytes"], report["max_capture_bytes"])
 
+    def test_context_filter_timeout_waits_for_inherited_pipe_descendants(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / "filters.json"
+                    config.write_text(json.dumps({"schema_version": "contextguard.filter-dsl.v1", "filters": []}), encoding="utf-8")
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(config),
+                            "--json-report",
+                            "--timeout-seconds",
+                            "1",
+                            "--max-capture-bytes",
+                            "100000",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            (
+                                "import subprocess, sys;"
+                                "subprocess.Popen([sys.executable, '-c', "
+                                "\"import time; time.sleep(10); print('late-descendant')\"], "
+                                "stdout=sys.stdout, stderr=sys.stderr);"
+                                "print('parent-done')"
+                            ),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=8,
+                    )
+                self.assertEqual(proc.returncode, 124, proc.stderr)
+                self.assertIn("parent-done", proc.stdout)
+                stderr_lines = [line for line in proc.stderr.splitlines() if line.strip()]
+                report = json.loads(stderr_lines[-1])
+                self.assertEqual(report["reason"], "timeout")
+                self.assertEqual(report["command_exit_code"], 124)
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {
