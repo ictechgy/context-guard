@@ -813,11 +813,11 @@ LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
 LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ |[+-].*)")
 LEARNED_IDENTIFIER_RE = re.compile(
     r"\b(?:"
-    r"[A-Za-z]+_[A-Za-z0-9_]*"
-    r"|[a-z]+[A-Z][A-Za-z0-9]*"
-    r"|[A-Z][a-z]+[A-Z][A-Za-z0-9]*"
-    r"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
-    r"|[A-Z][A-Z0-9_]{2,}"
+    r"_*[A-Za-z]+_[A-Za-z0-9_]*"
+    r"|_*[a-z]+[A-Z][A-Za-z0-9]*"
+    r"|_*[A-Z][a-z]+[A-Z][A-Za-z0-9]*"
+    r"|_*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
+    r"|_*[A-Z][A-Z0-9_]{2,}"
     r")\b"
 )
 LEARNED_PATH_RE = re.compile(
@@ -826,12 +826,14 @@ LEARNED_PATH_RE = re.compile(
     r"|"
     r"\b[A-Za-z]:\\(?:[^\\\s:\"'<>|]+\\)*[^\\\s:\"'<>|]+"
     r"|"
+    r"(?<![\w.-])(?:\.{1,2}/)+[A-Za-z0-9._@%+=:-]+(?:/[A-Za-z0-9._@%+=:-]+)*\b"
+    r"|"
     r"\b(?:\.{1,2}/)?(?:[A-Za-z0-9._@%+=:-]+/)+[A-Za-z0-9._@%+=:-]+\b"
     r"|"
     r"\b[A-Za-z0-9._-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|kt|swift|json|ya?ml|toml|md|txt|log|sh|bash|zsh|sql|html|css)\b"
     r")"
 )
-LEARNED_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{32,}|sha256:[0-9a-fA-F]{32,}|[0-9a-fA-F]{7,12})\b")
+LEARNED_HASH_RE = re.compile(r"\b(?:sha256:[0-9a-fA-F]{32,64}|[0-9a-fA-F]{7,64})\b")
 LEARNED_STACK_FRAME_RE = re.compile(
     r"(?m)^\s*(?:File\s+\"[^\"]+\",\s+line\s+\d+,\s+in\s+\S+|at\s+\S+.*\([^)]*:\d+(?::\d+)?\))"
 )
@@ -840,14 +842,23 @@ LEARNED_QUOTED_STRING_RE = re.compile(
     r'''(?x)"""(?:.|\n)*?"""|''' + r"""'''(?:.|\n)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"""
 )
 LEARNED_NUMERIC_CONSTANT_RE = re.compile(
-    r"(?<![\w.])(?:[vV]?\d+(?:\.\d+){2,}|[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?))(?![\w.])"
+    r"(?<![\w.])(?:[vV]?\d+(?:\.\d+)*|[-+]?0x[0-9A-Fa-f]+)(?![\w.])"
 )
 LEARNED_PROMPT_LIKE_RE = re.compile(
-    r"(?i)\b(?:ignore (?:all )?(?:previous|prior) instructions|system prompt|developer message|"
-    r"you are chatgpt|act as|jailbreak|do not follow|override instructions)\b"
+    r"(?ix)(?:"
+    r"\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+)?(?:above|earlier|previous|prior)\s+instructions\b"
+    r"|^\s*(?:system|developer|user|assistant)\s*:"
+    r"|\b(?:system|developer|user|assistant)\s+instructions?\b"
+    r"|\b(?:system|developer)\s+message\b"
+    r"|\byou\s+are\s+(?:now\s+)?(?:chatgpt|a\s+\w+|\w+)\b"
+    r"|\bact\s+as\b"
+    r"|\bjailbreak\b"
+    r"|\bdo\s+not\s+follow\b"
+    r"|\boverride\s+instructions\b"
+    r")"
 )
 LEARNED_URL_RE = re.compile(
-    r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local|ai|edu|gov|mil|co|info|biz|kr|jp|uk|cn|xyz)(?:/|\b))"
+    r"(?i)\b(?:https?://|(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,24})(?:/|\b)"
 )
 LEARNED_CODE_LIKE_RE = re.compile(
     r"(?mx)^\s*(?:"
