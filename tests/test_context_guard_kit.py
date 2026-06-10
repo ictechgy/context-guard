@@ -4327,6 +4327,42 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(text_proc.returncode, 0, text_proc.stderr)
         self.assertNotIn(private_path, text_proc.stdout + text_proc.stderr)
 
+    def test_context_guard_cli_project_version_ignores_cwd_metadata(self):
+        module = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_version_cwd_test")
+        expected = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "package.json").write_text(json.dumps({"version": "999.999.999-cwd"}), encoding="utf-8")
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                self.assertEqual(module.project_version(), expected)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_context_guard_cli_project_version_skips_special_and_symlink_metadata(self):
+        module = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_version_safe_read_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_dir = root / ".claude-plugin"
+            metadata_dir.mkdir()
+
+            link = metadata_dir / "plugin.json"
+            target = root / "target.json"
+            target.write_text(json.dumps({"version": "1.2.3-symlink"}), encoding="utf-8")
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with mock.patch.object(module, "_candidate_roots", return_value=[root]):
+                self.assertEqual(module.project_version(), "0.0.0+unknown")
+            link.unlink()
+
+            if not hasattr(os, "mkfifo"):
+                self.skipTest("mkfifo unavailable")
+            os.mkfifo(link)
+            with mock.patch.object(module, "_candidate_roots", return_value=[root]):
+                self.assertEqual(module.project_version(), "0.0.0+unknown")
+
     def test_cost_guard_release_gate_parity_surfaces_include_cost_helper(self):
         cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_cost_test")
         self.assertEqual(cli.HELPER_SUBCOMMANDS["cost"], ("context-guard-cost",))

@@ -11,11 +11,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 from typing import NoReturn
 
 COMMAND_NAME = "context-guard"
 PACKAGE_NAME = "@ictechgy/context-guard"
+MAX_VERSION_METADATA_BYTES = 64 * 1024
 
 HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "setup": ("context-guard-setup",),
@@ -50,16 +52,57 @@ def _script_dir() -> Path:
 
 def _candidate_roots() -> list[Path]:
     script_dir = _script_dir()
-    roots = [script_dir.parent, script_dir.parent.parent, Path.cwd()]
+    roots = [script_dir.parent, script_dir.parent.parent]
     # When run from context-guard-kit in a checkout, the repo root is one level up.
     if script_dir.name == "context-guard-kit":
         roots.insert(0, script_dir.parent)
     return list(dict.fromkeys(roots))
 
 
-def _load_json(path: Path) -> dict[str, object] | None:
+def _read_metadata_text(path: Path) -> str | None:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        pre_open = path.lstat()
+        if not stat.S_ISREG(pre_open.st_mode):
+            return None
+        if pre_open.st_size > MAX_VERSION_METADATA_BYTES:
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode):
+                return None
+            if opened.st_size > MAX_VERSION_METADATA_BYTES:
+                return None
+            data = os.read(fd, MAX_VERSION_METADATA_BYTES + 1)
+        except OSError:
+            return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if len(data) > MAX_VERSION_METADATA_BYTES:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _load_json(path: Path) -> dict[str, object] | None:
+    text = _read_metadata_text(path)
+    if text is None:
+        return None
+    try:
+        data = json.loads(text)
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
