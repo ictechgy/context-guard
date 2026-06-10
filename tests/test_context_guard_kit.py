@@ -1033,6 +1033,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         payload = json.loads(proc.stdout)
                         self.assertEqual(payload["tool"], "context-guard-experiments")
 
+                with self.subTest(script=script, planner=name, shape="regular-parent-traversal-normalized"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        (root / "nested").mkdir()
+                        real = root / f"{name}.txt"
+                        real.write_text(text, encoding="utf-8")
+                        path = root / "nested" / ".." / real.name
+                        proc = subprocess.run(
+                            [sys.executable, str(script), *materialize(args, path)],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["tool"], "context-guard-experiments")
+
                 with self.subTest(script=script, planner=name, shape="symlink"):
                     with tempfile.TemporaryDirectory() as tmp:
                         real = Path(tmp) / f"{name}.txt"

@@ -359,6 +359,13 @@ def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
     return path
 
 
+def normalize_local_path(path: Path) -> Path:
+    path = path.expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return normalize_allowed_first_absolute_symlink(Path(os.path.normpath(str(path))))
+
+
 def normalize_project_path(root: Path, candidate: Path, *, label: str) -> Path:
     candidate = candidate.expanduser()
     if not candidate.is_absolute():
@@ -462,7 +469,7 @@ def _precheck_regular_leaf(parent_fd: int, leaf_name: str, *, label: str, missin
 
 
 def read_bounded_regular_file(path: Path, *, max_bytes: int, label: str, missing_ok: bool = False) -> tuple[bytes, bool] | None:
-    path = normalize_allowed_first_absolute_symlink(path)
+    path = normalize_local_path(path)
     parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", missing_ok=missing_ok)
     if parent_fd is None:
         return None
@@ -511,7 +518,7 @@ def write_all_fd(fd: int, data: bytes) -> None:
 
 
 def write_regular_file_no_follow(path: Path, data: bytes, *, label: str) -> None:
-    path = normalize_allowed_first_absolute_symlink(path)
+    path = normalize_local_path(path)
     parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", create=True)
     if parent_fd is None:  # pragma: no cover - create=True never returns None.
         raise RegistryError(f"could not inspect {label} parent")
