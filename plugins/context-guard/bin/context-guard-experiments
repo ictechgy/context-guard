@@ -15,9 +15,11 @@ import hashlib
 import ipaddress
 import json
 import math
+import os
 import re
 import shlex
 from pathlib import Path
+import stat
 import sys
 from typing import Any, NoReturn
 import unicodedata
@@ -26,6 +28,7 @@ from urllib.parse import urlparse
 TOOL_NAME = "context-guard-experiments"
 CONFIG_SCHEMA_VERSION = "contextguard.experiments.v1"
 DEFAULT_CONFIG = Path(".context-guard") / "experiments.json"
+MAX_CONFIG_BYTES = 64_000
 MAX_CONTEXT_DIFF_INPUT_BYTES = 256_000
 MAX_VISUAL_OCR_TEXT_BYTES = 64_000
 MAX_LEARNED_COMPRESSION_INPUT_BYTES = 128_000
@@ -49,6 +52,17 @@ LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_TARGET_PORT = 0
 LOCAL_PROXY_LOCALHOST_NAMES = {"localhost"}
+ALLOWED_FIRST_COMPONENT_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+DIR_FD_OPEN_SUPPORTED = os.open in getattr(os, "supports_dir_fd", set())
+DIR_FD_MKDIR_SUPPORTED = os.mkdir in getattr(os, "supports_dir_fd", set())
+DIR_FD_STAT_NOFOLLOW_SUPPORTED = (
+    os.stat in getattr(os, "supports_dir_fd", set())
+    and os.stat in getattr(os, "supports_follow_symlinks", set())
+)
+NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
 
 
 @dataclass(frozen=True)
@@ -276,6 +290,261 @@ def fail(message: str, code: int = 2) -> NoReturn:
     raise SystemExit(code)
 
 
+def os_error_detail(exc: OSError) -> str:
+    detail = exc.strerror or exc.__class__.__name__
+    if exc.errno is not None:
+        return f"{detail} (errno {exc.errno})"
+    return detail
+
+
+def _no_follow_flag(*, label: str) -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        raise RegistryError(f"{label} requires O_NOFOLLOW support")
+    return os.O_NOFOLLOW
+
+
+def _directory_open_flags(*, follow_final: bool = False, label: str) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if not follow_final:
+        flags |= _no_follow_flag(label=label)
+    return flags
+
+
+def _file_open_flags(*, label: str, write: bool = False) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC if write else os.O_RDONLY
+    flags |= _no_follow_flag(label=label)
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def _leaf_name(path: Path, *, label: str) -> str:
+    name = path.name
+    if name in {"", ".", ".."}:
+        raise RegistryError(f"{label} must name a regular file")
+    return name
+
+
+def _normalized_link_target(anchor: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if target.is_absolute():
+        return Path(os.path.normpath(str(target)))
+    return Path(os.path.normpath(str(anchor / target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute():
+        return path
+    parts = path.parts
+    if len(parts) < 2:
+        return path
+    first = parts[1]
+    expected = ALLOWED_FIRST_COMPONENT_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
+    try:
+        if link.is_symlink() and _normalized_link_target(Path(path.anchor), os.readlink(link)) == expected:
+            return expected.joinpath(*parts[2:])
+    except OSError:
+        return path
+    return path
+
+
+def normalize_project_path(root: Path, candidate: Path, *, label: str) -> Path:
+    candidate = candidate.expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    normalized = normalize_allowed_first_absolute_symlink(Path(os.path.normpath(str(candidate))))
+    try:
+        normalized.relative_to(root)
+    except ValueError as exc:
+        raise RegistryError(f"{label} must stay inside project root: {normalized}") from exc
+    return normalized
+
+
+def open_directory_no_follow(path: Path, *, label: str, create: bool = False, missing_ok: bool = False) -> int | None:
+    path = normalize_allowed_first_absolute_symlink(path)
+    if not DIR_FD_OPEN_SUPPORTED:
+        raise RegistryError(f"{label} requires dir_fd open support")
+    if create and not DIR_FD_MKDIR_SUPPORTED:
+        raise RegistryError(f"{label} requires dir_fd mkdir support")
+    flags = _directory_open_flags(label=label)
+    if path.is_absolute():
+        anchor = path.anchor or os.sep
+        parts = path.parts[1:]
+        try:
+            current_fd = os.open(anchor, _directory_open_flags(follow_final=True, label=label))
+        except OSError as exc:
+            raise RegistryError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+    else:
+        parts = path.parts
+        try:
+            current_fd = os.open(".", flags)
+        except OSError as exc:
+            raise RegistryError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                raise RegistryError(f"{label} must not contain parent traversal")
+            next_fd = -1
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if missing_ok:
+                    os.close(current_fd)
+                    current_fd = -1
+                    return None
+                if not create:
+                    raise RegistryError(f"could not inspect {label}: missing directory component") from None
+                try:
+                    os.mkdir(part, mode=0o755, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise RegistryError(f"could not create {label}: {os_error_detail(exc)}") from exc
+                try:
+                    next_fd = os.open(part, flags, dir_fd=current_fd)
+                except OSError as exc:
+                    raise RegistryError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+            except OSError as exc:
+                raise RegistryError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise RegistryError(f"{label} must not traverse non-directory components")
+            except Exception:
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                raise
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+
+def _precheck_regular_leaf(parent_fd: int, leaf_name: str, *, label: str, missing_ok: bool = False) -> bool:
+    if not DIR_FD_STAT_NOFOLLOW_SUPPORTED:
+        raise RegistryError(f"{label} requires dir_fd stat support")
+    try:
+        st = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        if missing_ok:
+            return False
+        raise RegistryError(f"could not inspect {label}: missing file") from None
+    except OSError as exc:
+        raise RegistryError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise RegistryError(f"{label} must be a regular file")
+    return True
+
+
+def read_bounded_regular_file(path: Path, *, max_bytes: int, label: str, missing_ok: bool = False) -> tuple[bytes, bool] | None:
+    path = normalize_allowed_first_absolute_symlink(path)
+    parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", missing_ok=missing_ok)
+    if parent_fd is None:
+        return None
+    fd = -1
+    try:
+        leaf = _leaf_name(path, label=label)
+        exists = _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=missing_ok)
+        if not exists:
+            return None
+        fd = os.open(leaf, _file_open_flags(label=label), dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RegistryError(f"{label} must be a regular file")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        truncated = len(raw) > max_bytes
+        return raw[:max_bytes], truncated
+    except OSError as exc:
+        raise RegistryError(f"could not read {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+
+
+def write_all_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written <= 0:
+            raise OSError("short write")
+        offset += written
+
+
+def write_regular_file_no_follow(path: Path, data: bytes, *, label: str) -> None:
+    path = normalize_allowed_first_absolute_symlink(path)
+    parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", create=True)
+    if parent_fd is None:  # pragma: no cover - create=True never returns None.
+        raise RegistryError(f"could not inspect {label} parent")
+    fd = -1
+    try:
+        leaf = _leaf_name(path, label=label)
+        _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
+        fd = os.open(leaf, _file_open_flags(label=label, write=True), 0o644, dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RegistryError(f"{label} must be a regular file")
+        write_all_fd(fd, data)
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise RegistryError(f"could not write {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.fsync(parent_fd)
+        except OSError:
+            pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+
+
 def resolve_root(raw_root: str | None) -> Path:
     root = Path(raw_root) if raw_root else Path.cwd()
     try:
@@ -286,27 +555,21 @@ def resolve_root(raw_root: str | None) -> Path:
 
 def resolve_config_path(root: Path, raw_config: str | None) -> Path:
     if raw_config:
-        candidate = Path(raw_config).expanduser()
-        if not candidate.is_absolute():
-            candidate = root / candidate
+        candidate = Path(raw_config)
     else:
-        candidate = root / DEFAULT_CONFIG
-    try:
-        resolved = candidate.resolve(strict=False)
-    except OSError as exc:
-        raise RegistryError(f"could not resolve config path: {candidate}: {exc}") from exc
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise RegistryError(f"config path must stay inside project root: {resolved}") from exc
-    return resolved
+        candidate = DEFAULT_CONFIG
+    return normalize_project_path(root, candidate, label="config path")
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    loaded = read_bounded_regular_file(path, max_bytes=MAX_CONFIG_BYTES, label="config", missing_ok=True)
+    if loaded is None:
         return {"schema_version": CONFIG_SCHEMA_VERSION, "enabled": []}
+    raw, truncated = loaded
+    if truncated:
+        raise RegistryError("config exceeded max bytes")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as exc:
         raise RegistryError(f"could not parse config JSON: {path}: {exc.msg}") from exc
     except OSError as exc:
@@ -328,11 +591,8 @@ def write_config(path: Path, enabled: set[str]) -> dict[str, Any]:
         "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "enabled": sorted(enabled),
     }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    except OSError as exc:
-        raise RegistryError(f"could not write config: {path}: {exc}") from exc
+    payload = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    write_regular_file_no_follow(path, payload, label="config")
     return data
 
 
@@ -459,18 +719,16 @@ def read_bounded_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if args.input:
         path = Path(args.input)
         source_label = source_label or str(path)
-        try:
-            with path.open("rb") as handle:
-                raw = handle.read(MAX_CONTEXT_DIFF_INPUT_BYTES + 1)
-        except OSError as exc:
-            raise RegistryError(f"could not read input: {path}: {exc}") from exc
+        loaded = read_bounded_regular_file(path, max_bytes=MAX_CONTEXT_DIFF_INPUT_BYTES, label="input")
+        assert loaded is not None
+        raw, truncated = loaded
     else:
         source_label = source_label or "stdin"
         raw = sys.stdin.buffer.read(MAX_CONTEXT_DIFF_INPUT_BYTES + 1)
+        truncated = len(raw) > MAX_CONTEXT_DIFF_INPUT_BYTES
+        raw = raw[:MAX_CONTEXT_DIFF_INPUT_BYTES]
     if not raw:
         raise RegistryError("context-diff-compaction plan requires diff input on stdin or --input")
-    truncated = len(raw) > MAX_CONTEXT_DIFF_INPUT_BYTES
-    raw = raw[:MAX_CONTEXT_DIFF_INPUT_BYTES]
     text = raw.decode("utf-8", errors="replace")
     metadata = {
         "source_label": source_label,
@@ -678,23 +936,21 @@ def read_visual_ocr_text(args: argparse.Namespace) -> dict[str, Any]:
     if args.ocr_text_file is not None:
         path = Path(args.ocr_text_file)
         source_label = args.ocr_source_label.strip() if args.ocr_source_label else path.name
-        try:
-            with path.open("rb") as handle:
-                raw = handle.read(MAX_VISUAL_OCR_TEXT_BYTES + 1)
-        except OSError as exc:
-            raise RegistryError(f"could not read OCR text file: {path}: {exc}") from exc
+        loaded = read_bounded_regular_file(path, max_bytes=MAX_VISUAL_OCR_TEXT_BYTES, label="OCR text file")
+        assert loaded is not None
+        raw, truncated = loaded
         source_type = "file"
     elif args.ocr_text is not None:
         raw = args.ocr_text.encode("utf-8")
         source_label = args.ocr_source_label.strip() if args.ocr_source_label else "inline"
         source_type = "inline"
+        truncated = len(raw) > MAX_VISUAL_OCR_TEXT_BYTES
+        raw = raw[:MAX_VISUAL_OCR_TEXT_BYTES]
     else:
         raw = b""
         source_label = args.ocr_source_label.strip() if args.ocr_source_label else None
         source_type = None
-
-    truncated = len(raw) > MAX_VISUAL_OCR_TEXT_BYTES
-    raw = raw[:MAX_VISUAL_OCR_TEXT_BYTES]
+        truncated = False
     try:
         text = raw.decode("utf-8")
         valid_encoding = True
@@ -1059,22 +1315,21 @@ def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, A
         path = Path(args.input)
         source_label = source_label or sanitize_self_hosted_text(path)
         try:
-            with path.open("rb") as handle:
-                raw = handle.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
-        except OSError as exc:
-            safe_path = sanitize_self_hosted_text(path)
-            detail = exc.strerror or exc.__class__.__name__
-            if exc.errno is not None:
-                detail = f"{detail} (errno {exc.errno})"
-            raise RegistryError(f"could not read self-hosted metrics input: {safe_path}: {detail}") from exc
+            loaded = read_bounded_regular_file(path, max_bytes=MAX_SELF_HOSTED_METRICS_INPUT_BYTES, label=f"self-hosted metrics input: {source_label}")
+        except RegistryError as exc:
+            raise RegistryError(f"could not read self-hosted metrics input: {source_label}: {exc}") from exc
+        assert loaded is not None
+        raw, loaded_truncated = loaded
     else:
         source_label = source_label or "stdin"
         raw = sys.stdin.buffer.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
-    if len(raw) > MAX_SELF_HOSTED_METRICS_INPUT_BYTES:
+        loaded_truncated = len(raw) > MAX_SELF_HOSTED_METRICS_INPUT_BYTES
+        raw = raw[:MAX_SELF_HOSTED_METRICS_INPUT_BYTES]
+    if loaded_truncated:
         return None, {
             "source_label": source_label,
             "bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
-            "sha256": hashlib.sha256(raw[:MAX_SELF_HOSTED_METRICS_INPUT_BYTES]).hexdigest(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "truncated": True,
             "max_bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
             "envelope_source": None,
@@ -1333,18 +1588,16 @@ def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], 
     path = Path(args.input)
     safe_path = sanitize_local_proxy_value(path)
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
-    except OSError as exc:
-        detail = exc.strerror or exc.__class__.__name__
-        if exc.errno is not None:
-            detail = f"{detail} (errno {exc.errno})"
-        raise RegistryError(f"could not read local-proxy input: {safe_path}: {detail}") from exc
-    if len(raw) > MAX_SELF_HOSTED_METRICS_INPUT_BYTES:
+        loaded = read_bounded_regular_file(path, max_bytes=MAX_SELF_HOSTED_METRICS_INPUT_BYTES, label=f"local-proxy input: {safe_path}")
+    except RegistryError as exc:
+        raise RegistryError(f"could not read local-proxy input: {safe_path}: {exc}") from exc
+    assert loaded is not None
+    raw, loaded_truncated = loaded
+    if loaded_truncated:
         return {}, {
             "source_label": safe_path,
             "bytes": MAX_SELF_HOSTED_METRICS_INPUT_BYTES,
-            "sha256": hashlib.sha256(raw[:MAX_SELF_HOSTED_METRICS_INPUT_BYTES]).hexdigest(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "truncated": True,
             "ignored_keys": [],
         }
@@ -1691,16 +1944,14 @@ def read_learned_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if args.input:
         path = Path(args.input)
         source_label = source_label or path.name
-        try:
-            with path.open("rb") as handle:
-                raw = handle.read(MAX_LEARNED_COMPRESSION_INPUT_BYTES + 1)
-        except OSError as exc:
-            raise RegistryError(f"could not read learned-compression input: {path}: {exc}") from exc
+        loaded = read_bounded_regular_file(path, max_bytes=MAX_LEARNED_COMPRESSION_INPUT_BYTES, label="learned-compression input")
+        assert loaded is not None
+        raw, truncated = loaded
     else:
         source_label = source_label or "stdin"
         raw = sys.stdin.buffer.read(MAX_LEARNED_COMPRESSION_INPUT_BYTES + 1)
-    truncated = len(raw) > MAX_LEARNED_COMPRESSION_INPUT_BYTES
-    raw = raw[:MAX_LEARNED_COMPRESSION_INPUT_BYTES]
+        truncated = len(raw) > MAX_LEARNED_COMPRESSION_INPUT_BYTES
+        raw = raw[:MAX_LEARNED_COMPRESSION_INPUT_BYTES]
     text = raw.decode("utf-8", errors="replace")
     metadata = {
         "source_label": source_label,

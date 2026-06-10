@@ -635,6 +635,126 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("config path must stay inside project root", rejected.stderr)
                     self.assertNotIn("Traceback", rejected.stderr + rejected.stdout)
 
+    def test_experimental_registry_config_rejects_symlinks_and_special_files(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    root = sandbox / "project"
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir(parents=True)
+                    target = sandbox / "target.json"
+                    target.write_text(json.dumps({"schema_version": "contextguard.experiments.v1", "enabled": []}), encoding="utf-8")
+                    config = config_dir / "experiments.json"
+                    try:
+                        config.symlink_to(target)
+                    except OSError as exc:
+                        self.skipTest(f"symlink creation unavailable: {exc}")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "list", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("config must be a regular file", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    root = sandbox / "project"
+                    root.mkdir()
+                    real_config_dir = sandbox / "real-config"
+                    real_config_dir.mkdir()
+                    try:
+                        (root / ".context-guard").symlink_to(real_config_dir, target_is_directory=True)
+                    except OSError as exc:
+                        self.skipTest(f"symlink creation unavailable: {exc}")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "list", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("could not inspect config parent", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                if hasattr(os, "mkfifo"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp) / "project"
+                        config_dir = root / ".context-guard"
+                        config_dir.mkdir(parents=True)
+                        os.mkfifo(config_dir / "experiments.json")
+                        proc = subprocess.run(
+                            [sys.executable, str(script), "enable", "output-receipt-trim", "--root", str(root), "--json"],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        self.assertIn("config must be a regular file", proc.stderr)
+                        self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_experimental_registry_config_write_race_cannot_redirect_to_symlink(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_config_write_race_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir()
+                    config = config_dir / "experiments.json"
+                    config.write_text(json.dumps({"schema_version": "contextguard.experiments.v1", "enabled": []}), encoding="utf-8")
+                    outside = root / "outside.json"
+                    outside.write_text("outside-safe\n", encoding="utf-8")
+                    real_open = module.os.open
+                    swapped = False
+
+                    def racing_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                        nonlocal swapped
+                        if (
+                            not swapped
+                            and dir_fd is not None
+                            and os.fspath(path_arg) == "experiments.json"
+                            and flags & module.os.O_WRONLY
+                        ):
+                            config.unlink()
+                            config.symlink_to(outside)
+                            swapped = True
+                        if dir_fd is None:
+                            return real_open(path_arg, flags, mode)
+                        return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+
+                    with mock.patch.object(module.os, "open", racing_open):
+                        with self.assertRaises(module.RegistryError):
+                            module.write_config(config, {"output-receipt-trim"})
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "outside-safe\n")
+
+    def test_experimental_registry_safe_io_primitives_fail_closed(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_safe_io_fail_closed_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "input.json"
+                    path.write_text("{}", encoding="utf-8")
+                    original_no_follow = module.NO_FOLLOW_SUPPORTED
+                    original_dir_fd = module.DIR_FD_OPEN_SUPPORTED
+                    original_stat = module.DIR_FD_STAT_NOFOLLOW_SUPPORTED
+                    try:
+                        module.NO_FOLLOW_SUPPORTED = False
+                        with self.assertRaisesRegex(module.RegistryError, "O_NOFOLLOW"):
+                            module.read_bounded_regular_file(path, max_bytes=10, label="test input")
+                        module.NO_FOLLOW_SUPPORTED = original_no_follow
+                        module.DIR_FD_OPEN_SUPPORTED = False
+                        with self.assertRaisesRegex(module.RegistryError, "dir_fd open"):
+                            module.write_regular_file_no_follow(path, b"{}", label="config")
+                        module.DIR_FD_OPEN_SUPPORTED = original_dir_fd
+                        module.DIR_FD_STAT_NOFOLLOW_SUPPORTED = False
+                        with self.assertRaisesRegex(module.RegistryError, "dir_fd stat"):
+                            module.read_bounded_regular_file(path, max_bytes=10, label="test input")
+                    finally:
+                        module.NO_FOLLOW_SUPPORTED = original_no_follow
+                        module.DIR_FD_OPEN_SUPPORTED = original_dir_fd
+                        module.DIR_FD_STAT_NOFOLLOW_SUPPORTED = original_stat
+
     def test_experimental_registry_rejects_unknown_id_without_traceback(self):
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
@@ -824,6 +944,114 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     payload = json.loads(proc.stdout)
                     self.assertTrue(payload["metadata"]["protected_zone_policy"]["enabled"])
                     self.assertFalse((Path(tmp) / ".context-guard" / "experiments.json").exists())
+
+    def test_experimental_registry_planner_file_inputs_reject_symlink_and_fifo(self):
+        cases = [
+            (
+                "context-diff",
+                ["plan", "context-diff-compaction", "--input", "{path}", "--json"],
+                "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+                "input",
+            ),
+            (
+                "visual-ocr",
+                [
+                    "plan",
+                    "visual-crop-ocr",
+                    "--full-evidence-receipt",
+                    "full-visual",
+                    "--missed-context-note",
+                    "legend outside crop",
+                    "--ocr-text-file",
+                    "{path}",
+                    "--json",
+                ],
+                "OCR says total is 42\n",
+                "OCR text file",
+            ),
+            (
+                "self-hosted",
+                ["plan", "self-hosted-metrics-ledger", "--input", "{path}", "--json"],
+                json.dumps({"self_hosted_metrics": {"latency_ms": 12, "peak_memory_mb": 34}}),
+                "self-hosted metrics input",
+            ),
+            (
+                "local-proxy",
+                ["plan", "local-proxy", "--input", "{path}", "--json"],
+                json.dumps({"local_proxy": {"bind_host": "127.0.0.1", "target_host": "127.0.0.1"}}),
+                "local-proxy input",
+            ),
+            (
+                "learned",
+                [
+                    "plan",
+                    "learned-compression",
+                    "--input",
+                    "{path}",
+                    "--sanitized",
+                    "--trusted-source",
+                    "--exact-fallback-receipt",
+                    "abcdef1234567890",
+                    "--reexpand-command",
+                    "context-guard-artifact get abcdef1234567890",
+                    "--json",
+                ],
+                "This sanitized paragraph describes a safe user workflow in prose.\n",
+                "learned-compression input",
+            ),
+        ]
+
+        def materialize(args: list[str], path: Path) -> list[str]:
+            return [str(path) if item == "{path}" else item for item in args]
+
+        for script in EXPERIMENT_SCRIPTS:
+            for name, args, text, expected_label in cases:
+                with self.subTest(script=script, planner=name, shape="regular"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        path = Path(tmp) / f"{name}.txt"
+                        path.write_text(text, encoding="utf-8")
+                        proc = subprocess.run(
+                            [sys.executable, str(script), *materialize(args, path)],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["tool"], "context-guard-experiments")
+
+                with self.subTest(script=script, planner=name, shape="symlink"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        real = Path(tmp) / f"{name}.txt"
+                        real.write_text(text, encoding="utf-8")
+                        link = Path(tmp) / f"{name}-link.txt"
+                        try:
+                            link.symlink_to(real)
+                        except OSError as exc:
+                            self.skipTest(f"symlink creation unavailable: {exc}")
+                        proc = subprocess.run(
+                            [sys.executable, str(script), *materialize(args, link)],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        self.assertIn(expected_label, proc.stderr)
+                        self.assertIn("must be a regular file", proc.stderr)
+                        self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                if hasattr(os, "mkfifo"):
+                    with self.subTest(script=script, planner=name, shape="fifo"):
+                        with tempfile.TemporaryDirectory() as tmp:
+                            fifo = Path(tmp) / f"{name}.txt"
+                            os.mkfifo(fifo)
+                            proc = subprocess.run(
+                                [sys.executable, str(script), *materialize(args, fifo)],
+                                text=True,
+                                capture_output=True,
+                            )
+                            self.assertEqual(proc.returncode, 2)
+                            self.assertIn(expected_label, proc.stderr)
+                            self.assertIn("must be a regular file", proc.stderr)
+                            self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_context_diff_compaction_plan_json_contract(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -10,2 +10,2 @@ def run\n-old\n+new\n"
