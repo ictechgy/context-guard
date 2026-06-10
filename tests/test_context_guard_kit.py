@@ -1714,7 +1714,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "plan",
                         "self-hosted-metrics-ledger",
                         "--source-label",
-                        "api_key=supersecretvalue",
+                        "/tmp/credential=notredactedmaybe/input.json",
                         "--latency-ms",
                         "123.5",
                         "--peak-memory-mb",
@@ -1752,7 +1752,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["mode"], "dry_run")
                 self.assertEqual(payload["status"], "ready_for_ledger_review")
                 self.assertEqual(payload["input"]["envelope_source"], "cli_flags")
-                self.assertEqual(payload["input"]["source_label"], "api_key=[REDACTED]")
+                self.assertEqual(payload["input"]["source_label"], "/tmp/[REDACTED]/input.json")
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
                 self.assertFalse(payload["policy"]["ledger_write_performed"])
                 self.assertFalse(payload["policy"]["hosted_api_token_savings_claim_allowed"])
@@ -1779,6 +1779,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "abcdefghijklmnopqrstuvwxyz",
                     "AKIA1234567890ABCDEF",
                     "supersecret",
+                    "notredactedmaybe",
                     "runtime-secret-value",
                     "user:pass",
                     "sk-ant",
@@ -1831,6 +1832,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "self_hosted_metrics": {
                             "latency_ms": 1,
                             "api_key=hidden-secret-value": 99,
+                            "credential=notredactedmaybe": 98,
+                            "X-Amz-Signature=abcdefghijklmnopqrstuvwxyz": 97,
+                            "access_key=plain-access-key": 96,
                         }
                     }),
                     text=True,
@@ -1839,8 +1843,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 unknown_key_payload = json.loads(unknown_key.stdout)
                 self.assertEqual(unknown_key_payload["status"], "ready_for_ledger_review")
-                self.assertIn("api_key=[REDACTED]", unknown_key_payload["input"]["ignored_keys"])
-                self.assertNotIn("hidden-secret-value", json.dumps(unknown_key_payload, sort_keys=True))
+                self.assertEqual(unknown_key_payload["input"]["ignored_keys"], ["redacted_key"])
+                serialized_unknown_key = json.dumps(unknown_key_payload, sort_keys=True)
+                for secret_fragment in (
+                    "hidden-secret-value",
+                    "notredactedmaybe",
+                    "abcdefghijklmnopqrstuvwxyz",
+                    "plain-access-key",
+                    "credential=",
+                    "X-Amz-Signature",
+                    "access_key",
+                ):
+                    self.assertNotIn(secret_fragment, serialized_unknown_key)
 
                 nested = subprocess.run(
                     [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],

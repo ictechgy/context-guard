@@ -39,6 +39,8 @@ MAX_SELF_HOSTED_ENERGY_WH = 1_000_000
 MAX_SELF_HOSTED_LOCAL_COST_USD = 1_000_000
 MAX_SELF_HOSTED_TOKENS_PER_SECOND = 10_000_000
 TOKEN_PROXY_BYTES_PER_TOKEN = 4
+MAX_SELF_HOSTED_JSON_DEPTH = 100
+MAX_SELF_HOSTED_JSON_NODES = 10_000
 
 
 @dataclass(frozen=True)
@@ -843,11 +845,19 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
-SECRET_LABEL_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
+SECRET_LABEL_KEY_RE = (
+    r"[A-Za-z0-9_.-]*(?:"
+    r"api[-_]?key|apikey|token|secret|password|passwd|pwd|client[-_]?secret|"
+    r"credential|credentials|signature|sig|x-amz-signature|x-amz-credential|x-amz-security-token|"
+    r"awsaccesskeyid|(?:aws[-_]?)?access[-_]?key(?:[-_]?id)?|"
+    r"private[-_]?key|privatekey|pgp[-_]?private[-_]?key|pgpprivatekey|ssh[-_]?key|sshkey"
+    r")[A-Za-z0-9_.-]*"
+)
 SECRET_LABEL_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
 SECRET_LABEL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(rf"(?i)(^|[/\\\s{{,?&#;\[\(<])({SECRET_LABEL_KEY_RE}(?:[:=][^\s,}}&#;\]\)\\/]*)?)"), r"\1[REDACTED]"),
     (re.compile(rf"(?i)([?&#;]({SECRET_LABEL_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
     (
         re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_LABEL_KEY_RE})[\"']?\s*[:=]\s*){SECRET_LABEL_VALUE_RE}"),
@@ -897,7 +907,11 @@ def sanitize_self_hosted_ignored_key(value: Any) -> str:
     if not isinstance(value, str):
         return "non_string_key"
     text = sanitize_self_hosted_text(value)
-    return text or "empty_key"
+    if not text:
+        return "empty_key"
+    if "[REDACTED]" in text:
+        return "redacted_key"
+    return text
 
 
 def normalize_self_hosted_metric(value: Any, *, maximum: float) -> float | None:
@@ -990,14 +1004,22 @@ def reject_non_finite_json_constant(value: str) -> NoReturn:
 
 
 def has_non_finite_json_number(value: Any) -> bool:
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, float):
-        return not math.isfinite(value)
-    if isinstance(value, list):
-        return any(has_non_finite_json_number(item) for item in value)
-    if isinstance(value, dict):
-        return any(has_non_finite_json_number(item) for item in value.values())
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    while stack:
+        item, depth = stack.pop()
+        visited += 1
+        if depth > MAX_SELF_HOSTED_JSON_DEPTH or visited > MAX_SELF_HOSTED_JSON_NODES:
+            return True
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                return True
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, dict):
+            stack.extend((child, depth + 1) for child in item.values())
     return False
 
 
@@ -1043,6 +1065,8 @@ def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, A
         raise RegistryError(f"could not parse self-hosted metrics JSON: {exc.msg}") from exc
     except ValueError as exc:
         raise RegistryError(f"could not parse self-hosted metrics JSON: {exc}") from exc
+    except RecursionError as exc:
+        raise RegistryError("could not parse self-hosted metrics JSON: nesting too deep") from exc
     if has_non_finite_json_number(payload):
         raise RegistryError("could not parse self-hosted metrics JSON: non-finite JSON number")
     return payload, {
