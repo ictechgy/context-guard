@@ -16,8 +16,8 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
-from typing import Any, BinaryIO, Iterable
+import threading
+from typing import Any, Iterable
 
 SCHEMA_VERSION = "contextguard.filter-dsl.v1"
 TOOL_NAME = "context-guard-filter"
@@ -334,70 +334,95 @@ def print_validation(valid: bool, errors: list[str], count: int, as_json: bool) 
 @dataclass
 class CommandResult:
     returncode: int
-    stdout_file: BinaryIO | None
-    stderr_file: BinaryIO | None
     stdout_text: str
     stderr_text: str
     output_bytes: int
     capture_limited: bool
     timed_out: bool
-
-    def write_passthrough(self) -> None:
-        write_binary_stream(self.stdout_file, sys.stdout)
-        write_binary_stream(self.stderr_file, sys.stderr)
-
-    def close(self) -> None:
-        for handle in (self.stdout_file, self.stderr_file):
-            if handle is None:
-                continue
-            try:
-                handle.close()
-            except OSError:
-                pass
+    passthrough_emitted: bool
 
 
-def write_binary_stream(handle: BinaryIO | None, stream: Any) -> None:
-    if handle is None:
-        return
-    handle.seek(0)
+def write_binary_chunk(stream: Any, chunk: bytes) -> None:
     stream.flush()
     binary = getattr(stream, "buffer", None)
-    decoder = None if binary is not None else codecs.getincrementaldecoder("utf-8")("replace")
-    while True:
-        chunk = handle.read(64 * 1024)
-        if not chunk:
-            break
-        if binary is not None:
-            binary.write(chunk)
-        else:
-            assert decoder is not None
-            stream.write(decoder.decode(chunk))
-    if decoder is not None:
-        stream.write(decoder.decode(b"", final=True))
+    if binary is not None:
+        binary.write(chunk)
+    else:
+        stream.write(chunk.decode("utf-8", "replace"))
     stream.flush()
 
 
-def _decode_temp_file(handle: BinaryIO) -> str:
-    handle.seek(0)
-    return handle.read().decode("utf-8", "replace")
+class BoundedCapture:
+    def __init__(self, max_capture_bytes: int) -> None:
+        self.max_capture_bytes = max_capture_bytes
+        self.stdout = bytearray()
+        self.stderr = bytearray()
+        self.output_bytes = 0
+        self.capture_limited = False
+        self.passthrough_emitted = False
+        self._lock = threading.Lock()
+        self._stdout_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._stderr_decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
+    def consume(self, stream_name: str, chunk: bytes) -> None:
+        if not chunk:
+            return
+        with self._lock:
+            self.output_bytes += len(chunk)
+            if self.capture_limited:
+                write_binary_chunk(sys.stdout if stream_name == "stdout" else sys.stderr, chunk)
+                return
+            stored_total = len(self.stdout) + len(self.stderr)
+            remaining = self.max_capture_bytes - stored_total
+            target = self.stdout if stream_name == "stdout" else self.stderr
+            if len(chunk) <= remaining:
+                target.extend(chunk)
+                return
+            if remaining > 0:
+                target.extend(chunk[:remaining])
+                overflow = chunk[remaining:]
+            else:
+                overflow = chunk
+            self.capture_limited = True
+            self.passthrough_emitted = True
+            write_binary_chunk(sys.stdout, bytes(self.stdout))
+            write_binary_chunk(sys.stderr, bytes(self.stderr))
+            write_binary_chunk(sys.stdout if stream_name == "stdout" else sys.stderr, overflow)
 
-def _temp_file_size(handle: BinaryIO) -> int:
-    handle.flush()
-    return int(handle.tell())
+    def text(self) -> tuple[str, str]:
+        stdout = self._stdout_decoder.decode(bytes(self.stdout), final=True)
+        stderr = self._stderr_decoder.decode(bytes(self.stderr), final=True)
+        return stdout, stderr
 
 
 def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -> CommandResult:
     if not argv:
         stderr = f"{TOOL_NAME}: command failed to start: no command provided\n"
         output_bytes = len(stderr.encode("utf-8", "replace"))
-        return CommandResult(127, None, None, "", stderr, output_bytes, False, False)
-    stdout_file: BinaryIO | None = None
-    stderr_file: BinaryIO | None = None
+        return CommandResult(127, "", stderr, output_bytes, False, False, False)
+    capture = BoundedCapture(max_capture_bytes)
+
+    def read_pipe(pipe: Any, stream_name: str) -> None:
+        try:
+            while True:
+                chunk = pipe.read(64 * 1024)
+                if not chunk:
+                    break
+                capture.consume(stream_name, chunk)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
     try:
-        stdout_file = tempfile.TemporaryFile()
-        stderr_file = tempfile.TemporaryFile()
-        proc = subprocess.Popen(argv, stdout=stdout_file, stderr=stderr_file)
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        stdout_thread = threading.Thread(target=read_pipe, args=(proc.stdout, "stdout"), daemon=True)
+        stderr_thread = threading.Thread(target=read_pipe, args=(proc.stderr, "stderr"), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
         timed_out = False
         try:
             returncode = proc.wait(timeout=timeout_seconds)
@@ -409,23 +434,22 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-            stderr_file.write(f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n".encode("utf-8"))
-        stdout_size = _temp_file_size(stdout_file)
-        stderr_size = _temp_file_size(stderr_file)
-        output_bytes = stdout_size + stderr_size
-        capture_limited = output_bytes > max_capture_bytes
-        stdout_text = "" if capture_limited else _decode_temp_file(stdout_file)
-        stderr_text = "" if capture_limited else _decode_temp_file(stderr_file)
-        return CommandResult(returncode, stdout_file, stderr_file, stdout_text, stderr_text, output_bytes, capture_limited, timed_out)
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+        for thread in (stdout_thread, stderr_thread):
+            thread.join(timeout=5)
+        if timed_out:
+            capture.consume("stderr", f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n".encode("utf-8"))
+        stdout_text, stderr_text = ("", "") if capture.capture_limited else capture.text()
+        return CommandResult(returncode, stdout_text, stderr_text, capture.output_bytes, capture.capture_limited, timed_out, capture.passthrough_emitted)
     except OSError as exc:
         stderr = f"{TOOL_NAME}: command failed to start: {exc.strerror or exc.__class__.__name__}\n"
         encoded = stderr.encode("utf-8", "replace")
-        if stderr_file is not None:
-            stderr_file.write(encoded)
-            output_bytes = (_temp_file_size(stdout_file) if stdout_file is not None else 0) + _temp_file_size(stderr_file)
-            return CommandResult(127, stdout_file, stderr_file, "", stderr, output_bytes, output_bytes > max_capture_bytes, False)
         output_bytes = len(encoded)
-        return CommandResult(127, stdout_file, stderr_file, "", stderr, output_bytes, False, False)
+        return CommandResult(127, "", stderr, output_bytes, False, False, False)
 
 
 def emit_run_report(args: argparse.Namespace, payload: dict[str, Any]) -> None:
@@ -455,56 +479,50 @@ def cmd_run(args: argparse.Namespace) -> int:
     timeout_seconds = bounded_int(args.timeout_seconds, DEFAULT_TIMEOUT_SECONDS, 1, MAX_TIMEOUT_SECONDS)
     filters, errors = load_filters(Path(args.config).expanduser())
     result = run_command(command, timeout_seconds, max_capture)
-    try:
-        rc = result.returncode
-        output = result.stdout_text + result.stderr_text
-        protected_nonzero = rc != 0 and is_protected_command(command)
-        report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
-        if result.timed_out:
-            report["reason"] = "timeout"
-        elif errors:
-            report["reason"] = "invalid-config"
-            report["errors"] = errors[:10]
-        elif result.capture_limited:
-            report["reason"] = "capture-limit"
-            report["output_bytes"] = result.output_bytes
-            report["max_capture_bytes"] = max_capture
+    rc = result.returncode
+    output = result.stdout_text + result.stderr_text
+    protected_nonzero = rc != 0 and is_protected_command(command)
+    report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
+    if result.timed_out:
+        report["reason"] = "timeout"
+    elif errors:
+        report["reason"] = "invalid-config"
+        report["errors"] = errors[:10]
+    elif result.capture_limited:
+        report["reason"] = "capture-limit"
+        report["output_bytes"] = result.output_bytes
+        report["max_capture_bytes"] = max_capture
+    else:
+        matched = next((flt for flt in filters if filter_matches(flt, command)), None)
+        if matched is None:
+            report["reason"] = "no-match"
+        elif protected_nonzero:
+            report["reason"] = "protected-nonzero"
+            report["filter_id"] = matched.id
+        elif rc != 0 and matched.passthrough_on_exit:
+            report["reason"] = "nonzero-passthrough"
+            report["filter_id"] = matched.id
         else:
-            matched = next((flt for flt in filters if filter_matches(flt, command)), None)
-            if matched is None:
-                report["reason"] = "no-match"
-            elif protected_nonzero:
-                report["reason"] = "protected-nonzero"
-                report["filter_id"] = matched.id
-            elif rc != 0 and matched.passthrough_on_exit:
-                report["reason"] = "nonzero-passthrough"
+            try:
+                lines = output.splitlines(keepends=True)
+                filtered = select_lines(lines, matched, max_line_chars)
+            except re.error as exc:
+                report["reason"] = f"filter-error:{compact(str(exc), 80)}"
                 report["filter_id"] = matched.id
             else:
-                try:
-                    lines = output.splitlines(keepends=True)
-                    filtered = select_lines(lines, matched, max_line_chars)
-                except re.error as exc:
-                    report["reason"] = f"filter-error:{compact(str(exc), 80)}"
+                if output and not filtered:
+                    report["reason"] = "empty-output-fallback"
                     report["filter_id"] = matched.id
                 else:
-                    if output and not filtered:
-                        report["reason"] = "empty-output-fallback"
-                        report["filter_id"] = matched.id
-                    else:
-                        sys.stdout.write("".join(filtered))
-                        report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": len(lines), "output_lines": len(filtered)})
-                        emit_run_report(args, report)
-                        return rc
-        if result.stdout_file is None and result.stderr_file is None:
-            sys.stdout.write(result.stdout_text)
-            sys.stderr.write(result.stderr_text)
-        else:
-            result.write_passthrough()
-        emit_run_report(args, report)
-        return rc
-    finally:
-        result.close()
-
+                    sys.stdout.write("".join(filtered))
+                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": len(lines), "output_lines": len(filtered)})
+                    emit_run_report(args, report)
+                    return rc
+    if not result.passthrough_emitted:
+        sys.stdout.write(result.stdout_text)
+        sys.stderr.write(result.stderr_text)
+    emit_run_report(args, report)
+    return rc
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=TOOL_NAME, description="Validate and apply bounded declarative command-output filters. Filtered mode applies line rules to combined stdout+stderr and writes the filtered result to stdout; passthrough mode preserves stdout/stderr streams.")
