@@ -1998,9 +1998,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_negative_csv_option_values(argv: list[str] | None) -> list[str] | None:
+    """Keep negative comma-separated option values portable across Python versions.
+
+    Python 3.11/3.12 argparse treats a value such as ``-1,0,20,10`` after an
+    option as another option token rather than as the option's value.  Python
+    3.14 accepts the same test input, so normalize the small set of CSV-valued
+    options that intentionally accepts negative numbers for validation.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    normalized: list[str] = []
+    pending_csv_option: str | None = None
+    csv_options = {"--crop-bounds"}
+    for token in argv:
+        if pending_csv_option is not None:
+            normalized.append(f"{pending_csv_option}={token}")
+            pending_csv_option = None
+            continue
+        if token in csv_options:
+            pending_csv_option = token
+            continue
+        normalized.append(token)
+    if pending_csv_option is not None:
+        normalized.append(pending_csv_option)
+    return normalized
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(normalize_negative_csv_option_values(argv))
     try:
         return int(args.func(args))
     except RegistryError as exc:
