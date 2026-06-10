@@ -19,6 +19,7 @@ import shlex
 from pathlib import Path
 import sys
 from typing import Any, NoReturn
+import unicodedata
 
 TOOL_NAME = "context-guard-experiments"
 CONFIG_SCHEMA_VERSION = "contextguard.experiments.v1"
@@ -842,20 +843,61 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
-SECRET_LABEL_RE = re.compile(
-    r"(?i)(sk-(?:ant-|proj-)?[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{12,}|xox[baprs]-[A-Za-z0-9-]{10,})"
+SECRET_LABEL_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
+SECRET_LABEL_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
+SECRET_LABEL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+    (re.compile(rf"(?i)([?&#;]({SECRET_LABEL_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
+    (
+        re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_LABEL_KEY_RE})[\"']?\s*[:=]\s*){SECRET_LABEL_VALUE_RE}"),
+        r"\1\2[REDACTED]",
+    ),
+    (
+        re.compile(rf"(?i)(^|[\s\"'])(--(?:{SECRET_LABEL_KEY_RE})(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"),
+        r"\1\2[REDACTED]",
+    ),
+    (re.compile(r"(?i)(^|[\s\"'])((?:-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
+    (re.compile(r"glpat-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
+    (re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}"), "[REDACTED]"),
+    (re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"), "[REDACTED]"),
+    (re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
+    (re.compile(r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
+    (re.compile(r"npm_[A-Za-z0-9]{20,}"), "[REDACTED]"),
+    (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED]"),
+    (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED]"),
+    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
 )
+
+
+def sanitize_self_hosted_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in text)
+    text = " ".join(text.split())
+    for pattern, replacement in SECRET_LABEL_PATTERNS:
+        text = pattern.sub(replacement, text)
+    if len(text) > MAX_SELF_HOSTED_LABEL_CHARS:
+        text = text[: MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
+    return text
 
 
 def sanitize_self_hosted_label(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    text = SECRET_LABEL_RE.sub("[REDACTED]", value).strip()
+    text = sanitize_self_hosted_text(value)
     if not text:
         return None
-    if len(text) > MAX_SELF_HOSTED_LABEL_CHARS:
-        text = text[: MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
     return text
+
+
+def sanitize_self_hosted_ignored_key(value: Any) -> str:
+    if not isinstance(value, str):
+        return "non_string_key"
+    text = sanitize_self_hosted_text(value)
+    return text or "empty_key"
 
 
 def normalize_self_hosted_metric(value: Any, *, maximum: float) -> float | None:
@@ -901,7 +943,7 @@ def normalize_self_hosted_metrics(raw: Any, *, source: str) -> tuple[dict[str, A
             elif value is not None:
                 invalid_keys.append(key)
         else:
-            ignored_keys.append(str(key))
+            ignored_keys.append(sanitize_self_hosted_ignored_key(key))
     if not metrics:
         return None, invalid_keys, ignored_keys
     return {
@@ -943,11 +985,27 @@ def cli_self_hosted_metrics(args: argparse.Namespace) -> dict[str, Any]:
     return raw
 
 
+def reject_non_finite_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-finite JSON value {value}")
+
+
+def has_non_finite_json_number(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, list):
+        return any(has_non_finite_json_number(item) for item in value)
+    if isinstance(value, dict):
+        return any(has_non_finite_json_number(item) for item in value.values())
+    return False
+
+
 def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
-    source_label = args.source_label
+    source_label = sanitize_self_hosted_text(args.source_label) if args.source_label else None
     if args.input:
         path = Path(args.input)
-        source_label = source_label or str(path)
+        source_label = source_label or sanitize_self_hosted_text(path)
         try:
             with path.open("rb") as handle:
                 raw = handle.read(MAX_SELF_HOSTED_METRICS_INPUT_BYTES + 1)
@@ -980,9 +1038,13 @@ def read_self_hosted_payload(args: argparse.Namespace) -> tuple[Any, dict[str, A
         }
     text = raw.decode("utf-8", errors="replace")
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_constant=reject_non_finite_json_constant)
     except json.JSONDecodeError as exc:
         raise RegistryError(f"could not parse self-hosted metrics JSON: {exc.msg}") from exc
+    except ValueError as exc:
+        raise RegistryError(f"could not parse self-hosted metrics JSON: {exc}") from exc
+    if has_non_finite_json_number(payload):
+        raise RegistryError("could not parse self-hosted metrics JSON: non-finite JSON number")
     return payload, {
         "source_label": source_label,
         "bytes": len(raw),
@@ -1004,7 +1066,7 @@ def select_self_hosted_envelope(payload: Any) -> tuple[Any, str | None, list[str
     metrics = payload.get("metrics")
     if isinstance(metrics, dict) and SELF_HOSTED_METRICS_KEY in metrics:
         return metrics.get(SELF_HOSTED_METRICS_KEY), f"explicit_provider_payload.metrics.{SELF_HOSTED_METRICS_KEY}", ignored
-    if any(key.startswith("self_hosted_") for key in payload):
+    if any(isinstance(key, str) and key.startswith("self_hosted_") for key in payload):
         ignored.append("incidental_self_hosted_keys")
     return None, None, ignored
 
@@ -1016,7 +1078,7 @@ def self_hosted_metrics_plan_payload(args: argparse.Namespace) -> dict[str, Any]
         source = "cli_flags"
         ignored_envelope_keys = []
         input_meta = {
-            "source_label": args.source_label or "cli_flags",
+            "source_label": sanitize_self_hosted_text(args.source_label) if args.source_label else "cli_flags",
             "bytes": 0,
             "sha256": None,
             "truncated": False,
@@ -1033,7 +1095,7 @@ def self_hosted_metrics_plan_payload(args: argparse.Namespace) -> dict[str, Any]
         source = None
         ignored_envelope_keys = []
         input_meta = {
-            "source_label": args.source_label or "cli_flags",
+            "source_label": sanitize_self_hosted_text(args.source_label) if args.source_label else "cli_flags",
             "bytes": 0,
             "sha256": None,
             "truncated": False,

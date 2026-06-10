@@ -1713,6 +1713,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         str(script),
                         "plan",
                         "self-hosted-metrics-ledger",
+                        "--source-label",
+                        "api_key=supersecretvalue",
                         "--latency-ms",
                         "123.5",
                         "--peak-memory-mb",
@@ -1726,11 +1728,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         "--tokens-per-second",
                         "42",
                         "--model-server",
-                        "local dev sk-ant-secret-token",
+                        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
                         "--optimization",
                         "prefix cache reuse",
                         "--quality-metric",
                         "golden task pass rate",
+                        "--hardware",
+                        "AKIA1234567890ABCDEF",
+                        "--runtime",
+                        "api_key=runtime-secret-value",
+                        "--dataset",
+                        "https://user:pass@example.test/data",
                         "--json",
                     ],
                     text=True,
@@ -1744,6 +1752,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["mode"], "dry_run")
                 self.assertEqual(payload["status"], "ready_for_ledger_review")
                 self.assertEqual(payload["input"]["envelope_source"], "cli_flags")
+                self.assertEqual(payload["input"]["source_label"], "api_key=[REDACTED]")
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
                 self.assertFalse(payload["policy"]["ledger_write_performed"])
                 self.assertFalse(payload["policy"]["hosted_api_token_savings_claim_allowed"])
@@ -1762,7 +1771,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(sidecar["measurement_availability"]["energy_wh"])
                 self.assertIn("[REDACTED]", sidecar["labels"]["model_server"])
                 self.assertEqual(sidecar["labels"]["optimization"], "prefix cache reuse")
-                self.assertNotIn("sk-ant", json.dumps(sidecar))
+                self.assertIn("[REDACTED]", sidecar["labels"]["hardware"])
+                self.assertIn("[REDACTED]", sidecar["labels"]["runtime"])
+                self.assertIn("[REDACTED]", sidecar["labels"]["dataset"])
+                serialized_sidecar = json.dumps(sidecar, sort_keys=True)
+                for secret_fragment in (
+                    "abcdefghijklmnopqrstuvwxyz",
+                    "AKIA1234567890ABCDEF",
+                    "supersecret",
+                    "runtime-secret-value",
+                    "user:pass",
+                    "sk-ant",
+                ):
+                    self.assertNotIn(secret_fragment, serialized_sidecar)
                 self.assertEqual(
                     sidecar["claim_boundary"]["id"],
                     "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings",
@@ -1803,6 +1824,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     top_level_payload["self_hosted_metrics"]["source"],
                     "explicit_provider_payload.self_hosted_metrics",
                 )
+
+                unknown_key = subprocess.run(
+                    [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                    input=json.dumps({
+                        "self_hosted_metrics": {
+                            "latency_ms": 1,
+                            "api_key=hidden-secret-value": 99,
+                        }
+                    }),
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                unknown_key_payload = json.loads(unknown_key.stdout)
+                self.assertEqual(unknown_key_payload["status"], "ready_for_ledger_review")
+                self.assertIn("api_key=[REDACTED]", unknown_key_payload["input"]["ignored_keys"])
+                self.assertNotIn("hidden-secret-value", json.dumps(unknown_key_payload, sort_keys=True))
 
                 nested = subprocess.run(
                     [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
@@ -1853,7 +1891,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["status"], "ready_for_ledger_review")
 
     def test_experimental_self_hosted_metrics_ledger_plan_blockers_and_read_only(self):
-        for script in EXPERIMENT_SCRIPTS:
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
             with self.subTest(script=script):
                 missing = subprocess.run(
                     [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
@@ -1943,6 +1981,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("could not parse self-hosted metrics JSON", bad_json.stderr)
                 self.assertNotIn("Traceback", bad_json.stderr + bad_json.stdout)
 
+                for bad_number in (
+                    '{"self_hosted_metrics":{"latency_ms":1,"ignored":NaN}}',
+                    '{"self_hosted_metrics":{"latency_ms":1,"ignored":Infinity}}',
+                    '{"self_hosted_metrics":{"latency_ms":1,"ignored":1e999}}',
+                ):
+                    bad_number_proc = subprocess.run(
+                        [sys.executable, str(script), "plan", "self-hosted-metrics-ledger", "--json"],
+                        input=bad_number,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(bad_number_proc.returncode, 2, msg=bad_number)
+                    self.assertIn("non-finite", bad_number_proc.stderr)
+                    self.assertNotIn("Traceback", bad_number_proc.stderr + bad_number_proc.stdout)
+
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
                     before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
@@ -1969,6 +2022,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("no hosted API token/cost savings claim", human.stdout)
                     after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
                     self.assertEqual(after, before)
+
+                module = load_python_script_module(script, f"_experimental_registry_non_string_key_{index}")
+                _, _, ignored_keys = module.select_self_hosted_envelope({1: "x", "self_hosted_latency_ms": 10})
+                self.assertEqual(ignored_keys, ["incidental_self_hosted_keys"])
 
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
