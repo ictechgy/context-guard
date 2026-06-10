@@ -436,9 +436,13 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             except OSError:
                 pass
         try:
-            if proc.poll() is None:
-                proc.send_signal(sig)
-        except OSError:
+            if proc.poll() is not None:
+                return
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+        except (OSError, ValueError):
             pass
 
     def close_pipes(proc: subprocess.Popen[bytes]) -> None:
@@ -494,7 +498,7 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
         drain_deadline = (
             time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
             if timed_out
-            else min(started_at + float(timeout_seconds), time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS)
+            else time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
         )
         if not join_threads_until(reader_threads, drain_deadline):
             drain_timed_out = True
