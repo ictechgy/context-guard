@@ -8,6 +8,7 @@ risk hiding evidence.
 from __future__ import annotations
 
 import argparse
+import codecs
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -330,12 +331,6 @@ def print_validation(valid: bool, errors: list[str], count: int, as_json: bool) 
             print(f"- {error}", file=sys.stderr)
 
 
-def timeout_text(value: str | bytes | None) -> str:
-    if isinstance(value, str):
-        return value
-    return (value or b"").decode("utf-8", "replace")
-
-
 @dataclass
 class CommandResult:
     returncode: int
@@ -365,7 +360,9 @@ def write_binary_stream(handle: BinaryIO | None, stream: Any) -> None:
     if handle is None:
         return
     handle.seek(0)
+    stream.flush()
     binary = getattr(stream, "buffer", None)
+    decoder = None if binary is not None else codecs.getincrementaldecoder("utf-8")("replace")
     while True:
         chunk = handle.read(64 * 1024)
         if not chunk:
@@ -373,7 +370,10 @@ def write_binary_stream(handle: BinaryIO | None, stream: Any) -> None:
         if binary is not None:
             binary.write(chunk)
         else:
-            stream.write(chunk.decode("utf-8", "replace"))
+            assert decoder is not None
+            stream.write(decoder.decode(chunk))
+    if decoder is not None:
+        stream.write(decoder.decode(b"", final=True))
     stream.flush()
 
 
@@ -388,6 +388,10 @@ def _temp_file_size(handle: BinaryIO) -> int:
 
 
 def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -> CommandResult:
+    if not argv:
+        stderr = f"{TOOL_NAME}: command failed to start: no command provided\n"
+        output_bytes = len(stderr.encode("utf-8", "replace"))
+        return CommandResult(127, None, None, "", stderr, output_bytes, False, False)
     stdout_file: BinaryIO | None = None
     stderr_file: BinaryIO | None = None
     try:
@@ -413,11 +417,6 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
         stdout_text = "" if capture_limited else _decode_temp_file(stdout_file)
         stderr_text = "" if capture_limited else _decode_temp_file(stderr_file)
         return CommandResult(returncode, stdout_file, stderr_file, stdout_text, stderr_text, output_bytes, capture_limited, timed_out)
-    except subprocess.TimeoutExpired as exc:
-        stdout = timeout_text(exc.stdout)
-        stderr = timeout_text(exc.stderr) + f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n"
-        output_bytes = len((stdout + stderr).encode("utf-8", "replace"))
-        return CommandResult(TIMEOUT_EXIT_CODE, stdout_file, stderr_file, stdout, stderr, output_bytes, output_bytes > max_capture_bytes, True)
     except OSError as exc:
         stderr = f"{TOOL_NAME}: command failed to start: {exc.strerror or exc.__class__.__name__}\n"
         encoded = stderr.encode("utf-8", "replace")
