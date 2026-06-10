@@ -810,7 +810,7 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
 
 
 LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
-LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ |[+-]\S)")
+LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ |[+-].*)")
 LEARNED_IDENTIFIER_RE = re.compile(
     r"\b(?:"
     r"[A-Za-z]+_[A-Za-z0-9_]*"
@@ -840,7 +840,7 @@ LEARNED_QUOTED_STRING_RE = re.compile(
     r'''(?x)"""(?:.|\n)*?"""|''' + r"""'''(?:.|\n)*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"""
 )
 LEARNED_NUMERIC_CONSTANT_RE = re.compile(
-    r"(?<![\w.])(?:\d+(?:\.\d+){2,}|[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?))(?![\w.])"
+    r"(?<![\w.])(?:[vV]?\d+(?:\.\d+){2,}|[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?))(?![\w.])"
 )
 LEARNED_PROMPT_LIKE_RE = re.compile(
     r"(?i)\b(?:ignore (?:all )?(?:previous|prior) instructions|system prompt|developer message|"
@@ -850,6 +850,7 @@ LEARNED_URL_RE = re.compile(
     r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local|ai|edu|gov|mil|co|info|biz|kr|jp|uk|cn|xyz)(?:/|\b))"
 )
 LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
+LEARNED_ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
 
 def read_learned_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -915,6 +916,8 @@ def learned_signal_counts(text: str) -> dict[str, int]:
 def valid_learned_reexpand_command(receipt_id: str | None, command: str | None) -> tuple[bool, str | None]:
     if not receipt_id or not command:
         return False, "missing_exact_fallback"
+    if not LEARNED_ARTIFACT_ID_RE.fullmatch(receipt_id):
+        return False, "invalid_reexpand_command"
     if any(token in command for token in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
         return False, "invalid_reexpand_command"
     try:
