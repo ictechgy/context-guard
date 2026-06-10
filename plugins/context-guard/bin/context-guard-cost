@@ -58,6 +58,10 @@ ALLOWED_FIRST_COMPONENT_SYMLINKS = {
 }
 DIR_FD_OPEN_SUPPORTED = os.open in getattr(os, "supports_dir_fd", set())
 NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
+DIR_FD_STAT_NOFOLLOW_SUPPORTED = (
+    os.stat in getattr(os, "supports_dir_fd", set())
+    and os.stat in getattr(os, "supports_follow_symlinks", set())
+)
 
 SECRET_RE = re.compile(
     r"(?is)("
@@ -157,7 +161,20 @@ def read_bounded_regular_path(path: str | Path, *, max_bytes: int, label: str) -
     fd = -1
     try:
         parent_fd = open_directory_no_follow(p.parent, label=f"{label} parent")
-        fd = os.open(leaf_name, _base_open_flags() | _no_follow_flag(label=label), dir_fd=parent_fd)
+        if not DIR_FD_STAT_NOFOLLOW_SUPPORTED:
+            fail(f"{label} requires dir_fd stat support for symlink-safe regular-file validation")
+        try:
+            pre_st = os.stat(leaf_name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            fail(f"could not inspect {label}: {os_error_detail(exc)}")
+        if not stat.S_ISREG(pre_st.st_mode):
+            fail(f"{label} must be a regular file")
+        flags = _base_open_flags() | _no_follow_flag(label=label)
+        if hasattr(os, "O_NONBLOCK"):
+            flags |= os.O_NONBLOCK
+        if hasattr(os, "O_NOCTTY"):
+            flags |= os.O_NOCTTY
+        fd = os.open(leaf_name, flags, dir_fd=parent_fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             fail(f"{label} must be a regular file")
         chunks: list[bytes] = []

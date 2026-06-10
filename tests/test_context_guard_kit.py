@@ -2634,6 +2634,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("must not traverse symlinks", combined)
                         self.assertNotIn("Traceback", combined)
 
+                with self.subTest(script=script, target=target, shape="fifo"):
+                    if not hasattr(os, "mkfifo"):
+                        self.skipTest("mkfifo unavailable")
+                    with tempfile.TemporaryDirectory() as tmp_raw:
+                        tmp = Path(tmp_raw)
+                        fifo = tmp / "input.json"
+                        os.mkfifo(fifo)
+                        proc = run_target(script, target, fifo, tmp)
+                        self.assertEqual(proc.returncode, 2)
+                        combined = proc.stdout + proc.stderr
+                        expected_label = "pricing profile" if target == "pricing" else "input file"
+                        self.assertIn(f"{expected_label} must be a regular file", combined)
+                        self.assertNotIn("Traceback", combined)
+
     def test_cost_guard_json_file_inputs_are_bounded_and_accept_normal_files(self):
         regular_inputs: dict[str, Any] = {
             "request": cost_guard_request(cacheable_text="regular file hardening prefix " + ("x" * 800)),
