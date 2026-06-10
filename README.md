@@ -396,7 +396,7 @@ Shipped experimental dry-run checker/planner surfaces are intentionally narrow:
 | `context-diff-compaction` | Reviewable compaction advice for diffs. | Does not emit replacement text; exact receipt/re-expand handles are recorded only for human or future gated review. |
 | `visual-crop-ocr` | Metadata for full visual evidence, crop bounds, OCR notes, confidence, and missed context. | No screenshot capture, crop/OCR runtime, image parsing, or external OCR/image service. |
 | `learned-compression` | Deny-by-default policy checks for sanitized trusted prose with exact fallback receipts. | No embeddings, rerankers, model calls, learned/synthetic compressor runtime, or replacement generation. |
-| `self-hosted-metrics-ledger` | Read-only ledger-compatible previews for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | Does not write a ledger and cannot support hosted API token/cost savings claims. |
+| `self-hosted-metrics-ledger` | Read-only ledger-compatible previews for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | Does not write a ledger and does not support hosted API token/cost savings claims. |
 | `local-proxy` | Localhost-only advisory metadata for a possible future local proxy. | Starts no listener, forwards no traffic, persists no API keys, writes no ledger, blocks non-local bind/target/upstream values, and requires a separate future runtime gate before any forwarding implementation. |
 
 ## What is not yet shipped

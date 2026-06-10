@@ -365,7 +365,7 @@ context-guard experiments disable output-receipt-trim --root .
 
 아래 항목은 프로젝트가 기록해 둔 방향일 뿐, 약속된 기능이 아닙니다. 저장소의 다른 문서에 명시되지 않는 한 아직 제공 기능이 아닙니다.
 
-- learned/synthetic compressor runtime, multimodal crop/OCR 또는 visual-token pruning runtime, self-hosted KV/latent inference optimization, 실제 proxy forwarding runtime. 자세한 내용은 [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. 이 항목들은 later-roadmap gate 아래 아직 제공 기능이 아닙니다. matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider가 측정한 token/cost evidence와 별도 future PR gate가 있어야 hosted API 절감 주장이나 런타임 기능 주장으로 승격할 수 있습니다.
+- learned/synthetic compressor runtime, multimodal crop/OCR 또는 visual-token pruning runtime, self-hosted KV/latent inference optimization, 실제 proxy forwarding runtime. 자세한 내용은 [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. 이 항목들은 later-roadmap gate를 통과하기 전까지 제공 기능이 아닙니다. matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider가 측정한 token/cost evidence와 별도 future PR gate가 있어야 hosted API 절감 주장이나 런타임 기능 주장으로 승격할 수 있습니다.
 
 ## 저장소 구조
 
