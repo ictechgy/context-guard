@@ -569,7 +569,11 @@ def load_config(path: Path) -> dict[str, Any]:
     if truncated:
         raise RegistryError("config exceeded max bytes")
     try:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RegistryError(f"could not decode config UTF-8: {path}: {exc.reason}") from exc
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RegistryError(f"could not parse config JSON: {path}: {exc.msg}") from exc
     except OSError as exc:

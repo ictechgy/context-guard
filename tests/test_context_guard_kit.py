@@ -693,6 +693,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("config must be a regular file", proc.stderr)
                         self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / "project"
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir(parents=True)
+                    (config_dir / "experiments.json").write_bytes(b"\xff\xfe")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "list", "--root", str(root), "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("could not decode config UTF-8", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
     def test_experimental_registry_config_write_race_cannot_redirect_to_symlink(self):
         for index, script in enumerate(EXPERIMENT_SCRIPTS):
             with self.subTest(script=script):
