@@ -352,6 +352,44 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.stdout, "ORIGINAL empty fallback\n")
                     self.assertEqual(json.loads(proc.stderr)["reason"], "empty-output-fallback")
 
+    def test_context_filter_capture_limit_preserves_passthrough_streams(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / "filters.json"
+                    config.write_text(
+                        json.dumps({
+                            "schema_version": "contextguard.filter-dsl.v1",
+                            "filters": [{"id": "keep", "match": {"argv_prefix": [sys.executable]}, "include_regex": ["NEVER"]}],
+                        }),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(config),
+                            "--json-report",
+                            "--max-capture-bytes",
+                            "8",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "import sys; print('0123456789'); print('child-stderr', file=sys.stderr)",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(proc.stdout, "0123456789\n")
+                    stderr_lines = proc.stderr.splitlines()
+                    self.assertEqual(stderr_lines[0], "child-stderr")
+                    report = json.loads(stderr_lines[-1])
+                    self.assertEqual(report["reason"], "capture-limit")
+                    self.assertGreater(report["output_bytes"], report["max_capture_bytes"])
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {

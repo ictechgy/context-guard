@@ -15,7 +15,8 @@ import re
 import shlex
 import subprocess
 import sys
-from typing import Any, Iterable
+import tempfile
+from typing import Any, BinaryIO, Iterable
 
 SCHEMA_VERSION = "contextguard.filter-dsl.v1"
 TOOL_NAME = "context-guard-filter"
@@ -335,16 +336,97 @@ def timeout_text(value: str | bytes | None) -> str:
     return (value or b"").decode("utf-8", "replace")
 
 
-def run_command(argv: list[str], timeout_seconds: int) -> tuple[int, str, str, bool]:
+@dataclass
+class CommandResult:
+    returncode: int
+    stdout_file: BinaryIO | None
+    stderr_file: BinaryIO | None
+    stdout_text: str
+    stderr_text: str
+    output_bytes: int
+    capture_limited: bool
+    timed_out: bool
+
+    def write_passthrough(self) -> None:
+        write_binary_stream(self.stdout_file, sys.stdout)
+        write_binary_stream(self.stderr_file, sys.stderr)
+
+    def close(self) -> None:
+        for handle in (self.stdout_file, self.stderr_file):
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+def write_binary_stream(handle: BinaryIO | None, stream: Any) -> None:
+    if handle is None:
+        return
+    handle.seek(0)
+    binary = getattr(stream, "buffer", None)
+    while True:
+        chunk = handle.read(64 * 1024)
+        if not chunk:
+            break
+        if binary is not None:
+            binary.write(chunk)
+        else:
+            stream.write(chunk.decode("utf-8", "replace"))
+    stream.flush()
+
+
+def _decode_temp_file(handle: BinaryIO) -> str:
+    handle.seek(0)
+    return handle.read().decode("utf-8", "replace")
+
+
+def _temp_file_size(handle: BinaryIO) -> int:
+    handle.flush()
+    return int(handle.tell())
+
+
+def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -> CommandResult:
+    stdout_file: BinaryIO | None = None
+    stderr_file: BinaryIO | None = None
     try:
-        proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace", timeout=timeout_seconds)
-        return proc.returncode, proc.stdout or "", proc.stderr or "", False
+        stdout_file = tempfile.TemporaryFile()
+        stderr_file = tempfile.TemporaryFile()
+        proc = subprocess.Popen(argv, stdout=stdout_file, stderr=stderr_file)
+        timed_out = False
+        try:
+            returncode = proc.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            returncode = TIMEOUT_EXIT_CODE
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            stderr_file.write(f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n".encode("utf-8"))
+        stdout_size = _temp_file_size(stdout_file)
+        stderr_size = _temp_file_size(stderr_file)
+        output_bytes = stdout_size + stderr_size
+        capture_limited = output_bytes > max_capture_bytes
+        stdout_text = "" if capture_limited else _decode_temp_file(stdout_file)
+        stderr_text = "" if capture_limited else _decode_temp_file(stderr_file)
+        return CommandResult(returncode, stdout_file, stderr_file, stdout_text, stderr_text, output_bytes, capture_limited, timed_out)
     except subprocess.TimeoutExpired as exc:
         stdout = timeout_text(exc.stdout)
         stderr = timeout_text(exc.stderr) + f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n"
-        return TIMEOUT_EXIT_CODE, stdout, stderr, True
+        output_bytes = len((stdout + stderr).encode("utf-8", "replace"))
+        return CommandResult(TIMEOUT_EXIT_CODE, stdout_file, stderr_file, stdout, stderr, output_bytes, output_bytes > max_capture_bytes, True)
     except OSError as exc:
-        return 127, "", f"{TOOL_NAME}: command failed to start: {exc.strerror or exc.__class__.__name__}\n", False
+        stderr = f"{TOOL_NAME}: command failed to start: {exc.strerror or exc.__class__.__name__}\n"
+        encoded = stderr.encode("utf-8", "replace")
+        if stderr_file is not None:
+            stderr_file.write(encoded)
+            output_bytes = (_temp_file_size(stdout_file) if stdout_file is not None else 0) + _temp_file_size(stderr_file)
+            return CommandResult(127, stdout_file, stderr_file, "", stderr, output_bytes, output_bytes > max_capture_bytes, False)
+        output_bytes = len(encoded)
+        return CommandResult(127, stdout_file, stderr_file, "", stderr, output_bytes, False, False)
 
 
 def emit_run_report(args: argparse.Namespace, payload: dict[str, Any]) -> None:
@@ -373,50 +455,56 @@ def cmd_run(args: argparse.Namespace) -> int:
     max_line_chars = bounded_int(args.max_line_chars, DEFAULT_MAX_LINE_CHARS, 1, MAX_LINE_CHARS_LIMIT)
     timeout_seconds = bounded_int(args.timeout_seconds, DEFAULT_TIMEOUT_SECONDS, 1, MAX_TIMEOUT_SECONDS)
     filters, errors = load_filters(Path(args.config).expanduser())
-    rc, stdout_text, stderr_text, timed_out = run_command(command, timeout_seconds)
-    output = stdout_text + stderr_text
-    output_bytes = len(output.encode("utf-8", "replace"))
-    protected_nonzero = rc != 0 and is_protected_command(command)
-    report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
-    if timed_out:
-        report["reason"] = "timeout"
-    elif errors:
-        report["reason"] = "invalid-config"
-        report["errors"] = errors[:10]
-    elif output_bytes > max_capture:
-        report["reason"] = "capture-limit"
-        report["output_bytes"] = output_bytes
-        report["max_capture_bytes"] = max_capture
-    else:
-        matched = next((flt for flt in filters if filter_matches(flt, command)), None)
-        if matched is None:
-            report["reason"] = "no-match"
-        elif protected_nonzero:
-            report["reason"] = "protected-nonzero"
-            report["filter_id"] = matched.id
-        elif rc != 0 and matched.passthrough_on_exit:
-            report["reason"] = "nonzero-passthrough"
-            report["filter_id"] = matched.id
+    result = run_command(command, timeout_seconds, max_capture)
+    try:
+        rc = result.returncode
+        output = result.stdout_text + result.stderr_text
+        protected_nonzero = rc != 0 and is_protected_command(command)
+        report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
+        if result.timed_out:
+            report["reason"] = "timeout"
+        elif errors:
+            report["reason"] = "invalid-config"
+            report["errors"] = errors[:10]
+        elif result.capture_limited:
+            report["reason"] = "capture-limit"
+            report["output_bytes"] = result.output_bytes
+            report["max_capture_bytes"] = max_capture
         else:
-            try:
-                lines = output.splitlines(keepends=True)
-                filtered = select_lines(lines, matched, max_line_chars)
-            except re.error as exc:
-                report["reason"] = f"filter-error:{compact(str(exc), 80)}"
+            matched = next((flt for flt in filters if filter_matches(flt, command)), None)
+            if matched is None:
+                report["reason"] = "no-match"
+            elif protected_nonzero:
+                report["reason"] = "protected-nonzero"
+                report["filter_id"] = matched.id
+            elif rc != 0 and matched.passthrough_on_exit:
+                report["reason"] = "nonzero-passthrough"
                 report["filter_id"] = matched.id
             else:
-                if output and not filtered:
-                    report["reason"] = "empty-output-fallback"
+                try:
+                    lines = output.splitlines(keepends=True)
+                    filtered = select_lines(lines, matched, max_line_chars)
+                except re.error as exc:
+                    report["reason"] = f"filter-error:{compact(str(exc), 80)}"
                     report["filter_id"] = matched.id
                 else:
-                    sys.stdout.write("".join(filtered))
-                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": len(lines), "output_lines": len(filtered)})
-                    emit_run_report(args, report)
-                    return rc
-    sys.stdout.write(stdout_text)
-    sys.stderr.write(stderr_text)
-    emit_run_report(args, report)
-    return rc
+                    if output and not filtered:
+                        report["reason"] = "empty-output-fallback"
+                        report["filter_id"] = matched.id
+                    else:
+                        sys.stdout.write("".join(filtered))
+                        report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": len(lines), "output_lines": len(filtered)})
+                        emit_run_report(args, report)
+                        return rc
+        if result.stdout_file is None and result.stderr_file is None:
+            sys.stdout.write(result.stdout_text)
+            sys.stderr.write(result.stderr_text)
+        else:
+            result.write_passthrough()
+        emit_run_report(args, report)
+        return rc
+    finally:
+        result.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
