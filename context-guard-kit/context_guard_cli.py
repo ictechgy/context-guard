@@ -59,8 +59,25 @@ def _candidate_roots() -> list[Path]:
     return list(dict.fromkeys(roots))
 
 
+def _has_symlink_parent(path: Path) -> bool:
+    current = Path(path.anchor) if path.is_absolute() else Path()
+    parts = path.parts[1:-1] if path.is_absolute() else path.parts[:-1]
+    for part in parts:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _read_metadata_text(path: Path) -> str | None:
     try:
+        if _has_symlink_parent(path):
+            return None
         pre_open = path.lstat()
         if not stat.S_ISREG(pre_open.st_mode):
             return None

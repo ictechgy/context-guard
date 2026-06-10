@@ -390,7 +390,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(report["reason"], "capture-limit")
                     self.assertGreater(report["output_bytes"], report["max_capture_bytes"])
 
-    def test_context_filter_timeout_waits_for_inherited_pipe_descendants(self):
+    def test_context_filter_pipe_drain_timeout_preserves_direct_exit_code(self):
         for script in FILTER_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -423,12 +423,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         capture_output=True,
                         timeout=8,
                     )
-                self.assertEqual(proc.returncode, 124, proc.stderr)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("parent-done", proc.stdout)
+                self.assertNotIn("late-descendant", proc.stdout + proc.stderr)
                 stderr_lines = [line for line in proc.stderr.splitlines() if line.strip()]
                 report = json.loads(stderr_lines[-1])
-                self.assertEqual(report["reason"], "timeout")
-                self.assertEqual(report["command_exit_code"], 124)
+                self.assertEqual(report["reason"], "pipe-drain-timeout")
+                self.assertEqual(report["command_exit_code"], 0)
 
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
@@ -4360,6 +4361,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
             if not hasattr(os, "mkfifo"):
                 self.skipTest("mkfifo unavailable")
             os.mkfifo(link)
+            with mock.patch.object(module, "_candidate_roots", return_value=[root]):
+                self.assertEqual(module.project_version(), "0.0.0+unknown")
+            link.unlink()
+            metadata_dir.rmdir()
+
+            external = root / "external-metadata"
+            external.mkdir()
+            (external / "plugin.json").write_text(json.dumps({"version": "1.2.3-parent-symlink"}), encoding="utf-8")
+            metadata_dir.symlink_to(external, target_is_directory=True)
             with mock.patch.object(module, "_candidate_roots", return_value=[root]):
                 self.assertEqual(module.project_version(), "0.0.0+unknown")
 

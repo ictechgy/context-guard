@@ -344,6 +344,7 @@ class CommandResult:
     output_bytes: int
     capture_limited: bool
     timed_out: bool
+    drain_timed_out: bool
     passthrough_emitted: bool
 
 
@@ -409,7 +410,7 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
     if not argv:
         stderr = f"{TOOL_NAME}: command failed to start: no command provided\n"
         output_bytes = len(stderr.encode("utf-8", "replace"))
-        return CommandResult(127, "", stderr, output_bytes, False, False, False)
+        return CommandResult(127, "", stderr, output_bytes, False, False, False, False)
     capture = BoundedCapture(max_capture_bytes)
 
     def read_pipe(pipe: Any, stream_name: str) -> None:
@@ -483,6 +484,7 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
         stdout_thread.start()
         stderr_thread.start()
         timed_out = False
+        drain_timed_out = False
         try:
             returncode = proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -495,18 +497,19 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             else min(started_at + float(timeout_seconds), time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS)
         )
         if not join_threads_until(reader_threads, drain_deadline):
-            timed_out = True
-            returncode = TIMEOUT_EXIT_CODE
+            drain_timed_out = True
             terminate_and_close(proc, reader_threads)
         if timed_out:
             capture.consume("stderr", f"\n[{TOOL_NAME}] command timed out after {timeout_seconds}s\n".encode("utf-8"))
+        elif drain_timed_out:
+            capture.consume("stderr", f"\n[{TOOL_NAME}] command pipe drain timed out after direct process exit\n".encode("utf-8"))
         stdout_text, stderr_text = ("", "") if capture.capture_limited else capture.text()
-        return CommandResult(returncode, stdout_text, stderr_text, capture.output_bytes, capture.capture_limited, timed_out, capture.passthrough_emitted)
+        return CommandResult(returncode, stdout_text, stderr_text, capture.output_bytes, capture.capture_limited, timed_out, drain_timed_out, capture.passthrough_emitted)
     except OSError as exc:
         stderr = f"{TOOL_NAME}: command failed to start: {exc.strerror or exc.__class__.__name__}\n"
         encoded = stderr.encode("utf-8", "replace")
         output_bytes = len(encoded)
-        return CommandResult(127, "", stderr, output_bytes, False, False, False)
+        return CommandResult(127, "", stderr, output_bytes, False, False, False, False)
 
 
 def emit_run_report(args: argparse.Namespace, payload: dict[str, Any]) -> None:
@@ -542,6 +545,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
     if result.timed_out:
         report["reason"] = "timeout"
+    elif result.drain_timed_out:
+        report["reason"] = "pipe-drain-timeout"
     elif errors:
         report["reason"] = "invalid-config"
         report["errors"] = errors[:10]
