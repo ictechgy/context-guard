@@ -6997,6 +6997,55 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         self.assertIn("unsafe_path", reasons)
                     self.assertIn("ok.txt", data["pack"])
 
+    def test_context_pack_omits_fifo_sources_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "ok.txt").write_text("ok\n", encoding="utf-8")
+                    fifo = root / "pipe.txt"
+                    os.mkfifo(fifo)
+                    manifest = root / "pack.json"
+                    manifest.write_text(
+                        json.dumps(
+                            {
+                                "version": 1,
+                                "sources": [
+                                    {"path": "pipe.txt", "priority": 10},
+                                    {"path": "ok.txt", "priority": 1},
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            str(manifest),
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                            "--no-artifact",
+                        ],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+                    data = json.loads(proc.stdout)
+                    reasons = {item["reason"] for item in data["omitted_sources"]}
+                    self.assertIn("empty_source", reasons)
+                    self.assertIn("ok.txt", data["pack"])
+
     def test_context_pack_receipt_cap_does_not_write_oversized_metadata(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):

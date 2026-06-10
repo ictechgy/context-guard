@@ -480,6 +480,21 @@ def open_dir_no_follow(path: Path | str, *, dir_fd: int | None = None) -> int:
         raise
 
 
+def file_open_flags() -> int:
+    flags = os.O_RDONLY
+    for name in ("O_NOFOLLOW", "O_CLOEXEC", "O_NONBLOCK", "O_NOCTTY"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def stat_leaf_no_follow(name: str, *, dir_fd: int) -> os.stat_result | None:
+    supports_dir_fd = os.stat in getattr(os, "supports_dir_fd", set())
+    supports_no_follow = os.stat in getattr(os, "supports_follow_symlinks", set())
+    if not supports_dir_fd or not supports_no_follow:
+        return None
+    return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+
+
 def open_regular_under_root(root: Path, rel: Path) -> tuple[Any | None, str]:
     current_fd: int | None = None
     try:
@@ -500,11 +515,20 @@ def open_regular_under_root(root: Path, rel: Path) -> tuple[Any | None, str]:
                 os.close(current_fd)
                 current_fd = next_fd
                 continue
-            flags = os.O_RDONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            if hasattr(os, "O_CLOEXEC"):
-                flags |= os.O_CLOEXEC
+            try:
+                pre_st = stat_leaf_no_follow(part, dir_fd=current_fd)
+            except FileNotFoundError:
+                return None, "missing"
+            except NotADirectoryError:
+                return None, "missing"
+            except OSError:
+                return None, "unsafe_path"
+            if pre_st is not None:
+                if stat.S_ISLNK(pre_st.st_mode):
+                    return None, "unsafe_path"
+                if not stat.S_ISREG(pre_st.st_mode):
+                    return None, "empty_source"
+            flags = file_open_flags()
             file_fd = -1
             try:
                 file_fd = os.open(part, flags, dir_fd=current_fd)
