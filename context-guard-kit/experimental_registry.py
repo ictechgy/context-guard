@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
+import shlex
 from pathlib import Path
 import sys
 from typing import Any, NoReturn
@@ -23,6 +24,7 @@ CONFIG_SCHEMA_VERSION = "contextguard.experiments.v1"
 DEFAULT_CONFIG = Path(".context-guard") / "experiments.json"
 MAX_CONTEXT_DIFF_INPUT_BYTES = 256_000
 MAX_VISUAL_OCR_TEXT_BYTES = 64_000
+MAX_LEARNED_COMPRESSION_INPUT_BYTES = 128_000
 
 
 @dataclass(frozen=True)
@@ -155,14 +157,23 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment(
         id="learned-compression",
         name="Learned/synthetic compression safe gate",
-        summary="Future deny-by-default compression gate for already-sanitized unprotected prose only.",
+        summary="Deny-by-default dry-run safety gate for already-sanitized unprotected prose only.",
         stability="experimental",
         default_enabled=False,
         risk_level="high",
         claim_boundary="Semantic compression cannot claim savings or correctness without matched-task quality and provider token evidence.",
         gate_requirements=("explicit opt-in", "sanitized unprotected prose only", "protected-zone denial", "exact fallback or receipt"),
-        runtime_status="advisory-planned",
-        evidence_contract="Future safety-gate evidence only; semantic compression cannot run on protected or untrusted text.",
+        runtime_status="available-dry-run",
+        commands=("context-guard experiments plan learned-compression",),
+        opt_in_flags=("plan learned-compression", "--sanitized", "--trusted-source", "--exact-fallback-receipt", "--reexpand-command"),
+        config_effect=(
+            "Registry enablement records project-local intent only; learned compression remains a dry-run policy check "
+            "and does not run learned compressors, embeddings, model calls, or replacements."
+        ),
+        evidence_contract=(
+            "Dry-run eligibility requires caller-asserted sanitized trusted prose, exact local fallback handles, and "
+            "denial of protected or prompt-like signals."
+        ),
     ),
     Experiment(
         id="self-hosted-metrics-ledger",
@@ -798,6 +809,202 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
+LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*```")
+LEARNED_DIFF_RE = re.compile(r"(?m)^(diff --git |@@\s+-|--- |\+\+\+ )")
+LEARNED_IDENTIFIER_RE = re.compile(r"\b(?:[A-Za-z]+_[A-Za-z0-9_]*|[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][A-Z0-9_]{2,})\b")
+LEARNED_PATH_RE = re.compile(
+    r"(?x)(?:"
+    r"(?<![\w.-])/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+"
+    r"|"
+    r"\b[A-Za-z]:\\(?:[^\\\s:\"'<>|]+\\)*[^\\\s:\"'<>|]+"
+    r")"
+)
+LEARNED_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{32,}|sha256:[0-9a-fA-F]{32,})\b")
+LEARNED_STACK_FRAME_RE = re.compile(
+    r"(?m)^\s*(?:File\s+\"[^\"]+\",\s+line\s+\d+,\s+in\s+\S+|at\s+\S+.*\([^)]*:\d+(?::\d+)?\))"
+)
+LEARNED_JSON_KEY_RE = re.compile(r'"(?:[^"\\]|\\.)*"\s*:')
+LEARNED_QUOTED_STRING_RE = re.compile(r"""(?x)"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'""")
+LEARNED_NUMERIC_CONSTANT_RE = re.compile(r"(?<![\w.])[-+]?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?)(?![\w.])")
+LEARNED_PROMPT_LIKE_RE = re.compile(
+    r"(?i)\b(?:ignore (?:all )?(?:previous|prior) instructions|system prompt|developer message|"
+    r"you are chatgpt|act as|jailbreak|do not follow|override instructions)\b"
+)
+LEARNED_URL_RE = re.compile(r"(?i)\b(?:https?://|[A-Za-z0-9.-]+\.(?:com|net|org|io|dev|local)(?:/|\b))")
+LEARNED_WORD_RE = re.compile(r"\b[\w.-]+\b")
+
+
+def read_learned_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    source_label = args.source_label
+    if args.input:
+        path = Path(args.input)
+        source_label = source_label or path.name
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(MAX_LEARNED_COMPRESSION_INPUT_BYTES + 1)
+        except OSError as exc:
+            raise RegistryError(f"could not read learned-compression input: {path}: {exc}") from exc
+    else:
+        source_label = source_label or "stdin"
+        raw = sys.stdin.buffer.read(MAX_LEARNED_COMPRESSION_INPUT_BYTES + 1)
+    truncated = len(raw) > MAX_LEARNED_COMPRESSION_INPUT_BYTES
+    raw = raw[:MAX_LEARNED_COMPRESSION_INPUT_BYTES]
+    text = raw.decode("utf-8", errors="replace")
+    metadata = {
+        "source_label": source_label,
+        "bytes": len(raw),
+        "lines": len(text.splitlines()),
+        "sha256": hashlib.sha256(raw).hexdigest() if raw else None,
+        "truncated": truncated,
+        "max_bytes": MAX_LEARNED_COMPRESSION_INPUT_BYTES,
+    }
+    return text, metadata
+
+
+def learned_content_type(text: str, counts: dict[str, int]) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "empty"
+    if counts["protected_json_key"]:
+        return "json"
+    if counts["protected_diff"]:
+        return "diff"
+    if counts["protected_code_fence"] or counts["protected_identifier"] >= 3:
+        return "code"
+    return "prose"
+
+
+def learned_signal_counts(text: str) -> dict[str, int]:
+    words = LEARNED_WORD_RE.findall(text)
+    numeric_count = len(LEARNED_NUMERIC_CONSTANT_RE.findall(text))
+    numeric_density_high = 1 if words and numeric_count >= 3 and numeric_count / len(words) >= 0.20 else 0
+    return {
+        "protected_code_fence": len(LEARNED_CODE_FENCE_RE.findall(text)),
+        "protected_diff": len(LEARNED_DIFF_RE.findall(text)),
+        "protected_identifier": len(LEARNED_IDENTIFIER_RE.findall(text)),
+        "protected_path": len(LEARNED_PATH_RE.findall(text)),
+        "protected_hash": len(LEARNED_HASH_RE.findall(text)),
+        "protected_stack_frame": len(LEARNED_STACK_FRAME_RE.findall(text)),
+        "protected_json_key": len(LEARNED_JSON_KEY_RE.findall(text)),
+        "protected_numeric_constant": numeric_count,
+        "protected_quoted_string": len(LEARNED_QUOTED_STRING_RE.findall(text)),
+        "prompt_like_instruction": len(LEARNED_PROMPT_LIKE_RE.findall(text)),
+        "url_or_endpoint": len(LEARNED_URL_RE.findall(text)),
+        "numeric_density_high": numeric_density_high,
+    }
+
+
+def valid_learned_reexpand_command(receipt_id: str | None, command: str | None) -> tuple[bool, str | None]:
+    if not receipt_id or not command:
+        return False, "missing_exact_fallback"
+    if any(token in command for token in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
+        return False, "invalid_reexpand_command"
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False, "invalid_reexpand_command"
+    if len(argv) < 3:
+        return False, "invalid_reexpand_command"
+    if argv[:3] == ["context-guard-artifact", "get", receipt_id]:
+        return True, None
+    if len(argv) >= 4 and argv[:4] == ["context-guard", "artifact", "get", receipt_id]:
+        return True, None
+    return False, "invalid_reexpand_command"
+
+
+def learned_compression_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    text, input_meta = read_learned_input(args)
+    receipt_id = args.exact_fallback_receipt.strip() if args.exact_fallback_receipt else None
+    reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
+    reexpand_valid, fallback_blocker = valid_learned_reexpand_command(receipt_id, reexpand_command)
+    counts = learned_signal_counts(text)
+    content_type = learned_content_type(text, counts)
+
+    blockers: list[str] = []
+    if not text.strip():
+        blockers.append("missing_input")
+    if input_meta["truncated"]:
+        blockers.append("input_truncated")
+    if not args.sanitized:
+        blockers.append("missing_sanitized_assertion")
+    if not args.trusted_source:
+        blockers.append("untrusted_input")
+    if fallback_blocker:
+        blockers.append(fallback_blocker)
+    if content_type != "prose" and text.strip():
+        blockers.append("non_prose_input")
+    for blocker, count in counts.items():
+        if count:
+            blockers.append(blocker)
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+    return {
+        "tool": TOOL_NAME,
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "experiment_id": "learned-compression",
+        "mode": "dry_run",
+        "status": "ready_for_human_review" if ready else "blocked_until_safe_input",
+        "input": input_meta,
+        "policy": {
+            "deny_by_default": True,
+            "runtime_compression_allowed": False,
+            "eligible_for_human_review": ready,
+            "human_review_required": True,
+            "stable_runtime_behavior_changed": False,
+        },
+        "sanitization": {
+            "required": True,
+            "caller_asserted": bool(args.sanitized),
+            "verified": False,
+        },
+        "trust": {
+            "required": True,
+            "caller_asserted": bool(args.trusted_source),
+            "verified": False,
+        },
+        "exact_fallback": {
+            "required": True,
+            "available": bool(receipt_id and reexpand_command and reexpand_valid),
+            "receipt_id": receipt_id,
+            "cli": reexpand_command,
+            "verified": False,
+        },
+        "protected_signal_scan": {
+            "content_type": content_type,
+            "counts": counts,
+        },
+        "review_plan": {
+            "readiness_blockers": blockers,
+            "protected_signals": [name for name, count in counts.items() if count],
+            "next_steps": [
+                "Keep exact fallback receipt and re-expand command available before considering any future summary.",
+                "Reject learned compression for protected, prompt-like, untrusted, or non-prose input.",
+                "Do not claim hosted token/cost savings from this dry-run policy check.",
+            ],
+        },
+        "claim_boundary": (
+            "Dry-run learned-compression policy check only; no hosted token/cost savings claim without "
+            "provider-measured matched successful tasks."
+        ),
+        "candidate_replacement": None,
+    }
+
+
+def command_plan_learned_compression(args: argparse.Namespace) -> int:
+    payload = learned_compression_plan_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard learned/synthetic compression gate (dry-run only)")
+        print("No learned compressor/model/provider was called and no replacement text was emitted.")
+        print(f"Status: {payload['status']}")
+        print(f"Input: {payload['input']['source_label']} lines={payload['input']['lines']} sha256={payload['input']['sha256']}")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", help="Project root for default project-local experiment config (default: cwd).")
     parser.add_argument("--config", help="Project-local config path. Relative paths resolve under --root; absolute paths must stay inside --root.")
@@ -866,6 +1073,19 @@ def build_parser() -> argparse.ArgumentParser:
     visual_ocr.add_argument("--missed-context-note", action="append", help="Potential context outside crop/OCR text. Repeatable.")
     visual_ocr.add_argument("--json", action="store_true", help="Emit JSON output.")
     visual_ocr.set_defaults(func=command_plan_visual_crop_ocr)
+
+    learned = plan_sub.add_parser(
+        "learned-compression",
+        help="Dry-run a deny-by-default learned/synthetic compression safety gate.",
+    )
+    learned.add_argument("--input", help="Read candidate prose from a text file instead of stdin.")
+    learned.add_argument("--source-label", help="Safe label to use for the input source in reports.")
+    learned.add_argument("--sanitized", action="store_true", help="Assert input is already sanitized.")
+    learned.add_argument("--trusted-source", action="store_true", help="Assert input came from a trusted source.")
+    learned.add_argument("--exact-fallback-receipt", help="Local exact fallback receipt id for the original text.")
+    learned.add_argument("--reexpand-command", help="Local exact re-expand command bound to the receipt id.")
+    learned.add_argument("--json", action="store_true", help="Emit JSON output.")
+    learned.set_defaults(func=command_plan_learned_compression)
 
     return parser
 

@@ -113,7 +113,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 - 설치만으로 전역 Claude 설정을 변경하지 않습니다.
 - 절감 수치가 필요할 때 직접 전후 비교 측정을 대신하지 않습니다.
 - 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움될 수 있지만 Anthropic provider prompt cache를 대체하거나 cache hit를 보장하지 않습니다. 배포나 청구 설명 전에는 Anthropic prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
-- learned compression과 self-hosted KV/latent inference optimization은 runtime 기능으로 제공하지 않습니다. multimodal OCR/crop은 `context-guard experiments plan visual-crop-ocr` dry-run 메타데이터 planner만 제공하며, 실제 OCR/crop runtime·스크린샷 캡처·이미지 파싱·외부 OCR/이미지 서비스 호출은 제공하지 않습니다.
+- learned compression은 `context-guard experiments plan learned-compression` dry-run 안전성 checker만 제공하며, learned/synthetic compressor runtime·embedding·reranker·model call·replacement 생성은 제공하지 않습니다. self-hosted KV/latent inference optimization도 runtime 기능으로 제공하지 않습니다. multimodal OCR/crop은 `context-guard experiments plan visual-crop-ocr` dry-run 메타데이터 planner만 제공하며, 실제 OCR/crop runtime·스크린샷 캡처·이미지 파싱·외부 OCR/이미지 서비스 호출은 제공하지 않습니다.
 - 예전 `/claude-token-optimizer:*` Claude Code 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 
 기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 `bin/`에서 계속 제공합니다.
@@ -337,7 +337,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 
 아래 항목은 프로젝트가 기록해 둔 방향일 뿐, 약속된 기능이 아닙니다. 저장소의 다른 문서에 명시되지 않는 한 아직 제공 기능이 아닙니다.
 
-- learned prompt/context compression, self-hosted KV/latent inference optimization, 그리고 실제 multimodal crop/OCR 또는 visual-token pruning runtime. 자세한 내용은 [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. multimodal OCR/crop은 dry-run planner만 shipped 상태이고 실제 OCR/crop runtime은 shipped가 아닙니다. 이 lane들은 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence가 있어야 hosted API 절감 주장을 할 수 있습니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, context-diff compaction, local proxy constraint도 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 묶습니다.
+- learned/synthetic compressor runtime, self-hosted KV/latent inference optimization, 그리고 실제 multimodal crop/OCR 또는 visual-token pruning runtime. 자세한 내용은 [experimental token-reduction radar](research/experimental-token-reduction-radar.md)와 [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md)를 참고하세요. learned compression은 dry-run checker만 shipped 상태이고 learned compressor/replacement runtime은 shipped가 아니며, multimodal OCR/crop도 dry-run planner만 shipped 상태이고 실제 OCR/crop runtime은 shipped가 아닙니다. 이 lane들은 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence가 있어야 hosted API 절감 주장을 할 수 있습니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, context-diff compaction, local proxy constraint도 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 묶습니다.
 
 ## 저장소 구조
 
