@@ -18,6 +18,10 @@ from typing import NoReturn
 COMMAND_NAME = "context-guard"
 PACKAGE_NAME = "@ictechgy/context-guard"
 MAX_VERSION_METADATA_BYTES = 64 * 1024
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "setup": ("context-guard-setup",),
@@ -59,7 +63,33 @@ def _candidate_roots() -> list[Path]:
     return list(dict.fromkeys(roots))
 
 
+def _normalized_link_target(anchor: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if target.is_absolute():
+        return Path(os.path.normpath(str(target)))
+    return Path(os.path.normpath(str(anchor / target)))
+
+
+def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute():
+        return path
+    parts = path.parts
+    if len(parts) < 2:
+        return path
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(parts[1])
+    if expected is None:
+        return path
+    first = Path(path.anchor) / parts[1]
+    try:
+        if first.is_symlink() and _normalized_link_target(Path(path.anchor), os.readlink(first)) == expected:
+            return expected.joinpath(*parts[2:])
+    except OSError:
+        return path
+    return path
+
+
 def _has_symlink_parent(path: Path) -> bool:
+    path = _normalize_allowed_first_absolute_symlink(path)
     current = Path(path.anchor) if path.is_absolute() else Path()
     parts = path.parts[1:-1] if path.is_absolute() else path.parts[:-1]
     for part in parts:
@@ -75,6 +105,7 @@ def _has_symlink_parent(path: Path) -> bool:
 
 
 def _read_metadata_text(path: Path) -> str | None:
+    path = _normalize_allowed_first_absolute_symlink(path)
     try:
         if _has_symlink_parent(path):
             return None

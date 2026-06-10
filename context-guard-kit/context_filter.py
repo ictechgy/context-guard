@@ -426,10 +426,10 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             except OSError:
                 pass
 
-    def terminate_processes(proc: subprocess.Popen[bytes], sig: int) -> None:
+    def terminate_processes(proc: subprocess.Popen[bytes], *, force: bool) -> None:
         if os.name == "posix":
             try:
-                os.killpg(proc.pid, sig)
+                os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
                 return
             except ProcessLookupError:
                 return
@@ -438,7 +438,7 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
         try:
             if proc.poll() is not None:
                 return
-            if sig == signal.SIGKILL:
+            if force:
                 proc.kill()
             else:
                 proc.terminate()
@@ -461,14 +461,14 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
         return all(not thread.is_alive() for thread in threads)
 
     def terminate_and_close(proc: subprocess.Popen[bytes], threads: tuple[threading.Thread, threading.Thread]) -> None:
-        terminate_processes(proc, signal.SIGTERM)
+        terminate_processes(proc, force=False)
         try:
             proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             pass
         if join_threads_until(threads, time.monotonic() + PIPE_THREAD_CLOSE_GRACE_SECONDS):
             return
-        terminate_processes(proc, signal.SIGKILL)
+        terminate_processes(proc, force=True)
         try:
             proc.wait(timeout=PIPE_THREAD_CLOSE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
@@ -495,11 +495,7 @@ def run_command(argv: list[str], timeout_seconds: int, max_capture_bytes: int) -
             timed_out = True
             returncode = TIMEOUT_EXIT_CODE
             terminate_and_close(proc, reader_threads)
-        drain_deadline = (
-            time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
-            if timed_out
-            else time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
-        )
+        drain_deadline = time.monotonic() + TIMEOUT_PIPE_DRAIN_GRACE_SECONDS
         if not join_threads_until(reader_threads, drain_deadline):
             drain_timed_out = True
             terminate_and_close(proc, reader_threads)
