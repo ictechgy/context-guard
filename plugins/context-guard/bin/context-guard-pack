@@ -24,6 +24,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -187,30 +188,34 @@ class FallbackLineSanitizer:
 # every file, while each sanitize_text() call still gets a fresh stateful
 # sanitizer instance.
 _LINE_SANITIZER_FACTORY_CACHE: Any | None = None
+_LINE_SANITIZER_FACTORY_LOCK = threading.Lock()
 
 
 def load_line_sanitizer_factory() -> Any:
     global _LINE_SANITIZER_FACTORY_CACHE
     if _LINE_SANITIZER_FACTORY_CACHE is not None:
         return _LINE_SANITIZER_FACTORY_CACHE
-    script_dir = Path(__file__).resolve().parent
-    for name in ("sanitize_output.py", "context-guard-sanitize-output", "claude-sanitize-output"):
-        candidate = script_dir / name
-        if not candidate.exists():
-            continue
-        try:
-            loader = importlib.machinery.SourceFileLoader(f"_context_guard_pack_sanitize_{os.getpid()}", str(candidate))
-            spec = importlib.util.spec_from_loader(loader.name, loader)
-            if spec is None:
-                raise RuntimeError("import spec unavailable")
-            module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
-            _LINE_SANITIZER_FACTORY_CACHE = module.LineSanitizer
+    with _LINE_SANITIZER_FACTORY_LOCK:
+        if _LINE_SANITIZER_FACTORY_CACHE is not None:
             return _LINE_SANITIZER_FACTORY_CACHE
-        except Exception as exc:
-            raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
-    _LINE_SANITIZER_FACTORY_CACHE = FallbackLineSanitizer
-    return _LINE_SANITIZER_FACTORY_CACHE
+        script_dir = Path(__file__).resolve().parent
+        for name in ("sanitize_output.py", "context-guard-sanitize-output", "claude-sanitize-output"):
+            candidate = script_dir / name
+            if not candidate.exists():
+                continue
+            try:
+                loader = importlib.machinery.SourceFileLoader(f"_context_guard_pack_sanitize_{os.getpid()}", str(candidate))
+                spec = importlib.util.spec_from_loader(loader.name, loader)
+                if spec is None:
+                    raise RuntimeError("import spec unavailable")
+                module = importlib.util.module_from_spec(spec)
+                loader.exec_module(module)
+                _LINE_SANITIZER_FACTORY_CACHE = module.LineSanitizer
+                return _LINE_SANITIZER_FACTORY_CACHE
+            except Exception as exc:
+                raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
+        _LINE_SANITIZER_FACTORY_CACHE = FallbackLineSanitizer
+        return _LINE_SANITIZER_FACTORY_CACHE
 
 
 def load_line_sanitizer(show_paths: bool = False) -> object:

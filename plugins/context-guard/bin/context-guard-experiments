@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shlex
 from pathlib import Path
 import stat
@@ -326,6 +327,16 @@ def _file_open_flags(*, label: str, write: bool = False) -> int:
     return flags
 
 
+def _temp_file_open_flags(*, label: str) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= _no_follow_flag(label=label)
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
 def _leaf_name(path: Path, *, label: str) -> str:
     name = path.name
     if name in {"", ".", ".."}:
@@ -523,23 +534,51 @@ def write_regular_file_no_follow(path: Path, data: bytes, *, label: str) -> None
     if parent_fd is None:  # pragma: no cover - create=True never returns None.
         raise RegistryError(f"could not inspect {label} parent")
     fd = -1
+    temp_leaf: str | None = None
     try:
         leaf = _leaf_name(path, label=label)
-        _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
-        fd = os.open(leaf, _file_open_flags(label=label, write=True), 0o644, dir_fd=parent_fd)
+        exists = _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
+        mode = 0o644
+        if exists:
+            try:
+                mode = stat.S_IMODE(os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False).st_mode) or 0o644
+            except OSError:
+                mode = 0o644
+        for _attempt in range(20):
+            candidate = _leaf_name(Path(f".{leaf}.{os.getpid()}.{secrets.token_hex(8)}.tmp"), label=f"{label} temp")
+            try:
+                fd = os.open(candidate, _temp_file_open_flags(label=f"{label} temp"), mode, dir_fd=parent_fd)
+                temp_leaf = candidate
+                break
+            except FileExistsError:
+                continue
+        if fd < 0 or temp_leaf is None:
+            raise RegistryError(f"could not create temporary {label}")
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise RegistryError(f"{label} must be a regular file")
+            raise RegistryError(f"{label} temp must be a regular file")
         write_all_fd(fd, data)
         try:
             os.fsync(fd)
         except OSError:
             pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        fd = -1
+        os.replace(temp_leaf, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        temp_leaf = None
     except OSError as exc:
         raise RegistryError(f"could not write {label}: {os_error_detail(exc)}") from exc
     finally:
         if fd >= 0:
             try:
                 os.close(fd)
+            except OSError:
+                pass
+        if temp_leaf is not None:
+            try:
+                os.unlink(temp_leaf, dir_fd=parent_fd)
             except OSError:
                 pass
         try:

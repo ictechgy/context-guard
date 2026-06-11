@@ -88,53 +88,134 @@ def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
     return path
 
 
-def _has_symlink_parent(path: Path) -> bool:
+def _metadata_no_follow_supported() -> bool:
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_follow_symlinks", set())
+    )
+
+
+def _directory_open_flags(*, follow_final: bool = False) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if not follow_final:
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def _metadata_file_open_flags() -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def _leaf_name(path: Path) -> str | None:
+    name = path.name
+    if name in {"", ".", ".."}:
+        return None
+    return name
+
+
+def _open_metadata_parent_no_follow(path: Path) -> int | None:
+    if not _metadata_no_follow_supported():
+        return None
     path = _normalize_allowed_first_absolute_symlink(path)
-    current = Path(path.anchor) if path.is_absolute() else Path()
-    parts = path.parts[1:-1] if path.is_absolute() else path.parts[:-1]
-    for part in parts:
-        if part in {"", "."}:
-            continue
-        current = current / part
-        try:
-            if current.is_symlink():
-                return True
-        except OSError:
-            return True
-    return False
+    try:
+        if path.is_absolute():
+            current_fd = os.open(path.anchor or os.sep, _directory_open_flags(follow_final=True))
+            parts = path.parts[1:-1]
+        else:
+            current_fd = os.open(".", _directory_open_flags(follow_final=True))
+            parts = path.parts[:-1]
+    except OSError:
+        return None
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                return None
+            next_fd = -1
+            try:
+                next_fd = os.open(part, _directory_open_flags(), dir_fd=current_fd)
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                    next_fd = -1
+                    return None
+            except OSError:
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                try:
+                    os.close(current_fd)
+                except OSError:
+                    pass
+                current_fd = -1
+                return None
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
 
 
 def _read_metadata_text(path: Path) -> str | None:
     path = _normalize_allowed_first_absolute_symlink(path)
+    parent_fd = _open_metadata_parent_no_follow(path)
+    if parent_fd is None:
+        return None
+    fd = -1
+    data = b""
     try:
-        if _has_symlink_parent(path):
+        leaf = _leaf_name(path)
+        if leaf is None:
             return None
-        pre_open = path.lstat()
+        pre_open = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISREG(pre_open.st_mode):
             return None
         if pre_open.st_size > MAX_VERSION_METADATA_BYTES:
             return None
-        flags = os.O_RDONLY
-        if hasattr(os, "O_CLOEXEC"):
-            flags |= os.O_CLOEXEC
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags)
+        fd = os.open(leaf, _metadata_file_open_flags(), dir_fd=parent_fd)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return None
+        if opened.st_size > MAX_VERSION_METADATA_BYTES:
+            return None
+        data = os.read(fd, MAX_VERSION_METADATA_BYTES + 1)
     except OSError:
         return None
-    try:
-        try:
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode):
-                return None
-            if opened.st_size > MAX_VERSION_METADATA_BYTES:
-                return None
-            data = os.read(fd, MAX_VERSION_METADATA_BYTES + 1)
-        except OSError:
-            return None
     finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
-            os.close(fd)
+            os.close(parent_fd)
         except OSError:
             pass
     if len(data) > MAX_VERSION_METADATA_BYTES:

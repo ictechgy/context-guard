@@ -375,27 +375,34 @@ class BoundedCapture:
     def consume(self, stream_name: str, chunk: bytes) -> None:
         if not chunk:
             return
+        passthrough: list[tuple[Any, bytes]] = []
         with self._lock:
             self.output_bytes += len(chunk)
             if self.capture_limited:
-                write_binary_chunk(sys.stdout if stream_name == "stdout" else sys.stderr, chunk)
-                return
-            stored_total = len(self.stdout) + len(self.stderr)
-            remaining = self.max_capture_bytes - stored_total
-            target = self.stdout if stream_name == "stdout" else self.stderr
-            if len(chunk) <= remaining:
-                target.extend(chunk)
-                return
-            if remaining > 0:
-                target.extend(chunk[:remaining])
-                overflow = chunk[remaining:]
+                passthrough.append((sys.stdout if stream_name == "stdout" else sys.stderr, chunk))
             else:
-                overflow = chunk
-            self.capture_limited = True
-            self.passthrough_emitted = True
-            write_binary_chunk(sys.stdout, bytes(self.stdout))
-            write_binary_chunk(sys.stderr, bytes(self.stderr))
-            write_binary_chunk(sys.stdout if stream_name == "stdout" else sys.stderr, overflow)
+                stored_total = len(self.stdout) + len(self.stderr)
+                remaining = self.max_capture_bytes - stored_total
+                target = self.stdout if stream_name == "stdout" else self.stderr
+                if len(chunk) <= remaining:
+                    target.extend(chunk)
+                    return
+                if remaining > 0:
+                    target.extend(chunk[:remaining])
+                    overflow = chunk[remaining:]
+                else:
+                    overflow = chunk
+                self.capture_limited = True
+                self.passthrough_emitted = True
+                passthrough.extend(
+                    [
+                        (sys.stdout, bytes(self.stdout)),
+                        (sys.stderr, bytes(self.stderr)),
+                        (sys.stdout if stream_name == "stdout" else sys.stderr, overflow),
+                    ]
+                )
+        for stream, payload in passthrough:
+            write_binary_chunk(stream, payload)
 
     def text(self) -> tuple[str, str]:
         with self._lock:

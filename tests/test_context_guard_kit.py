@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -431,6 +432,33 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(report["reason"], "pipe-drain-timeout")
                 self.assertEqual(report["command_exit_code"], 0)
 
+    def test_context_filter_bounded_capture_writes_passthrough_outside_lock(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_bounded_capture_lock_{index}")
+                capture = module.BoundedCapture(1)
+                lock_available: list[bool] = []
+                emitted: list[bytes] = []
+
+                def observing_write(_stream, chunk):
+                    acquired = capture._lock.acquire(blocking=False)
+                    lock_available.append(acquired)
+                    if acquired:
+                        capture._lock.release()
+                    if chunk:
+                        emitted.append(bytes(chunk))
+
+                with mock.patch.object(module, "write_binary_chunk", observing_write):
+                    capture.consume("stdout", "é".encode("utf-8")[:1])
+                    capture.consume("stdout", "é".encode("utf-8")[1:])
+
+                stdout_text, stderr_text = capture.text()
+                self.assertTrue(lock_available)
+                self.assertTrue(all(lock_available))
+                self.assertEqual(b"".join(emitted), "é".encode("utf-8"))
+                self.assertEqual(stdout_text, "�")
+                self.assertEqual(stderr_text, "")
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {
@@ -798,28 +826,90 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     config.write_text(json.dumps({"schema_version": "contextguard.experiments.v1", "enabled": []}), encoding="utf-8")
                     outside = root / "outside.json"
                     outside.write_text("outside-safe\n", encoding="utf-8")
-                    real_open = module.os.open
+                    real_replace = module.os.replace
                     swapped = False
 
-                    def racing_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                    def racing_replace(src, dst, *args, **kwargs):
                         nonlocal swapped
-                        if (
-                            not swapped
-                            and dir_fd is not None
-                            and os.fspath(path_arg) == "experiments.json"
-                            and flags & module.os.O_WRONLY
-                        ):
+                        if not swapped and os.fspath(dst) == "experiments.json":
                             config.unlink()
                             config.symlink_to(outside)
                             swapped = True
-                        if dir_fd is None:
-                            return real_open(path_arg, flags, mode)
-                        return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+                        return real_replace(src, dst, *args, **kwargs)
 
-                    with mock.patch.object(module.os, "open", racing_open):
-                        with self.assertRaises(module.RegistryError):
-                            module.write_config(config, {"output-receipt-trim"})
+                    with mock.patch.object(module.os, "replace", racing_replace):
+                        module.write_config(config, {"output-receipt-trim"})
+                    self.assertTrue(swapped)
                     self.assertEqual(outside.read_text(encoding="utf-8"), "outside-safe\n")
+                    self.assertFalse(config.is_symlink())
+                    self.assertIn("output-receipt-trim", json.loads(config.read_text(encoding="utf-8"))["enabled"])
+
+    def test_experimental_registry_atomic_config_write_preserves_existing_on_failure(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_atomic_write_failure_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir()
+                    config = config_dir / "experiments.json"
+                    original = json.dumps({"schema_version": "contextguard.experiments.v1", "enabled": []}) + "\n"
+                    config.write_text(original, encoding="utf-8")
+                    real_write_all = module.write_all_fd
+
+                    def failing_write_all(fd, data):
+                        real_write_all(fd, b'{"partial":')
+                        raise OSError(errno.EIO, "simulated temp write failure")
+
+                    with mock.patch.object(module, "write_all_fd", failing_write_all):
+                        with self.assertRaisesRegex(module.RegistryError, "simulated temp write failure"):
+                            module.write_config(config, {"output-receipt-trim"})
+
+                    self.assertEqual(config.read_text(encoding="utf-8"), original)
+                    self.assertEqual(list(config_dir.glob(".experiments.json.*.tmp")), [])
+
+    def test_experimental_registry_atomic_config_write_preserves_existing_on_replace_failure(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_atomic_replace_failure_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config_dir = root / ".context-guard"
+                    config_dir.mkdir()
+                    config = config_dir / "experiments.json"
+                    original = json.dumps({"schema_version": "contextguard.experiments.v1", "enabled": []}) + "\n"
+                    config.write_text(original, encoding="utf-8")
+
+                    def failing_replace(*_args, **_kwargs):
+                        raise OSError(errno.EIO, "simulated replace failure")
+
+                    with mock.patch.object(module.os, "replace", failing_replace):
+                        with self.assertRaisesRegex(module.RegistryError, "simulated replace failure"):
+                            module.write_config(config, {"output-receipt-trim"})
+
+                    self.assertEqual(config.read_text(encoding="utf-8"), original)
+                    self.assertEqual(list(config_dir.glob(".experiments.json.*.tmp")), [])
+
+    def test_experimental_registry_write_all_fd_retries_partial_writes(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_partial_write_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "partial.txt"
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+                    real_write = module.os.write
+
+                    def partial_write(write_fd, data):
+                        chunk_len = 1 if len(data) == 1 else max(1, min(3, len(data) // 2))
+                        return real_write(write_fd, data[:chunk_len])
+
+                    try:
+                        with mock.patch.object(module.os, "write", partial_write):
+                            module.write_all_fd(fd, b"abcdefghi")
+                    finally:
+                        os.close(fd)
+
+                    self.assertEqual(path.read_bytes(), b"abcdefghi")
 
     def test_experimental_registry_safe_io_primitives_fail_closed(self):
         for index, script in enumerate(EXPERIMENT_SCRIPTS):
@@ -4373,6 +4463,67 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with mock.patch.object(module, "_candidate_roots", return_value=[root]):
                 self.assertEqual(module.project_version(), "0.0.0+unknown")
 
+    def test_context_guard_cli_metadata_read_uses_open_parent_fd_after_path_swap(self):
+        module = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_version_race_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_dir = root / ".claude-plugin"
+            metadata_dir.mkdir()
+            (metadata_dir / "plugin.json").write_text(json.dumps({"version": "1.2.3-safe"}), encoding="utf-8")
+            external = root / "external-metadata"
+            external.mkdir()
+            (external / "plugin.json").write_text(json.dumps({"version": "9.9.9-race"}), encoding="utf-8")
+            moved_metadata_dir = root / ".claude-plugin-opened"
+            real_open = module.os.open
+            swapped = False
+
+            try:
+                probe = root / "probe-link"
+                probe.symlink_to(external, target_is_directory=True)
+                probe.unlink()
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            def racing_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if not swapped and dir_fd is not None and os.fspath(path_arg) == "plugin.json":
+                    metadata_dir.rename(moved_metadata_dir)
+                    metadata_dir.symlink_to(external, target_is_directory=True)
+                    swapped = True
+                if dir_fd is None:
+                    return real_open(path_arg, flags, mode)
+                return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+
+            patched_supports = set(module.os.supports_dir_fd)
+            patched_supports.discard(real_open)
+            patched_supports.add(racing_open)
+            with (
+                mock.patch.object(module.os, "open", racing_open),
+                mock.patch.object(module.os, "supports_dir_fd", patched_supports),
+                mock.patch.object(module, "_candidate_roots", return_value=[root]),
+            ):
+                self.assertEqual(module.project_version(), "1.2.3-safe")
+            self.assertTrue(swapped)
+
+    def test_context_guard_cli_metadata_read_rejects_relative_symlink_parent(self):
+        module = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_version_relative_symlink_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external"
+            external.mkdir()
+            (external / "plugin.json").write_text(json.dumps({"version": "9.9.9-relative"}), encoding="utf-8")
+            link = root / "metadata-link"
+            try:
+                link.symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(root)
+                self.assertIsNone(module._read_metadata_text(Path("metadata-link") / "plugin.json"))
+            finally:
+                os.chdir(old_cwd)
+
     def test_cost_guard_release_gate_parity_surfaces_include_cost_helper(self):
         cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_cost_test")
         self.assertEqual(cli.HELPER_SUBCOMMANDS["cost"], ("context-guard-cost",))
@@ -6938,6 +7089,57 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("state=1", first)
                     self.assertIn("state=1", second)
                     self.assertEqual(module._LINE_SANITIZER_FACTORY_CACHE.instances, 2)
+
+    def test_context_pack_serializes_concurrent_sanitizer_factory_first_load(self):
+        sanitizer_template = (
+            "from pathlib import Path\n"
+            "import time\n"
+            "COUNT_FILE = Path({count_file!r})\n"
+            "with COUNT_FILE.open('a', encoding='utf-8') as fh:\n"
+            "    fh.write('load\\n')\n"
+            "time.sleep(0.1)\n"
+            "class LineSanitizer:\n"
+            "    def __init__(self, *, show_paths=False):\n"
+            "        self.show_paths = show_paths\n"
+            "        self.redactions = 0\n"
+            "    def sanitize(self, raw_line):\n"
+            "        return raw_line, False\n"
+        )
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    sandbox = Path(tmp)
+                    pack_copy = sandbox / "context_pack.py"
+                    shutil.copy2(script, pack_copy)
+                    count_file = sandbox / "load-count.txt"
+                    (sandbox / "sanitize_output.py").write_text(
+                        sanitizer_template.format(count_file=str(count_file)),
+                        encoding="utf-8",
+                    )
+                    module = load_python_script_module(pack_copy, f"context_pack_sanitizer_concurrent_cache_{index}")
+                    start = threading.Event()
+                    factories: list[object] = []
+                    errors: list[BaseException] = []
+
+                    def load_factory():
+                        start.wait()
+                        try:
+                            factories.append(module.load_line_sanitizer_factory())
+                        except BaseException as exc:  # pragma: no cover - assertion reports thread failures.
+                            errors.append(exc)
+
+                    threads = [threading.Thread(target=load_factory) for _ in range(4)]
+                    for thread in threads:
+                        thread.start()
+                    start.set()
+                    for thread in threads:
+                        thread.join(timeout=2)
+
+                    self.assertFalse(any(thread.is_alive() for thread in threads))
+                    self.assertEqual(errors, [])
+                    self.assertEqual(len(factories), 4)
+                    self.assertEqual(len({id(factory) for factory in factories}), 1)
+                    self.assertEqual(count_file.read_text(encoding="utf-8").splitlines(), ["load"])
 
     def test_context_pack_redacts_before_pack_and_private_receipt(self):
         secret = "sk-" + ("C" * 32)
