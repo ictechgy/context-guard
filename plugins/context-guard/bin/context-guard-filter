@@ -369,7 +369,9 @@ class BoundedCapture:
         self.capture_limited = False
         self.passthrough_emitted = False
         self._lock = threading.Lock()
-        self._emit_lock = threading.Lock()
+        self._emit_condition = threading.Condition()
+        self._next_emit_order = 0
+        self._active_emit_order = 0
         self._stdout_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
@@ -377,13 +379,11 @@ class BoundedCapture:
         if not chunk:
             return
         passthrough: list[tuple[Any, bytes]] = []
-        emit_lock_acquired = False
+        emit_order: int | None = None
         with self._lock:
             self.output_bytes += len(chunk)
             if self.capture_limited:
                 passthrough.append((sys.stdout if stream_name == "stdout" else sys.stderr, chunk))
-                self._emit_lock.acquire()
-                emit_lock_acquired = True
             else:
                 stored_total = len(self.stdout) + len(self.stderr)
                 remaining = self.max_capture_bytes - stored_total
@@ -405,14 +405,21 @@ class BoundedCapture:
                         (sys.stdout if stream_name == "stdout" else sys.stderr, overflow),
                     ]
                 )
-                self._emit_lock.acquire()
-                emit_lock_acquired = True
+            if passthrough:
+                emit_order = self._next_emit_order
+                self._next_emit_order += 1
+        if emit_order is None:
+            return
+        with self._emit_condition:
+            while emit_order != self._active_emit_order:
+                self._emit_condition.wait()
         try:
             for stream, payload in passthrough:
                 write_binary_chunk(stream, payload)
         finally:
-            if emit_lock_acquired:
-                self._emit_lock.release()
+            with self._emit_condition:
+                self._active_emit_order += 1
+                self._emit_condition.notify_all()
 
     def text(self) -> tuple[str, str]:
         with self._lock:

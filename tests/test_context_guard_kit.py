@@ -484,6 +484,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     second.start()
                     time.sleep(0.1)
                     self.assertEqual(emitted, [])
+                    state_lock_available = capture._lock.acquire(blocking=False)
+                    self.assertTrue(state_lock_available)
+                    if state_lock_available:
+                        capture._lock.release()
                     allow_first_write.set()
                     first.join(timeout=2)
                     second.join(timeout=2)
