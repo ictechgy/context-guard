@@ -1234,6 +1234,7 @@ def open_private_regular_file_for_append(path: Path, *, label: str) -> int:
                     os.close(parent_fd)
                 except OSError:
                     pass
+    raise AssertionError("unreachable: append retry loop exits via return or fail")
 
 
 def load_ledger(store_dir: Path) -> list[dict[str, Any]]:

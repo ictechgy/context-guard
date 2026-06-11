@@ -459,6 +459,39 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(stdout_text, "�")
                 self.assertEqual(stderr_text, "")
 
+    def test_context_filter_bounded_capture_serializes_limit_transition_emit(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_bounded_capture_emit_order_{index}")
+                capture = module.BoundedCapture(1)
+                first_write_started = threading.Event()
+                allow_first_write = threading.Event()
+                emitted: list[bytes] = []
+
+                def observing_write(_stream, chunk):
+                    payload = bytes(chunk)
+                    if payload == b"A" and not first_write_started.is_set():
+                        first_write_started.set()
+                        self.assertTrue(allow_first_write.wait(timeout=2))
+                    if payload:
+                        emitted.append(payload)
+
+                with mock.patch.object(module, "write_binary_chunk", observing_write):
+                    first = threading.Thread(target=lambda: capture.consume("stdout", b"AB"))
+                    second = threading.Thread(target=lambda: capture.consume("stdout", b"C"))
+                    first.start()
+                    self.assertTrue(first_write_started.wait(timeout=2))
+                    second.start()
+                    time.sleep(0.1)
+                    self.assertEqual(emitted, [])
+                    allow_first_write.set()
+                    first.join(timeout=2)
+                    second.join(timeout=2)
+
+                self.assertFalse(first.is_alive())
+                self.assertFalse(second.is_alive())
+                self.assertEqual(b"".join(emitted), b"ABC")
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {

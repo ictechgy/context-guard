@@ -369,6 +369,7 @@ class BoundedCapture:
         self.capture_limited = False
         self.passthrough_emitted = False
         self._lock = threading.Lock()
+        self._emit_lock = threading.Lock()
         self._stdout_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
@@ -376,10 +377,13 @@ class BoundedCapture:
         if not chunk:
             return
         passthrough: list[tuple[Any, bytes]] = []
+        emit_lock_acquired = False
         with self._lock:
             self.output_bytes += len(chunk)
             if self.capture_limited:
                 passthrough.append((sys.stdout if stream_name == "stdout" else sys.stderr, chunk))
+                self._emit_lock.acquire()
+                emit_lock_acquired = True
             else:
                 stored_total = len(self.stdout) + len(self.stderr)
                 remaining = self.max_capture_bytes - stored_total
@@ -401,8 +405,14 @@ class BoundedCapture:
                         (sys.stdout if stream_name == "stdout" else sys.stderr, overflow),
                     ]
                 )
-        for stream, payload in passthrough:
-            write_binary_chunk(stream, payload)
+                self._emit_lock.acquire()
+                emit_lock_acquired = True
+        try:
+            for stream, payload in passthrough:
+                write_binary_chunk(stream, payload)
+        finally:
+            if emit_lock_acquired:
+                self._emit_lock.release()
 
     def text(self) -> tuple[str, str]:
         with self._lock:
