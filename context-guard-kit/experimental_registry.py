@@ -217,16 +217,21 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment(
         id="self-hosted-metrics-ledger",
         name="Self-hosted metrics ledger",
-        summary="Dry-run checker for self-hosted/local metrics ledger sidecars kept separate from hosted API claims.",
+        summary="Explicit local ledger runtime for self-hosted/local metrics sidecars kept separate from hosted API claims.",
         stability="experimental",
         default_enabled=False,
         risk_level="low",
         claim_boundary="Self-hosted memory/latency metrics must stay separate from hosted API token/cost claims.",
         gate_requirements=("explicit opt-in", "separate ledger fields", "shifted-cost accounting"),
-        runtime_status="available-dry-run",
-        commands=("context-guard experiments plan self-hosted-metrics-ledger",),
+        runtime_status="available-explicit-runtime",
+        commands=(
+            "context-guard experiments plan self-hosted-metrics-ledger",
+            "context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl <path>",
+        ),
         opt_in_flags=(
             "plan self-hosted-metrics-ledger",
+            "record self-hosted-metrics-ledger",
+            "--ledger-jsonl",
             "--input",
             "--latency-ms",
             "--peak-memory-mb",
@@ -238,12 +243,12 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--optimization",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; self-hosted metrics planning remains a dry-run "
-            "ledger-preview surface and does not write ledgers or alter benchmark/report behavior."
+            "Registry enablement records project-local intent only; self-hosted metrics still write a ledger only "
+            "when the explicit record command is invoked with --ledger-jsonl."
         ),
         evidence_contract=(
-            "Real evidence belongs in context-guard-bench JSONL ledger sidecars; self-hosted metrics remain separate "
-            "from hosted API token/cost savings."
+            "The explicit record command writes context-guard-bench JSONL ledger sidecars; self-hosted metrics "
+            "remain separate from hosted API token/cost savings."
         ),
     ),
     Experiment(
@@ -332,6 +337,18 @@ def _temp_file_open_flags(*, label: str) -> int:
     flags |= _no_follow_flag(label=label)
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def _append_file_open_flags(*, label: str) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags |= _no_follow_flag(label=label)
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
     if hasattr(os, "O_NOCTTY"):
         flags |= os.O_NOCTTY
     return flags
@@ -579,6 +596,43 @@ def write_regular_file_no_follow(path: Path, data: bytes, *, label: str) -> None
         if temp_leaf is not None:
             try:
                 os.unlink(temp_leaf, dir_fd=parent_fd)
+            except OSError:
+                pass
+        try:
+            os.fsync(parent_fd)
+        except OSError:
+            pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+
+
+def append_jsonl_no_follow(path: Path, payload: dict[str, Any], *, label: str) -> int:
+    path = normalize_local_path(path)
+    parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", create=True)
+    if parent_fd is None:  # pragma: no cover - create=True never returns None.
+        raise RegistryError(f"could not inspect {label} parent")
+    fd = -1
+    try:
+        leaf = _leaf_name(path, label=label)
+        _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
+        fd = os.open(leaf, _append_file_open_flags(label=label), 0o600, dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RegistryError(f"{label} must be a regular file")
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+        write_all_fd(fd, data)
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        return len(data)
+    except OSError as exc:
+        raise RegistryError(f"could not append {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
             except OSError:
                 pass
         try:
@@ -1434,6 +1488,70 @@ def select_self_hosted_envelope(payload: Any) -> tuple[Any, str | None, list[str
     return None, None, ignored
 
 
+def parse_optional_success(value: str | None) -> bool | None:
+    if value is None or value == "unknown":
+        return None
+    return value == "true"
+
+
+def self_hosted_metrics_ledger_row(
+    sidecar: dict[str, Any],
+    *,
+    task_id: str = "self-hosted-metrics-manual",
+    variant: str = "self-hosted-metrics-ledger",
+    success: bool | None = None,
+    notes: str = "explicit self-hosted metrics record; no hosted API savings claim",
+    claude_version: str = "manual",
+    wall_time_seconds: float = 0.0,
+) -> dict[str, Any]:
+    return {
+        "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "claude_version": sanitize_self_hosted_text(claude_version) or "manual",
+        "task_id": sanitize_self_hosted_text(task_id) or "self-hosted-metrics-manual",
+        "variant": sanitize_self_hosted_text(variant) or "self-hosted-metrics-ledger",
+        "transform_id": "self-hosted-metrics-ledger",
+        "success": success,
+        "primary_tokens_measured": False,
+        "primary_tokens": 0,
+        "primary_cost_measured": False,
+        "primary_cost_usd": 0.0,
+        "provider_cached_tokens": None,
+        "provider_cached_tokens_measured": False,
+        "wall_time_seconds": wall_time_seconds,
+        "external_tokens_measured": False,
+        "external_tokens": 0,
+        "external_cost_measured": False,
+        "external_cost_usd": 0.0,
+        "total_cost_with_shift_usd": None,
+        "artifacts_used": 0,
+        "bytes_before": 0,
+        "bytes_after": 0,
+        "hook_triggers": 0,
+        "turns": 0,
+        "notes": sanitize_self_hosted_text(notes)
+        or "explicit self-hosted metrics record; no hosted API savings claim",
+        "measurement_availability": {
+            "primary_tokens": False,
+            "primary_cost": False,
+            "external_tokens": False,
+            "external_cost": False,
+            "shifted_cost": False,
+            "provider_cache": False,
+            "byte_metrics": False,
+            "wall_time": False,
+            "self_hosted_metrics": True,
+        },
+        "self_hosted_metrics": sidecar,
+        "proxy_metrics": {
+            "byte_metrics_observed": False,
+            "token_proxy": "chars_div_4",
+            "bytes_per_token": TOKEN_PROXY_BYTES_PER_TOKEN,
+            "claim_boundary": "proxy_only_not_hosted_token_savings",
+        },
+    }
+
+
 def self_hosted_metrics_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     cli_metrics = cli_self_hosted_metrics(args)
     if cli_metrics:
@@ -1493,51 +1611,12 @@ def self_hosted_metrics_plan_payload(args: argparse.Namespace) -> dict[str, Any]
     ready = not blockers
     ledger_preview = None
     if sidecar is not None:
-        ledger_preview = {
-            "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "claude_version": "dry-run",
-            "task_id": "self-hosted-metrics-dry-run",
-            "variant": "self-hosted-metrics-ledger",
-            "transform_id": "self-hosted-metrics-ledger",
-            "success": None,
-            "primary_tokens_measured": False,
-            "primary_tokens": 0,
-            "primary_cost_measured": False,
-            "primary_cost_usd": 0.0,
-            "provider_cached_tokens": None,
-            "provider_cached_tokens_measured": False,
-            "wall_time_seconds": 0.0,
-            "external_tokens_measured": False,
-            "external_tokens": 0,
-            "external_cost_measured": False,
-            "external_cost_usd": 0.0,
-            "total_cost_with_shift_usd": None,
-            "artifacts_used": 0,
-            "bytes_before": 0,
-            "bytes_after": 0,
-            "hook_triggers": 0,
-            "turns": 0,
-            "notes": "dry-run preview; no ledger file written",
-            "measurement_availability": {
-                "primary_tokens": False,
-                "primary_cost": False,
-                "external_tokens": False,
-                "external_cost": False,
-                "shifted_cost": False,
-                "provider_cache": False,
-                "byte_metrics": False,
-                "wall_time": False,
-                "self_hosted_metrics": True,
-            },
-            "self_hosted_metrics": sidecar,
-            "proxy_metrics": {
-                "byte_metrics_observed": False,
-                "token_proxy": "chars_div_4",
-                "bytes_per_token": TOKEN_PROXY_BYTES_PER_TOKEN,
-                "claim_boundary": "proxy_only_not_hosted_token_savings",
-            },
-        }
+        ledger_preview = self_hosted_metrics_ledger_row(
+            sidecar,
+            task_id="self-hosted-metrics-dry-run",
+            notes="dry-run preview; no ledger file written",
+            claude_version="dry-run",
+        )
     return {
         "tool": TOOL_NAME,
         "schema_version": CONFIG_SCHEMA_VERSION,
@@ -1579,6 +1658,65 @@ def command_plan_self_hosted_metrics_ledger(args: argparse.Namespace) -> int:
         print(f"Status: {payload['status']}")
         if payload["review_plan"]["readiness_blockers"]:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
+def self_hosted_metrics_record_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = self_hosted_metrics_plan_payload(args)
+    payload["mode"] = "record"
+    payload["claim_boundary"] = (
+        "Explicit local self-hosted metrics ledger record only; local/model-server metrics are diagnostic sidecars "
+        "and are not hosted API token or cost savings evidence."
+    )
+    payload["policy"]["ledger_write_performed"] = False
+    payload["policy"]["stable_runtime_behavior_changed"] = False
+    payload["ledger_record"] = None
+    payload["ledger_jsonl"] = {
+        "path": sanitize_self_hosted_text(args.ledger_jsonl),
+        "write_performed": False,
+        "bytes_written": 0,
+    }
+    if payload["self_hosted_metrics"] is None or payload["review_plan"]["readiness_blockers"]:
+        payload["status"] = "blocked_until_metrics"
+        return payload
+
+    row = self_hosted_metrics_ledger_row(
+        payload["self_hosted_metrics"],
+        task_id=args.task_id,
+        variant=args.variant,
+        success=parse_optional_success(args.success),
+        notes=args.notes,
+        claude_version="manual",
+    )
+    bytes_written = append_jsonl_no_follow(Path(args.ledger_jsonl), row, label="self-hosted metrics ledger")
+    payload["status"] = "recorded"
+    payload["ledger_preview"] = row
+    payload["ledger_record"] = row
+    payload["policy"]["ledger_write_performed"] = True
+    payload["ledger_jsonl"]["write_performed"] = True
+    payload["ledger_jsonl"]["bytes_written"] = bytes_written
+    payload["review_plan"]["next_steps"] = [
+        "Use this JSONL row only as self-hosted/local diagnostic evidence.",
+        "Keep hosted API token/cost savings claims behind provider-measured matched successful tasks.",
+        "Compare this sidecar with benchmark rows only through explicit shifted-cost accounting.",
+    ]
+    return payload
+
+
+def command_record_self_hosted_metrics_ledger(args: argparse.Namespace) -> int:
+    payload = self_hosted_metrics_record_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "recorded":
+            print("ContextGuard self-hosted metrics ledger record written")
+            print(f"Ledger: {payload['ledger_jsonl']['path']} bytes={payload['ledger_jsonl']['bytes_written']}")
+        else:
+            print("ContextGuard self-hosted metrics ledger record blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
 
@@ -2295,6 +2433,43 @@ def build_parser() -> argparse.ArgumentParser:
     learned.add_argument("--reexpand-command", help="Local exact re-expand command bound to the receipt id.")
     learned.add_argument("--json", action="store_true", help="Emit JSON output.")
     learned.set_defaults(func=command_plan_learned_compression)
+
+    record_parser = sub.add_parser("record", help="Run explicit local runtime recorders for experimental lanes.")
+    record_sub = record_parser.add_subparsers(dest="record_command", required=True)
+    record_self_hosted = record_sub.add_parser(
+        "self-hosted-metrics-ledger",
+        help="Append one self-hosted/local metrics sidecar row to a JSONL ledger.",
+    )
+    record_self_hosted.add_argument("--ledger-jsonl", required=True, help="Local JSONL ledger path to append.")
+    record_self_hosted.add_argument("--input", help="Read an explicit self_hosted_metrics JSON envelope from a file instead of stdin.")
+    record_self_hosted.add_argument("--source-label", help="Safe label to use for the input source in reports.")
+    record_self_hosted.add_argument("--latency-ms", type=float, default=None, help="Local/model-server latency in milliseconds.")
+    record_self_hosted.add_argument("--peak-memory-mb", type=float, default=None, help="Peak local/model-server memory in MiB/MB.")
+    record_self_hosted.add_argument("--quality-score", type=float, default=None, help="Quality score from 0.0 to 1.0.")
+    record_self_hosted.add_argument("--energy-wh", type=float, default=None, help="Diagnostic local energy use in watt-hours.")
+    record_self_hosted.add_argument("--local-cost-usd", type=float, default=None, help="Diagnostic local/self-hosted cost in USD.")
+    record_self_hosted.add_argument("--tokens-per-second", type=float, default=None, help="Diagnostic local throughput.")
+    record_self_hosted.add_argument("--model-server", help="Sanitized label for local model server/runtime.")
+    record_self_hosted.add_argument("--optimization", help="Sanitized label for the local optimization under test.")
+    record_self_hosted.add_argument("--quality-metric", help="Sanitized label for quality metric.")
+    record_self_hosted.add_argument("--hardware", help="Sanitized local hardware label.")
+    record_self_hosted.add_argument("--runtime", help="Sanitized local runtime label.")
+    record_self_hosted.add_argument("--dataset", help="Sanitized dataset label.")
+    record_self_hosted.add_argument("--task-id", default="self-hosted-metrics-manual", help="Sanitized task id for the ledger row.")
+    record_self_hosted.add_argument("--variant", default="self-hosted-metrics-ledger", help="Sanitized variant label for the ledger row.")
+    record_self_hosted.add_argument(
+        "--success",
+        choices=("true", "false", "unknown"),
+        default="unknown",
+        help="Optional success value for the local run; unknown writes JSON null.",
+    )
+    record_self_hosted.add_argument(
+        "--notes",
+        default="explicit self-hosted metrics record; no hosted API savings claim",
+        help="Sanitized note for the ledger row.",
+    )
+    record_self_hosted.add_argument("--json", action="store_true", help="Emit JSON output.")
+    record_self_hosted.set_defaults(func=command_record_self_hosted_metrics_ledger)
 
     return parser
 

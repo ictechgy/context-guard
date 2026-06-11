@@ -413,13 +413,13 @@
     <section id="experiments" class="shell">
       <div class="section-head">
         <h2>실험 기능을 활성화해도 런타임 동작이 켜지지 않습니다.</h2>
-        <p><code>context-guard experiments</code>는 프로젝트 로컬 의도와 검토용 메타데이터를 기록합니다. 아래 lane들은 모두 dry-run checker/planner이며, hosted API 절감이나 실제 런타임 기능으로 주장하려면 별도 evidence gate와 future PR gate가 필요합니다.</p>
+        <p><code>context-guard experiments</code>는 프로젝트 로컬 의도와 검토용 메타데이터를 기록합니다. 대부분의 lane은 dry-run checker/planner이고, self-hosted metrics만 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록을 제공합니다. hosted API 절감이나 더 넓은 런타임 기능으로 주장하려면 별도 evidence gate와 future PR gate가 필요합니다.</p>
       </div>
       <div class="feature-grid">
         <article class="card"><span class="icon">Δ</span><h3>context-diff compaction</h3><p><code>context-diff-compaction</code>은 diff를 줄일 수 있는지 검토하지만 replacement text를 emit하지 않습니다. receipt와 re-expand handle은 사람 검토나 future gated review용 메타데이터로만 기록합니다.</p></article>
         <article class="card"><span class="icon">☷</span><h3>visual crop/OCR</h3><p><code>visual-crop-ocr</code>은 전체 visual evidence, crop bounds, OCR note, confidence, missed context를 메타데이터로만 다룹니다. 스크린샷 캡처·OCR 런타임·이미지 파싱·외부 이미지 서비스 호출은 하지 않습니다.</p></article>
         <article class="card"><span class="icon">λ</span><h3>learned compression</h3><p><code>learned-compression</code>은 sanitized trusted prose와 exact fallback receipt가 있는지 deny-by-default로 확인합니다. embedding, reranker, model call, compressor runtime, replacement 생성 기능은 없습니다.</p></article>
-        <article class="card"><span class="icon">S</span><h3>self-hosted metrics</h3><p><code>self-hosted-metrics-ledger</code>는 local/model-server latency, memory, quality, energy, throughput, local-cost metric을 읽기 전용 ledger preview로만 보여줍니다. ledger 파일을 쓰지 않고 hosted API 절감 근거로 쓰지 않습니다.</p></article>
+        <article class="card"><span class="icon">S</span><h3>self-hosted metrics</h3><p><code>self-hosted-metrics-ledger</code>는 dry-run preview와 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록을 제공합니다. dry-run preview는 ledger 파일을 쓰지 않으며, record 결과도 hosted API 절감 근거로 쓰지 않습니다.</p></article>
         <article class="card"><span class="icon">⌂</span><h3>local proxy</h3><p><code>local-proxy</code>는 미래 local proxy 후보를 localhost-only advisory plan으로 검토합니다. listener를 시작하지 않고 traffic을 forward하지 않으며 API key나 ledger를 저장하지 않습니다. non-local bind/target/upstream은 차단하며 실제 forwarding은 별도 future runtime gate가 필요합니다.</p></article>
         <article class="card warning-card"><span class="icon">!</span><h3>공통 안전 경계</h3><p><code>experiments enable</code>은 의도 기록일 뿐입니다. helper별 명시 flag, claim boundary, 별도 runtime gate를 통과하기 전까지 안정 동작이나 절감 주장으로 승격하지 않습니다.</p></article>
       </div>
@@ -481,7 +481,7 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
         <article class="card"><span class="icon">✓</span><h3>측정 근거를 직접 남깁니다</h3><p>벤치마크·감사·상태표시줄 신호로 실제 전후 변화를 측정하고, 절감 효과가 없으면 그대로 보고합니다.</p></article>
         <article class="card warning-card"><span class="icon">!</span><h3>고정 절감률을 보장하지 않습니다</h3><p>저장소와 작업 방식에 따라 효과가 달라집니다. 벤치마크 도구로 직접 측정하세요.</p></article>
         <article class="card warning-card"><span class="icon">↯</span><h3>외부 AI로 작업을 보내지 않습니다</h3><p>토큰을 줄이기 위해 작업을 다른 AI 서비스로 보내거나 대신 실행하지 않습니다. 헬퍼는 로컬에서 동작합니다.</p></article>
-        <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 검증할 후보와 later-roadmap gate를 기록합니다. 현재 제공되는 것은 dry-run checker/planner뿐이며, learned compressor runtime·replacement generation·self-hosted KV/latent runtime·실제 proxy forwarding runtime은 provider-measured matched-task 근거와 별도 future PR gate 없이는 제공 기능이나 hosted API 절감으로 주장하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 검증할 후보와 later-roadmap gate를 기록합니다. 현재 제공되는 것은 대부분 dry-run checker/planner이며 self-hosted metrics의 명시적 로컬 JSONL sidecar 기록만 예외입니다. learned compressor runtime·replacement generation·self-hosted KV/latent runtime·실제 proxy forwarding runtime은 provider-measured matched-task 근거와 별도 future PR gate 없이는 제공 기능이나 hosted API 절감으로 주장하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">⌂</span><h3>전역 설정을 자동 변경하지 않습니다</h3><p>설정은 프로젝트 단위로, 사용자가 명시적으로 적용할 때만 반영됩니다.</p></article>
         <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼는 계속 제공합니다.</p></article>
       </div>

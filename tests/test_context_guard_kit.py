@@ -1091,9 +1091,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("protected", learned["evidence_contract"].lower())
 
                         self_hosted = experiments["self-hosted-metrics-ledger"]
-                        self.assertEqual(self_hosted["runtime_status"], "available-dry-run")
+                        self.assertEqual(self_hosted["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan self-hosted-metrics-ledger", self_hosted["commands"])
+                        self.assertIn(
+                            "context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl <path>",
+                            self_hosted["commands"],
+                        )
                         self.assertIn("plan self-hosted-metrics-ledger", self_hosted["opt_in_flags"])
+                        self.assertIn("record self-hosted-metrics-ledger", self_hosted["opt_in_flags"])
+                        self.assertIn("--ledger-jsonl", self_hosted["opt_in_flags"])
                         self.assertIn("--latency-ms", self_hosted["opt_in_flags"])
                         self.assertIn("--peak-memory-mb", self_hosted["opt_in_flags"])
                         self.assertIn("--quality-score", self_hosted["opt_in_flags"])
@@ -1101,8 +1107,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("--local-cost-usd", self_hosted["opt_in_flags"])
                         self.assertIn("--tokens-per-second", self_hosted["opt_in_flags"])
                         self.assertIn("--model-server", self_hosted["opt_in_flags"])
-                        self.assertIn("dry-run", self_hosted["config_effect"])
-                        self.assertIn("does not write ledgers", self_hosted["config_effect"])
+                        self.assertIn("explicit record command", self_hosted["config_effect"])
+                        self.assertIn("--ledger-jsonl", self_hosted["config_effect"])
                         self.assertIn("context-guard-bench JSONL ledger sidecars", self_hosted["evidence_contract"])
                         self.assertIn("hosted API token/cost savings", self_hosted["evidence_contract"])
 
@@ -2389,6 +2395,216 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 payload = json.loads(proc.stdout)
                 self.assertEqual(payload["experiment_id"], "self-hosted-metrics-ledger")
                 self.assertEqual(payload["status"], "ready_for_ledger_review")
+
+    def test_experimental_self_hosted_metrics_ledger_record_runtime(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    ledger = Path(tmp) / "nested" / "self-hosted.jsonl"
+                    plan = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "self-hosted-metrics-ledger",
+                            "--latency-ms",
+                            "12",
+                            "--peak-memory-mb",
+                            "128",
+                            "--quality-score",
+                            "0.9",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    plan_payload = json.loads(plan.stdout)
+                    self.assertEqual(plan_payload["mode"], "dry_run")
+                    self.assertFalse(plan_payload["policy"]["ledger_write_performed"])
+                    self.assertFalse(ledger.exists())
+
+                    record = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "self-hosted-metrics-ledger",
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--latency-ms",
+                            "12",
+                            "--peak-memory-mb",
+                            "128",
+                            "--quality-score",
+                            "0.9",
+                            "--energy-wh",
+                            "1.5",
+                            "--local-cost-usd",
+                            "0.01",
+                            "--tokens-per-second",
+                            "33",
+                            "--model-server",
+                            "Bearer abcdefghijklmnopqrstuvwxyz",
+                            "--task-id",
+                            "manual-self-hosted-task",
+                            "--success",
+                            "true",
+                            "--notes",
+                            "manual local run; api_key=supersecret",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(record.stdout)
+                    self.assertEqual(payload["mode"], "record")
+                    self.assertEqual(payload["status"], "recorded")
+                    self.assertTrue(payload["policy"]["ledger_write_performed"])
+                    self.assertTrue(payload["ledger_jsonl"]["write_performed"])
+                    self.assertGreater(payload["ledger_jsonl"]["bytes_written"], 0)
+                    self.assertIn("[REDACTED]", json.dumps(payload["ledger_record"], sort_keys=True))
+                    self.assertNotIn("abcdefghijklmnopqrstuvwxyz", json.dumps(payload, sort_keys=True))
+                    self.assertNotIn("supersecret", json.dumps(payload, sort_keys=True))
+
+                    rows = ledger.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(len(rows), 1)
+                    row = json.loads(rows[0])
+                    self.assertEqual(row["schema_version"], "contextguard.bench.run-evidence.v1")
+                    self.assertEqual(row["task_id"], "manual-self-hosted-task")
+                    self.assertTrue(row["success"])
+                    self.assertFalse(row["primary_tokens_measured"])
+                    self.assertFalse(row["primary_cost_measured"])
+                    self.assertTrue(row["measurement_availability"]["self_hosted_metrics"])
+                    self.assertEqual(row["self_hosted_metrics"]["metrics"]["latency_ms"], 12.0)
+                    self.assertEqual(
+                        row["self_hosted_metrics"]["claim_boundary"]["id"],
+                        "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings",
+                    )
+                    self.assertFalse(
+                        row["self_hosted_metrics"]["claim_boundary"]["hosted_api_token_savings_claim_allowed"]
+                    )
+                    self.assertFalse(
+                        row["self_hosted_metrics"]["claim_boundary"]["hosted_api_cost_savings_claim_allowed"]
+                    )
+
+                    blocked_ledger = Path(tmp) / "blocked.jsonl"
+                    blocked = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "self-hosted-metrics-ledger",
+                            "--ledger-jsonl",
+                            str(blocked_ledger),
+                            "--latency-ms",
+                            "nan",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    blocked_payload = json.loads(blocked.stdout)
+                    self.assertEqual(blocked_payload["status"], "blocked_until_metrics")
+                    self.assertFalse(blocked_payload["policy"]["ledger_write_performed"])
+                    self.assertFalse(blocked_ledger.exists())
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                with tempfile.TemporaryDirectory() as tmp:
+                    ledger = Path(tmp) / "dispatcher.jsonl"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "record",
+                            "self-hosted-metrics-ledger",
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--latency-ms",
+                            "10",
+                            "--peak-memory-mb",
+                            "512",
+                            "--quality-score",
+                            "1",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=ROOT,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "self-hosted-metrics-ledger")
+                    self.assertEqual(payload["status"], "recorded")
+                    self.assertEqual(len(ledger.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_experimental_self_hosted_metrics_ledger_record_rejects_unsafe_paths(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    target = root / "target.jsonl"
+                    symlink = root / "ledger-link.jsonl"
+                    symlink.symlink_to(target)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "self-hosted-metrics-ledger",
+                            "--ledger-jsonl",
+                            str(symlink),
+                            "--latency-ms",
+                            "1",
+                            "--peak-memory-mb",
+                            "2",
+                            "--quality-score",
+                            "0.5",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("self-hosted metrics ledger", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+                    self.assertFalse(target.exists())
+
+                    module = load_python_script_module(script, f"_experimental_registry_record_fifo_{index}")
+                    if hasattr(os, "mkfifo"):
+                        fifo = root / "ledger.fifo"
+                        os.mkfifo(fifo)
+                        with self.assertRaises(module.RegistryError):
+                            module.append_jsonl_no_follow(fifo, {"ok": True}, label="self-hosted metrics ledger")
+
+                    if hasattr(module.os, "O_NONBLOCK"):
+                        flag_ledger = root / "flags.jsonl"
+                        real_open = module.os.open
+                        seen_flags: list[int] = []
+
+                        def recording_open(path_arg, flags, mode=0o777, *, dir_fd=None):
+                            if path_arg == flag_ledger.name:
+                                seen_flags.append(flags)
+                            if dir_fd is None:
+                                return real_open(path_arg, flags, mode)
+                            return real_open(path_arg, flags, mode, dir_fd=dir_fd)
+
+                        module.os.open = recording_open
+                        try:
+                            bytes_written = module.append_jsonl_no_follow(
+                                flag_ledger,
+                                {"ok": True},
+                                label="self-hosted metrics ledger",
+                            )
+                        finally:
+                            module.os.open = real_open
+                        self.assertGreater(bytes_written, 0)
+                        self.assertTrue(seen_flags)
+                        self.assertTrue(all(flags & module.os.O_NONBLOCK for flags in seen_flags))
 
     def test_experimental_self_hosted_metrics_ledger_plan_blockers_and_read_only(self):
         for index, script in enumerate(EXPERIMENT_SCRIPTS):

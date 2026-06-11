@@ -127,9 +127,9 @@ Candidate methods include PyramidKV, ChunkKV, FastKV, RocketKV, KV quantization,
 | What it does not prove | It does not reduce hosted API prompt tokens just because local KV memory is smaller. |
 | Hosted API claim boundary | Treat as self-hosted memory/latency only unless provider telemetry shows token/cost reduction. |
 | Minimum telemetry | model/server, context length, KV memory, latency, throughput, quality metric, energy/cost if measured. |
-| Promotion path | Keep as documentation until ContextGuard has a supported self-hosted integration and benchmark harness. |
+| Promotion path | Start with explicit local metrics JSONL sidecars; broader KV/latent runtime optimization still waits for a supported self-hosted integration and benchmark harness. |
 
-Recommended first experiment: document how to record self-hosted latency/memory alongside ContextGuard's benchmark ledger without mixing it into hosted API token claims.
+First local runtime experiment: `context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl ...` can write self-hosted latency/memory/quality sidecar rows next to ContextGuard benchmark ledgers. These rows remain diagnostic local/self-hosted evidence and must not be mixed into hosted API token/cost claims.
 
 ## Review checklist for future experiment PRs
 

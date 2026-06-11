@@ -113,7 +113,7 @@ When you need a savings claim, measure it on your own tasks:
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
 - Local RAM/disk receipts can reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
-- Experimental helpers are dry-run checker/planner surfaces only. ContextGuard can review learned-compression policy, visual crop/OCR metadata, self-hosted metrics ledger previews, context-diff compaction plans, and local-proxy constraints, but it does not ship learned/synthetic compressor runtime, embeddings, rerankers, model calls, replacement generation, OCR/crop runtime, self-hosted KV/latent inference optimization, or actual proxy forwarding runtime.
+- Experimental helpers are mostly dry-run checker/planner surfaces; the only explicit runtime promoted here is the local `self-hosted-metrics-ledger` JSONL sidecar recorder. ContextGuard can review learned-compression policy, visual crop/OCR metadata, self-hosted metrics ledger previews/records, context-diff compaction plans, and local-proxy constraints, but it does not ship learned/synthetic compressor runtime, embeddings, rerankers, model calls, replacement generation, OCR/crop runtime, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or actual proxy forwarding runtime.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
 Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin/` so existing automation can migrate gradually.
@@ -380,6 +380,7 @@ context-guard experiments plan context-diff-compaction --json < change.diff
 context-guard experiments plan visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --missed-context-note "outside crop omitted"
 context-guard experiments plan learned-compression --json --sanitized --trusted-source --exact-fallback-receipt <id> --reexpand-command "context-guard-artifact get <id> --full" < sanitized-prose.txt
 context-guard experiments plan self-hosted-metrics-ledger --json --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98
+context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl .context-guard/self-hosted-metrics.jsonl --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98 --json
 context-guard experiments plan local-proxy --json --bind-host 127.0.0.1 --target-host 127.0.0.1 --runtime-gate-ack
 context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
@@ -389,21 +390,21 @@ The `--runtime-gate-ack` example still produces advisory metadata only; it does 
 
 By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. `experiments enable` records intent only; it does not run helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 
-Shipped experimental dry-run checker/planner surfaces are intentionally narrow:
+Shipped experimental checker/planner surfaces, plus the one explicit local metrics recorder, are intentionally narrow:
 
 | Planner/checker | What it emits | Hard boundary |
 | --- | --- | --- |
 | `context-diff-compaction` | Reviewable compaction advice for diffs. | Does not emit replacement text; exact receipt/re-expand handles are recorded only for human or future gated review. |
 | `visual-crop-ocr` | Metadata for full visual evidence, crop bounds, OCR notes, confidence, and missed context. | No screenshot capture, crop/OCR runtime, image parsing, or external OCR/image service. |
 | `learned-compression` | Deny-by-default policy checks for sanitized trusted prose with exact fallback receipts. | No embeddings, rerankers, model calls, learned/synthetic compressor runtime, or replacement generation. |
-| `self-hosted-metrics-ledger` | Read-only ledger-compatible previews for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | Does not write a ledger and does not support hosted API token/cost savings claims. |
+| `self-hosted-metrics-ledger` | Dry-run preview plus an explicit `record ... --ledger-jsonl` runtime for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | The dry-run preview does not write a ledger; the explicit record command writes only local JSONL sidecars and still does not support hosted API token/cost savings claims. |
 | `local-proxy` | Localhost-only advisory metadata for a possible future local proxy. | Starts no listener, forwards no traffic, persists no API keys, writes no ledger, blocks non-local bind/target/upstream values, and requires a separate future runtime gate before any forwarding implementation. |
 
 ## What is not yet shipped
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- Learned/synthetic compressor runtime, multimodal crop/OCR or visual-token pruning runtime, self-hosted KV/latent inference optimization, and actual proxy forwarding runtime. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or runtime feature claim.
+- Learned/synthetic compressor runtime, multimodal crop/OCR or visual-token pruning runtime, self-hosted KV/latent optimization beyond explicit local metrics recording, and actual proxy forwarding runtime. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or runtime feature claim.
 
 ## Repository layout
 

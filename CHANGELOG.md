@@ -4,6 +4,8 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added an explicit `context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl ...` runtime for local self-hosted metrics sidecar rows while keeping dry-run previews read-only and hosted API savings claims disallowed.
+
 ## [0.4.8] - 2026-06-11
 
 - Hardened experimental registry config writes with same-directory atomic replace so failed writes or symlink swaps do not truncate or redirect the live config.
