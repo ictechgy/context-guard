@@ -377,6 +377,7 @@ Experimental lanes are **default off**. The registry records project-local inten
 context-guard experiments list
 context-guard experiments status --json
 context-guard experiments plan context-diff-compaction --json < change.diff
+context-guard experiments emit context-diff-compaction --receipt-id <artifact-id> --reexpand-command "context-guard-artifact get <artifact-id> --full" --replacement-file compact-diff.txt --json < change.diff
 context-guard experiments plan visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --missed-context-note "outside crop omitted"
 context-guard experiments plan learned-compression --json --sanitized --trusted-source --exact-fallback-receipt <id> --reexpand-command "context-guard-artifact get <id> --full" < sanitized-prose.txt
 context-guard experiments plan self-hosted-metrics-ledger --json --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98
@@ -390,11 +391,11 @@ The `--runtime-gate-ack` example still produces advisory metadata only; it does 
 
 By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. `experiments enable` records intent only; it does not run helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 
-Shipped experimental checker/planner surfaces, plus the one explicit local metrics recorder, are intentionally narrow:
+Shipped experimental checker/planner surfaces, plus explicit local context-diff and metrics runtimes, are intentionally narrow:
 
-| Planner/checker | What it emits | Hard boundary |
+| Planner/checker/runtime | What it emits | Hard boundary |
 | --- | --- | --- |
-| `context-diff-compaction` | Reviewable compaction advice for diffs. | Does not emit replacement text; exact receipt/re-expand handles are recorded only for human or future gated review. |
+| `context-diff-compaction` | Dry-run diff advice plus an explicit `emit ... --receipt-id ... --reexpand-command ...` runtime for caller-supplied compact replacements. | `plan` emits no replacement. `emit` requires reviewable hunks, exact local artifact re-expand metadata whose stored content matches the input diff, and a smaller caller-supplied replacement; ContextGuard does not generate semantic compression or support hosted token/cost savings claims. |
 | `visual-crop-ocr` | Metadata for full visual evidence, crop bounds, OCR notes, confidence, and missed context. | No screenshot capture, crop/OCR runtime, image parsing, or external OCR/image service. |
 | `learned-compression` | Deny-by-default policy checks for sanitized trusted prose with exact fallback receipts. | No embeddings, rerankers, model calls, learned/synthetic compressor runtime, or replacement generation. |
 | `self-hosted-metrics-ledger` | Dry-run preview plus an explicit `record ... --ledger-jsonl` runtime for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | The dry-run preview does not write a ledger; the explicit record command writes only local JSONL sidecars and still does not support hosted API token/cost savings claims. |

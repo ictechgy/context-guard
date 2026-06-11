@@ -79,6 +79,12 @@ Future PR checklist:
 - [ ] Make no hosted API token/cost savings claim from proxy byte reductions, cache hits, or local latency alone.
 
 
+## Graduated local experiment — context-diff compaction emitter
+
+`context-guard experiments emit context-diff-compaction --receipt-id ... --reexpand-command ...` is the explicit local runtime promoted from the reviewable context-diff gate. It does not generate semantic compression; the compact replacement must be supplied by the caller, the original diff must still contain reviewable hunks, and the exact re-expand command must be shaped as local artifact retrieval and the stored artifact content must match the input diff (`context-guard-artifact get <id> --full` or `context-guard artifact get <id> --full`). The emitted byte reduction is proxy evidence only and cannot support hosted API token/cost savings claims without the shared promotion gate.
+
+Broader context-diff compaction remains gated if it would automatically generate replacements, execute re-expansion beyond local receipt-file verification, write replacement files, or claim provider savings.
+
 ## Graduated local experiment — receipt-backed output trimming
 
 `context-guard-trim-output --digest ... --artifact-receipt` is the first reversible local transform experiment promoted from this roadmap. It stores only sanitized command output in the existing local artifact store and emits exact re-expand commands for omitted details. It is opt-in, does not change default trimming behavior, and does not create a hosted API token/cost savings claim; benchmark reports must still use matched successful tasks and provider-measured primary token fields before reporting token savings.
@@ -142,5 +148,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally documentation-only. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, and benchmark evidence. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.

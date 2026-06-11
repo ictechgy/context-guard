@@ -31,6 +31,10 @@ CONFIG_SCHEMA_VERSION = "contextguard.experiments.v1"
 DEFAULT_CONFIG = Path(".context-guard") / "experiments.json"
 MAX_CONFIG_BYTES = 64_000
 MAX_CONTEXT_DIFF_INPUT_BYTES = 256_000
+MAX_CONTEXT_DIFF_REPLACEMENT_BYTES = 128_000
+MAX_CONTEXT_DIFF_ARTIFACT_METADATA_BYTES = 64_000
+DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR = Path(".context-guard") / "artifacts"
+LEGACY_CONTEXT_DIFF_ARTIFACT_DIR = Path(".claude-token-optimizer") / "artifacts"
 MAX_VISUAL_OCR_TEXT_BYTES = 64_000
 MAX_LEARNED_COMPRESSION_INPUT_BYTES = 128_000
 MAX_SELF_HOSTED_METRICS_INPUT_BYTES = 64_000
@@ -145,22 +149,32 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     Experiment(
         id="context-diff-compaction",
         name="Reviewable context-diff compaction",
-        summary="Dry-run advisory lane for human-reviewable compaction plans with stable exact handles.",
+        summary="Explicit receipt-backed runtime for caller-supplied compact diff replacements with stable exact handles.",
         stability="experimental",
         default_enabled=False,
         risk_level="medium",
         claim_boundary="Smaller local diffs are proxy evidence only; hosted savings require provider-measured matched tasks.",
         gate_requirements=("explicit opt-in", "human-reviewable diff", "local receipt", "exact re-expand handle"),
-        runtime_status="available-dry-run",
-        commands=("context-guard experiments plan context-diff-compaction",),
-        opt_in_flags=("plan context-diff-compaction", "--receipt-id", "--reexpand-command"),
+        runtime_status="available-explicit-runtime",
+        commands=(
+            "context-guard experiments plan context-diff-compaction",
+            "context-guard experiments emit context-diff-compaction --receipt-id <id> --reexpand-command <cmd>",
+        ),
+        opt_in_flags=(
+            "plan context-diff-compaction",
+            "emit context-diff-compaction",
+            "--receipt-id",
+            "--reexpand-command",
+            "--replacement-text|--replacement-file",
+        ),
         config_effect=(
-            "Registry enablement records project-local intent only; context-diff compaction remains a dry-run plan "
-            "unless a future story adds an explicit replacement command."
+            "Registry enablement records project-local intent only; context-diff replacement emits only through the "
+            "explicit emit command with exact retrieval metadata and caller-supplied compact text."
         ),
         evidence_contract=(
-            "Dry-run plans require human-reviewable hunks plus user-supplied exact receipt and re-expand handles before "
-            "any future lossy replacement can be reviewed."
+            "Emitted replacements require human-reviewable hunks, caller-supplied compact text, and exact local "
+            "artifact content that matches the input diff plus re-expand metadata; smaller local diffs remain proxy "
+            "evidence only."
         ),
     ),
     Experiment(
@@ -816,6 +830,7 @@ def command_disable(args: argparse.Namespace) -> int:
 
 DIFF_GIT_RE = re.compile(r"^diff --git (?P<old>\S+) (?P<new>\S+)$")
 HUNK_RE = re.compile(r"^@@\s+-(?P<old_start>\d+)(?:,(?P<old_count>\d+))?\s+\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))?\s+@@(?P<section>.*)$")
+CONTEXT_DIFF_ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 
 
 def read_bounded_input(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -854,13 +869,16 @@ def strip_diff_prefix(path: str) -> str:
 def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    current_hunk: dict[str, Any] | None = None
     total_hunks = 0
+    summarized_hunks = 0
     lines = text.splitlines()
     diff_header_count = 0
     for line_number, line in enumerate(lines, start=1):
         match = DIFF_GIT_RE.match(line)
         if match:
             diff_header_count += 1
+            current_hunk = None
             if len(files) >= max_files:
                 current = None
                 continue
@@ -877,26 +895,197 @@ def summarize_diff(text: str, *, max_files: int = 50, max_hunks: int = 200) -> d
             total_hunks += 1
             if current is None:
                 if len(files) >= max_files:
+                    current_hunk = None
                     continue
                 current = {"old_path": None, "new_path": None, "diff_header_line": None, "hunks": []}
                 files.append(current)
             if len(current["hunks"]) < max_hunks:
-                current["hunks"].append(
-                    {
-                        "line": line_number,
-                        "old_start": int(hunk.group("old_start")),
-                        "old_count": int(hunk.group("old_count") or "1"),
-                        "new_start": int(hunk.group("new_start")),
-                        "new_count": int(hunk.group("new_count") or "1"),
-                        "section": hunk.group("section").strip()[:120],
-                    }
-                )
+                current_hunk = {
+                    "line": line_number,
+                    "old_start": int(hunk.group("old_start")),
+                    "old_count": int(hunk.group("old_count") or "1"),
+                    "new_start": int(hunk.group("new_start")),
+                    "new_count": int(hunk.group("new_count") or "1"),
+                    "section": hunk.group("section").strip()[:120],
+                    "added_lines": 0,
+                    "removed_lines": 0,
+                    "context_lines": 0,
+                    "body_lines": 0,
+                    "reviewable": False,
+                }
+                current["hunks"].append(current_hunk)
+                summarized_hunks += 1
+            else:
+                current_hunk = None
+            continue
+        if current_hunk is not None:
+            changed = False
+            if line.startswith("+") and not line.startswith("+++"):
+                current_hunk["added_lines"] += 1
+                changed = True
+            elif line.startswith("-") and not line.startswith("---"):
+                current_hunk["removed_lines"] += 1
+                changed = True
+            elif line.startswith(" "):
+                current_hunk["context_lines"] += 1
+            else:
+                continue
+            current_hunk["body_lines"] += 1
+    reviewable_hunks = 0
+    malformed_hunks = 0
+    for file_summary in files:
+        for hunk_summary in file_summary["hunks"]:
+            old_body_lines = hunk_summary["removed_lines"] + hunk_summary["context_lines"]
+            new_body_lines = hunk_summary["added_lines"] + hunk_summary["context_lines"]
+            has_changes = bool(hunk_summary["added_lines"] or hunk_summary["removed_lines"])
+            well_formed = (
+                old_body_lines == hunk_summary["old_count"]
+                and new_body_lines == hunk_summary["new_count"]
+            )
+            hunk_summary["old_body_lines"] = old_body_lines
+            hunk_summary["new_body_lines"] = new_body_lines
+            hunk_summary["has_changes"] = has_changes
+            hunk_summary["well_formed"] = well_formed
+            hunk_summary["reviewable"] = bool(has_changes and well_formed)
+            if hunk_summary["reviewable"]:
+                reviewable_hunks += 1
+            elif not well_formed:
+                malformed_hunks += 1
     return {
         "file_count": len(files),
         "hunk_count": total_hunks,
+        "summarized_hunk_count": summarized_hunks,
+        "reviewable_hunk_count": reviewable_hunks,
+        "malformed_hunk_count": malformed_hunks,
         "truncated_files": max(0, diff_header_count - len(files)),
+        "truncated_hunks": max(0, total_hunks - summarized_hunks),
         "files": files,
     }
+
+
+def valid_context_diff_reexpand_command(receipt_id: str | None, command: str | None) -> tuple[bool, str | None]:
+    if not receipt_id or not command:
+        return False, "missing_exact_receipt_or_reexpand_command"
+    if not CONTEXT_DIFF_ARTIFACT_ID_RE.fullmatch(receipt_id):
+        return False, "invalid_reexpand_command"
+    if any(token in command for token in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
+        return False, "invalid_reexpand_command"
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False, "invalid_reexpand_command"
+    if argv == ["context-guard-artifact", "get", receipt_id, "--full"]:
+        return True, None
+    if argv == ["context-guard", "artifact", "get", receipt_id, "--full"]:
+        return True, None
+    return False, "invalid_reexpand_command"
+
+
+def context_diff_artifact_read_dirs() -> list[Path]:
+    return [DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR, LEGACY_CONTEXT_DIFF_ARTIFACT_DIR]
+
+
+def context_diff_artifact_paths(directory: Path, receipt_id: str) -> tuple[Path, Path]:
+    return directory / f"{receipt_id}.txt", directory / f"{receipt_id}.json"
+
+
+def verify_context_diff_artifact(
+    receipt_id: str | None,
+    *,
+    expected_sha256: str,
+    expected_bytes: int,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    if not receipt_id or not CONTEXT_DIFF_ARTIFACT_ID_RE.fullmatch(receipt_id):
+        return False, "invalid_reexpand_command", {"checked": False, "read_directories": []}
+    read_dirs = context_diff_artifact_read_dirs()
+    details: dict[str, Any] = {
+        "checked": True,
+        "read_directories": [str(path) for path in read_dirs],
+        "matched_directory": None,
+        "content_sha256": None,
+        "content_bytes": None,
+    }
+    for directory in read_dirs:
+        content_path, meta_path = context_diff_artifact_paths(directory, receipt_id)
+        meta_loaded = read_bounded_regular_file(
+            meta_path,
+            max_bytes=MAX_CONTEXT_DIFF_ARTIFACT_METADATA_BYTES,
+            label="context-diff artifact metadata",
+            missing_ok=True,
+        )
+        content_loaded = read_bounded_regular_file(
+            content_path,
+            max_bytes=max(MAX_CONTEXT_DIFF_INPUT_BYTES, expected_bytes),
+            label="context-diff artifact content",
+            missing_ok=True,
+        )
+        if meta_loaded is None and content_loaded is None:
+            continue
+        if meta_loaded is None or content_loaded is None:
+            return False, "artifact_receipt_invalid", details
+        meta_raw, meta_truncated = meta_loaded
+        content_raw, content_truncated = content_loaded
+        if meta_truncated or content_truncated:
+            return False, "artifact_receipt_invalid", details
+        try:
+            metadata = json.loads(meta_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, "artifact_receipt_invalid", details
+        if not isinstance(metadata, dict) or metadata.get("artifact_id") != receipt_id:
+            return False, "artifact_receipt_invalid", details
+        stored = metadata.get("stored_output")
+        stored_sha = stored.get("sha256") if isinstance(stored, dict) else None
+        stored_bytes = stored.get("bytes") if isinstance(stored, dict) else None
+        actual_sha = hashlib.sha256(content_raw).hexdigest()
+        actual_bytes = len(content_raw)
+        details.update({
+            "matched_directory": str(directory),
+            "content_sha256": actual_sha,
+            "content_bytes": actual_bytes,
+        })
+        if stored_sha != actual_sha or stored_bytes != actual_bytes:
+            return False, "artifact_receipt_invalid", details
+        if actual_sha != expected_sha256 or actual_bytes != expected_bytes:
+            return False, "artifact_content_mismatch", details
+        return True, None, details
+    return False, "artifact_receipt_not_found", details
+
+
+def read_context_diff_replacement(args: argparse.Namespace) -> tuple[str | None, dict[str, Any]]:
+    if args.replacement_text is not None and args.replacement_file:
+        raise RegistryError("context-diff-compaction emit accepts only one of --replacement-text or --replacement-file")
+    if args.replacement_text is not None:
+        text = str(args.replacement_text)
+        raw = text.encode("utf-8")
+        truncated = len(raw) > MAX_CONTEXT_DIFF_REPLACEMENT_BYTES
+        raw = raw[:MAX_CONTEXT_DIFF_REPLACEMENT_BYTES]
+        text = raw.decode("utf-8", errors="replace")
+        source_label = "inline"
+    elif args.replacement_file:
+        path = Path(args.replacement_file)
+        loaded = read_bounded_regular_file(
+            path,
+            max_bytes=MAX_CONTEXT_DIFF_REPLACEMENT_BYTES,
+            label="context-diff replacement",
+        )
+        assert loaded is not None
+        raw, truncated = loaded
+        text = raw.decode("utf-8", errors="replace")
+        source_label = str(path)
+    else:
+        text = None
+        raw = b""
+        truncated = False
+        source_label = None
+    metadata = {
+        "source_label": source_label,
+        "bytes": len(raw),
+        "lines": len(text.splitlines()) if text is not None else 0,
+        "sha256": hashlib.sha256(raw).hexdigest() if text is not None else None,
+        "truncated": truncated,
+        "max_bytes": MAX_CONTEXT_DIFF_REPLACEMENT_BYTES,
+    }
+    return text, metadata
 
 
 def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -910,7 +1099,11 @@ def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         readiness_blockers.append("missing_exact_receipt_or_reexpand_command")
     if input_meta["truncated"]:
         readiness_blockers.append("input_truncated")
-    if summary["file_count"] == 0 or summary["hunk_count"] == 0:
+    if summary.get("truncated_files", 0) or summary.get("truncated_hunks", 0):
+        readiness_blockers.append("diff_summary_truncated")
+    if summary.get("malformed_hunk_count", 0):
+        readiness_blockers.append("malformed_diff_hunks")
+    if summary["file_count"] == 0 or summary.get("reviewable_hunk_count", 0) == 0:
         readiness_blockers.append("no_reviewable_diff_hunks")
     status = (
         "ready_for_human_review"
@@ -939,7 +1132,7 @@ def context_diff_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "artifact_id": receipt_id,
             "cli": reexpand_command,
             "verified": False,
-            "note": "G003 records user-supplied handles for human review only; it does not verify local receipt storage.",
+            "note": "Dry-run planning records user-supplied handles for human review only; it does not verify local receipt storage.",
         },
         "review_plan": {
             "summary": summary,
@@ -980,6 +1173,119 @@ def command_plan_context_diff_compaction(args: argparse.Namespace) -> int:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
+
+
+def context_diff_emit_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = context_diff_plan_payload(args)
+    receipt_id = args.receipt_id.strip() if args.receipt_id else None
+    reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
+    reexpand_valid, reexpand_blocker = valid_context_diff_reexpand_command(receipt_id, reexpand_command)
+    replacement_text, replacement_meta = read_context_diff_replacement(args)
+    artifact_verified = False
+    artifact_blocker = None
+    artifact_verification: dict[str, Any] = {"checked": False, "read_directories": []}
+    if reexpand_valid:
+        artifact_verified, artifact_blocker, artifact_verification = verify_context_diff_artifact(
+            receipt_id,
+            expected_sha256=payload["input"]["sha256"],
+            expected_bytes=payload["input"]["bytes"],
+        )
+
+    blockers = list(payload["review_plan"]["readiness_blockers"])
+    if reexpand_blocker:
+        blockers.append(reexpand_blocker)
+    if artifact_blocker:
+        blockers.append(artifact_blocker)
+    if replacement_text is None or not replacement_text.strip():
+        blockers.append("missing_compacted_replacement")
+    if replacement_meta["truncated"]:
+        blockers.append("replacement_truncated")
+    if (
+        replacement_text is not None
+        and not replacement_meta["truncated"]
+        and replacement_meta["bytes"] >= payload["input"]["bytes"]
+    ):
+        blockers.append("replacement_not_smaller_than_input")
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+
+    replacement_record = None
+    if ready and replacement_text is not None:
+        replacement_record = {
+            "text": replacement_text,
+            "bytes": replacement_meta["bytes"],
+            "lines": replacement_meta["lines"],
+            "sha256": replacement_meta["sha256"],
+            "source_label": replacement_meta["source_label"],
+        }
+
+    payload["mode"] = "emit"
+    payload["status"] = "replacement_emitted" if ready else "blocked_until_emit_ready"
+    payload["transform_policy"] = {
+        "automatic_compaction": False,
+        "lossy_replacement_allowed": ready,
+        "semantic_rewrite_allowed": False,
+        "caller_supplied_replacement_required": True,
+        "human_review_required": True,
+        "stable_runtime_behavior_changed": False,
+    }
+    payload["exact_retrieval"] = {
+        "required": True,
+        "available": bool(receipt_id and reexpand_command and reexpand_valid and artifact_verified),
+        "artifact_id": receipt_id,
+        "cli": reexpand_command,
+        "verified": artifact_verified,
+        "valid_command_shape": reexpand_valid,
+        "verification": artifact_verification,
+        "note": "Emit mode validates exact local artifact command shape and verifies local artifact content matches the input diff.",
+    }
+    payload["replacement"] = replacement_meta
+    payload["review_plan"]["readiness_blockers"] = blockers
+    payload["review_plan"]["bounded_loss_disclosure"] = (
+        "Compacted replacement is caller supplied and lossy; use exact_retrieval.cli to recover the original diff "
+        "before relying on omitted details."
+    )
+    payload["review_plan"]["next_steps"] = [
+        "Human-review the compacted replacement against the original diff before use.",
+        "Use exact_retrieval.cli to recover the original diff whenever omitted details matter.",
+        "Treat bytes_before/bytes_after as local proxy evidence only; do not claim hosted token/cost savings.",
+    ]
+    payload["claim_boundary"] = (
+        "Explicit local context-diff replacement emission only; smaller local diffs are proxy evidence and are not "
+        "hosted API token or cost savings evidence."
+    )
+    bytes_after = replacement_meta["bytes"] if replacement_text is not None else 0
+    payload["compaction_evidence"] = {
+        "bytes_before": payload["input"]["bytes"],
+        "bytes_after": bytes_after,
+        "byte_reduction": max(0, payload["input"]["bytes"] - bytes_after),
+        "byte_reduction_proxy_only": True,
+        "hosted_api_token_savings_claim_allowed": False,
+        "hosted_api_cost_savings_claim_allowed": False,
+    }
+    payload["compacted_replacement"] = replacement_record
+    return payload
+
+
+def command_emit_context_diff_compaction(args: argparse.Namespace) -> int:
+    payload = context_diff_emit_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "replacement_emitted":
+            print("ContextGuard context-diff compact replacement emitted")
+            print(
+                f"Replacement: bytes={payload['replacement']['bytes']} "
+                f"sha256={payload['replacement']['sha256']}"
+            )
+            print(f"Exact re-expand: {payload['exact_retrieval']['cli']}")
+        else:
+            print("ContextGuard context-diff compact replacement blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "replacement_emitted" else 1
 
 
 def clean_values(values: list[str] | None) -> list[str]:
@@ -2433,6 +2739,22 @@ def build_parser() -> argparse.ArgumentParser:
     learned.add_argument("--reexpand-command", help="Local exact re-expand command bound to the receipt id.")
     learned.add_argument("--json", action="store_true", help="Emit JSON output.")
     learned.set_defaults(func=command_plan_learned_compression)
+
+    emit_parser = sub.add_parser("emit", help="Emit explicit local runtime outputs for experimental lanes.")
+    emit_sub = emit_parser.add_subparsers(dest="emit_command", required=True)
+    emit_context_diff = emit_sub.add_parser(
+        "context-diff-compaction",
+        help="Emit a caller-supplied compact diff replacement only with exact retrieval metadata.",
+    )
+    emit_context_diff.add_argument("--input", help="Read original diff text from a file instead of stdin.")
+    emit_context_diff.add_argument("--source-label", help="Safe label to use for the diff input source in reports.")
+    emit_context_diff.add_argument("--receipt-id", required=True, help="Exact local artifact receipt id for the original diff.")
+    emit_context_diff.add_argument("--reexpand-command", required=True, help="Exact command that restores the original diff.")
+    replacement_group = emit_context_diff.add_mutually_exclusive_group(required=True)
+    replacement_group.add_argument("--replacement-text", help="Caller-supplied compact replacement text to emit.")
+    replacement_group.add_argument("--replacement-file", help="Read caller-supplied compact replacement text from a file.")
+    emit_context_diff.add_argument("--json", action="store_true", help="Emit JSON output.")
+    emit_context_diff.set_defaults(func=command_emit_context_diff_compaction)
 
     record_parser = sub.add_parser("record", help="Run explicit local runtime recorders for experimental lanes.")
     record_sub = record_parser.add_subparsers(dest="record_command", required=True)

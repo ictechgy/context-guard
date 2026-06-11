@@ -1066,9 +1066,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("semantic", protected["evidence_contract"].lower())
 
                         context_diff = experiments["context-diff-compaction"]
-                        self.assertEqual(context_diff["runtime_status"], "available-dry-run")
+                        self.assertEqual(context_diff["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan context-diff-compaction", context_diff["commands"])
+                        self.assertIn(
+                            "context-guard experiments emit context-diff-compaction --receipt-id <id> --reexpand-command <cmd>",
+                            context_diff["commands"],
+                        )
                         self.assertIn("plan context-diff-compaction", context_diff["opt_in_flags"])
+                        self.assertIn("emit context-diff-compaction", context_diff["opt_in_flags"])
+                        self.assertIn("--replacement-text|--replacement-file", context_diff["opt_in_flags"])
+                        self.assertIn("explicit emit command", context_diff["config_effect"])
+                        self.assertIn("exact local artifact", context_diff["evidence_contract"])
 
                         visual_ocr = experiments["visual-crop-ocr"]
                         self.assertEqual(visual_ocr["runtime_status"], "available-dry-run")
@@ -1296,7 +1304,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_context_diff_compaction_plan_json_contract(self):
-        diff_text = "diff --git a/app.py b/app.py\n@@ -10,2 +10,2 @@ def run\n-old\n+new\n"
+        diff_text = "diff --git a/app.py b/app.py\n@@ -10 +10 @@ def run\n-old\n+new\n"
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
                 proc = subprocess.run(
@@ -1326,8 +1334,51 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 summary = payload["review_plan"]["summary"]
                 self.assertEqual(summary["file_count"], 1)
                 self.assertEqual(summary["hunk_count"], 1)
+                self.assertEqual(summary["summarized_hunk_count"], 1)
+                self.assertEqual(summary["reviewable_hunk_count"], 1)
+                self.assertEqual(summary["malformed_hunk_count"], 0)
+                self.assertEqual(summary["truncated_hunks"], 0)
+                self.assertEqual(summary["files"][0]["hunks"][0]["removed_lines"], 1)
+                self.assertEqual(summary["files"][0]["hunks"][0]["added_lines"], 1)
+                self.assertEqual(summary["files"][0]["hunks"][0]["old_body_lines"], 1)
+                self.assertEqual(summary["files"][0]["hunks"][0]["new_body_lines"], 1)
+                self.assertTrue(summary["files"][0]["hunks"][0]["well_formed"])
+                self.assertTrue(summary["files"][0]["hunks"][0]["reviewable"])
                 self.assertEqual(summary["files"][0]["new_path"], "app.py")
                 self.assertIn("no hosted", payload["claim_boundary"].lower())
+
+    def test_experimental_context_diff_compaction_plan_blocks_truncated_hunk_summary(self):
+        diff_text = "".join(
+            f"@@ -{idx} +{idx} @@\n-old {idx}\n+new {idx}\n"
+            for idx in range(1, 202)
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        "abc123receipt",
+                        "--reexpand-command",
+                        "context-guard-artifact get abc123receipt --full",
+                        "--json",
+                    ],
+                    input=diff_text,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["status"], "blocked_until_reviewable_diff")
+                self.assertIn("diff_summary_truncated", payload["review_plan"]["readiness_blockers"])
+                summary = payload["review_plan"]["summary"]
+                self.assertEqual(summary["hunk_count"], 201)
+                self.assertEqual(summary["summarized_hunk_count"], 200)
+                self.assertEqual(summary["truncated_hunks"], 1)
+                self.assertEqual(summary["reviewable_hunk_count"], 200)
 
     def test_experimental_context_diff_compaction_plan_ready_handle_is_unverified(self):
         diff_text = "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
@@ -1471,6 +1522,334 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertTrue(json.loads(proc.stdout)["input"]["truncated"])
+
+    def test_experimental_context_diff_compaction_emit_runtime(self):
+        diff_text = (
+            "diff --git a/app.py b/app.py\n"
+            "@@ -1,5 +1,5 @@ def run\n"
+            "-old line 01 with enough context for review\n"
+            "-old line 02 with enough context for review\n"
+            "-old line 03 with enough context for review\n"
+            "-old line 04 with enough context for review\n"
+            "-old line 05 with enough context for review\n"
+            "+new line 01 with enough context for review\n"
+            "+new line 02 with enough context for review\n"
+            "+new line 03 with enough context for review\n"
+            "+new line 04 with enough context for review\n"
+            "+new line 05 with enough context for review\n"
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    stored = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                        input=diff_text,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_id = json.loads(stored.stdout)["artifact_id"]
+                    reexpand = f"context-guard-artifact get {receipt_id} --full"
+                    replacement = (
+                        "Compact context-diff replacement for app.py def run.\n"
+                        f"Exact re-expand: {reexpand}\n"
+                        "Bounded loss: retrieve original diff before relying on omitted lines.\n"
+                    )
+
+                    plan = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "context-diff-compaction",
+                            "--receipt-id",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--json",
+                        ],
+                        input=diff_text,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    plan_payload = json.loads(plan.stdout)
+                    self.assertEqual(plan_payload["mode"], "dry_run")
+                    self.assertIsNone(plan_payload["compacted_replacement"])
+                    self.assertFalse(plan_payload["transform_policy"]["lossy_replacement_allowed"])
+
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "context-diff-compaction",
+                            "--receipt-id",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-text",
+                            replacement,
+                            "--json",
+                        ],
+                        input=diff_text,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "context-diff-compaction")
+                    self.assertEqual(payload["mode"], "emit")
+                    self.assertEqual(payload["status"], "replacement_emitted")
+                    self.assertTrue(payload["exact_retrieval"]["available"])
+                    self.assertTrue(payload["exact_retrieval"]["valid_command_shape"])
+                    self.assertTrue(payload["exact_retrieval"]["verified"])
+                    self.assertEqual(payload["exact_retrieval"]["verification"]["content_sha256"], payload["input"]["sha256"])
+                    self.assertTrue(payload["transform_policy"]["lossy_replacement_allowed"])
+                    self.assertFalse(payload["transform_policy"]["automatic_compaction"])
+                    self.assertFalse(payload["transform_policy"]["semantic_rewrite_allowed"])
+                    self.assertEqual(payload["compacted_replacement"]["text"], replacement)
+                    self.assertEqual(payload["replacement"]["sha256"], payload["compacted_replacement"]["sha256"])
+                    self.assertLess(
+                        payload["compaction_evidence"]["bytes_after"],
+                        payload["compaction_evidence"]["bytes_before"],
+                    )
+                    self.assertTrue(payload["compaction_evidence"]["byte_reduction_proxy_only"])
+                    self.assertFalse(payload["compaction_evidence"]["hosted_api_token_savings_claim_allowed"])
+                    self.assertFalse(payload["compaction_evidence"]["hosted_api_cost_savings_claim_allowed"])
+                    self.assertIn("not hosted", payload["claim_boundary"])
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    stored = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                        input=diff_text,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_id = json.loads(stored.stdout)["artifact_id"]
+                    reexpand = f"context-guard-artifact get {receipt_id} --full"
+                    replacement = (
+                        "Compact context-diff replacement for dispatcher path.\n"
+                        f"Exact re-expand: {reexpand}\n"
+                    )
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "emit",
+                            "context-diff-compaction",
+                            "--receipt-id",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-text",
+                            replacement,
+                            "--json",
+                        ],
+                        input=diff_text,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "context-diff-compaction")
+                    self.assertEqual(payload["status"], "replacement_emitted")
+                    self.assertTrue(payload["exact_retrieval"]["verified"])
+
+    def test_experimental_context_diff_compaction_emit_blocks_unsafe_inputs(self):
+        receipt_id = "abcdef1234567890abcdef12"
+        reexpand = f"context-guard-artifact get {receipt_id} --full"
+        diff_text = "diff --git a/a.txt b/a.txt\n@@ -1 +1,51 @@\n-a\n+b\n" + ("+padding\n" * 50)
+        replacement = f"Compact replacement.\nExact re-expand: {reexpand}\n"
+        cases = [
+            (
+                "invalid_command",
+                diff_text,
+                receipt_id,
+                f"context-guard-artifact get {receipt_id} --lines 1:4",
+                replacement,
+                "invalid_reexpand_command",
+            ),
+            ("missing_artifact", diff_text, receipt_id, reexpand, replacement, "artifact_receipt_not_found"),
+            ("unreviewable_diff", "not a diff\n", receipt_id, reexpand, replacement, "no_reviewable_diff_hunks"),
+            ("bare_hunk_header", "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n", receipt_id, reexpand, replacement, "no_reviewable_diff_hunks"),
+            ("context_only_hunk", "diff --git a/a.txt b/a.txt\n@@ -1 +1 @@\n unchanged\n", receipt_id, reexpand, replacement, "no_reviewable_diff_hunks"),
+            ("malformed_count_hunk", "diff --git a/a.txt b/a.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n", receipt_id, reexpand, replacement, "malformed_diff_hunks"),
+            ("not_compact", diff_text, receipt_id, reexpand, diff_text + "extra\n", "replacement_not_smaller_than_input"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, diff_input, case_receipt, case_reexpand, case_replacement, blocker in cases:
+                with self.subTest(script=script, case=name):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "context-diff-compaction",
+                            "--receipt-id",
+                            case_receipt,
+                            "--reexpand-command",
+                            case_reexpand,
+                            "--replacement-text",
+                            case_replacement,
+                            "--json",
+                        ],
+                        input=diff_input,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "blocked_until_emit_ready")
+                    self.assertIsNone(payload["compacted_replacement"])
+                    self.assertFalse(payload["transform_policy"]["lossy_replacement_allowed"])
+                    self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
+
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                other_diff = "diff --git a/other.txt b/other.txt\n@@ -1 +1 @@\n-old\n+new\n"
+                stored = subprocess.run(
+                    [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                    input=other_diff,
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                mismatch_receipt = json.loads(stored.stdout)["artifact_id"]
+                mismatch_reexpand = f"context-guard-artifact get {mismatch_receipt} --full"
+                mismatch = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        mismatch_receipt,
+                        "--reexpand-command",
+                        mismatch_reexpand,
+                        "--replacement-text",
+                        replacement,
+                        "--json",
+                    ],
+                    input=diff_text,
+                    text=True,
+                    capture_output=True,
+                    cwd=root,
+                )
+                self.assertEqual(mismatch.returncode, 1)
+                mismatch_payload = json.loads(mismatch.stdout)
+                self.assertEqual(mismatch_payload["status"], "blocked_until_emit_ready")
+                self.assertIn("artifact_content_mismatch", mismatch_payload["review_plan"]["readiness_blockers"])
+                self.assertIsNone(mismatch_payload["compacted_replacement"])
+
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                truncated_diff = "".join(
+                    f"diff --git a/f{idx}.txt b/f{idx}.txt\n@@ -1 +1 @@\n-old {idx}\n+new {idx}\n"
+                    for idx in range(51)
+                )
+                stored = subprocess.run(
+                    [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                    input=truncated_diff,
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                truncated_receipt = json.loads(stored.stdout)["artifact_id"]
+                truncated_reexpand = f"context-guard-artifact get {truncated_receipt} --full"
+                truncated = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "context-diff-compaction",
+                        "--receipt-id",
+                        truncated_receipt,
+                        "--reexpand-command",
+                        truncated_reexpand,
+                        "--replacement-text",
+                        f"Compact replacement.\nExact re-expand: {truncated_reexpand}\n",
+                        "--json",
+                    ],
+                    input=truncated_diff,
+                    text=True,
+                    capture_output=True,
+                    cwd=root,
+                )
+                self.assertEqual(truncated.returncode, 1)
+                truncated_payload = json.loads(truncated.stdout)
+                self.assertEqual(truncated_payload["status"], "blocked_until_emit_ready")
+                self.assertIn("diff_summary_truncated", truncated_payload["review_plan"]["readiness_blockers"])
+                self.assertEqual(truncated_payload["review_plan"]["summary"]["truncated_files"], 1)
+                self.assertIsNone(truncated_payload["compacted_replacement"])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    target = root / "replacement.txt"
+                    target.write_text(replacement, encoding="utf-8")
+                    symlink = root / "replacement-link.txt"
+                    symlink.symlink_to(target)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "context-diff-compaction",
+                            "--receipt-id",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-file",
+                            str(symlink),
+                            "--json",
+                        ],
+                        input=diff_text,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("context-diff replacement", proc.stderr)
+                    self.assertIn("must be a regular file", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                    if hasattr(os, "mkfifo"):
+                        fifo = root / "replacement.fifo"
+                        os.mkfifo(fifo)
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "emit",
+                                "context-diff-compaction",
+                                "--receipt-id",
+                                receipt_id,
+                                "--reexpand-command",
+                                reexpand,
+                                "--replacement-file",
+                                str(fifo),
+                                "--json",
+                            ],
+                            input=diff_text,
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        self.assertIn("context-diff replacement", proc.stderr)
+                        self.assertIn("must be a regular file", proc.stderr)
+                        self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_visual_crop_ocr_plan_json_contract_and_readiness_matrix(self):
         for script in EXPERIMENT_SCRIPTS:

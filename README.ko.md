@@ -341,6 +341,7 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 context-guard experiments list
 context-guard experiments status --json
 context-guard experiments plan context-diff-compaction --json < change.diff
+context-guard experiments emit context-diff-compaction --receipt-id <artifact-id> --reexpand-command "context-guard-artifact get <artifact-id> --full" --replacement-file compact-diff.txt --json < change.diff
 context-guard experiments plan visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --missed-context-note "outside crop omitted"
 context-guard experiments plan learned-compression --json --sanitized --trusted-source --exact-fallback-receipt <id> --reexpand-command "context-guard-artifact get <id> --full" < sanitized-prose.txt
 context-guard experiments plan self-hosted-metrics-ledger --json --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98
@@ -354,9 +355,9 @@ context-guard experiments disable output-receipt-trim --root .
 
 기본적으로 프로젝트 설정은 `.context-guard/experiments.json`에 저장됩니다. 명시적인 프로젝트 로컬 재정의가 필요할 때만 `--config <path>`를 사용하세요. 실험 메타데이터에는 risk level, gate requirement, explicit command/flag surface, claim boundary가 포함되어 provider-measured matched-task evidence 없이는 hosted API token/cost savings claim으로 쓰지 않도록 합니다. `experiments enable`은 의도만 기록하며 helper를 실행하거나 명시 flag를 대체하거나 exact receipt/re-expand evidence 없는 content replacement를 허용하지 않습니다.
 
-| Dry-run 안전성 checker/planner | 출력하는 것 | 넘지 않는 경계 |
+| 안전성 checker/planner/runtime | 출력하는 것 | 넘지 않는 경계 |
 | --- | --- | --- |
-| `context-diff-compaction` | diff에 대한 검토용 compaction 조언. | replacement text를 emit하지 않습니다. 정확한 receipt/re-expand handle은 사람 검토나 future gated review용 메타데이터로만 기록합니다. |
+| `context-diff-compaction` | dry-run diff 조언과 명시적 `emit ... --receipt-id ... --reexpand-command ...` 런타임으로 caller-supplied compact replacement를 출력합니다. | `plan`은 replacement를 emit하지 않습니다. `emit`은 reviewable hunk, input diff와 일치하는 exact local artifact content/re-expand metadata와 더 작은 caller-supplied replacement가 모두 있을 때만 동작하며, ContextGuard가 semantic compression을 생성하거나 hosted token/cost 절감 주장 근거로 쓰지 않습니다. |
 | `visual-crop-ocr` | 전체 visual evidence, crop bounds, OCR note, confidence, missed context 메타데이터. | 스크린샷 캡처, crop/OCR 런타임, 이미지 파싱, 외부 OCR/image service 호출을 하지 않습니다. |
 | `learned-compression` | sanitized trusted prose와 exact fallback receipt를 위한 deny-by-default 정책 검사. | embedding, reranker, model call, learned/synthetic compressor runtime, replacement 생성을 하지 않습니다. |
 | `self-hosted-metrics-ledger` | dry-run preview와 명시적 `record ... --ledger-jsonl` 런타임으로 local/model-server latency, memory, quality, energy, throughput, local-cost metric을 기록합니다. | dry-run preview는 ledger 파일을 쓰지 않습니다. 명시적 record 명령만 로컬 JSONL sidecar를 쓰며, hosted API token/cost 절감 주장 근거로는 쓰지 않습니다. |
