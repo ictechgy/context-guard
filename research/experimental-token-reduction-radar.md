@@ -1,6 +1,6 @@
 # Experimental Token-Reduction Radar
 
-ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** that may reduce prompt size, multimodal payloads, or self-hosted inference overhead, but nothing here is a shipped runtime feature or a hosted API savings claim.
+ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** plus narrow **graduated local experiments** such as the explicit context-diff, visual evidence-pack, and self-hosted metrics runtimes. Later-roadmap lanes are not shipped runtime features, and nothing here is a hosted API savings claim.
 
 ## Non-claims
 
@@ -85,6 +85,12 @@ Future PR checklist:
 
 Broader context-diff compaction remains gated if it would automatically generate replacements, execute re-expansion beyond local receipt-file verification, write replacement files, or claim provider savings.
 
+## Graduated local experiment — visual crop/OCR evidence pack
+
+`context-guard experiments emit visual-crop-ocr --full-evidence-receipt ...` is the explicit local runtime promoted from the multimodal crop/OCR lane. It emits only caller-supplied evidence packs: full visual evidence receipts, crop bounds/image-size metadata, OCR text, OCR confidence/error notes, and missed-context notes. It does not capture screenshots, crop images, parse images, run OCR, call external services, write evidence files, emit replacement evidence, or claim hosted visual/text token savings. Image area and OCR byte reductions are proxy evidence only until matched successful tasks include provider-measured image/text token or cost fields.
+
+Broader visual-token reduction remains gated if it would generate crops, invoke OCR/image models, prune visual tokens inside model architectures, replace full evidence without review, or claim provider savings.
+
 ## Graduated local experiment — receipt-backed output trimming
 
 `context-guard-trim-output --digest ... --artifact-receipt` is the first reversible local transform experiment promoted from this roadmap. It stores only sanitized command output in the existing local artifact store and emits exact re-expand commands for omitted details. It is opt-in, does not change default trimming behavior, and does not create a hosted API token/cost savings claim; benchmark reports must still use matched successful tasks and provider-measured primary token fields before reporting token savings.
@@ -148,5 +154,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.

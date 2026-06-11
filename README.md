@@ -76,7 +76,7 @@ ContextGuard is complementary to provider and semantic caches, and adjacent to p
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| Experimental dry-run planners | Reviewing learned-compression, visual crop/OCR, self-hosted metrics, context-diff compaction, and local-proxy ideas before any runtime path ships. | Default-off and advisory-only; no runtime compression, OCR, forwarding, or hosted-savings claim without separate evidence and future PR gates. |
+| Experimental planners and local runtimes | Reviewing learned-compression/local-proxy ideas, plus explicit local context-diff, visual evidence-pack, and self-hosted metrics runtimes. | Default-off and explicit-command-only; no generated compression, OCR/crop service, forwarding, or hosted-savings claim without separate evidence and future PR gates. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
@@ -113,7 +113,7 @@ When you need a savings claim, measure it on your own tasks:
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
 - Local RAM/disk receipts can reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
-- Experimental helpers are mostly dry-run checker/planner surfaces; the only explicit runtime promoted here is the local `self-hosted-metrics-ledger` JSONL sidecar recorder. ContextGuard can review learned-compression policy, visual crop/OCR metadata, self-hosted metrics ledger previews/records, context-diff compaction plans, and local-proxy constraints, but it does not ship learned/synthetic compressor runtime, embeddings, rerankers, model calls, replacement generation, OCR/crop runtime, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or actual proxy forwarding runtime.
+- Experimental helpers are mostly dry-run checker/planner surfaces, with explicit local runtimes only for caller-supplied context-diff replacement payloads, caller-supplied visual crop/OCR evidence packs, and self-hosted metrics JSONL sidecar records. ContextGuard can review learned-compression policy and local-proxy constraints, but it does not ship learned/synthetic compressor runtime, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or actual proxy forwarding runtime.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
 Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin/` so existing automation can migrate gradually.
@@ -379,6 +379,7 @@ context-guard experiments status --json
 context-guard experiments plan context-diff-compaction --json < change.diff
 context-guard experiments emit context-diff-compaction --receipt-id <artifact-id> --reexpand-command "context-guard-artifact get <artifact-id> --full" --replacement-file compact-diff.txt --json < change.diff
 context-guard experiments plan visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --missed-context-note "outside crop omitted"
+context-guard experiments emit visual-crop-ocr --json --full-evidence-receipt <id> --crop-label <label> --crop-bounds 0,0,100,100 --image-size 800,600 --ocr-text "visible text" --ocr-confidence 0.9 --ocr-error-note "glyph may be uncertain" --missed-context-note "outside crop omitted"
 context-guard experiments plan learned-compression --json --sanitized --trusted-source --exact-fallback-receipt <id> --reexpand-command "context-guard-artifact get <id> --full" < sanitized-prose.txt
 context-guard experiments plan self-hosted-metrics-ledger --json --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98
 context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl .context-guard/self-hosted-metrics.jsonl --latency-ms 123.5 --peak-memory-mb 2048 --quality-score 0.98 --json
@@ -391,12 +392,12 @@ The `--runtime-gate-ack` example still produces advisory metadata only; it does 
 
 By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. `experiments enable` records intent only; it does not run helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 
-Shipped experimental checker/planner surfaces, plus explicit local context-diff and metrics runtimes, are intentionally narrow:
+Shipped experimental checker/planner surfaces, plus explicit local context-diff, visual evidence, and metrics runtimes, are intentionally narrow:
 
 | Planner/checker/runtime | What it emits | Hard boundary |
 | --- | --- | --- |
 | `context-diff-compaction` | Dry-run diff advice plus an explicit `emit ... --receipt-id ... --reexpand-command ...` runtime for caller-supplied compact replacements. | `plan` emits no replacement. `emit` requires reviewable hunks, exact local artifact re-expand metadata whose stored content matches the input diff, and a smaller caller-supplied replacement; ContextGuard does not generate semantic compression or support hosted token/cost savings claims. |
-| `visual-crop-ocr` | Metadata for full visual evidence, crop bounds, OCR notes, confidence, and missed context. | No screenshot capture, crop/OCR runtime, image parsing, or external OCR/image service. |
+| `visual-crop-ocr` | Dry-run visual evidence advice plus an explicit `emit visual-crop-ocr` runtime for caller-supplied evidence packs. | `emit` requires a full visual evidence receipt, missed-context note, and complete user-supplied crop and/or OCR evidence; ContextGuard does not capture screenshots, crop images, run OCR, parse images, call external services, write files, or support hosted token/cost savings claims. |
 | `learned-compression` | Deny-by-default policy checks for sanitized trusted prose with exact fallback receipts. | No embeddings, rerankers, model calls, learned/synthetic compressor runtime, or replacement generation. |
 | `self-hosted-metrics-ledger` | Dry-run preview plus an explicit `record ... --ledger-jsonl` runtime for local/model-server latency, memory, quality, energy, throughput, and local-cost metrics. | The dry-run preview does not write a ledger; the explicit record command writes only local JSONL sidecars and still does not support hosted API token/cost savings claims. |
 | `local-proxy` | Localhost-only advisory metadata for a possible future local proxy. | Starts no listener, forwards no traffic, persists no API keys, writes no ledger, blocks non-local bind/target/upstream values, and requires a separate future runtime gate before any forwarding implementation. |
@@ -405,7 +406,7 @@ Shipped experimental checker/planner surfaces, plus explicit local context-diff 
 
 These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- Learned/synthetic compressor runtime, multimodal crop/OCR or visual-token pruning runtime, self-hosted KV/latent optimization beyond explicit local metrics recording, and actual proxy forwarding runtime. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or runtime feature claim.
+- Learned/synthetic compressor runtime, generated crop/OCR or visual-token pruning runtime beyond the caller-supplied visual evidence-pack emitter, self-hosted KV/latent optimization beyond explicit local metrics recording, and actual proxy forwarding runtime. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or runtime feature claim.
 
 ## Repository layout
 

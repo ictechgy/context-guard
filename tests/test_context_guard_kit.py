@@ -1079,12 +1079,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("exact local artifact", context_diff["evidence_contract"])
 
                         visual_ocr = experiments["visual-crop-ocr"]
-                        self.assertEqual(visual_ocr["runtime_status"], "available-dry-run")
+                        self.assertEqual(visual_ocr["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan visual-crop-ocr", visual_ocr["commands"])
+                        self.assertIn("context-guard experiments emit visual-crop-ocr", visual_ocr["commands"])
                         self.assertIn("plan visual-crop-ocr", visual_ocr["opt_in_flags"])
+                        self.assertIn("emit visual-crop-ocr", visual_ocr["opt_in_flags"])
                         self.assertIn("--full-evidence-receipt", visual_ocr["opt_in_flags"])
                         self.assertIn("--ocr-text|--ocr-text-file", visual_ocr["opt_in_flags"])
-                        self.assertIn("does not run OCR", visual_ocr["config_effect"])
+                        self.assertIn("explicit emit command", visual_ocr["config_effect"])
+                        self.assertIn("do not run OCR", visual_ocr["config_effect"])
+                        self.assertIn("full visual evidence receipt", visual_ocr["evidence_contract"])
                         self.assertIn("missed-context", visual_ocr["evidence_contract"].lower())
 
                         learned = experiments["learned-compression"]
@@ -1879,6 +1883,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertTrue(payload["guardrails"]["human_review_required"])
                 self.assertFalse(payload["guardrails"]["stable_runtime_behavior_changed"])
                 self.assertIsNone(payload["candidate_replacement"])
+                self.assertNotIn("evidence_pack", payload)
                 self.assertFalse(payload["derived_evidence"]["crop"]["available"])
                 self.assertFalse(payload["derived_evidence"]["ocr"]["available"])
                 self.assertGreaterEqual(len(payload["review_plan"]["next_steps"]), 3)
@@ -2177,6 +2182,205 @@ class ClaudeTokenKitTests(unittest.TestCase):
         source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
         for forbidden in ("import requests", "urllib.request", "http.client", "import socket", "import subprocess"):
             self.assertNotIn(forbidden, source)
+
+    def test_experimental_visual_crop_ocr_emit_runtime(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                args = [
+                    sys.executable,
+                    str(script),
+                    "emit",
+                    "visual-crop-ocr",
+                    "--full-evidence-receipt",
+                    "full-visual-abc123",
+                    "--full-evidence-label",
+                    "checkout screenshot",
+                    "--crop-label",
+                    "error toast",
+                    "--crop-bounds",
+                    "10,20,120,40",
+                    "--image-size",
+                    "400,300",
+                    "--ocr-text",
+                    "Payment failed: retry later",
+                    "--ocr-confidence",
+                    "0.91",
+                    "--ocr-error-note",
+                    "colon may be low confidence",
+                    "--missed-context-note",
+                    "navbar and footer omitted from crop",
+                    "--json",
+                ]
+                proc = subprocess.run(args, text=True, capture_output=True, check=True)
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "visual-crop-ocr")
+                self.assertEqual(payload["mode"], "emit")
+                self.assertEqual(payload["status"], "evidence_pack_emitted")
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertFalse(payload["guardrails"]["external_services_called"])
+                self.assertFalse(payload["guardrails"]["runtime_writes_files"])
+                self.assertTrue(payload["guardrails"]["evidence_pack_allowed"])
+                self.assertFalse(payload["guardrails"]["candidate_replacement_allowed"])
+                self.assertIsNone(payload["candidate_replacement"])
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertIsNotNone(payload["evidence_pack"])
+                pack = payload["evidence_pack"]
+                self.assertEqual(pack["schema_version"], "contextguard.visual-evidence-pack.v1")
+                self.assertEqual(pack["full_visual_evidence"]["receipt_id"], "full-visual-abc123")
+                self.assertFalse(pack["full_visual_evidence"]["verified"])
+                self.assertEqual(pack["crop_evidence"]["bounds"]["width"], 120)
+                self.assertEqual(pack["ocr_evidence"]["text"], "Payment failed: retry later")
+                self.assertEqual(pack["ocr_evidence"]["confidence"], 0.91)
+                self.assertIn("navbar", pack["missed_context_notes"][0])
+                self.assertTrue(pack["reduction_evidence"]["proxy_only"])
+                self.assertFalse(pack["reduction_evidence"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(pack["reduction_evidence"]["hosted_api_cost_savings_claim_allowed"])
+                self.assertIn("not hosted", pack["claim_boundary"])
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "emit",
+                        "visual-crop-ocr",
+                        "--full-evidence-receipt",
+                        "full-visual-dispatch",
+                        "--crop-label",
+                        "status chip",
+                        "--crop-bounds",
+                        "0,0,20,20",
+                        "--image-size",
+                        "40,40",
+                        "--missed-context-note",
+                        "page title omitted",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["status"], "evidence_pack_emitted")
+                self.assertIsNotNone(payload["evidence_pack"])
+                self.assertTrue(payload["evidence_pack"]["crop_evidence"]["available"])
+
+    def test_experimental_visual_crop_ocr_emit_blocks_unsafe_inputs(self):
+        cases = [
+            (
+                "missing_missed_context",
+                [
+                    "--full-evidence-receipt",
+                    "full-visual-123",
+                    "--crop-label",
+                    "total",
+                    "--crop-bounds",
+                    "0,0,20,20",
+                    "--image-size",
+                    "40,40",
+                ],
+                "missing_missed_context_note",
+            ),
+            (
+                "missing_derived",
+                ["--full-evidence-receipt", "full-visual-123", "--missed-context-note", "outside view omitted"],
+                "missing_derived_evidence",
+            ),
+            (
+                "invalid_confidence",
+                [
+                    "--full-evidence-receipt",
+                    "full-visual-123",
+                    "--ocr-text",
+                    "text",
+                    "--ocr-confidence",
+                    "1.5",
+                    "--ocr-error-note",
+                    "uncertain",
+                    "--missed-context-note",
+                    "outside view omitted",
+                ],
+                "invalid_ocr_confidence",
+            ),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, args, blocker in cases:
+                with self.subTest(script=script, case=name):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "emit", "visual-crop-ocr", *args, "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "blocked_until_visual_evidence_pack_ready")
+                    self.assertNotIn("evidence_pack", payload)
+                    self.assertFalse(payload["guardrails"]["evidence_pack_allowed"])
+                    self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
+
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target = root / "ocr.txt"
+                target.write_text("OCR text\n", encoding="utf-8")
+                symlink = root / "ocr-link.txt"
+                symlink.symlink_to(target)
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "visual-crop-ocr",
+                        "--full-evidence-receipt",
+                        "full-visual-123",
+                        "--ocr-text-file",
+                        str(symlink),
+                        "--ocr-confidence",
+                        "0.5",
+                        "--ocr-error-note",
+                        "uncertain glyph",
+                        "--missed-context-note",
+                        "outside view omitted",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("OCR text file", proc.stderr)
+                self.assertIn("must be a regular file", proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                if hasattr(os, "mkfifo"):
+                    fifo = root / "ocr.fifo"
+                    os.mkfifo(fifo)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "visual-crop-ocr",
+                            "--full-evidence-receipt",
+                            "full-visual-123",
+                            "--ocr-text-file",
+                            str(fifo),
+                            "--ocr-confidence",
+                            "0.5",
+                            "--ocr-error-note",
+                            "uncertain glyph",
+                            "--missed-context-note",
+                            "outside view omitted",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("OCR text file", proc.stderr)
+                    self.assertIn("must be a regular file", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_learned_compression_plan_json_contract_and_ready_path(self):
         safe_prose = "This sanitized paragraph summarizes project goals and tradeoffs without exact protected tokens.\n"

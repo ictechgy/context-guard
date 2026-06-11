@@ -179,17 +179,21 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     ),
     Experiment(
         id="visual-crop-ocr",
-        name="Visual crop/OCR evidence planning",
-        summary="Dry-run fixture lane for comparing full visual evidence with cropped or OCR-derived evidence.",
+        name="Visual crop/OCR evidence pack",
+        summary="Explicit local runtime for caller-supplied visual crop/OCR evidence packs.",
         stability="experimental",
         default_enabled=False,
         risk_level="medium",
         claim_boundary="Image/OCR byte reductions are proxy evidence until provider image/text token fields are measured.",
         gate_requirements=("explicit opt-in", "original evidence preserved", "confidence/error notes", "missed-context guardrail"),
-        runtime_status="available-dry-run",
-        commands=("context-guard experiments plan visual-crop-ocr",),
+        runtime_status="available-explicit-runtime",
+        commands=(
+            "context-guard experiments plan visual-crop-ocr",
+            "context-guard experiments emit visual-crop-ocr",
+        ),
         opt_in_flags=(
             "plan visual-crop-ocr",
+            "emit visual-crop-ocr",
             "--full-evidence-receipt",
             "--crop-bounds",
             "--image-size",
@@ -199,12 +203,12 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--missed-context-note",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; visual crop/OCR planning remains a dry-run "
-            "metadata surface and does not run OCR, crop images, call providers, or change stable behavior."
+            "Registry enablement records project-local intent only; visual crop/OCR evidence packs emit only through "
+            "the explicit emit command and do not run OCR, crop images, call providers, write files, or change stable behavior."
         ),
         evidence_contract=(
-            "Dry-run plans require retrievable full visual evidence plus crop/OCR confidence, error, and "
-            "missed-context guardrails before human review."
+            "Emitted evidence packs require the full visual evidence receipt plus caller-supplied crop/OCR evidence, "
+            "OCR confidence/error notes when OCR is present, and missed-context guardrails before human review."
         ),
     ),
     Experiment(
@@ -1376,6 +1380,7 @@ def read_visual_ocr_text(args: argparse.Namespace) -> dict[str, Any]:
         "truncated": truncated,
         "max_bytes": MAX_VISUAL_OCR_TEXT_BYTES,
         "valid_utf8": valid_encoding,
+        "text": text,
         "text_preview": text,
         "has_text": bool(text.strip()),
     }
@@ -1536,6 +1541,93 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
+
+
+def visual_crop_ocr_evidence_pack_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = visual_crop_ocr_plan_payload(args)
+    blockers = list(payload["review_plan"]["readiness_blockers"])
+    ready = not blockers
+    crop = payload["derived_evidence"]["crop"]
+    ocr = payload["derived_evidence"]["ocr"]
+
+    image_area = None
+    crop_area = None
+    if crop["bounds"] is not None and crop["image_size"] is not None:
+        image_area = crop["image_size"]["width"] * crop["image_size"]["height"]
+        crop_area = crop["bounds"]["width"] * crop["bounds"]["height"]
+
+    payload["mode"] = "emit"
+    payload["status"] = "evidence_pack_emitted" if ready else "blocked_until_visual_evidence_pack_ready"
+    payload["guardrails"] = dict(payload["guardrails"])
+    payload["guardrails"].update({
+        "candidate_replacement_allowed": False,
+        "evidence_pack_allowed": ready,
+        "runtime_writes_files": False,
+        "external_services_called": False,
+    })
+    payload["claim_boundary"] = (
+        "Explicit local visual crop/OCR evidence-pack emission only; image area and OCR byte reductions are proxy "
+        "evidence and are not hosted API token or cost savings evidence."
+    )
+    payload["reduction_evidence"] = {
+        "image_area_before": image_area,
+        "crop_area_after": crop_area if crop["available"] else None,
+        "crop_area_reduction": (image_area - crop_area) if crop["available"] and image_area is not None and crop_area is not None else None,
+        "ocr_text_bytes": ocr["metadata"]["bytes"] if ocr["available"] else None,
+        "proxy_only": True,
+        "hosted_api_token_savings_claim_allowed": False,
+        "hosted_api_cost_savings_claim_allowed": False,
+    }
+    payload["review_plan"]["next_steps"] = [
+        "Human-review crop/OCR evidence against the full visual evidence receipt before using it as a substitute.",
+        "Read missed-context notes before relying on omitted visual regions.",
+        "Treat image area/OCR byte reductions as local proxy evidence only; do not claim hosted token/cost savings.",
+    ]
+    if ready:
+        payload["evidence_pack"] = {
+            "schema_version": "contextguard.visual-evidence-pack.v1",
+            "full_visual_evidence": payload["full_visual_evidence"],
+            "crop_evidence": crop if crop["available"] else None,
+            "ocr_evidence": (
+                {
+                    "source_type": ocr["source_type"],
+                    "source_label": ocr["source_label"],
+                    "text": ocr["text_preview"],
+                    "metadata": ocr["metadata"],
+                    "confidence": ocr["confidence"],
+                    "error_notes": ocr["error_notes"],
+                }
+                if ocr["available"]
+                else None
+            ),
+            "missed_context_notes": payload["review_plan"]["missed_context_notes"],
+            "guardrails": payload["guardrails"],
+            "reduction_evidence": payload["reduction_evidence"],
+            "claim_boundary": payload["claim_boundary"],
+        }
+    return payload
+
+
+def command_emit_visual_crop_ocr(args: argparse.Namespace) -> int:
+    payload = visual_crop_ocr_evidence_pack_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "evidence_pack_emitted":
+            print("ContextGuard visual crop/OCR evidence pack emitted")
+            print(f"Full evidence receipt: {payload['full_visual_evidence']['receipt_id']}")
+            print(
+                "Derived evidence: "
+                f"crop={payload['derived_evidence']['crop']['available']} "
+                f"ocr={payload['derived_evidence']['ocr']['available']}"
+            )
+        else:
+            print("ContextGuard visual crop/OCR evidence pack blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "evidence_pack_emitted" else 1
 
 
 SECRET_LABEL_KEY_RE = (
@@ -2755,6 +2847,24 @@ def build_parser() -> argparse.ArgumentParser:
     replacement_group.add_argument("--replacement-file", help="Read caller-supplied compact replacement text from a file.")
     emit_context_diff.add_argument("--json", action="store_true", help="Emit JSON output.")
     emit_context_diff.set_defaults(func=command_emit_context_diff_compaction)
+
+    emit_visual_ocr = emit_sub.add_parser(
+        "visual-crop-ocr",
+        help="Emit a caller-supplied visual crop/OCR evidence pack without image/OCR services.",
+    )
+    emit_visual_ocr.add_argument("--full-evidence-receipt", help="User-supplied receipt/id for the original full visual evidence.")
+    emit_visual_ocr.add_argument("--full-evidence-label", help="Safe label for the full visual evidence.")
+    emit_visual_ocr.add_argument("--crop-label", help="Safe label for the cropped region or crop fixture.")
+    emit_visual_ocr.add_argument("--crop-bounds", help="Crop bounds as x,y,width,height integers.")
+    emit_visual_ocr.add_argument("--image-size", help="Original image size as width,height integers.")
+    emit_visual_ocr.add_argument("--ocr-text", help="Bounded OCR fixture text supplied inline.")
+    emit_visual_ocr.add_argument("--ocr-text-file", help="Read bounded OCR fixture text from a UTF-8 text file.")
+    emit_visual_ocr.add_argument("--ocr-source-label", help="Safe label for OCR text source; defaults to inline or file basename.")
+    emit_visual_ocr.add_argument("--ocr-confidence", help="OCR confidence as a finite decimal from 0.0 to 1.0.")
+    emit_visual_ocr.add_argument("--ocr-error-note", action="append", help="Known OCR error/uncertainty note. Repeatable.")
+    emit_visual_ocr.add_argument("--missed-context-note", action="append", help="Potential context outside crop/OCR text. Repeatable.")
+    emit_visual_ocr.add_argument("--json", action="store_true", help="Emit JSON output.")
+    emit_visual_ocr.set_defaults(func=command_emit_visual_crop_ocr)
 
     record_parser = sub.add_parser("record", help="Run explicit local runtime recorders for experimental lanes.")
     record_sub = record_parser.add_subparsers(dest="record_command", required=True)
