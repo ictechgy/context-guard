@@ -4,6 +4,14 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-06-11
+
+- Hardened experimental registry config writes with same-directory atomic replace so failed writes or symlink swaps do not truncate or redirect the live config.
+- Hardened dispatcher version metadata reads with dir-fd no-follow parent traversal to close parent symlink races.
+- Preserved bounded filter passthrough ordering without holding the capture state lock during emission.
+- Serialized context pack sanitizer factory first load and added focused race/failure regression coverage.
+- Kept plugin bin mirrors synchronized for the updated helper hardening.
+
 ## [0.4.7] - 2026-06-11
 
 - Added default-off experimental opt-in registry surfaces for future token-reduction lanes, preserving project-local intent without enabling runtime behavior.
