@@ -116,6 +116,10 @@ FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
 }
 
 
+def running_in_ci() -> bool:
+    return os.environ.get("CI", "").lower() == "true" or os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+
+
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"release smoke failed: {message}")
 
@@ -192,6 +196,33 @@ def check_npm_package_lifecycle_scripts(package_json: Path) -> None:
     forbidden = sorted(FORBIDDEN_NPM_LIFECYCLE_SCRIPTS & set(scripts))
     if forbidden:
         fail(f"package.json contains npm lifecycle scripts that release smoke must not run: {', '.join(forbidden)}")
+
+
+def npm_package_version(package_json: Path) -> str:
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(f"package.json did not emit valid JSON: line {exc.lineno}: {exc.msg}")
+    if not isinstance(data, dict):
+        fail("package.json JSON output must be an object")
+    version = data.get("version")
+    if not isinstance(version, str) or not version.strip():
+        fail("package.json missing non-empty version")
+    return version.strip()
+
+
+def require_path_inside(child: Path, parent: Path, *, label: str) -> None:
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except (OSError, ValueError) as exc:
+        fail(f"{label} resolved outside isolated npm prefix: {child}")
+
+
+def write_fake_context_guard_shadow(fake_bin: Path) -> None:
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    fake = fake_bin / "context-guard"
+    fake.write_text("#!/bin/sh\necho PATH-SHADOWED-CONTEXT-GUARD\n", encoding="utf-8")
+    fake.chmod(0o755)
 
 
 def command_path(plugin_bin: Path, name: str) -> Path:
@@ -658,22 +689,32 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
 
 
 def run_npm_package_smoke(timeout: float) -> None:
+    if not NPM_PACKAGE_JSON.is_file():
+        print("npm package smoke: skipped (package.json not found)")
+        return
     npm = shutil.which("npm")
-    if npm is None or not NPM_PACKAGE_JSON.is_file():
-        print("npm package smoke: skipped")
+    if npm is None:
+        if running_in_ci():
+            fail("npm package smoke requires npm in CI; ensure actions/setup-node ran before release gates")
+        print("npm package smoke: skipped (npm not found)")
         return
     check_npm_package_lifecycle_scripts(NPM_PACKAGE_JSON)
+    expected_version = npm_package_version(NPM_PACKAGE_JSON)
     with tempfile.TemporaryDirectory(prefix="context-guard-npm-smoke-") as td:
         root = Path(td)
         pack_dir = root / "pack"
         project = root / "project"
         home = root / "home"
         tmp = root / "tmp"
+        install_prefix = root / "isolated-install"
+        fake_bin = root / "fake-path-bin"
         pack_dir.mkdir()
         project.mkdir()
         home.mkdir()
         tmp.mkdir()
+        write_fake_context_guard_shadow(fake_bin)
         env = smoke_environment(home, tmp)
+        env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
         pack = run_bounded_command(
             [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", str(pack_dir)],
             cwd=ROOT,
@@ -698,23 +739,49 @@ def run_npm_package_smoke(timeout: float) -> None:
         tarball = pack_dir / filename
         if not tarball.is_file():
             fail(f"npm pack tarball missing: {tarball}")
-        run_command(
-            [npm, "exec", "--ignore-scripts", "--yes", "--package", str(tarball), "--", "context-guard", "--version"],
+
+        install = run_bounded_command(
+            [
+                npm,
+                "install",
+                "--ignore-scripts",
+                "--no-audit",
+                "--fund=false",
+                "--prefix",
+                str(install_prefix),
+                str(tarball),
+            ],
             cwd=project,
             env=env,
             timeout=timeout,
-            expect=lambda proc: None if proc.stdout.strip() else fail("npm exec context-guard --version emitted no output"),
+        )
+        if install.timed_out:
+            fail(f"npm install isolated package smoke timed out after {timeout:g}s")
+        if install.output_truncated:
+            fail("npm install isolated package smoke output exceeded bounds")
+        if install.proc.returncode != 0:
+            fail(f"npm install isolated package smoke exited {install.proc.returncode}: {(install.proc.stderr or install.proc.stdout).strip()[:500]}")
+
+        isolated_bin = install_prefix / "node_modules" / ".bin"
+        context_guard = isolated_bin / "context-guard"
+        if not context_guard.is_file():
+            fail(f"isolated npm install missing context-guard bin: {context_guard}")
+        require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
+
+        run_command(
+            [str(context_guard), "--version"],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                None
+                if proc.stdout.strip() == expected_version
+                else fail(f"isolated context-guard --version emitted {proc.stdout.strip()!r}, expected {expected_version!r}")
+            ),
         )
         run_command(
             [
-                npm,
-                "exec",
-                "--ignore-scripts",
-                "--yes",
-                "--package",
-                str(tarball),
-                "--",
-                "context-guard",
+                str(context_guard),
                 "setup",
                 "--root",
                 str(project),
@@ -731,19 +798,12 @@ def run_npm_package_smoke(timeout: float) -> None:
             env=env,
             timeout=timeout,
             expect=lambda proc: (
-                check_json_field(load_json(proc.stdout, "npm exec context-guard setup"), "applied", False, "npm exec context-guard setup")
+                check_json_field(load_json(proc.stdout, "isolated npm context-guard setup"), "applied", False, "isolated npm context-guard setup")
             ),
         )
         run_command(
             [
-                npm,
-                "exec",
-                "--ignore-scripts",
-                "--yes",
-                "--package",
-                str(tarball),
-                "--",
-                "context-guard",
+                str(context_guard),
                 "setup",
                 "--root",
                 str(project),
@@ -763,40 +823,25 @@ def run_npm_package_smoke(timeout: float) -> None:
             expect=lambda proc: check_brief_mode_apply_smoke(
                 proc,
                 project,
-                "npm exec context-guard setup brief-mode apply",
+                "isolated npm context-guard setup brief-mode apply",
             ),
         )
         for plan in npm_dispatcher_smoke_plan():
             entrypoint = str(plan["entrypoint"])
             mode = str(plan["mode"])
             args = [str(arg) for arg in plan["args"]]
-            command_label = " ".join(["npm exec", entrypoint, *args])
+            entrypoint_path = isolated_bin / entrypoint
+            if not entrypoint_path.is_file():
+                fail(f"isolated npm install missing dispatcher bin: {entrypoint_path}")
+            require_path_inside(entrypoint_path, install_prefix, label=f"{entrypoint} npm bin")
+            command_label = " ".join(["isolated npm", entrypoint, *args])
             run_command(
-                [
-                    npm,
-                    "exec",
-                    "--ignore-scripts",
-                    "--yes",
-                    "--package",
-                    str(tarball),
-                    "--",
-                    entrypoint,
-                    *args,
-                ],
+                [str(entrypoint_path), *args],
                 cwd=project,
                 env=env,
                 timeout=timeout,
                 input_text=launch_stdin(mode),
                 expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
-            )
-        npx = shutil.which("npx")
-        if npx is not None:
-            run_command(
-                [npx, "--ignore-scripts", "--yes", "--package", str(tarball), "context-guard", "--version"],
-                cwd=project,
-                env=env,
-                timeout=timeout,
-                expect=lambda proc: None if proc.stdout.strip() else fail("npx context-guard --version emitted no output"),
             )
 
 

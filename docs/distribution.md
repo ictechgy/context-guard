@@ -47,11 +47,14 @@ The helpers are Python/shell scripts packaged through npm and Homebrew. Supporte
 
 Before publishing the Homebrew tap, run the formula-specific checks locally or in CI when Homebrew is available:
 
+Render or copy `packaging/homebrew/context-guard.rb.template` into a real tap formula first; replace `{{VERSION}}` with the bare semver version (for example `0.4.9`, not `v0.4.9`) and `REPLACE_WITH_RELEASE_TARBALL_SHA256` with the verified tarball SHA. Do not run Homebrew audit/install directly against the placeholder template.
+
 ```bash
-brew style packaging/homebrew/context-guard.rb
-brew audit --strict --new packaging/homebrew/context-guard.rb
-brew install --build-from-source packaging/homebrew/context-guard.rb
-brew test context-guard
+# Example once Formula/context-guard.rb has been rendered in the tap checkout:
+brew style Formula/context-guard.rb
+brew audit --strict --new ictechgy/tap/context-guard
+brew install --build-from-source ictechgy/tap/context-guard
+brew test ictechgy/tap/context-guard
 ```
 
-The formula should rewrite Python shebangs to the declared Homebrew Python dependency and expose both `context-guard` and legacy compatibility wrappers from `plugins/context-guard/bin`.
+The rendered formula should rewrite Python shebangs to the declared Homebrew Python dependency and expose both `context-guard` and legacy compatibility wrappers from `plugins/context-guard/bin`.

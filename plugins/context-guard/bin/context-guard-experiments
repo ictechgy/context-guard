@@ -89,6 +89,7 @@ LOCAL_PROXY_SENSITIVE_HEADER_NAMES = {
     "cookie",
     "set-cookie",
 }
+LOCAL_PROXY_NONCE_HEADER = "X-ContextGuard-Proxy-Nonce"
 LOCAL_PROXY_HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -336,8 +337,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "context-guard experiments plan local-proxy",
             "context-guard experiments plan local-proxy-external-forwarding",
             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
-            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
-            "context-guard experiments serve local-proxy --diagnostic-ledger-jsonl <path> ...",
+            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once --ready-file <path>",
+            "context-guard experiments serve local-proxy --ready-file <ready-file> --diagnostic-ledger-jsonl <path> ...",
         ),
         opt_in_flags=(
             "plan local-proxy",
@@ -356,6 +357,7 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--max-request-bytes",
             "--max-response-bytes",
             "--diagnostic-ledger-jsonl",
+            "--ready-file",
             "--external-forwarding-intent",
             "--external-forwarding-design-ack",
             "--allow-host",
@@ -372,10 +374,11 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         ),
         evidence_contract=(
             "Gate rows require localhost-only bind/target metadata and explicit runtime gate acknowledgement. Serve "
-            "evidence requires loopback-only bind/target IPs, explicit forwarding acknowledgement, no credential "
-            "forwarding or persistence, bounded bytes/timeouts, and optional diagnostic ledger rows that remain "
-            "shifted-cost evidence only. External-forwarding design plans require threat model notes, explicit "
-            "allowlists, credential redaction policy, and provider-evidence boundaries before any future runtime."
+            "evidence requires loopback-only bind/target IPs, a private ready-file nonce handoff, explicit forwarding "
+            "acknowledgement, no credential forwarding or persistence, bounded bytes/timeouts, and optional diagnostic "
+            "ledger rows that remain shifted-cost evidence only. External-forwarding design plans require threat model "
+            "notes, explicit allowlists, credential redaction policy, and provider-evidence boundaries before any future "
+            "runtime."
         ),
     ),
 )
@@ -3085,6 +3088,15 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "bytes_written": 0,
         "reason": None if diagnostic_ledger_raw else "not_requested",
     }
+    payload["client_auth"] = {
+        "required": True,
+        "type": "nonce_header",
+        "header": LOCAL_PROXY_NONCE_HEADER,
+        "delivery": "ready_file",
+        "ready_file_required": True,
+        "nonce_in_public_output": False,
+        "nonce_forwarded_upstream": False,
+    }
     payload["_diagnostic_ledger_write_path"] = diagnostic_ledger_write_path
     payload["forward_result"] = None
 
@@ -3240,7 +3252,7 @@ def local_proxy_response_headers(headers: Any) -> list[tuple[str, str]]:
     return result
 
 
-def write_local_proxy_ready_file(path: str | None, *, bind_host: str, bind_port: int) -> None:
+def write_local_proxy_ready_file(path: str | None, *, bind_host: str, bind_port: int, auth_nonce: str) -> None:
     if not path:
         return
     ready_payload = {
@@ -3253,6 +3265,14 @@ def write_local_proxy_ready_file(path: str | None, *, bind_host: str, bind_port:
         "bind": {
             "host": bind_host,
             "port": bind_port,
+        },
+        "client_auth": {
+            "required": True,
+            "type": "nonce_header",
+            "header": LOCAL_PROXY_NONCE_HEADER,
+            "nonce": auth_nonce,
+            "forwarded_upstream": False,
+            "public_output": False,
         },
     }
     data = json.dumps(ready_payload, sort_keys=True).encode("utf-8") + b"\n"
@@ -3268,6 +3288,7 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
     max_request_bytes = int(limits["max_request_bytes"])
     max_response_bytes = int(limits["max_response_bytes"])
     timeout_seconds = float(limits["timeout_seconds"])
+    auth_nonce = secrets.token_urlsafe(32)
     server_result: dict[str, Any] = {
         "served_once": False,
         "forwarded": False,
@@ -3283,6 +3304,10 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         "sensitive_headers_blocked": [],
         "listener_started": False,
         "ready_file_written": False,
+        "client_auth_required": True,
+        "client_auth_header": LOCAL_PROXY_NONCE_HEADER,
+        "client_auth_delivered": False,
+        "client_auth_nonce_forwarded": False,
     }
 
     def finish_blocked(handler: BaseHTTPRequestHandler, status_code: int, reason: str, *, sensitive: list[str] | None = None) -> None:
@@ -3309,9 +3334,25 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - BaseHTTPRequestHandler API.
             return
 
+        def authorize_request(self) -> bool:
+            values = self.headers.get_all(LOCAL_PROXY_NONCE_HEADER, [])
+            if len(values) == 0:
+                finish_blocked(self, 403, "missing_proxy_nonce")
+                return False
+            if len(values) != 1:
+                finish_blocked(self, 403, "duplicate_proxy_nonce")
+                return False
+            candidate = str(values[0])
+            if not secrets.compare_digest(candidate, auth_nonce):
+                finish_blocked(self, 403, "invalid_proxy_nonce")
+                return False
+            return True
+
         def do_CONNECT(self) -> None:
             server_result["request_method"] = "CONNECT"
             server_result.update(local_proxy_request_target_meta(self.path))
+            if not self.authorize_request():
+                return
             finish_blocked(self, 405, "connect_tunneling_not_allowed")
 
         def do_HEAD(self) -> None:
@@ -3332,6 +3373,8 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         def block_method(self) -> None:
             server_result["request_method"] = self.command
             server_result.update(local_proxy_request_target_meta(self.path))
+            if not self.authorize_request():
+                return
             finish_blocked(self, 405, "method_not_allowed")
 
         def do_DELETE(self) -> None:
@@ -3346,6 +3389,8 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         def forward_request(self) -> None:
             server_result["request_method"] = self.command
             server_result.update(local_proxy_request_target_meta(self.path))
+            if not self.authorize_request():
+                return
             if local_proxy_secret_like(self.path):
                 finish_blocked(self, 400, "secret_like_request_target")
                 return
@@ -3435,8 +3480,9 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
     httpd.timeout = timeout_seconds
     try:
         try:
-            write_local_proxy_ready_file(ready_file, bind_host=bind_host, bind_port=bind_port)
+            write_local_proxy_ready_file(ready_file, bind_host=bind_host, bind_port=bind_port, auth_nonce=auth_nonce)
             server_result["ready_file_written"] = bool(ready_file)
+            server_result["client_auth_delivered"] = bool(ready_file)
             server_result["listener_started"] = True
         except RegistryError as exc:
             server_result.update({
@@ -3461,6 +3507,10 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
 def command_serve_local_proxy(args: argparse.Namespace) -> int:
     payload = local_proxy_forward_payload(args)
     diagnostic_ledger = payload.get("diagnostic_ledger") if isinstance(payload.get("diagnostic_ledger"), dict) else {}
+    if payload["status"] == "ready_to_serve" and not args.ready_file:
+        payload["status"] = "blocked_until_local_proxy_forwarding_ready"
+        payload["review_plan"]["readiness_blockers"].append("missing_ready_file_for_proxy_nonce")
+        diagnostic_ledger["reason"] = "not_forwarded" if diagnostic_ledger.get("write_requested") else diagnostic_ledger.get("reason")
     if payload["status"] == "ready_to_serve" and diagnostic_ledger.get("write_requested"):
         try:
             preflight_append_jsonl_no_follow(

@@ -4,6 +4,9 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Hardened release gates with isolated npm install smoke, CI Node setup, full unittest discovery, Homebrew template stale-version checks, and explicit CI/subprocess timeouts.
+- Hardened `context-guard experiments serve local-proxy` with a private ready-file nonce handoff that rejects missing, duplicate, or invalid nonce headers before forwarding and keeps the raw nonce out of public output and upstream requests.
+
 ## [0.4.9] - 2026-06-12
 
 - Added `context-guard experiments plan local-proxy-external-forwarding`, a design-only dry-run gate for future external forwarding proposals with explicit intent, HTTPS allowlist, threat model notes, credential redaction policy, provider-evidence boundary, and no DNS lookup, external service call, traffic forwarding, credential persistence, or hosted savings claim.
