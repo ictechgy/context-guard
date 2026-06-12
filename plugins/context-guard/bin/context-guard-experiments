@@ -54,11 +54,14 @@ TOKEN_PROXY_BYTES_PER_TOKEN = 4
 MAX_SELF_HOSTED_JSON_DEPTH = 100
 MAX_SELF_HOSTED_JSON_NODES = 10_000
 LOCAL_PROXY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-plan.v1"
+LOCAL_PROXY_GATE_SCHEMA_VERSION = "contextguard.experiments.local-proxy-gate.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_TARGET_PORT = 0
 LOCAL_PROXY_LOCALHOST_NAMES = {"localhost"}
+LOCAL_PROXY_TRUE_VALUES = {"1", "on", "true", "yes", "y"}
+LOCAL_PROXY_FALSE_VALUES = {"", "0", "false", "n", "no", "off"}
 ALLOWED_FIRST_COMPONENT_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -284,33 +287,38 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     ),
     Experiment(
         id="local-proxy",
-        name="Local proxy advisory lane",
-        summary="Dry-run localhost-only proxy advisory plan with no hidden forwarding or API-key persistence.",
+        name="Local proxy runtime gate",
+        summary="Explicit local gate-record runtime for localhost-only proxy experiments with no hidden forwarding or API-key persistence.",
         stability="experimental",
         default_enabled=False,
         risk_level="high",
         claim_boundary="Proxy metrics are diagnostic only; no hosted savings claim without provider-measured evidence.",
         gate_requirements=("explicit opt-in", "localhost-only default", "no API-key persistence", "no hidden external forwarding"),
-        runtime_status="available-dry-run",
-        commands=("context-guard experiments plan local-proxy",),
+        runtime_status="available-explicit-runtime",
+        commands=(
+            "context-guard experiments plan local-proxy",
+            "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
+        ),
         opt_in_flags=(
             "plan local-proxy",
+            "record local-proxy-runtime-gate",
             "--bind-host",
             "--bind-port",
             "--target-host",
             "--target-port",
             "--upstream-url",
+            "--ledger-jsonl",
             "--runtime-gate-ack",
             "--external-forwarding-intent",
             "--persist-api-key",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; local proxy planning remains a dry-run advisory "
-            "surface and does not bind sockets, forward traffic, persist API keys, or write ledgers."
+            "Registry enablement records project-local intent only; local proxy gate records emit only through the "
+            "explicit record command and do not bind sockets, forward traffic, persist API keys, or call external services."
         ),
         evidence_contract=(
-            "Dry-run plans require localhost-only bind/target metadata, explicit runtime gate acknowledgement before "
-            "any future forwarding, and no raw API-key persistence."
+            "Recorded gate rows require localhost-only bind/target metadata, explicit runtime gate acknowledgement, "
+            "no listener, no forwarding, no raw API-key persistence, and shifted-cost accounting boundaries."
         ),
     ),
 )
@@ -2261,10 +2269,30 @@ def coalesce_local_proxy_value(args: argparse.Namespace, payload: dict[str, Any]
     return value if value is not None else payload.get(key)
 
 
-def coalesce_local_proxy_bool(args: argparse.Namespace, payload: dict[str, Any], attr: str, key: str) -> bool:
+def parse_local_proxy_json_bool(value: Any) -> tuple[bool, bool]:
+    if value is None:
+        return False, True
+    if isinstance(value, bool):
+        return value, True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in LOCAL_PROXY_TRUE_VALUES:
+            return True, True
+        if normalized in LOCAL_PROXY_FALSE_VALUES:
+            return False, True
+        return False, False
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value == 1:
+            return True, True
+        if value == 0:
+            return False, True
+    return False, False
+
+
+def coalesce_local_proxy_bool(args: argparse.Namespace, payload: dict[str, Any], attr: str, key: str) -> tuple[bool, bool]:
     if getattr(args, attr):
-        return True
-    return bool(payload.get(key))
+        return True, True
+    return parse_local_proxy_json_bool(payload.get(key))
 
 
 def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -2278,14 +2306,24 @@ def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     proxy_label_raw = coalesce_local_proxy_value(args, input_payload, "proxy_label", "proxy_label")
     api_key_raw = coalesce_local_proxy_value(args, input_payload, "api_key", "api_key")
     authorization_raw = coalesce_local_proxy_value(args, input_payload, "authorization_header", "authorization_header")
-    persist_api_key = coalesce_local_proxy_bool(args, input_payload, "persist_api_key", "persist_api_key")
-    external_forwarding_intent = coalesce_local_proxy_bool(
+    persist_api_key, persist_api_key_valid = coalesce_local_proxy_bool(
+        args,
+        input_payload,
+        "persist_api_key",
+        "persist_api_key",
+    )
+    external_forwarding_intent, external_forwarding_intent_valid = coalesce_local_proxy_bool(
         args,
         input_payload,
         "external_forwarding_intent",
         "external_forwarding_intent",
     )
-    runtime_gate_ack = coalesce_local_proxy_bool(args, input_payload, "runtime_gate_ack", "runtime_gate_ack")
+    runtime_gate_ack, runtime_gate_ack_valid = coalesce_local_proxy_bool(
+        args,
+        input_payload,
+        "runtime_gate_ack",
+        "runtime_gate_ack",
+    )
 
     upstream_url = sanitize_local_proxy_value(upstream_url_raw) if upstream_url_raw else None
     upstream_host = None
@@ -2354,6 +2392,12 @@ def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     blockers: list[str] = []
     if input_meta["truncated"]:
         blockers.append("input_truncated")
+    if not persist_api_key_valid:
+        blockers.append("invalid_persist_api_key")
+    if not external_forwarding_intent_valid:
+        blockers.append("invalid_external_forwarding_intent")
+    if not runtime_gate_ack_valid:
+        blockers.append("invalid_runtime_gate_ack")
     if not bind_port_valid:
         blockers.append("invalid_bind_port")
     if not target_port_valid:
@@ -2467,6 +2511,104 @@ def command_plan_local_proxy(args: argparse.Namespace) -> int:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
+
+
+def local_proxy_gate_row(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": LOCAL_PROXY_GATE_SCHEMA_VERSION,
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "experiment_id": "local-proxy",
+        "proxy_label": payload["ledger_preview"]["proxy_label"],
+        "bind": payload["bind"],
+        "target": payload["target"],
+        "policy": {
+            "localhost_only": True,
+            "runtime_gate_acknowledged": payload["policy"]["runtime_gate_acknowledged"],
+            "listener_started": False,
+            "traffic_forwarded": False,
+            "dns_lookup_attempted": False,
+            "api_key_persisted": False,
+            "hidden_external_forwarding": False,
+        },
+        "network_actions": payload["network_actions"],
+        "api_key_persistence": payload["api_key_persistence"],
+        "forwarding": payload["forwarding"],
+        "claim_boundary": {
+            "id": "local_proxy_runtime_gate_not_hosted_savings",
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+            "requires_provider_measured_matched_tasks_for_hosted_claims": True,
+            "reason": "This row records a local proxy runtime gate only; it starts no listener and forwards no traffic.",
+        },
+        "shifted_cost_accounting_required": True,
+    }
+
+
+def local_proxy_record_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = local_proxy_plan_payload(args)
+    payload["mode"] = "record"
+    payload["claim_boundary"] = (
+        "Explicit local proxy runtime-gate record only; no listener, forwarding, DNS lookup, API-key persistence, "
+        "external service call, or hosted API token/cost savings claim is performed."
+    )
+    payload["policy"] = dict(payload["policy"])
+    payload["policy"].update({
+        "dry_run_only": False,
+        "runtime_gate_record_only": True,
+        "runtime_gate_recorded": False,
+        "listener_started": False,
+        "traffic_forwarded": False,
+        "stable_runtime_behavior_changed": False,
+    })
+    payload["ledger_record"] = None
+    payload["ledger_jsonl"] = {
+        "path": sanitize_local_proxy_value(args.ledger_jsonl),
+        "write_performed": False,
+        "bytes_written": 0,
+    }
+    blockers = list(payload["review_plan"]["readiness_blockers"])
+    if not payload["policy"]["runtime_gate_acknowledged"]:
+        blockers.append("missing_runtime_gate_ack")
+    blockers = list(dict.fromkeys(blockers))
+    payload["review_plan"]["readiness_blockers"] = blockers
+    payload["ledger_preview"]["schema_version"] = LOCAL_PROXY_GATE_SCHEMA_VERSION
+    payload["ledger_preview"]["ledger_jsonl"] = sanitize_local_proxy_value(args.ledger_jsonl)
+    payload["ledger_preview"]["ledger_write_performed"] = False
+    if blockers:
+        payload["status"] = "blocked_until_local_proxy_gate_ready"
+        return payload
+
+    row = local_proxy_gate_row(payload)
+    bytes_written = append_jsonl_no_follow(Path(args.ledger_jsonl), row, label="local proxy runtime gate ledger")
+    payload["status"] = "recorded"
+    payload["ledger_preview"] = row
+    payload["ledger_record"] = row
+    payload["ledger_jsonl"]["write_performed"] = True
+    payload["ledger_jsonl"]["bytes_written"] = bytes_written
+    payload["policy"]["runtime_gate_recorded"] = True
+    payload["review_plan"]["next_steps"] = [
+        "Use this JSONL row only as a local proxy runtime-gate record.",
+        "Keep any actual proxy listener or forwarding implementation behind a separate reviewed runtime.",
+        "Do not persist API keys or claim hosted token/cost savings from this gate record.",
+    ]
+    return payload
+
+
+def command_record_local_proxy_runtime_gate(args: argparse.Namespace) -> int:
+    payload = local_proxy_record_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "recorded":
+            print("ContextGuard local proxy runtime-gate record written")
+            print(f"Ledger: {payload['ledger_jsonl']['path']} bytes={payload['ledger_jsonl']['bytes_written']}")
+        else:
+            print("ContextGuard local proxy runtime-gate record blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "recorded" else 1
 
 
 LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
@@ -3156,6 +3298,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     record_self_hosted.add_argument("--json", action="store_true", help="Emit JSON output.")
     record_self_hosted.set_defaults(func=command_record_self_hosted_metrics_ledger)
+
+    record_local_proxy = record_sub.add_parser(
+        "local-proxy-runtime-gate",
+        help="Append one localhost-only local proxy runtime-gate row without starting a proxy.",
+    )
+    record_local_proxy.add_argument("--input", help="Read a local_proxy JSON envelope from a file instead of CLI flags.")
+    record_local_proxy.add_argument("--bind-host", help="Advisory bind host; must be localhost/loopback.")
+    record_local_proxy.add_argument("--bind-port", default=None, help="Advisory bind port; 0 means unspecified/ephemeral.")
+    record_local_proxy.add_argument("--target-host", help="Advisory target host; must be localhost/loopback.")
+    record_local_proxy.add_argument("--target-port", default=None, help="Advisory target port; 0 means unspecified.")
+    record_local_proxy.add_argument("--upstream-url", help="Advisory upstream URL; host must be localhost/loopback.")
+    record_local_proxy.add_argument("--ledger-jsonl", required=True, help="Local JSONL ledger path to append the gate row.")
+    record_local_proxy.add_argument("--proxy-label", help="Safe label for this local proxy gate record.")
+    record_local_proxy.add_argument("--api-key", help="Blocked/redacted API key material; never persisted or emitted raw.")
+    record_local_proxy.add_argument("--authorization-header", help="Blocked/redacted Authorization header; never persisted or emitted raw.")
+    record_local_proxy.add_argument("--persist-api-key", action="store_true", help="Declare API-key persistence intent; blocked.")
+    record_local_proxy.add_argument(
+        "--external-forwarding-intent",
+        action="store_true",
+        help="Declare future external forwarding intent; blocked in this gate recorder.",
+    )
+    record_local_proxy.add_argument(
+        "--runtime-gate-ack",
+        action="store_true",
+        help="Acknowledge this is only a local gate record and any forwarding needs a separate runtime gate.",
+    )
+    record_local_proxy.add_argument("--json", action="store_true", help="Emit JSON output.")
+    record_local_proxy.set_defaults(func=command_record_local_proxy_runtime_gate)
 
     return parser
 

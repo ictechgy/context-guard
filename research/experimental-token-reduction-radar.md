@@ -1,6 +1,6 @@
 # Experimental Token-Reduction Radar
 
-ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** plus narrow **graduated local experiments** such as the explicit context-diff, visual evidence-pack, and self-hosted metrics runtimes. Later-roadmap lanes are not shipped runtime features, and nothing here is a hosted API savings claim.
+ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** plus narrow **graduated local experiments** such as the explicit context-diff, visual evidence-pack, learned-candidate, self-hosted metrics, and local proxy gate-record runtimes. Later-roadmap lanes are not shipped runtime features, and nothing here is a hosted API savings claim.
 
 ## Non-claims
 
@@ -66,9 +66,9 @@ Future PR checklist:
 
 ### Opt-in local proxy constraints gate
 
-Local proxy constraints are opt-in and local-only. They must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
+Local proxy constraints are opt-in and local-only. The shipped gate recorder is record-only; any future proxy behavior must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
 
-A future proxy-related PR must show configuration that keeps external forwarding disabled unless the user explicitly opts in, must preserve privacy/reversibility expectations, and must not convert local proxy metrics into hosted API token/cost savings without provider-measured evidence.
+A future proxy-forwarding PR must show configuration that keeps external forwarding disabled unless the user explicitly opts in, must preserve privacy/reversibility expectations, and must not convert local proxy metrics into hosted API token/cost savings without provider-measured evidence.
 
 Future PR checklist:
 - [ ] Require explicit opt-in before any local proxy behavior is enabled.
@@ -78,6 +78,12 @@ Future PR checklist:
 - [ ] Record shifted-cost accounting for local services, subagents, model servers, and proxy infrastructure.
 - [ ] Make no hosted API token/cost savings claim from proxy byte reductions, cache hits, or local latency alone.
 
+
+## Graduated local experiment — local proxy runtime-gate recorder
+
+`context-guard experiments record local-proxy-runtime-gate --ledger-jsonl ...` is the explicit local runtime promoted from the local proxy constraints gate. It appends one local JSONL gate row only after localhost-only bind/target/upstream metadata and explicit `--runtime-gate-ack` pass. It starts no listener, forwards no traffic, performs no DNS lookup, persists no API keys, calls no external services, and makes no hosted API token/cost savings claim.
+
+Broader local proxy forwarding remains gated if it would bind sockets, process request or Authorization headers, forward traffic, call external services, persist secrets, or claim provider savings.
 
 ## Graduated local experiment — context-diff compaction emitter
 

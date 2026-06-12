@@ -1133,16 +1133,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("hosted API token/cost savings", self_hosted["evidence_contract"])
 
                         local_proxy = experiments["local-proxy"]
-                        self.assertEqual(local_proxy["runtime_status"], "available-dry-run")
+                        self.assertEqual(local_proxy["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan local-proxy", local_proxy["commands"])
+                        self.assertIn(
+                            "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
+                            local_proxy["commands"],
+                        )
                         self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
+                        self.assertIn("record local-proxy-runtime-gate", local_proxy["opt_in_flags"])
                         self.assertIn("--bind-host", local_proxy["opt_in_flags"])
                         self.assertIn("--target-host", local_proxy["opt_in_flags"])
+                        self.assertIn("--ledger-jsonl", local_proxy["opt_in_flags"])
                         self.assertIn("--runtime-gate-ack", local_proxy["opt_in_flags"])
                         self.assertIn("--external-forwarding-intent", local_proxy["opt_in_flags"])
                         self.assertIn("--persist-api-key", local_proxy["opt_in_flags"])
-                        self.assertIn("dry-run", local_proxy["config_effect"])
-                        self.assertIn("does not bind sockets", local_proxy["config_effect"])
+                        self.assertIn("explicit record command", local_proxy["config_effect"])
+                        self.assertIn("do not bind sockets", local_proxy["config_effect"])
                         self.assertIn("forward traffic", local_proxy["config_effect"])
                         self.assertIn("API-key persistence", local_proxy["evidence_contract"])
 
@@ -3990,6 +3996,330 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 for host in ("0.0.0.0", "example.com", "192.168.1.10"):
                     self.assertFalse(module.is_localhost_host(host))
 
+    def assert_local_proxy_gate_row_has_no_runtime_actions(self, row):
+        self.assertFalse(row["policy"]["listener_started"])
+        self.assertFalse(row["policy"]["traffic_forwarded"])
+        self.assertFalse(row["policy"]["dns_lookup_attempted"])
+        self.assertFalse(row["policy"]["api_key_persisted"])
+        self.assertFalse(row["policy"]["hidden_external_forwarding"])
+        self.assertFalse(row["network_actions"]["listener_started"])
+        self.assertFalse(row["network_actions"]["outbound_forwarding_attempted"])
+        self.assertFalse(row["network_actions"]["dns_lookup_attempted"])
+        self.assertFalse(row["network_actions"]["external_services_called"])
+        self.assertFalse(row["api_key_persistence"]["performed"])
+        self.assertFalse(row["forwarding"]["hidden_external_forwarding"])
+        self.assertFalse(row["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+        self.assertFalse(row["claim_boundary"]["hosted_api_cost_savings_claim_allowed"])
+
+    def test_experimental_local_proxy_runtime_gate_record(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    ledger = root / ".context-guard" / "local-proxy-gates.jsonl"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--bind-host",
+                            "localhost",
+                            "--bind-port",
+                            "8765",
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            "8787",
+                            "--proxy-label",
+                            "local dev proxy",
+                            "--runtime-gate-ack",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "local-proxy")
+                    self.assertEqual(payload["mode"], "record")
+                    self.assertEqual(payload["status"], "recorded")
+                    self.assertTrue(payload["policy"]["runtime_gate_record_only"])
+                    self.assertTrue(payload["policy"]["runtime_gate_recorded"])
+                    self.assertFalse(payload["policy"]["listener_started"])
+                    self.assertFalse(payload["policy"]["traffic_forwarded"])
+                    self.assertFalse(payload["network_actions"]["listener_started"])
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                    self.assertFalse(payload["network_actions"]["external_services_called"])
+                    self.assertFalse(payload["api_key_persistence"]["performed"])
+                    self.assertFalse(payload["forwarding"]["hidden_external_forwarding"])
+                    self.assertTrue(payload["ledger_jsonl"]["write_performed"])
+                    self.assertEqual(payload["ledger_preview"]["schema_version"], "contextguard.experiments.local-proxy-gate.v1")
+                    self.assert_local_proxy_gate_row_has_no_runtime_actions(payload["ledger_preview"])
+                    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    self.assertEqual(len(rows), 1)
+                    row = rows[0]
+                    self.assertEqual(row["schema_version"], "contextguard.experiments.local-proxy-gate.v1")
+                    self.assertEqual(row["bind"]["host"], "localhost")
+                    self.assertEqual(row["target"]["host"], "127.0.0.1")
+                    self.assert_local_proxy_gate_row_has_no_runtime_actions(row)
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                with tempfile.TemporaryDirectory() as tmp:
+                    ledger = Path(tmp) / "gates.jsonl"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--target-host",
+                            "::1",
+                            "--runtime-gate-ack",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=ROOT,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "recorded")
+                    self.assertEqual(payload["ledger_preview"]["schema_version"], "contextguard.experiments.local-proxy-gate.v1")
+                    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    self.assertEqual(len(rows), 1)
+                    self.assert_local_proxy_gate_row_has_no_runtime_actions(rows[0])
+
+                    blocked_ledger = Path(tmp) / f"blocked-{dispatcher.name}.jsonl"
+                    blocked = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--ledger-jsonl",
+                            str(blocked_ledger),
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--target-host",
+                            "127.0.0.1",
+                            "--api-key",
+                            "sk-ant-secret-secret-secret",
+                            "--runtime-gate-ack",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=ROOT,
+                    )
+                    self.assertEqual(blocked.returncode, 1)
+                    blocked_payload = json.loads(blocked.stdout)
+                    self.assertEqual(blocked_payload["status"], "blocked_until_local_proxy_gate_ready")
+                    self.assertIn("api_key_material_provided", blocked_payload["review_plan"]["readiness_blockers"])
+                    self.assertFalse(blocked_payload["ledger_jsonl"]["write_performed"])
+                    self.assertFalse(blocked_ledger.exists())
+                    self.assertNotIn("sk-ant-secret", blocked.stdout + blocked.stderr)
+
+                    symlink_target = Path(tmp) / f"target-{dispatcher.name}.jsonl"
+                    symlink_target.write_text("", encoding="utf-8")
+                    symlink_ledger = Path(tmp) / f"ledger-link-{dispatcher.name}.jsonl"
+                    symlink_ledger.symlink_to(symlink_target)
+                    symlink_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--ledger-jsonl",
+                            str(symlink_ledger),
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--target-host",
+                            "127.0.0.1",
+                            "--runtime-gate-ack",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=ROOT,
+                    )
+                    self.assertEqual(symlink_proc.returncode, 2)
+                    self.assertEqual(symlink_target.read_text(encoding="utf-8"), "")
+                    self.assertNotIn("Traceback", symlink_proc.stdout + symlink_proc.stderr)
+
+    def test_experimental_local_proxy_runtime_gate_blocks_false_ack_from_input_json(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    input_json = root / "local-proxy.json"
+                    input_json.write_text(
+                        json.dumps({
+                            "local_proxy": {
+                                "bind_host": "127.0.0.1",
+                                "target_host": "127.0.0.1",
+                                "runtime_gate_ack": "false",
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                    ledger = root / "gates.jsonl"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--input",
+                            str(input_json),
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "blocked_until_local_proxy_gate_ready")
+                    self.assertFalse(payload["policy"]["runtime_gate_acknowledged"])
+                    self.assertIn("missing_runtime_gate_ack", payload["review_plan"]["readiness_blockers"])
+                    self.assertNotIn("invalid_runtime_gate_ack", payload["review_plan"]["readiness_blockers"])
+                    self.assertFalse(payload["ledger_jsonl"]["write_performed"])
+                    self.assertFalse(ledger.exists())
+
+    def test_experimental_local_proxy_runtime_gate_rejects_symlink_ledger(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    target = root / "target.jsonl"
+                    target.write_text("", encoding="utf-8")
+                    ledger = root / "ledger-link.jsonl"
+                    ledger.symlink_to(target)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "record",
+                            "local-proxy-runtime-gate",
+                            "--ledger-jsonl",
+                            str(ledger),
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--target-host",
+                            "127.0.0.1",
+                            "--runtime-gate-ack",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("local proxy runtime gate ledger", proc.stderr)
+                    self.assertEqual(target.read_text(encoding="utf-8"), "")
+                    self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+
+    def test_experimental_local_proxy_runtime_gate_blocks_unsafe_inputs(self):
+        cases = [
+            (
+                "missing_ack",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1"],
+                "missing_runtime_gate_ack",
+                (),
+            ),
+            (
+                "non_local_bind",
+                ["--bind-host", "0.0.0.0", "--target-host", "127.0.0.1", "--runtime-gate-ack"],
+                "non_localhost_bind_host",
+                (),
+            ),
+            (
+                "non_local_target",
+                ["--bind-host", "127.0.0.1", "--target-host", "example.com", "--runtime-gate-ack"],
+                "non_localhost_target_host",
+                (),
+            ),
+            (
+                "non_local_upstream",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--upstream-url", "https://example.com/path", "--runtime-gate-ack"],
+                "non_localhost_upstream_url",
+                (),
+            ),
+            (
+                "invalid_bind_port",
+                ["--bind-host", "127.0.0.1", "--bind-port", "not-a-port", "--target-host", "127.0.0.1", "--runtime-gate-ack"],
+                "invalid_bind_port",
+                (),
+            ),
+            (
+                "api_key",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--api-key", "sk-ant-secret-secret-secret", "--runtime-gate-ack"],
+                "api_key_material_provided",
+                ("sk-ant-secret",),
+            ),
+            (
+                "persist_api_key",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--persist-api-key", "--runtime-gate-ack"],
+                "api_key_persistence_requested",
+                (),
+            ),
+            (
+                "external_forwarding",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--external-forwarding-intent", "--runtime-gate-ack"],
+                "external_forwarding_intent_not_allowed",
+                (),
+            ),
+            (
+                "secret_like_proxy_label",
+                ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--proxy-label", "api_key: my_precious_value_123", "--runtime-gate-ack"],
+                "secret_like_proxy_metadata",
+                ("my_precious_value_123",),
+            ),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, args, blocker, secret_fragments in cases:
+                with self.subTest(script=script, case=name):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ledger = Path(tmp) / "gates.jsonl"
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "record",
+                                "local-proxy-runtime-gate",
+                                "--ledger-jsonl",
+                                str(ledger),
+                                *args,
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_gate_ready")
+                        self.assertFalse(payload["ledger_jsonl"]["write_performed"])
+                        self.assertIsNone(payload["ledger_record"])
+                        self.assertFalse(ledger.exists())
+                        self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
+                        self.assertFalse(payload["network_actions"]["listener_started"])
+                        self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                        self.assertFalse(payload["api_key_persistence"]["performed"])
+                        for secret_fragment in secret_fragments:
+                            self.assertNotIn(secret_fragment, proc.stdout + proc.stderr)
+
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -4023,6 +4353,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             KIT_DIR / "README.md",
             ROOT / "docs" / "index.html",
         )
+        boundary_docs = docs + (
+            ROOT / "CHANGELOG.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
         for doc in docs:
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8").lower()
@@ -4034,6 +4368,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"api[- ]?key|api key")
                 self.assertNotIn("actual proxy forwarding runtime is shipped", text)
                 self.assertNotIn("persists api keys", text)
+        for doc in boundary_docs:
+            with self.subTest(boundary_doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                self.assertRegex(text, r"local proxy|local-proxy")
+                self.assertRegex(text, r"record local-proxy-runtime-gate|local-proxy-runtime-gate|gate record|gate row")
+                self.assertRegex(text, r"localhost-only|localhost")
+                self.assertRegex(text, r"listener|traffic forwarding|forwarding")
+                self.assertRegex(text, r"dns lookup|dns")
+                self.assertRegex(text, r"external service")
+                self.assertRegex(text, r"api[- ]?key|api key")
+                self.assertRegex(text, r"hosted.*savings|hosted api 절감")
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
