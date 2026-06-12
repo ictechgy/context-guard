@@ -1192,6 +1192,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
                             local_proxy["commands"],
                         )
+                        self.assertIn(
+                            "context-guard experiments serve local-proxy --diagnostic-ledger-jsonl <path> ...",
+                            local_proxy["commands"],
+                        )
                         self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
                         self.assertIn("record local-proxy-runtime-gate", local_proxy["opt_in_flags"])
                         self.assertIn("serve local-proxy", local_proxy["opt_in_flags"])
@@ -1203,6 +1207,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("--once", local_proxy["opt_in_flags"])
                         self.assertIn("--max-request-bytes", local_proxy["opt_in_flags"])
                         self.assertIn("--max-response-bytes", local_proxy["opt_in_flags"])
+                        self.assertIn("--diagnostic-ledger-jsonl", local_proxy["opt_in_flags"])
                         self.assertIn("--external-forwarding-intent", local_proxy["opt_in_flags"])
                         self.assertIn("--persist-api-key", local_proxy["opt_in_flags"])
                         self.assertIn("explicit commands", local_proxy["config_effect"])
@@ -4448,7 +4453,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
                     self.assertFalse(payload["network_actions"]["external_services_called"])
                     self.assertTrue(payload["network_actions"]["outbound_forwarding_attempted"])
-                    self.assertEqual(payload["forward_result"]["request_target"], "/hello?name=contextguard")
+                    self.assertEqual(
+                        payload["forward_result"]["request_target_sha256"],
+                        hashlib.sha256(b"/hello?name=contextguard").hexdigest(),
+                    )
+                    self.assertEqual(payload["forward_result"]["request_target_bytes"], len(b"/hello?name=contextguard"))
+                    self.assertNotIn("request_target", payload["forward_result"])
                     self.assertTrue(payload["forward_result"]["forwarded"])
                     self.assertEqual(payload["forward_result"]["upstream_status"], 200)
                     self.assertNotIn("authorization", seen_requests[-1]["headers"])
@@ -5035,6 +5045,273 @@ class ClaudeTokenKitTests(unittest.TestCase):
             upstream.server_close()
             upstream_thread.join(timeout=5)
 
+    def test_experimental_local_proxy_serve_writes_forwarding_diagnostic_ledger(self):
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                body = b"diagnostic ok"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script, case="success_row"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        long_name = "diagnostics-" + ("x" * 130) + ".jsonl"
+                        ledger = Path(tmp) / long_name
+                        target_path = "/diagnostic-row?marker=raw-target"
+                        proxy_port = reserve_loopback_port()
+                        proc = subprocess.Popen(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, _headers = request_loopback_with_retries(proxy_port, target_path)
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 0, stdout + stderr)
+                        self.assertEqual(status, 200)
+                        self.assertEqual(body, b"diagnostic ok")
+                        payload = json.loads(stdout)
+                        self.assertEqual(payload["status"], "served_once")
+                        self.assertTrue(payload["diagnostic_ledger"]["write_requested"])
+                        self.assertTrue(payload["diagnostic_ledger"]["write_performed"])
+                        self.assertGreater(payload["diagnostic_ledger"]["bytes_written"], 0)
+                        self.assertEqual(
+                            payload["diagnostic_ledger"]["path_sha256"],
+                            hashlib.sha256(str(ledger).encode("utf-8")).hexdigest(),
+                        )
+                        self.assertTrue(ledger.exists())
+                        self.assertNotIn("request_target", payload["forward_result"])
+                        rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+                        self.assertEqual(len(rows), 1)
+                        row = rows[0]
+                        self.assertEqual(row["schema_version"], "contextguard.experiments.local-proxy-forward-diagnostic.v1")
+                        self.assertEqual(row["experiment_id"], "local-proxy")
+                        self.assertEqual(row["mode"], "serve")
+                        self.assertEqual(row["bind"]["host"], "127.0.0.1")
+                        self.assertEqual(row["target"]["host"], "127.0.0.1")
+                        self.assertEqual(row["request"]["method"], "GET")
+                        self.assertEqual(
+                            row["request"]["target_sha256"],
+                            hashlib.sha256(target_path.encode("utf-8")).hexdigest(),
+                        )
+                        self.assertEqual(row["request"]["target_bytes"], len(target_path.encode("utf-8")))
+                        self.assertFalse(row["request"]["headers_persisted"])
+                        self.assertFalse(row["request"]["body_persisted"])
+                        self.assertFalse(row["request"]["credential_material_forwarded"])
+                        self.assertFalse(row["response"]["body_persisted"])
+                        self.assertEqual(row["response"]["upstream_status"], 200)
+                        self.assertEqual(row["response"]["upstream_response_bytes"], len(b"diagnostic ok"))
+                        self.assertTrue(row["shifted_cost_accounting"]["required"])
+                        self.assertTrue(row["shifted_cost_accounting"]["diagnostic_only"])
+                        self.assertFalse(row["policy"]["hosted_api_token_savings_claim_allowed"])
+                        self.assertFalse(row["policy"]["hosted_api_cost_savings_claim_allowed"])
+                        serialized = json.dumps(row, sort_keys=True)
+                        self.assertNotIn("/diagnostic-row", serialized)
+                        self.assertNotIn("raw-target", serialized)
+                        self.assertNotIn("sk-ant", serialized)
+                        self.assertNotIn("Authorization: Bearer", serialized)
+                        self.assertNotIn("session=", serialized)
+                        self.assertNotIn("/diagnostic-row", stdout + stderr)
+                        self.assertNotIn("raw-target", stdout + stderr)
+
+                with self.subTest(script=script, case="blocked_request_no_row"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ledger = Path(tmp) / "diagnostics.jsonl"
+                        proxy_port = reserve_loopback_port()
+                        proc = subprocess.Popen(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, _headers = request_loopback_with_retries(
+                                proxy_port,
+                                "/blocked-ledger",
+                                headers={"Authorization": "Bearer sk-ant-secret-secret-secret"},
+                            )
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 1)
+                        self.assertEqual(status, 403)
+                        self.assertIn(b"sensitive_request_headers_blocked", body)
+                        payload = json.loads(stdout)
+                        self.assertFalse(payload["diagnostic_ledger"]["write_performed"])
+                        self.assertEqual(payload["diagnostic_ledger"]["reason"], "not_forwarded")
+                        self.assertFalse(ledger.exists())
+                        self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+                with self.subTest(script=script, case="startup_blocked_no_row"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ledger = Path(tmp) / "diagnostics.jsonl"
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                "8765",
+                                "--target-host",
+                                "localhost",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_forwarding_ready")
+                        self.assertFalse(payload["diagnostic_ledger"]["write_performed"])
+                        self.assertEqual(payload["diagnostic_ledger"]["reason"], "not_forwarded")
+                        self.assertFalse(ledger.exists())
+
+                with self.subTest(script=script, case="symlink_ledger_rejected"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        target = root / "target.jsonl"
+                        ledger = root / "diagnostics.jsonl"
+                        ledger.symlink_to(target)
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(reserve_loopback_port()),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_forwarding_ready")
+                        self.assertIn("diagnostic_ledger_preflight_failed", payload["review_plan"]["readiness_blockers"])
+                        self.assertFalse(payload["diagnostic_ledger"]["write_performed"])
+                        self.assertEqual(payload["diagnostic_ledger"]["reason"], "preflight_failed")
+                        self.assertFalse(payload["network_actions"]["listener_started"])
+                        self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                        self.assertFalse(target.exists())
+                        self.assertTrue(ledger.is_symlink())
+                        self.assertNotIn("_diagnostic_ledger_write_path", payload)
+                        self.assertRegex(proc.stdout + proc.stderr, r"must not be a symlink|must be a regular file")
+
+                with self.subTest(script=script, case="directory_ledger_rejected"):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ledger = Path(tmp) / "ledger-dir"
+                        ledger.mkdir()
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(reserve_loopback_port()),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_forwarding_ready")
+                        self.assertIn("diagnostic_ledger_preflight_failed", payload["review_plan"]["readiness_blockers"])
+                        self.assertEqual(payload["diagnostic_ledger"]["reason"], "preflight_failed")
+                        self.assertFalse(payload["network_actions"]["listener_started"])
+                        self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                        self.assertTrue(ledger.is_dir())
+                        self.assertNotIn("_diagnostic_ledger_write_path", payload)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -5094,6 +5371,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"external service")
                 self.assertRegex(text, r"api[- ]?key|api key")
                 self.assertRegex(text, r"connect|tls")
+                self.assertRegex(text, r"diagnostic|진단")
+                self.assertRegex(text, r"shifted[- ]cost|shifted cost|비용")
+                self.assertRegex(text, r"successful .*forwarded|successful-forward|successful forwarded request|성공")
+                self.assertRegex(text, r"raw headers?|raw bodies|raw header/body|request bodies|response bodies|원문 header|원문 body")
                 self.assertRegex(text, r"hosted.*savings|hosted api 절감")
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):

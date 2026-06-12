@@ -59,6 +59,7 @@ MAX_SELF_HOSTED_JSON_NODES = 10_000
 LOCAL_PROXY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-plan.v1"
 LOCAL_PROXY_GATE_SCHEMA_VERSION = "contextguard.experiments.local-proxy-gate.v1"
 LOCAL_PROXY_FORWARD_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward.v1"
+LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward-diagnostic.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
@@ -329,6 +330,7 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "context-guard experiments plan local-proxy",
             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
             "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
+            "context-guard experiments serve local-proxy --diagnostic-ledger-jsonl <path> ...",
         ),
         opt_in_flags=(
             "plan local-proxy",
@@ -345,6 +347,7 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--once",
             "--max-request-bytes",
             "--max-response-bytes",
+            "--diagnostic-ledger-jsonl",
             "--external-forwarding-intent",
             "--persist-api-key",
         ),
@@ -356,7 +359,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         evidence_contract=(
             "Gate rows require localhost-only bind/target metadata and explicit runtime gate acknowledgement. Serve "
             "evidence requires loopback-only bind/target IPs, explicit forwarding acknowledgement, no credential "
-            "forwarding or persistence, bounded bytes/timeouts, and shifted-cost accounting boundaries."
+            "forwarding or persistence, bounded bytes/timeouts, and optional diagnostic ledger rows that remain "
+            "shifted-cost evidence only."
         ),
     ),
 )
@@ -716,6 +720,53 @@ def append_jsonl_no_follow(path: Path, payload: dict[str, Any], *, label: str) -
             os.fsync(parent_fd)
         except OSError:
             pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+
+
+def preflight_append_jsonl_no_follow(path: Path, *, label: str) -> None:
+    """Validate that a JSONL append target is no-follow appendable before side effects."""
+    path = normalize_local_path(path)
+    parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent", create=True)
+    if parent_fd is None:  # pragma: no cover - create=True never returns None.
+        raise RegistryError(f"could not inspect {label} parent")
+    fd = -1
+    temp_leaf: str | None = None
+    try:
+        leaf = _leaf_name(path, label=label)
+        exists = _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
+        if exists:
+            fd = os.open(leaf, _append_file_open_flags(label=label), 0o600, dir_fd=parent_fd)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise RegistryError(f"{label} must be a regular file")
+            return
+        for _attempt in range(20):
+            candidate = _leaf_name(Path(f".{leaf}.{os.getpid()}.{secrets.token_hex(8)}.preflight"), label=f"{label} preflight")
+            try:
+                fd = os.open(candidate, _temp_file_open_flags(label=f"{label} preflight"), 0o600, dir_fd=parent_fd)
+                temp_leaf = candidate
+                break
+            except FileExistsError:
+                continue
+        if fd < 0 or temp_leaf is None:
+            raise RegistryError(f"could not create temporary {label} preflight")
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RegistryError(f"{label} preflight temp must be a regular file")
+    except OSError as exc:
+        raise RegistryError(f"could not append {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp_leaf is not None:
+            try:
+                os.unlink(temp_leaf, dir_fd=parent_fd)
+            except OSError:
+                pass
         try:
             os.close(parent_fd)
         except OSError:
@@ -2192,6 +2243,15 @@ def local_proxy_bytes_secret_like(value: bytes) -> bool:
     return local_proxy_secret_like(value.decode("utf-8", errors="replace"))
 
 
+def local_proxy_request_target_meta(value: Any) -> dict[str, Any]:
+    text = "" if value is None else str(value)
+    raw = text.encode("utf-8", errors="replace")
+    return {
+        "request_target_sha256": hashlib.sha256(raw).hexdigest(),
+        "request_target_bytes": len(raw),
+    }
+
+
 def is_localhost_host(value: Any) -> bool:
     if not isinstance(value, str):
         return False
@@ -2334,6 +2394,7 @@ def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], 
         "max_request_bytes",
         "max_response_bytes",
         "timeout_seconds",
+        "diagnostic_ledger_jsonl",
     }
     ignored.extend(sanitize_self_hosted_ignored_key(key) for key in envelope if key not in allowed)
     return dict(envelope), {
@@ -2715,6 +2776,14 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
     timeout_seconds, timeout_valid = normalize_local_proxy_timeout(
         coalesce_local_proxy_value(args, input_payload, "timeout_seconds", "timeout_seconds")
     )
+    diagnostic_ledger_raw = coalesce_local_proxy_value(
+        args,
+        input_payload,
+        "diagnostic_ledger_jsonl",
+        "diagnostic_ledger_jsonl",
+    )
+    diagnostic_ledger_path = sanitize_local_proxy_value(diagnostic_ledger_raw) if diagnostic_ledger_raw else None
+    diagnostic_ledger_write_path = str(diagnostic_ledger_raw) if diagnostic_ledger_raw else None
     bind_host = payload["bind"]["host"]
     target_host = payload["target"]["host"]
     bind_ip_literal = is_loopback_ip_literal(bind_host)
@@ -2760,9 +2829,21 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "max_response_bytes": max_response_bytes,
         "timeout_seconds": timeout_seconds,
     }
+    payload["diagnostic_ledger"] = {
+        "schema_version": LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION,
+        "path": diagnostic_ledger_path,
+        "path_sha256": hashlib.sha256(str(diagnostic_ledger_raw).encode("utf-8", errors="replace")).hexdigest() if diagnostic_ledger_raw else None,
+        "write_requested": bool(diagnostic_ledger_raw),
+        "write_performed": False,
+        "bytes_written": 0,
+        "reason": None if diagnostic_ledger_raw else "not_requested",
+    }
+    payload["_diagnostic_ledger_write_path"] = diagnostic_ledger_write_path
     payload["forward_result"] = None
 
     blockers = list(payload["review_plan"]["readiness_blockers"])
+    if diagnostic_ledger_raw is not None and local_proxy_secret_like(diagnostic_ledger_raw):
+        blockers.append("secret_like_diagnostic_ledger_path")
     if not payload["policy"]["runtime_gate_acknowledged"]:
         blockers.append("missing_runtime_gate_ack")
     if not forwarding_gate_ack_valid:
@@ -2798,6 +2879,84 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
     ]
     payload["status"] = "ready_to_serve" if not blockers else "blocked_until_local_proxy_forwarding_ready"
     return payload
+
+
+def local_proxy_forward_diagnostic_row(payload: dict[str, Any]) -> dict[str, Any]:
+    result = payload.get("forward_result") or {}
+    return {
+        "schema_version": LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION,
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "experiment_id": "local-proxy",
+        "mode": "serve",
+        "proxy_label": payload["ledger_preview"]["proxy_label"],
+        "bind": payload["bind"],
+        "target": {
+            "host": payload["target"]["host"],
+            "port": payload["target"]["port"],
+            "localhost_only": payload["target"]["localhost_only"],
+        },
+        "request": {
+            "method": result.get("request_method"),
+            "target_sha256": result.get("request_target_sha256"),
+            "target_bytes": result.get("request_target_bytes", 0),
+            "body_bytes": result.get("inbound_request_bytes", 0),
+            "headers_persisted": False,
+            "body_persisted": False,
+            "credential_material_forwarded": False,
+        },
+        "response": {
+            "upstream_status": result.get("upstream_status"),
+            "upstream_response_bytes": result.get("upstream_response_bytes", 0),
+            "body_persisted": False,
+        },
+        "runtime_limits": payload["runtime_limits"],
+        "network_actions": payload["network_actions"],
+        "policy": {
+            "localhost_only": True,
+            "literal_loopback_ip_only": True,
+            "forwarded": bool(result.get("forwarded")),
+            "api_key_persisted": False,
+            "hidden_external_forwarding": False,
+            "external_services_called": False,
+            "dns_lookup_attempted": False,
+            "connect_tunneling_allowed": False,
+            "https_mitm_allowed": False,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+        },
+        "shifted_cost_accounting": {
+            "required": True,
+            "local_proxy_request": True,
+            "diagnostic_only": True,
+            "provider_measured_matched_tasks_required_for_hosted_claims": True,
+        },
+        "claim_boundary": {
+            "id": "local_proxy_forward_diagnostic_not_hosted_savings",
+            "reason": "This row records one explicit literal-loopback forwarded request as shifted-cost diagnostic evidence only.",
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+        },
+    }
+
+
+def maybe_write_local_proxy_forward_diagnostic(payload: dict[str, Any]) -> None:
+    ledger = payload.get("diagnostic_ledger")
+    if not isinstance(ledger, dict) or not ledger.get("write_requested"):
+        return
+    if payload.get("status") != "served_once" or not (payload.get("forward_result") or {}).get("forwarded"):
+        if ledger.get("reason") != "preflight_failed":
+            ledger["reason"] = "not_forwarded"
+        return
+    row = local_proxy_forward_diagnostic_row(payload)
+    write_path = payload.get("_diagnostic_ledger_write_path")
+    if not write_path:
+        ledger["reason"] = "not_requested"
+        return
+    bytes_written = append_jsonl_no_follow(Path(str(write_path)), row, label="local proxy forwarding diagnostic ledger")
+    ledger["write_performed"] = True
+    ledger["bytes_written"] = bytes_written
+    ledger["reason"] = None
+    ledger["row_preview"] = row
 
 
 def local_proxy_has_sensitive_headers(headers: Any) -> list[str]:
@@ -2849,7 +3008,8 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
         "blocked_reason": None,
         "forward_attempted": False,
         "request_method": None,
-        "request_target": None,
+        "request_target_sha256": None,
+        "request_target_bytes": 0,
         "inbound_request_bytes": 0,
         "upstream_status": None,
         "upstream_response_bytes": 0,
@@ -2883,7 +3043,7 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
 
         def do_CONNECT(self) -> None:
             server_result["request_method"] = "CONNECT"
-            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            server_result.update(local_proxy_request_target_meta(self.path))
             finish_blocked(self, 405, "connect_tunneling_not_allowed")
 
         def do_HEAD(self) -> None:
@@ -2903,7 +3063,7 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
 
         def block_method(self) -> None:
             server_result["request_method"] = self.command
-            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            server_result.update(local_proxy_request_target_meta(self.path))
             finish_blocked(self, 405, "method_not_allowed")
 
         def do_DELETE(self) -> None:
@@ -2917,7 +3077,7 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
 
         def forward_request(self) -> None:
             server_result["request_method"] = self.command
-            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            server_result.update(local_proxy_request_target_meta(self.path))
             if local_proxy_secret_like(self.path):
                 finish_blocked(self, 400, "secret_like_request_target")
                 return
@@ -3013,6 +3173,18 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
 
 def command_serve_local_proxy(args: argparse.Namespace) -> int:
     payload = local_proxy_forward_payload(args)
+    diagnostic_ledger = payload.get("diagnostic_ledger") if isinstance(payload.get("diagnostic_ledger"), dict) else {}
+    if payload["status"] == "ready_to_serve" and diagnostic_ledger.get("write_requested"):
+        try:
+            preflight_append_jsonl_no_follow(
+                Path(str(payload.get("_diagnostic_ledger_write_path"))),
+                label="local proxy forwarding diagnostic ledger",
+            )
+        except RegistryError as exc:
+            payload["status"] = "blocked_until_local_proxy_forwarding_ready"
+            payload["review_plan"]["readiness_blockers"].append("diagnostic_ledger_preflight_failed")
+            diagnostic_ledger["reason"] = "preflight_failed"
+            diagnostic_ledger["error"] = sanitize_local_proxy_value(str(exc))
     if payload["status"] == "ready_to_serve":
         payload["network_actions"]["listener_started"] = True
         result = serve_local_proxy_once(payload)
@@ -3023,6 +3195,8 @@ def command_serve_local_proxy(args: argparse.Namespace) -> int:
         payload["policy"]["listener_started"] = True
         payload["policy"]["traffic_forwarded"] = bool(result["forwarded"])
         payload["status"] = "served_once" if result["forwarded"] else "blocked_request"
+    maybe_write_local_proxy_forward_diagnostic(payload)
+    payload.pop("_diagnostic_ledger_write_path", None)
     if args.json:
         emit_json(payload)
     else:
@@ -3768,6 +3942,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve_local_proxy.add_argument("--target-port", default=None, help="Target port; must be a nonzero explicit port for forwarding.")
     serve_local_proxy.add_argument("--upstream-url", help="Optional upstream URL; host must be a literal loopback IP for serving.")
     serve_local_proxy.add_argument("--proxy-label", help="Safe label for this local proxy serve run.")
+    serve_local_proxy.add_argument(
+        "--diagnostic-ledger-jsonl",
+        help="Append one shifted-cost diagnostic JSONL row only after a successful loopback forwarded request.",
+    )
     serve_local_proxy.add_argument("--api-key", help="Blocked/redacted API key material; never persisted or emitted raw.")
     serve_local_proxy.add_argument("--authorization-header", help="Blocked/redacted Authorization header; never persisted or emitted raw.")
     serve_local_proxy.add_argument("--persist-api-key", action="store_true", help="Declare API-key persistence intent; blocked.")
