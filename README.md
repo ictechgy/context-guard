@@ -1,13 +1,13 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships as a Claude Code plugin first — install once, apply per project, reverse if needed. Guardrails cover trimmed output, symbol-level reads, repeated-failure nudges, secret-pattern redaction, and usage measurement, then extend to other agents through local helper commands and advisory brief-mode rule snippets.
+ContextGuard is a local-first context management toolkit for AI coding and tool agents. It starts as a Claude Code plugin: install once, apply per project, and roll back when needed. Its guardrails trim noisy output, prefer symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
-Install and activation are separate. Installing ContextGuard only puts local helpers or Claude plugin skills in reach; configuration changes happen later through an explicit setup command.
+Install and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available; configuration changes happen later through an explicit setup command.
 
 | If you use... | Install | Activate |
 | --- | --- | --- |
@@ -27,13 +27,13 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups/rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; doctor only reports next commands and makes no changes.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; `doctor` reports next commands and makes no changes.
 
-ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure real before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
+ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
 ## Claude Code first, other agents too
 
-ContextGuard ships as a Claude Code plugin, and that is still the fastest path to value. Once installed, the same local-first guardrails can be reused by other AI coding and tool agents through:
+ContextGuard ships first as a Claude Code plugin, which is still the fastest path to value. After installation, the same local-first guardrails can be reused by other AI coding and tool agents through:
 
 - **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
 - **Advisory brief-mode rule snippets** you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
@@ -54,7 +54,7 @@ Current setup surfaces:
 
 ## How ContextGuard reduces token waste
 
-ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether that helped.
+ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
 
 | Waste path | ContextGuard guardrail |
 | --- | --- |
@@ -69,21 +69,21 @@ ContextGuard does not make the model cheaper by itself. It reduces avoidable con
 
 ## How it fits with caching and compression tools
 
-ContextGuard is complementary to provider and semantic caches, and adjacent to prompt compression. It focuses on **not sending unnecessary files, logs, or output in the first place**.
+ContextGuard complements provider and semantic caches, and sits next to prompt compression. Its main job is simpler: **do not send unnecessary files, logs, or output in the first place**.
 
 | Tool category | Saves by | ContextGuard relationship |
 | --- | --- | --- |
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| Experimental planners and local runtimes | Reviewing local-proxy ideas with dry-run local and external-forwarding design plans, explicit gate records, and an explicit one-shot loopback forwarding MVP, alongside explicit local context-diff, visual evidence-pack, learned-compression candidate, and self-hosted metrics runtimes. | Default-off and explicit-command-only; local proxy `record` rows still start no listener and forward no traffic, while `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request with credential headers blocked. No compressor/model execution, generated compression, OCR/crop service, external forwarding, hostname DNS targets, credential persistence, or hosted-savings claim ships without separate evidence and future PR gates. |
+| Experimental planners and local runtimes | Reviewing local-proxy ideas with dry-run local plans, external-forwarding design plans, explicit gate records, and a one-shot loopback forwarding MVP. Related lanes cover explicit local context-diff, visual evidence-pack, learned-compression candidate, and self-hosted metrics runtimes. | Default-off and explicit-command-only. Local proxy `record` rows still start no listener and forward no traffic, while `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request with credential headers blocked. No compressor/model execution, generated compression, OCR/crop service, external forwarding, hostname DNS targets, credential persistence, or hosted-savings claim ships without separate evidence and future PR gates. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
 
 | Approach | What it emphasizes | ContextGuard relationship |
 | --- | --- | --- |
-| Compression-first | Shortening text already selected for the model, often with lossy transforms. | ContextGuard prefers local artifact storage with exact slice retrieval over lossy one-way compression; you can get the original back. |
+| Compression-first | Shortening text already selected for the model, often with lossy transforms. | ContextGuard prefers local artifact storage with exact slice retrieval over lossy one-way compression, so you can get the original back. |
 | Terse-output rulesets across agents | Installing brief-mode output rules into many agents at once. | ContextGuard offers advisory brief-mode snippets and dry-run cross-agent setup — opt-in per project, no guaranteed savings claimed. |
 | ContextGuard | Avoiding unnecessary files, logs, and output before they enter context, with conservative measurement. | Local guardrails, reversible artifacts and retrieval, and benchmark evidence you measure yourself. |
 
@@ -113,7 +113,8 @@ When you need a savings claim, measure it on your own tasks:
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
 - Local RAM/disk receipts can reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
-- Experimental helpers are mostly dry-run checker/planner surfaces, including a design-only external-forwarding opt-in gate, with explicit local runtimes only for caller-supplied context-diff replacement payloads, caller-supplied visual crop/OCR evidence packs, caller-supplied learned-compression prose candidates, self-hosted metrics JSONL sidecar records, local-proxy runtime-gate JSONL records, and one-shot `serve local-proxy` loopback forwarding plus optional shifted-cost diagnostic JSONL rows for successful forwarded requests. ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
+- Experimental helpers are mostly dry-run checker/planner surfaces, including a design-only external-forwarding opt-in gate. Explicit local runtimes exist only for caller-supplied context-diff replacement payloads, caller-supplied visual crop/OCR evidence packs, caller-supplied learned-compression prose candidates, self-hosted metrics JSONL sidecar records, local-proxy runtime-gate JSONL records, and one-shot `serve local-proxy` loopback forwarding plus optional shifted-cost diagnostic JSONL rows for successful forwarded requests.
+- ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
 Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin/` so existing automation can migrate gradually.
@@ -268,7 +269,19 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
-`context-guard-pack auto` is the one-command local-only path that runs the same suggestion step and immediately builds the budgeted Markdown pack; add `--explain` when you want compact deterministic local selection/build reasons in JSON or text output. `--explain` also includes bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints. This metadata does not change the manifest, pack body, receipt, or byte budget, does not use network/model/embedding calls, and treats token values as local `chars_div_4` proxies rather than provider-token or savings claims. `--manifest-out` remains a build-compatible manifest, while `--pack-out` can save the rendered pack. `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional `--output` / `--test-output` text files under `--root` after sanitizing those output signals, then writes a manifest that `build --manifest` can consume. It uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources, writes a bounded local receipt under `.context-guard/packs`, and includes copy-pasteable `slice` commands for exact sanitized retrieval when the path/root are safe to display. If retrieval is unsafe, the pack and JSON metadata include `retrieval_omitted_reason` instead of a command. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
+`context-guard-pack auto` is the one-command, local-only path: it runs the suggestion step and immediately builds the budgeted Markdown pack.
+
+A few boundaries are intentional:
+
+- Add `--explain` for compact deterministic local selection/build reasons in JSON or text output.
+- `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
+- Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
+- `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
+- `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
+- `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.
+- Bounded receipts are stored under `.context-guard/packs`. When path/root display is safe, JSON output includes copy-pasteable `slice` commands for exact sanitized retrieval; otherwise it records `retrieval_omitted_reason`.
+
+The packer uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
 
 ### Prune a tool/MCP catalog for a task
 
@@ -339,7 +352,15 @@ JSON
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts, so a corrupt trace cannot dominate memory or hide scan gaps. JSON output also includes `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes. The sibling `cache_layout_advice` field turns those signals into ranked **checks/experiments** such as splitting long sessions or stabilizing early prompt prefixes, while keeping observed issues separate from hypothesized or corroborated causes. `--feasibility-json` also includes a [`mac_visibility`](docs/mac-visibility-feasibility-schema.md) contract that local macOS-visible consumers can bind against; only stable top-level fields are designated binding targets, and `summary` is not a primary UI binding source. These fields can flag likely volatile content near the prompt prefix, stable-prefix candidates, cache-miss hypotheses, and TTL/headroom evidence gaps, but they do not print raw prompt text, do not prove provider cache hits, and may be `missing`, `partial`, `hypothesis`, or `unavailable` when transcript schemas do not expose enough evidence.
+The audit command skips oversized transcript files and JSONL records by default (`--max-file-bytes`, `--max-line-bytes`) and reports skipped counts. That keeps a corrupt trace from dominating memory or hiding scan gaps.
+
+JSON output can include several evidence surfaces:
+
+- `cache_friendliness` and [`cache_diagnostics`](docs/cache-diagnostics-schema.md): heuristic prompt-layout/cache-read diagnostics built from bounded usage fields, timestamped cache telemetry records, and redacted segment hashes.
+- `cache_layout_advice`: ranked **checks/experiments** such as splitting long sessions or stabilizing early prompt prefixes, with observed issues kept separate from hypothesized or corroborated causes.
+- `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): a contract for local macOS-visible consumers. Only stable top-level fields are binding targets; `summary` is not a primary UI binding source.
+
+These fields can flag likely volatile content near the prompt prefix, stable-prefix candidates, cache-miss hypotheses, and TTL/headroom evidence gaps. They do not print raw prompt text, do not prove provider cache hits, and may be `missing`, `partial`, `hypothesis`, or `unavailable` when transcript schemas do not expose enough evidence.
 
 ### Watch context and cache health in the statusline
 
@@ -392,7 +413,13 @@ context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
 ```
 
-The `plan local-proxy` example still produces advisory metadata only; it does not enable forwarding. The explicit `record local-proxy-runtime-gate` example appends one localhost-only gate row and still starts no listener, forwards no traffic, persists no API keys, and makes no hosted-savings claim. The explicit `serve local-proxy` MVP is separate: it requires both runtime and forwarding acknowledgements plus `--once`, binds only a literal loopback IP, forwards only to a literal loopback IP target, blocks credential-bearing requests, uses byte/time limits, uses literal IPs instead of hostname DNS targets, does not persist API keys, and does not support external forwarding, CONNECT/TLS proxying, or hosted-savings claims. When `--diagnostic-ledger-jsonl` is supplied, `serve` appends one shifted-cost diagnostic row only after a successful forwarded request; the row stores hashes/metadata rather than raw headers, request bodies, response bodies, or hosted-savings evidence. The separate `plan local-proxy-external-forwarding` command is a dry-run design gate only: it requires explicit external intent, design acknowledgement, HTTPS host allowlist, threat model notes, credential redaction policy, and provider-evidence boundary, but starts no listener, performs no DNS lookup, calls no external service, forwards no traffic, persists no credentials, and does not ship an external proxy forwarding runtime.
+The local-proxy examples are intentionally split by side effect:
+
+- `plan local-proxy` produces advisory metadata only; it does not enable forwarding.
+- `record local-proxy-runtime-gate` appends one localhost-only gate row and still starts no listener, forwards no traffic, persists no API keys, and makes no hosted-savings claim.
+- `serve local-proxy` is the separate MVP. It requires both runtime and forwarding acknowledgements plus `--once`, binds only a literal loopback IP, forwards only to a literal loopback IP target, blocks credential-bearing requests, uses byte/time limits, uses literal IPs instead of hostname DNS targets, does not persist API keys, and does not support external forwarding, CONNECT/TLS proxying, or hosted-savings claims.
+- With `--diagnostic-ledger-jsonl`, `serve` appends one shifted-cost diagnostic row only after a successful forwarded request. The row stores hashes/metadata rather than raw headers, request bodies, response bodies, or hosted-savings evidence.
+- `plan local-proxy-external-forwarding` is a dry-run design gate only. It requires explicit external intent, design acknowledgement, HTTPS host allowlist, threat model notes, credential redaction policy, and provider-evidence boundary, but starts no listener, performs no DNS lookup, calls no external service, forwards no traffic, persists no credentials, and does not ship an external proxy forwarding runtime.
 
 By default, project settings are stored in `.context-guard/experiments.json`. Use `--config <path>` only for an explicit project-local override. Experiment metadata includes risk level, gate requirements, explicit command/flag surfaces, and claim boundaries so hosted API token/cost savings are not claimed without provider-measured matched-task evidence. `experiments enable` records intent only; it does not run helpers, remove the need for their explicit flags, or permit replacing content without exact receipt/re-expand evidence.
 

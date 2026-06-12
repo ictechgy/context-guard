@@ -1,13 +1,13 @@
 # ContextGuard
 
-ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 관리 도구 모음입니다. Claude Code 플러그인으로 먼저 사용할 수 있으며, 설치 후 프로젝트별로 명시적으로 적용하고 필요하면 되돌릴 수 있습니다. 출력 축약, 심볼 단위 읽기, 반복 실패 알림, 민감정보 패턴 가림, 사용량 측정 가드레일은 로컬 헬퍼 명령과 brief 모드 안내 규칙 스니펫을 통해 다른 에이전트에도 확장됩니다.
+ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 관리 도구 모음입니다. Claude Code 플러그인으로 먼저 사용할 수 있으며, 한 번 설치한 뒤 프로젝트별로 명시적으로 적용하고 필요하면 되돌릴 수 있습니다. 출력 축약, 심볼 단위 읽기, 반복 실패 알림, 민감정보 패턴 가림, 사용량 측정 가드레일은 로컬 헬퍼 명령과 brief 모드 안내 규칙 스니펫을 통해 다른 에이전트에도 확장됩니다.
 
 - 영문 문서: [`README.md`](README.md)
 - HTML 랜딩 페이지: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([소스](docs/index.html))
 
 ## 한눈에 보기
 
-설치와 활성화는 분리되어 있습니다. 설치만 하면 로컬 헬퍼나 Claude 플러그인 스킬이 준비될 뿐이며, 설정 파일은 사용자가 `setup`을 명시적으로 실행할 때만 바뀝니다.
+설치와 활성화는 의도적으로 분리되어 있습니다. 설치만 하면 로컬 헬퍼나 Claude 플러그인 스킬이 준비될 뿐이며, 설정 파일은 사용자가 `setup`을 명시적으로 실행할 때만 바뀝니다.
 
 | 쓰는 도구 | 설치 | 활성화 |
 | --- | --- | --- |
@@ -27,9 +27,9 @@ context-guard setup --agent claude --scope user --verify --json  # 읽기 전용
 context-guard setup --agent claude --scope user --plan
 ```
 
-기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제로 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다.
+기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다.
 
-ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이고, 실제 전후 비교 결과는 각자의 작업에서 측정할 수 있도록 벤치마크 도구를 제공합니다. 저장소마다 효과는 달라질 수 있으며, 고정된 토큰·비용 절감률을 보장하지 않습니다.
+ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이고, 실제 전후 비교 결과는 각자의 작업에서 측정할 수 있도록 벤치마크 도구를 제공합니다. 저장소마다 효과는 달라질 수 있으며, 고정된 토큰·비용 절감률은 보장하지 않습니다.
 
 ## Claude Code 우선, 다른 에이전트도 함께
 
@@ -54,7 +54,7 @@ ContextGuard는 Claude Code 플러그인으로 시작하는 것이 가장 빠릅
 
 ## ContextGuard가 토큰 낭비를 줄이는 방식
 
-ContextGuard는 모델 가격 자체를 낮추는 도구가 아닙니다. AI 코딩 에이전트의 컨텍스트에 들어가기 전에 불필요한 입력을 줄이고, 그 효과를 직접 확인할 수 있는 신호를 제공합니다.
+ContextGuard는 모델 가격 자체를 낮추는 도구가 아닙니다. AI 코딩 에이전트의 컨텍스트에 들어가기 전에 불필요한 입력을 줄이고, 그 변화가 도움이 됐는지 직접 확인할 수 있는 신호를 제공합니다.
 
 | 낭비 경로 | ContextGuard 가드레일 |
 | --- | --- |
@@ -69,21 +69,21 @@ ContextGuard는 모델 가격 자체를 낮추는 도구가 아닙니다. AI 코
 
 ## 캐시·압축 도구와의 차이
 
-ContextGuard는 provider 캐시, semantic cache, 프롬프트 압축 도구를 대체하지 않습니다. 역할은 **불필요한 파일·로그·출력이 처음부터 에이전트 컨텍스트에 덜 들어가게 하는 것**입니다.
+ContextGuard는 provider 캐시, semantic cache, 프롬프트 압축 도구를 대체하지 않습니다. 핵심 역할은 더 단순합니다. **불필요한 파일·로그·출력이 처음부터 에이전트 컨텍스트에 덜 들어가게 하는 것**입니다.
 
 | 도구 유형 | 줄이는 방식 | ContextGuard와의 관계 |
 | --- | --- | --- |
 | Provider prompt/context caching | 안정적인 프롬프트 앞부분을 재사용합니다. | 보완 관계입니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕고, `context-guard-audit`로 배치를 감지하며, `context-guard cost`로 Anthropic 요청이 cache read 대신 cache write가 될 가능성을 미리 알릴 수 있습니다. |
 | Semantic response cache | 같거나 비슷한 요청의 이전 답변을 재사용합니다. | 보완 관계입니다. ContextGuard는 AI 답변 캐시를 제공하지 않습니다. |
 | 프롬프트/컨텍스트 압축 | 이미 선택된 텍스트를 더 짧게 만듭니다. | 인접한 역할입니다. ContextGuard는 로컬 출력 축약과 요약을 제공하지만, 무손실 의미 압축을 보장하지 않습니다. |
-| 실험 planner/runtime | local proxy 후보는 dry-run local plan과 external-forwarding design plan, 명시적 gate record, 명시적 one-shot loopback forwarding MVP로 검토하고, context-diff·visual evidence pack·learned-compression caller-supplied candidate·self-hosted metrics도 명시적 로컬 런타임만 지원합니다. | 모두 기본 비활성이며 explicit command가 필요합니다. local proxy `record`는 listener를 시작하거나 traffic을 forward하지 않고, `serve local-proxy`는 literal loopback IP로 한 번만 bind/forward하며 credential header를 차단합니다. 별도 evidence gate와 future PR gate 없이는 compressor/model 실행, 생성형 compression, OCR/crop service, external forwarding, hostname DNS target, credential persistence, hosted API 절감 주장으로 보지 않습니다. |
+| 실험 planner/runtime | local proxy 후보는 dry-run local plan, external-forwarding design plan, 명시적 gate record, one-shot loopback forwarding MVP로 검토합니다. context-diff·visual evidence pack·learned-compression caller-supplied candidate·self-hosted metrics도 명시적 로컬 런타임만 지원합니다. | 모두 기본 비활성이며 explicit command가 필요합니다. local proxy `record`는 listener를 시작하거나 traffic을 forward하지 않고, `serve local-proxy`는 literal loopback IP로 한 번만 bind/forward하며 credential header를 차단합니다. 별도 evidence gate와 future PR gate 없이는 compressor/model 실행, 생성형 compression, OCR/crop service, external forwarding, hostname DNS target, credential persistence, hosted API 절감 주장으로 보지 않습니다. |
 | ContextGuard | 불필요한 파일, 로그, 반복 실패, 과도한 출력이 에이전트 컨텍스트에 들어가기 전에 줄어들도록 돕습니다. | 로컬 가드레일, 되돌릴 수 있는 로컬 보관본, 측정 도구입니다. |
 
 설계에 참고한 관련 패턴은 다음과 같습니다.
 
 | 접근 방식 | 강조점 | ContextGuard와의 관계 |
 | --- | --- | --- |
-| 압축 우선 | 모델에 이미 선택된 텍스트를 줄이며, 경우에 따라 손실형 변환을 사용합니다. | ContextGuard는 손실형 단방향 압축보다 로컬 보관본 저장과 정확한 줄·패턴 재조회를 선호합니다. 원본을 다시 가져올 수 있습니다. |
+| 압축 우선 | 모델에 이미 선택된 텍스트를 줄이며, 경우에 따라 손실형 변환을 사용합니다. | ContextGuard는 손실형 단방향 압축보다 로컬 보관본 저장과 정확한 줄·패턴 재조회를 선호하므로, 원본을 다시 가져올 수 있습니다. |
 | 여러 에이전트의 간결 출력 규칙 | 여러 에이전트에 brief 모드 출력 규칙을 한꺼번에 설치합니다. | ContextGuard는 안내용 brief 모드 스니펫과 dry-run 에이전트 간 설정을 제공합니다. 프로젝트별 opt-in이며, 절감을 보장하지 않습니다. |
 | ContextGuard | 불필요한 파일·로그·출력이 컨텍스트에 들어가기 전에 줄어들도록 돕고 보수적으로 측정합니다. | 로컬 가드레일, 되돌릴 수 있는 로컬 보관본·재조회, 직접 측정하는 벤치마크 근거입니다. |
 
@@ -113,7 +113,8 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 - 설치만으로 전역 Claude 설정을 변경하지 않습니다.
 - 절감 수치가 필요할 때 직접 전후 비교 측정을 대신하지 않습니다.
 - 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움될 수 있지만 Anthropic provider prompt cache를 대체하거나 cache hit를 보장하지 않습니다. 배포나 청구 설명 전에는 Anthropic prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
-- 실험 헬퍼는 대부분 dry-run 안전성 checker/planner이며 design-only external-forwarding opt-in gate를 포함합니다. 명시적 로컬 runtime은 caller-supplied context-diff replacement payload, caller-supplied visual crop/OCR evidence pack, caller-supplied learned-compression prose candidate, self-hosted metrics JSONL sidecar 기록, local-proxy runtime-gate JSONL 기록, one-shot `serve local-proxy` loopback forwarding과 successful forwarded request용 optional shifted-cost diagnostic JSONL row만 제공합니다. learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, screenshot 캡처·image crop·OCR 실행·image parsing·외부 OCR/image service, 명시적 local metrics 기록을 넘어선 self-hosted KV/latent inference optimization runtime, literal-loopback 1회 HTTP forwarding과 credential 차단을 넘어선 proxy forwarding은 제공하지 않습니다.
+- 실험 헬퍼는 대부분 dry-run 안전성 checker/planner이며 design-only external-forwarding opt-in gate를 포함합니다. 명시적 로컬 runtime은 caller-supplied context-diff replacement payload, caller-supplied visual crop/OCR evidence pack, caller-supplied learned-compression prose candidate, self-hosted metrics JSONL sidecar 기록, local-proxy runtime-gate JSONL 기록, one-shot `serve local-proxy` loopback forwarding과 successful forwarded request용 optional shifted-cost diagnostic JSONL row만 제공합니다.
+- ContextGuard는 learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, screenshot 캡처·image crop·OCR 실행·image parsing·외부 OCR/image service, 명시적 local metrics 기록을 넘어선 self-hosted KV/latent inference optimization runtime, literal-loopback 1회 HTTP forwarding과 credential 차단을 넘어선 proxy forwarding은 제공하지 않습니다.
 - 예전 `/claude-token-optimizer:*` Claude Code 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 
 기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 `bin/`에서 계속 제공합니다.
@@ -257,7 +258,19 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
-`context-guard-pack auto`는 같은 추천 단계를 실행한 뒤 예산 기반 Markdown 팩까지 바로 만드는 한-command 로컬 전용 경로입니다. `--explain`을 추가하면 JSON 또는 텍스트 출력에 결정적 로컬 선택/build 이유를 짧게 포함합니다. JSON explain에는 bounded `repo_map`도 들어가며 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트를 제공합니다. 이 repo-map은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 네트워크·모델 호출·임베딩을 쓰지 않으며 provider token 또는 savings claim이 아닙니다. `--manifest-out`은 여전히 `build`가 읽을 수 있는 manifest만 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다. `context-guard-pack suggest`는 더 낮은 수준의 추가 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다. 표준 라이브러리 기반의 결정적 휴리스틱만 사용하며, 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. `context-guard-pack build`는 우선순위가 있는 로컬 파일 근거를 렌더링된 UTF-8 바이트 기준 `--budget-bytes` 안의 Markdown 팩으로 조립합니다. JSON 출력은 포함·부분 포함·중복·unsafe·missing·예산 초과로 누락된 source를 기록하고, `.context-guard/packs`에 제한된 로컬 요약 기록을 쓰며, `path`와 `root`를 안전하게 표시할 수 있을 때만 정확한 가림 처리 slice 명령을 제공합니다. 안전하지 않으면 팩 본문과 JSON 메타데이터에 `retrieval_omitted_reason`을 남깁니다. 바이트 수는 관측값이고, 토큰 수는 provider가 실제 측정한 토큰 절감값이 아니라 추정 `chars_div_4` proxy입니다.
+`context-guard-pack auto`는 추천 단계와 예산 기반 Markdown 팩 생성을 한 번에 실행하는 로컬 전용 경로입니다.
+
+의도적인 경계는 다음과 같습니다.
+
+- `--explain`을 추가하면 JSON 또는 텍스트 출력에 결정적 로컬 선택/build 이유를 짧게 포함합니다.
+- JSON explain에는 bounded `repo_map`이 포함될 수 있습니다. 예시는 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트입니다.
+- repo-map은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 네트워크·모델 호출·임베딩을 쓰지 않으며 provider token 또는 savings claim이 아닙니다.
+- `--manifest-out`은 `build`가 읽을 수 있는 manifest를 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다.
+- `context-guard-pack suggest`는 더 낮은 수준의 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다.
+- `context-guard-pack build`는 우선순위가 있는 로컬 파일 근거를 렌더링된 UTF-8 바이트 기준 `--budget-bytes` 안의 Markdown 팩으로 조립합니다. JSON 출력은 포함·부분 포함·중복·unsafe·missing·예산 초과로 누락된 source를 기록합니다.
+- 제한된 로컬 요약 기록은 `.context-guard/packs`에 저장됩니다. `path`와 `root`를 안전하게 표시할 수 있을 때만 정확한 가림 처리 slice 명령을 제공하고, 안전하지 않으면 팩 본문과 JSON 메타데이터에 `retrieval_omitted_reason`을 남깁니다.
+
+표준 라이브러리 기반의 결정적 휴리스틱만 사용하며, 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. 바이트 수는 관측값이고, 토큰 수는 provider가 실제 측정한 토큰 절감값이 아니라 추정 `chars_div_4` proxy입니다.
 
 ### 작업에 맞게 tool/MCP catalog 줄이기
 
@@ -276,9 +289,12 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ```bash
 git diff | ./plugins/context-guard/bin/context-guard-compress --json
 pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
+cat evidence.txt | ./plugins/context-guard/bin/context-guard-compress --json --protected-policy
 ```
 
 `context-guard-compress`는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류한 뒤 JSON compact, diff 컨텍스트 접기, 중복 로그·검색 라인 제거, 공백 정규화 같은 결정적 축소를 적용합니다. 모델 토큰 절감을 관측했다고 주장하지 않으며, 바이트 수는 관측값으로, 토큰 수는 추정치로만 표시합니다. 손실형 요약 기록은 정확한 재조회를 위해 `context-guard-artifact store` 사용을 안내합니다.
+
+입력에 코드 펜스, diff, 식별자, 숫자 상수, 해시, 경로, 스택 프레임, 따옴표 문자열, JSON 키처럼 의미 보존이 중요한 구역이 있을 때는 `--protected-policy`를 추가하세요. 이 플래그는 기본 압축 동작을 바꾸지 않고, 의미·표현 변환을 거부하며 구조적 변환과 보관본 재조회만 허용하는 `protected_zone_policy`와 `transform_policy` 메타데이터를 추가합니다. 원문 보호 구간 대신 class/count 정책 메타데이터만 저장합니다.
 
 ### 명령 출력을 줄이거나 요약하기
 
@@ -286,7 +302,7 @@ pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
+head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 요약 모드에서 가림 처리된 전체 출력을 로컬 `context-guard-artifact` 보관본에 저장하려면 `--artifact-receipt`를 함께 사용하세요. 생략된 세부 내용에 의존하기 전에 출력된 `context-guard-artifact get ...` 명령으로 전체 내용을 다시 가져오세요. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
 
 ### 검색·diff 출력 민감정보 가림
 
@@ -303,7 +319,15 @@ head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는
 ./plugins/context-guard/bin/context-guard-audit ~/.claude/projects --top 20 --recommend
 ```
 
-감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다. JSON 출력에는 `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md)도 포함됩니다. 이는 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다. sibling `cache_layout_advice`는 이 신호를 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다. `--feasibility-json` 출력에는 로컬 macOS 가시화 surface가 바인딩할 수 있는 [`mac_visibility`](docs/mac-visibility-feasibility-schema.md) 계약도 포함됩니다. 이 계약은 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다. 원문 프롬프트는 출력하지 않고 provider cache hit나 live headroom을 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
+감사 명령은 기본적으로 너무 큰 대화 기록 파일과 JSONL 기록을 건너뛰고(`--max-file-bytes`, `--max-line-bytes`), 건너뛴 개수를 함께 보고합니다. 손상된 추적 기록이 메모리를 독점하거나 스캔 공백을 숨기지 않도록 하기 위한 방어입니다.
+
+JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
+
+- `cache_friendliness`와 [`cache_diagnostics`](docs/cache-diagnostics-schema.md): 제한된 사용량 필드, timestamped cache telemetry records, 가림 처리된 segment hash로 만든 휴리스틱 프롬프트 배치/cache-read 진단입니다.
+- `cache_layout_advice`: 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 신호를 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다.
+- `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): 로컬 macOS 가시화 surface가 바인딩할 수 있는 계약입니다. 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다.
+
+이 필드들은 prompt prefix 근처의 volatile content 가능성, stable-prefix 후보, cache-miss 가설, TTL/headroom evidence gap을 알려줄 수 있습니다. 원문 프롬프트를 출력하지 않고 provider cache hit나 live headroom을 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
 
 ### 상태표시줄에서 컨텍스트와 캐시 상태 확인
 
@@ -356,7 +380,13 @@ context-guard experiments enable output-receipt-trim --root .
 context-guard experiments disable output-receipt-trim --root .
 ```
 
-`plan local-proxy` 예시는 advisory metadata만 만들며 forwarding을 켜지 않습니다. 명시적 `record local-proxy-runtime-gate` 예시는 localhost-only gate row 하나만 append하고 listener 시작, traffic forwarding, API key 저장, hosted API 절감 주장을 하지 않습니다. 별도 `serve local-proxy` MVP는 `--runtime-gate-ack --forwarding-gate-ack --once`가 모두 필요하고 literal loopback IP에만 bind/forward하며 credential-bearing 요청, hostname DNS target, external forwarding, CONNECT/TLS proxying, API-key persistence, hosted savings claim을 차단합니다. `--diagnostic-ledger-jsonl`을 지정하면 successful forwarded request 뒤에만 shifted-cost 진단 row를 append하며 raw header, request body, response body, hosted-savings evidence를 저장하지 않습니다. 별도 `plan local-proxy-external-forwarding` 명령은 dry-run design gate일 뿐이며 explicit external intent, design ack, HTTPS host allowlist, threat model note, credential redaction policy, provider-evidence boundary를 요구하지만 listener 시작, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime 제공, hosted savings claim을 하지 않습니다.
+local-proxy 예시는 side effect 기준으로 나뉩니다.
+
+- `plan local-proxy`는 advisory metadata만 만들며 forwarding을 켜지 않습니다.
+- `record local-proxy-runtime-gate`는 localhost-only gate row 하나만 append하고 listener 시작, traffic forwarding, API key 저장, hosted API 절감 주장을 하지 않습니다.
+- `serve local-proxy`는 별도 MVP입니다. `--runtime-gate-ack --forwarding-gate-ack --once`가 모두 필요하고 literal loopback IP에만 bind/forward하며 byte/time limit을 적용하고 credential-bearing 요청, hostname DNS target, external forwarding, CONNECT/TLS proxying, API-key persistence, hosted savings claim을 차단합니다.
+- `--diagnostic-ledger-jsonl`을 지정하면 successful forwarded request 뒤에만 shifted-cost 진단 row를 append하며 raw header, request body, response body, hosted-savings evidence를 저장하지 않습니다.
+- `plan local-proxy-external-forwarding`은 dry-run design gate일 뿐입니다. explicit external intent, design ack, HTTPS host allowlist, threat model note, credential redaction policy, provider-evidence boundary를 요구하지만 listener 시작, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime 제공, hosted savings claim을 하지 않습니다.
 
 기본적으로 프로젝트 설정은 `.context-guard/experiments.json`에 저장됩니다. 명시적인 프로젝트 로컬 재정의가 필요할 때만 `--config <path>`를 사용하세요. 실험 메타데이터에는 risk level, gate requirement, explicit command/flag surface, claim boundary가 포함되어 provider-measured matched-task evidence 없이는 hosted API token/cost savings claim으로 쓰지 않도록 합니다. `experiments enable`은 의도만 기록하며 helper를 실행하거나 명시 flag를 대체하거나 exact receipt/re-expand evidence 없는 content replacement를 허용하지 않습니다.
 
@@ -414,14 +444,15 @@ context-guard-setup --plan
 
 ## 릴리스 확인
 
-릴리스에 민감한 변경을 배포하거나 머지하기 전에는 두 게이트를 모두 실행하세요.
+릴리스에 민감한 변경을 배포하거나 머지하기 전에는 동기화 확인과 두 게이트를 모두 실행하세요.
 
 ```bash
+python3 scripts/sync_plugin_copies.py --check
 python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-`prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
+헬퍼가 `context-guard-kit/` 아래에서 바뀌었다면 게이트 전에 `python3 scripts/sync_plugin_copies.py --write`를 실행하세요. `sync_plugin_copies.py --check`는 exact-copy 계약을 먼저 확인합니다. `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
 
 버전별 릴리스 노트는 [CHANGELOG.md](CHANGELOG.md)에 기록하며, 사전 배포 게이트는 플러그인 매니페스트 버전과 일치하는 항목이 있는지 확인합니다.
 
