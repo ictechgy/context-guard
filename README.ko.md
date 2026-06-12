@@ -27,7 +27,7 @@ context-guard setup --agent claude --scope user --verify --json  # 읽기 전용
 context-guard setup --agent claude --scope user --plan
 ```
 
-기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다.
+기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다. setup은 먼저 패키지/체크아웃 내부 헬퍼를 사용하며, 신뢰할 수 있는 설치라고 확인한 경우에만 `--allow-path-helper-fallback`으로 `PATH` 헬퍼 fallback을 명시적으로 허용하세요.
 
 ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이고, 실제 전후 비교 결과는 각자의 작업에서 측정할 수 있도록 벤치마크 도구를 제공합니다. 저장소마다 효과는 달라질 수 있으며, 고정된 토큰·비용 절감률은 보장하지 않습니다.
 
@@ -170,7 +170,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 ## npm/npx로 설치
 
-npm 패키지는 단일 `context-guard` 명령과 기존 `context-guard-*` 헬퍼 명령을 함께 제공합니다. 설치는 수동적입니다. `postinstall`로 설정을 쓰지 않으며, 사용자가 직접 `context-guard setup`을 실행할 때만 프로젝트나 사용자 설정을 변경합니다.
+npm 패키지는 단일 `context-guard` 명령과 기존 `context-guard-*` 헬퍼 명령을 함께 제공합니다. 설치는 수동적입니다. `postinstall`로 설정을 쓰지 않으며, 사용자가 직접 `context-guard setup`을 실행할 때만 프로젝트나 사용자 설정을 변경합니다. setup이 패키지/체크아웃 내부 헬퍼를 찾지 못해도 `PATH` fallback은 기본적으로 꺼져 있습니다. `context-guard doctor` 또는 `setup --verify`로 계획을 확인한 뒤 신뢰하는 헬퍼 디렉터리에 한해서만 `--allow-path-helper-fallback`을 사용하세요.
 
 ```bash
 npm install -g @ictechgy/context-guard
@@ -441,6 +441,8 @@ claude --plugin-dir ./plugins/context-guard
 export PATH="$PWD/plugins/context-guard/bin:$PATH"
 context-guard-setup --plan
 ```
+
+생성되는 hook 명령은 기본적으로 `PATH` 조회에 의존하지 않습니다. setup 마법사는 명시적인 패키지/체크아웃 헬퍼 경로를 기록하며, `--allow-path-helper-fallback`은 신뢰한 외부 설치를 사용할 때만 canonical 경로·symlink 없음·bounded identity probe 검증 후 허용됩니다.
 
 ## 릴리스 확인
 

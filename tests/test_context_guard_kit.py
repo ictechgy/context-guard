@@ -511,6 +511,117 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.stdout, "ORIGINAL empty fallback\n")
                     self.assertEqual(json.loads(proc.stderr)["reason"], "empty-output-fallback")
 
+
+    def test_context_filter_config_reads_reject_symlink_fifo_and_oversize_without_hanging(self):
+        for script in FILTER_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real = root / "real.json"
+                    real.write_text(json.dumps({"schema_version": "contextguard.filter-dsl.v1", "filters": []}), encoding="utf-8")
+                    traversal = root / "safe" / ".." / "real.json"
+                    traversal_validate = subprocess.run(
+                        [sys.executable, str(script), "validate", "--config", str(traversal), "--json"],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(traversal_validate.returncode, 2)
+                    self.assertIn("parent traversal", " ".join(json.loads(traversal_validate.stdout)["errors"]))
+                    traversal_run = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "run",
+                            "--config",
+                            str(traversal),
+                            "--json-report",
+                            "--",
+                            sys.executable,
+                            "-c",
+                            "print('ORIGINAL traversal passthrough')",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                        check=True,
+                    )
+                    self.assertEqual(traversal_run.stdout, "ORIGINAL traversal passthrough\n")
+                    self.assertEqual(json.loads(traversal_run.stderr)["reason"], "invalid-config")
+                    symlink = root / "link.json"
+                    try:
+                        symlink.symlink_to(real)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink creation unavailable: {exc}")
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "validate", "--config", str(symlink), "--json"],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("regular file", " ".join(json.loads(proc.stdout)["errors"]))
+
+                    if hasattr(os, "mkfifo"):
+                        fifo = root / "filters.fifo"
+                        os.mkfifo(fifo)
+                        validate = subprocess.run(
+                            [sys.executable, str(script), "validate", "--config", str(fifo), "--json"],
+                            text=True,
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        self.assertEqual(validate.returncode, 2)
+                        self.assertIn("regular file", " ".join(json.loads(validate.stdout)["errors"]))
+                        run = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "run",
+                                "--config",
+                                str(fifo),
+                                "--json-report",
+                                "--",
+                                sys.executable,
+                                "-c",
+                                "print('ORIGINAL fifo passthrough')",
+                            ],
+                            text=True,
+                            capture_output=True,
+                            timeout=5,
+                            check=True,
+                        )
+                        self.assertEqual(run.stdout, "ORIGINAL fifo passthrough\n")
+                        self.assertEqual(json.loads(run.stderr)["reason"], "invalid-config")
+
+                    oversized = root / "oversized.json"
+                    oversized.write_bytes(b"{" + b"x" * (1_000_001))
+                    too_large = subprocess.run(
+                        [sys.executable, str(script), "validate", "--config", str(oversized), "--json"],
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertEqual(too_large.returncode, 2)
+                    self.assertIn("too large", " ".join(json.loads(too_large.stdout)["errors"]))
+
+    def test_context_filter_safe_config_reader_fails_closed_without_required_platform_support(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_safe_config_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    config = Path(tmp) / "filters.json"
+                    config.write_text(json.dumps({"schema_version": "contextguard.filter-dsl.v1", "filters": []}), encoding="utf-8")
+                    for attr in ("NO_FOLLOW_SUPPORTED", "DIR_FD_OPEN_SUPPORTED", "DIR_FD_STAT_SUPPORTED", "NONBLOCK_SUPPORTED"):
+                        original = getattr(module, attr)
+                        try:
+                            setattr(module, attr, False)
+                            _raw, errors = module.read_json_limited(config)
+                            self.assertTrue(errors, attr)
+                            self.assertIn("safe", errors[0].lower())
+                        finally:
+                            setattr(module, attr, original)
+
     def test_context_filter_capture_limit_preserves_passthrough_streams(self):
         for script in FILTER_SCRIPTS:
             with self.subTest(script=script):
@@ -4181,6 +4292,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertTrue(module.is_localhost_host(host))
                 for host in ("0.0.0.0", "example.com", "192.168.1.10"):
                     self.assertFalse(module.is_localhost_host(host))
+                sensitive_headers = module.local_proxy_has_sensitive_headers({
+                    module.LOCAL_PROXY_NONCE_HEADER: "sk-ant-secret-secret-secret",
+                    "X-ContextGuard-Test": "sk-ant-secret-secret-secret",
+                })
+                self.assertNotIn(module.LOCAL_PROXY_NONCE_HEADER.lower(), sensitive_headers)
+                self.assertIn("x-contextguard-test", sensitive_headers)
 
     def assert_local_proxy_gate_row_has_no_runtime_actions(self, row):
         self.assertFalse(row["policy"]["listener_started"])
@@ -12249,6 +12366,116 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         [artifact_id],
                     )
 
+
+    def test_artifact_escrow_store_rejects_parent_traversal_and_special_destinations(self):
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    for raw_dir in (root / ".." / "outside", root / "safe" / ".." / "outside"):
+                        for argv_tail in (["store", "--json"], ["get", "0" * 20], ["list", "--json"]):
+                            proc = subprocess.run(
+                                [sys.executable, str(script), "--dir", str(raw_dir), *argv_tail],
+                                input="blocked\n" if argv_tail[0] == "store" else None,
+                                text=True,
+                                capture_output=True,
+                            )
+                            self.assertNotEqual(proc.returncode, 0, argv_tail)
+                            self.assertIn("parent traversal", proc.stderr, argv_tail)
+
+                    artifact_dir = root / "artifacts"
+                    artifact_dir.mkdir()
+                    raw = "trusted artifact\n"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    artifact_id = json.loads(store.stdout)["artifact_id"]
+                    content = artifact_dir / f"{artifact_id}.txt"
+                    content.unlink()
+                    target = root / "outside.txt"
+                    target.write_text("outside\n", encoding="utf-8")
+                    try:
+                        content.symlink_to(target)
+                    except (OSError, NotImplementedError) as exc:
+                        self.skipTest(f"symlink creation unavailable: {exc}")
+                    blocked = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertNotEqual(blocked.returncode, 0)
+                    self.assertIn("regular file", blocked.stderr)
+                    self.assertEqual(target.read_text(encoding="utf-8"), "outside\n")
+
+                    if hasattr(os, "mkfifo"):
+                        content.unlink()
+                        os.mkfifo(content)
+                        fifo = subprocess.run(
+                            [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                            input=raw,
+                            text=True,
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        self.assertNotEqual(fifo.returncode, 0)
+                        self.assertIn("regular file", fifo.stderr)
+
+    def test_artifact_escrow_dirfd_writer_fails_closed_on_unsupported_or_fsync_failure(self):
+        for index, script in enumerate(ARTIFACT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_artifact_dirfd_writer_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    content_path = Path(tmp) / "artifacts" / (("a" * 20) + ".txt")
+                    for attr in ("NO_FOLLOW_SUPPORTED", "DIR_FD_OPEN_SUPPORTED", "DIR_FD_MKDIR_SUPPORTED", "DIR_FD_STAT_SUPPORTED", "DIR_FD_REPLACE_SUPPORTED", "DIR_FD_UNLINK_SUPPORTED"):
+                        original = getattr(module, attr)
+                        try:
+                            setattr(module, attr, False)
+                            with self.assertRaisesRegex((RuntimeError, ValueError), "require|support"):
+                                module.write_private_text(content_path, "new\n")
+                        finally:
+                            setattr(module, attr, original)
+
+                    artifact_dir = Path(tmp) / "artifacts"
+                    artifact_dir.mkdir(exist_ok=True)
+                    os.chmod(artifact_dir, 0o777)
+                    module.write_private_text(content_path, "mode\n")
+                    self.assertEqual(stat.S_IMODE(os.stat(artifact_dir).st_mode), 0o700)
+                    existing = artifact_dir / (("b" * 20) + ".txt")
+                    existing.write_text("old\n", encoding="utf-8")
+                    os.chmod(existing, 0o600)
+                    original_fsync = module.os.fsync
+                    calls = {"count": 0}
+
+                    def failing_pre_replace_fsync(fd):
+                        calls["count"] += 1
+                        if calls["count"] == 2:
+                            raise OSError(errno.EIO, "pre replace fsync")
+                        return original_fsync(fd)
+
+                    with mock.patch.object(module.os, "fsync", failing_pre_replace_fsync):
+                        with self.assertRaisesRegex(RuntimeError, "artifact directory before replace"):
+                            module.write_private_text(existing, "new\n")
+                    self.assertEqual(existing.read_text(encoding="utf-8"), "old\n")
+                    self.assertEqual(list(artifact_dir.glob(".*.tmp")), [])
+
+                    calls["count"] = 0
+
+                    def failing_post_replace_fsync(fd):
+                        calls["count"] += 1
+                        if calls["count"] == 3:
+                            raise OSError(errno.EIO, "post replace fsync")
+                        return original_fsync(fd)
+
+                    with mock.patch.object(module.os, "fsync", failing_post_replace_fsync):
+                        with self.assertRaisesRegex(RuntimeError, "committed_but_parent_fsync_failed"):
+                            module.write_private_text(existing, "committed\n")
+                    self.assertEqual(existing.read_text(encoding="utf-8"), "committed\n")
+
     def test_artifact_escrow_store_is_bounded_by_max_bytes(self):
         for script in ARTIFACT_SCRIPTS:
             with self.subTest(script=script):
@@ -13612,6 +13839,95 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             self.assertFalse((home / ".context-guard").exists())
             self.assertEqual(list(home.rglob("*")), [])
 
+
+    def test_setup_helper_path_fallback_requires_explicit_opt_in_and_valid_identity(self):
+        module = load_python_script_module(KIT_DIR / "setup_wizard.py", "setup_path_fallback")
+        helper_name = "context-guard-test-helper"
+        with mock.patch.object(module.shutil, "which", return_value="/tmp/context-guard-test-helper") as which_mock:
+            with self.assertRaisesRegex(SystemExit, "PATH helper fallback is disabled"):
+                module.helper_argv(helper_name, "missing-helper.py")
+            which_mock.assert_not_called()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / helper_name
+            helper.write_text("#!/bin/sh\necho 'ContextGuard helper: context-guard-test-helper'\n", encoding="utf-8")
+            helper.chmod(0o755)
+            self.assertEqual(module.validate_path_helper_fallback(helper_name, str(helper)), helper.resolve())
+            old_path = os.environ.get("PATH", "")
+            try:
+                os.environ["PATH"] = str(root) + os.pathsep + old_path
+                self.assertEqual(
+                    module.helper_argv(helper_name, "missing-helper.py", allow_path_fallback=True)[0],
+                    str(helper.resolve()),
+                )
+            finally:
+                os.environ["PATH"] = old_path
+
+            bad_identity = root / "context-guard-bad-helper"
+            bad_identity.write_text("#!/bin/sh\necho 'not this project'\n", encoding="utf-8")
+            bad_identity.chmod(0o755)
+            with self.assertRaisesRegex(SystemExit, "did not identify ContextGuard"):
+                module.validate_path_helper_fallback("context-guard-bad-helper", str(bad_identity))
+
+            noisy = root / "context-guard-noisy-helper"
+            noisy.write_text("#!/bin/sh\npython3 - <<'PY2'\nprint('ContextGuard ' + 'x' * 5000)\nPY2\n", encoding="utf-8")
+            noisy.chmod(0o755)
+            with self.assertRaisesRegex(SystemExit, "output exceeded"):
+                module.validate_path_helper_fallback("context-guard-noisy-helper", str(noisy))
+
+            slow = root / "context-guard-slow-helper"
+            slow.write_text("#!/bin/sh\nsleep 6\necho ContextGuard\n", encoding="utf-8")
+            slow.chmod(0o755)
+            with self.assertRaisesRegex(SystemExit, "timed out"):
+                module.validate_path_helper_fallback("context-guard-slow-helper", str(slow))
+
+            non_exec = root / "context-guard-nonexec-helper"
+            non_exec.write_text("#!/bin/sh\necho ContextGuard\n", encoding="utf-8")
+            non_exec.chmod(0o600)
+            with self.assertRaisesRegex(SystemExit, "executable regular file"):
+                module.validate_path_helper_fallback("context-guard-nonexec-helper", str(non_exec))
+
+            real_bin = root / "real-bin"
+            real_bin.mkdir()
+            symlinked = real_bin / "context-guard-symlink-parent-helper"
+            symlinked.write_text("#!/bin/sh\necho ContextGuard\n", encoding="utf-8")
+            symlinked.chmod(0o755)
+            link_bin = root / "link-bin"
+            try:
+                link_bin.symlink_to(real_bin, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaisesRegex(SystemExit, "symlink or alias"):
+                module.validate_path_helper_fallback("context-guard-symlink-parent-helper", str(link_bin / "context-guard-symlink-parent-helper"))
+
+    def test_context_guard_doctor_recommended_commands_preserve_path_fallback_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings_dir = root / ".claude"
+            settings_dir.mkdir()
+            (settings_dir / "settings.json").write_text("{}", encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(KIT_DIR / "setup_wizard.py"),
+                    "--root",
+                    str(root),
+                    "--verify",
+                    "--json",
+                    "--allow-path-helper-fallback",
+                    "--no-diet-scan",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            commands = "\n".join(data["recommended_commands"])
+            self.assertIn("--allow-path-helper-fallback", commands)
+            helper_check = next(check for check in data["checks"] if check["id"] == "helper-availability")
+            self.assertTrue(helper_check["detail"]["allow_path_helper_fallback"])
+
     def test_context_guard_doctor_docs_and_smoke_surface_are_listed(self):
         docs = [
             ROOT / "README.md",
@@ -13648,10 +13964,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             args = setup.build_parser().parse_args(["--root", str(root), "--verify", "--json"])
             original_helper_argv = setup.helper_argv
 
-            def flaky_helper_argv(helper_name, kit_script, *, shell=None):
+            def flaky_helper_argv(helper_name, kit_script, *, shell=None, allow_path_fallback=False):
                 if helper_name == setup.HELPER_DIET:
                     raise SystemExit("missing diet helper")
-                return original_helper_argv(helper_name, kit_script, shell=shell)
+                return original_helper_argv(helper_name, kit_script, shell=shell, allow_path_fallback=allow_path_fallback)
 
             with mock.patch.object(setup, "helper_argv", side_effect=flaky_helper_argv):
                 report = setup.run_doctor(args)
@@ -13721,10 +14037,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     args = module.build_parser().parse_args(["--root", str(root), "--verify", "--json", "--no-diet-scan"])
                     original_helper_argv = module.helper_argv
 
-                    def missing_disabled_diet(helper_name, kit_script, *, shell=None):
+                    def missing_disabled_diet(helper_name, kit_script, *, shell=None, allow_path_fallback=False):
                         if helper_name == module.HELPER_DIET:
                             raise SystemExit("missing disabled diet helper")
-                        return original_helper_argv(helper_name, kit_script, shell=shell)
+                        return original_helper_argv(helper_name, kit_script, shell=shell, allow_path_fallback=allow_path_fallback)
 
                     with mock.patch.object(module, "helper_argv", side_effect=missing_disabled_diet):
                         report = module.run_doctor(args)
@@ -13841,13 +14157,15 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         setup = load_module_from_path(KIT_DIR / "setup_wizard.py", "setup_wizard_helper_argv_path")
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "custom-token-helper"
-            fake.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+            fake.write_text("#!/usr/bin/env bash\necho 'ContextGuard helper: custom-token-helper'\n", encoding="utf-8")
             fake.chmod(0o700)
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = f"{tmp}{os.pathsep}{old_path}"
             try:
-                argv = setup.helper_argv("custom-token-helper", "missing_script.py")
-                command = setup.helper_command("custom-token-helper", "missing_script.py")
+                with self.assertRaisesRegex(SystemExit, "PATH helper fallback is disabled"):
+                    setup.helper_argv("custom-token-helper", "missing_script.py")
+                argv = setup.helper_argv("custom-token-helper", "missing_script.py", allow_path_fallback=True)
+                command = setup.helper_command("custom-token-helper", "missing_script.py", allow_path_fallback=True)
             finally:
                 os.environ["PATH"] = old_path
         self.assertEqual(argv, [str(fake.resolve())])

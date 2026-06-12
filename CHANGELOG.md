@@ -6,6 +6,9 @@ All notable changes for the ContextGuard plugin are documented here.
 
 - Hardened release gates with isolated npm install smoke, CI Node setup, full unittest discovery, Homebrew template stale-version checks, and explicit CI/subprocess timeouts.
 - Hardened `context-guard experiments serve local-proxy` with a private ready-file nonce handoff that rejects missing, duplicate, or invalid nonce headers before forwarding and keeps the raw nonce out of public output and upstream requests.
+- Hardened `context-guard-filter` config loading with bounded no-follow regular-file reads, nonblocking FIFO/device rejection, and fail-closed unsupported-platform checks.
+- Hardened artifact escrow writes with parent-traversal rejection, dir-fd/no-follow private directories, 0600 temp files before atomic replace, and explicit pre/post-replace fsync failure semantics.
+- Disabled setup helper `PATH` fallback by default; trusted fallback now requires `--allow-path-helper-fallback`, canonical no-symlink executable paths, and a bounded helper identity probe.
 
 ## [0.4.9] - 2026-06-12
 
