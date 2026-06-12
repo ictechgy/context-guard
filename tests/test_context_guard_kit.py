@@ -1184,6 +1184,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         local_proxy = experiments["local-proxy"]
                         self.assertEqual(local_proxy["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan local-proxy", local_proxy["commands"])
+                        self.assertIn("context-guard experiments plan local-proxy-external-forwarding", local_proxy["commands"])
                         self.assertIn(
                             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
                             local_proxy["commands"],
@@ -1197,6 +1198,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             local_proxy["commands"],
                         )
                         self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
+                        self.assertIn("plan local-proxy-external-forwarding", local_proxy["opt_in_flags"])
                         self.assertIn("record local-proxy-runtime-gate", local_proxy["opt_in_flags"])
                         self.assertIn("serve local-proxy", local_proxy["opt_in_flags"])
                         self.assertIn("--bind-host", local_proxy["opt_in_flags"])
@@ -1209,12 +1211,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("--max-response-bytes", local_proxy["opt_in_flags"])
                         self.assertIn("--diagnostic-ledger-jsonl", local_proxy["opt_in_flags"])
                         self.assertIn("--external-forwarding-intent", local_proxy["opt_in_flags"])
+                        self.assertIn("--external-forwarding-design-ack", local_proxy["opt_in_flags"])
+                        self.assertIn("--allow-host", local_proxy["opt_in_flags"])
+                        self.assertIn("--allow-scheme", local_proxy["opt_in_flags"])
+                        self.assertIn("--threat-model-note", local_proxy["opt_in_flags"])
+                        self.assertIn("--credential-redaction-policy", local_proxy["opt_in_flags"])
+                        self.assertIn("--provider-evidence-boundary", local_proxy["opt_in_flags"])
                         self.assertIn("--persist-api-key", local_proxy["opt_in_flags"])
                         self.assertIn("explicit commands", local_proxy["config_effect"])
                         self.assertIn("literal loopback", local_proxy["config_effect"])
                         self.assertIn("blocks credential material", local_proxy["config_effect"])
+                        self.assertIn("design-only", local_proxy["config_effect"])
                         self.assertIn("forwarding acknowledgement", local_proxy["evidence_contract"])
                         self.assertIn("no credential forwarding or persistence", local_proxy["evidence_contract"])
+                        self.assertIn("threat model", local_proxy["evidence_contract"])
 
     def test_existing_explicit_experiment_flags_work_without_registry_enablement(self):
         for index, script in enumerate(TRIM_SCRIPTS):
@@ -4386,6 +4396,147 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         for secret_fragment in secret_fragments:
                             self.assertNotIn(secret_fragment, proc.stdout + proc.stderr)
 
+    def test_experimental_local_proxy_external_forwarding_design_gate(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script, case="ready_design_only"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root) for path in root.rglob("*"))
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "local-proxy-external-forwarding",
+                            "--external-forwarding-intent",
+                            "--external-forwarding-design-ack",
+                            "--allow-host",
+                            "api.example.com",
+                            "--allow-scheme",
+                            "https",
+                            "--credential-redaction-policy",
+                            "strip-sensitive-headers",
+                            "--provider-evidence-boundary",
+                            "diagnostic-only-provider-measured-required",
+                            "--threat-model-note",
+                            "Only user-owned HTTPS endpoint; sensitive headers are stripped before any future forwarding.",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                    )
+                    after = sorted(path.relative_to(root) for path in root.rglob("*"))
+                self.assertEqual(before, after)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.local-proxy-external-forwarding-design.v1")
+                self.assertEqual(payload["experiment_id"], "local-proxy")
+                self.assertEqual(payload["mode"], "external_forwarding_design")
+                self.assertEqual(payload["status"], "ready_for_external_forwarding_design_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertTrue(payload["policy"]["design_only"])
+                self.assertFalse(payload["policy"]["external_forwarding_runtime_implemented"])
+                self.assertFalse(payload["policy"]["external_forwarding_allowed"])
+                self.assertFalse(payload["policy"]["hidden_external_forwarding"])
+                self.assertFalse(payload["policy"]["api_key_persistence_allowed"])
+                self.assertFalse(payload["policy"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(payload["network_actions"]["listener_started"])
+                self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                self.assertFalse(payload["network_actions"]["external_services_called"])
+                design = payload["external_forwarding_design"]
+                self.assertTrue(design["intent_acknowledged"])
+                self.assertTrue(design["design_acknowledged"])
+                self.assertEqual(design["allowlist"]["hosts"], ["api.example.com"])
+                self.assertEqual(design["allowlist"]["schemes"], ["https"])
+                self.assertFalse(design["allowlist"]["wildcards_allowed"])
+                self.assertFalse(design["allowlist"]["localhost_allowed"])
+                self.assertEqual(design["credential_redaction"]["policy"], "strip-sensitive-headers")
+                self.assertIn("authorization", design["credential_redaction"]["blocked_header_names"])
+                self.assertFalse(design["credential_redaction"]["raw_headers_persisted"])
+                self.assertTrue(design["threat_model"]["required"])
+                self.assertTrue(design["provider_evidence_boundary"]["diagnostic_only"])
+                self.assertTrue(design["provider_evidence_boundary"]["provider_measured_matched_tasks_required_for_hosted_claims"])
+                self.assertFalse(design["provider_evidence_boundary"].get("hosted_api_token_savings_claim_allowed", False))
+                self.assertIn("no listener", payload["claim_boundary"].lower())
+                self.assertNotIn("external proxy forwarding runtime is shipped", proc.stdout.lower())
+
+            with self.subTest(script=script, case="missing_intent_and_unsupported_policies"):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy-external-forwarding",
+                        "--external-forwarding-design-ack",
+                        "--allow-host",
+                        "api.example.com",
+                        "--allow-scheme",
+                        "https",
+                        "--credential-redaction-policy",
+                        "forward-all-headers",
+                        "--provider-evidence-boundary",
+                        "hosted-savings-ok",
+                        "--threat-model-note",
+                        "Policy mismatch should stay blocked.",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                payload = json.loads(proc.stdout)
+                blockers = payload["review_plan"]["readiness_blockers"]
+                self.assertEqual(payload["status"], "blocked_until_external_forwarding_design_constraints")
+                self.assertIn("missing_external_forwarding_intent", blockers)
+                self.assertIn("unsupported_credential_redaction_policy", blockers)
+                self.assertIn("unsupported_provider_evidence_boundary", blockers)
+                self.assertFalse(payload["network_actions"]["listener_started"])
+                self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                self.assertFalse(payload["network_actions"]["external_services_called"])
+                self.assertFalse(payload["policy"]["external_forwarding_allowed"])
+
+            with self.subTest(script=script, case="blocked_unsafe_design"):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "local-proxy-external-forwarding",
+                        "--external-forwarding-intent",
+                        "--allow-host",
+                        "*.example.com",
+                        "--allow-host",
+                        "127.0.0.1",
+                        "--allow-scheme",
+                        "http",
+                        "--threat-model-note",
+                        "token=my_precious_value_123",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                payload = json.loads(proc.stdout)
+                blockers = payload["review_plan"]["readiness_blockers"]
+                self.assertEqual(payload["status"], "blocked_until_external_forwarding_design_constraints")
+                self.assertIn("missing_external_forwarding_design_ack", blockers)
+                self.assertIn("invalid_external_allow_host", blockers)
+                self.assertIn("localhost_external_allow_host_not_allowed", blockers)
+                self.assertIn("https_only_external_allow_scheme_required", blockers)
+                self.assertIn("missing_credential_redaction_policy", blockers)
+                self.assertIn("missing_provider_evidence_boundary", blockers)
+                self.assertIn("secret_like_external_forwarding_design_metadata", blockers)
+                self.assertFalse(payload["network_actions"]["listener_started"])
+                self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                self.assertFalse(payload["network_actions"]["external_services_called"])
+                self.assertFalse(payload["policy"]["external_forwarding_allowed"])
+                self.assertNotIn("my_precious_value_123", proc.stdout + proc.stderr)
+
     def test_experimental_local_proxy_serve_forwards_one_loopback_request(self):
         seen_requests: list[dict[str, object]] = []
 
@@ -5364,6 +5515,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(boundary_doc=doc):
                 text = doc.read_text(encoding="utf-8").lower()
                 self.assertRegex(text, r"local proxy|local-proxy")
+                self.assertIn("local-proxy-external-forwarding", text)
+                self.assertRegex(text, r"design-only|dry-run design gate|dry-run.*design|디자인|design gate")
                 self.assertRegex(text, r"record local-proxy-runtime-gate|local-proxy-runtime-gate|gate record|gate row")
                 self.assertRegex(text, r"localhost-only|localhost")
                 self.assertRegex(text, r"listener|traffic forwarding|forwarding")

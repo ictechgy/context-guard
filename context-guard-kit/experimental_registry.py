@@ -60,6 +60,7 @@ LOCAL_PROXY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-plan.v1"
 LOCAL_PROXY_GATE_SCHEMA_VERSION = "contextguard.experiments.local-proxy-gate.v1"
 LOCAL_PROXY_FORWARD_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward.v1"
 LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward-diagnostic.v1"
+LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION = "contextguard.experiments.local-proxy-external-forwarding-design.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
@@ -72,6 +73,9 @@ LOCAL_PROXY_DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
 LOCAL_PROXY_MAX_FORWARD_BYTES = 2 * 1024 * 1024
 LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS = 5.0
 LOCAL_PROXY_MAX_TIMEOUT_SECONDS = 30.0
+LOCAL_PROXY_EXTERNAL_ALLOWED_SCHEMES = {"https"}
+LOCAL_PROXY_EXTERNAL_CREDENTIAL_REDACTION_POLICY = "strip-sensitive-headers"
+LOCAL_PROXY_EXTERNAL_PROVIDER_EVIDENCE_BOUNDARY = "diagnostic-only-provider-measured-required"
 LOCAL_PROXY_SENSITIVE_HEADER_NAMES = {
     "authorization",
     "proxy-authorization",
@@ -328,12 +332,14 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         runtime_status="available-explicit-runtime",
         commands=(
             "context-guard experiments plan local-proxy",
+            "context-guard experiments plan local-proxy-external-forwarding",
             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
             "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
             "context-guard experiments serve local-proxy --diagnostic-ledger-jsonl <path> ...",
         ),
         opt_in_flags=(
             "plan local-proxy",
+            "plan local-proxy-external-forwarding",
             "record local-proxy-runtime-gate",
             "serve local-proxy",
             "--bind-host",
@@ -349,18 +355,25 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--max-response-bytes",
             "--diagnostic-ledger-jsonl",
             "--external-forwarding-intent",
+            "--external-forwarding-design-ack",
+            "--allow-host",
+            "--allow-scheme",
+            "--threat-model-note",
+            "--credential-redaction-policy",
+            "--provider-evidence-boundary",
             "--persist-api-key",
         ),
         config_effect=(
             "Registry enablement records project-local intent only; local proxy record/serve runtimes run only through "
             "explicit commands. Serve binds and forwards only literal loopback addresses, blocks credential material, "
-            "and never persists API keys or calls non-local services."
+            "and never persists API keys or calls non-local services; external-forwarding planning is design-only."
         ),
         evidence_contract=(
             "Gate rows require localhost-only bind/target metadata and explicit runtime gate acknowledgement. Serve "
             "evidence requires loopback-only bind/target IPs, explicit forwarding acknowledgement, no credential "
             "forwarding or persistence, bounded bytes/timeouts, and optional diagnostic ledger rows that remain "
-            "shifted-cost evidence only."
+            "shifted-cost evidence only. External-forwarding design plans require threat model notes, explicit "
+            "allowlists, credential redaction policy, and provider-evidence boundaries before any future runtime."
         ),
     ),
 )
@@ -2252,6 +2265,179 @@ def local_proxy_request_target_meta(value: Any) -> dict[str, Any]:
     }
 
 
+def normalize_external_allow_host(value: Any) -> tuple[str, list[str]]:
+    raw = "" if value is None else str(value).strip()
+    sanitized = sanitize_local_proxy_value(raw)
+    blockers: list[str] = []
+    host = raw.strip().strip("[]").lower().rstrip(".")
+    if not host:
+        return sanitized, ["invalid_external_allow_host"]
+    if "[REDACTED]" in sanitized:
+        blockers.append("secret_like_external_forwarding_design_metadata")
+    if any(ch in host for ch in ("*", "/", "\\", "@", ":", " ")) or len(host) > 253:
+        blockers.append("invalid_external_allow_host")
+    elif is_localhost_host(host):
+        blockers.append("localhost_external_allow_host_not_allowed")
+    else:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            labels = host.split(".")
+            label_re = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+            if len(labels) < 2 or any(not label_re.fullmatch(label) for label in labels):
+                blockers.append("invalid_external_allow_host")
+        else:
+            if not ip.is_global:
+                blockers.append("non_global_external_allow_host_not_allowed")
+    return sanitized, blockers
+
+
+def local_proxy_external_forwarding_design_payload(args: argparse.Namespace) -> dict[str, Any]:
+    intent = bool(args.external_forwarding_intent)
+    design_ack = bool(args.external_forwarding_design_ack)
+    raw_hosts = args.allow_host or []
+    raw_schemes = args.allow_scheme or []
+    raw_notes = args.threat_model_note or []
+    redaction_policy = sanitize_local_proxy_value(args.credential_redaction_policy)
+    provider_boundary = sanitize_local_proxy_value(args.provider_evidence_boundary)
+
+    blockers: list[str] = []
+    if not intent:
+        blockers.append("missing_external_forwarding_intent")
+    if not design_ack:
+        blockers.append("missing_external_forwarding_design_ack")
+
+    hosts: list[str] = []
+    if not raw_hosts:
+        blockers.append("missing_external_allow_host")
+    for raw_host in raw_hosts:
+        host, host_blockers = normalize_external_allow_host(raw_host)
+        if host:
+            hosts.append(host)
+        blockers.extend(host_blockers)
+    hosts = sorted(set(hosts))
+
+    schemes = sorted(set(sanitize_local_proxy_value(str(value).strip().lower()) for value in raw_schemes if str(value).strip()))
+    if not schemes:
+        blockers.append("missing_external_allow_scheme")
+    for scheme in schemes:
+        if "[REDACTED]" in scheme:
+            blockers.append("secret_like_external_forwarding_design_metadata")
+        elif scheme not in LOCAL_PROXY_EXTERNAL_ALLOWED_SCHEMES:
+            blockers.append("https_only_external_allow_scheme_required")
+
+    threat_model_notes = [sanitize_local_proxy_value(note) for note in clean_values(raw_notes)]
+    if not threat_model_notes:
+        blockers.append("missing_threat_model_note")
+    if any(local_proxy_secret_like(note) for note in raw_notes):
+        blockers.append("secret_like_external_forwarding_design_metadata")
+
+    if not redaction_policy:
+        blockers.append("missing_credential_redaction_policy")
+    elif redaction_policy != LOCAL_PROXY_EXTERNAL_CREDENTIAL_REDACTION_POLICY:
+        blockers.append("unsupported_credential_redaction_policy")
+    if not provider_boundary:
+        blockers.append("missing_provider_evidence_boundary")
+    elif provider_boundary != LOCAL_PROXY_EXTERNAL_PROVIDER_EVIDENCE_BOUNDARY:
+        blockers.append("unsupported_provider_evidence_boundary")
+    if local_proxy_secret_like(redaction_policy) or local_proxy_secret_like(provider_boundary):
+        blockers.append("secret_like_external_forwarding_design_metadata")
+
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+    return {
+        "tool": TOOL_NAME,
+        "schema_version": LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION,
+        "experiment_id": "local-proxy",
+        "mode": "external_forwarding_design",
+        "status": "ready_for_external_forwarding_design_review" if ready else "blocked_until_external_forwarding_design_constraints",
+        "policy": {
+            "default_off": True,
+            "design_only": True,
+            "external_forwarding_runtime_implemented": False,
+            "external_forwarding_allowed": False,
+            "hidden_external_forwarding": False,
+            "api_key_persistence_allowed": False,
+            "credential_material_forwarded": False,
+            "stable_runtime_behavior_changed": False,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+        },
+        "network_actions": {
+            "listener_started": False,
+            "outbound_forwarding_attempted": False,
+            "dns_lookup_attempted": False,
+            "external_services_called": False,
+        },
+        "external_forwarding_design": {
+            "intent_acknowledged": intent,
+            "design_acknowledged": design_ack,
+            "allowlist_required": True,
+            "allowlist": {
+                "hosts": hosts,
+                "schemes": schemes,
+                "wildcards_allowed": False,
+                "localhost_allowed": False,
+                "non_global_ip_allowed": False,
+            },
+            "credential_redaction": {
+                "policy": redaction_policy,
+                "required_policy": LOCAL_PROXY_EXTERNAL_CREDENTIAL_REDACTION_POLICY,
+                "blocked_header_names": sorted(LOCAL_PROXY_SENSITIVE_HEADER_NAMES),
+                "raw_headers_persisted": False,
+                "request_bodies_persisted": False,
+                "response_bodies_persisted": False,
+            },
+            "threat_model": {
+                "required": True,
+                "notes": threat_model_notes,
+                "future_review_required": True,
+            },
+            "provider_evidence_boundary": {
+                "policy": provider_boundary,
+                "required_policy": LOCAL_PROXY_EXTERNAL_PROVIDER_EVIDENCE_BOUNDARY,
+                "diagnostic_only": True,
+                "provider_measured_matched_tasks_required_for_hosted_claims": True,
+                "hosted_api_token_savings_claim_allowed": False,
+                "hosted_api_cost_savings_claim_allowed": False,
+            },
+            "future_runtime_requirements": [
+                "separate future runtime gate and review",
+                "explicit host/scheme allowlist enforcement before any network connection",
+                "credential-bearing requests blocked or stripped before forwarding",
+                "no CONNECT/TLS interception without a separate reviewed gate",
+                "diagnostic shifted-cost accounting only unless provider-measured matched-task evidence exists",
+            ],
+        },
+        "review_plan": {
+            "readiness_blockers": blockers,
+            "next_steps": [
+                "Treat this as design evidence only; do not forward external traffic from this command.",
+                "Keep existing local-proxy serve runtime literal-loopback-only.",
+                "Require a separate future runtime gate before any external forwarding implementation.",
+            ],
+        },
+        "claim_boundary": (
+            "Dry-run external forwarding design gate only; no listener, DNS lookup, external service call, credential "
+            "persistence, traffic forwarding, or hosted API token/cost savings claim is performed."
+        ),
+    }
+
+
+def command_plan_local_proxy_external_forwarding(args: argparse.Namespace) -> int:
+    payload = local_proxy_external_forwarding_design_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard local proxy external-forwarding design gate (dry-run only)")
+        print("No listener was started, no traffic was forwarded, no DNS lookup was performed, and no API key was persisted.")
+        print(f"Status: {payload['status']}")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
 def is_localhost_host(value: Any) -> bool:
     if not isinstance(value, str):
         return False
@@ -3800,6 +3986,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     local_proxy.add_argument("--json", action="store_true", help="Emit JSON output.")
     local_proxy.set_defaults(func=command_plan_local_proxy)
+
+    external_proxy = plan_sub.add_parser(
+        "local-proxy-external-forwarding",
+        help="Dry-run an external-forwarding opt-in design gate without forwarding traffic.",
+    )
+    external_proxy.add_argument(
+        "--external-forwarding-intent",
+        action="store_true",
+        help="Acknowledge intent to design a future external-forwarding proxy surface.",
+    )
+    external_proxy.add_argument(
+        "--external-forwarding-design-ack",
+        action="store_true",
+        help="Acknowledge this command is design-only and does not enable external forwarding.",
+    )
+    external_proxy.add_argument("--allow-host", action="append", help="Explicit non-wildcard public host allowed by the future design. Repeatable.")
+    external_proxy.add_argument("--allow-scheme", action="append", help="Allowed scheme for the future design; HTTPS is required. Repeatable.")
+    external_proxy.add_argument("--threat-model-note", action="append", help="Threat-model note for the future external-forwarding design. Repeatable.")
+    external_proxy.add_argument(
+        "--credential-redaction-policy",
+        help=f"Required policy: {LOCAL_PROXY_EXTERNAL_CREDENTIAL_REDACTION_POLICY}.",
+    )
+    external_proxy.add_argument(
+        "--provider-evidence-boundary",
+        help=f"Required policy: {LOCAL_PROXY_EXTERNAL_PROVIDER_EVIDENCE_BOUNDARY}.",
+    )
+    external_proxy.add_argument("--json", action="store_true", help="Emit JSON output.")
+    external_proxy.set_defaults(func=command_plan_local_proxy_external_forwarding)
 
     learned = plan_sub.add_parser(
         "learned-compression",

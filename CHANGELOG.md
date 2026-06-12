@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added `context-guard experiments plan local-proxy-external-forwarding`, a design-only dry-run gate for future external forwarding proposals with explicit intent, HTTPS allowlist, threat model notes, credential redaction policy, provider-evidence boundary, and no DNS lookup, external service call, traffic forwarding, credential persistence, or hosted savings claim.
 - Added optional `context-guard experiments serve local-proxy --diagnostic-ledger-jsonl ...` shifted-cost diagnostic rows for successful literal-loopback forwarded requests without raw headers, bodies, credential persistence, external forwarding, or hosted savings claims.
 - Added an explicit `context-guard experiments serve local-proxy ...` one-shot loopback forwarding MVP that requires runtime and forwarding acknowledgements, literal loopback bind/target IPs, bounded bytes/timeouts, and credential-free requests while keeping external forwarding, CONNECT/TLS proxying, API-key persistence, and hosted savings claims disallowed.
 - Added an explicit `context-guard experiments record local-proxy-runtime-gate --ledger-jsonl ...` runtime that appends one localhost-only gate row without starting listeners, forwarding traffic, performing DNS lookup, persisting API keys, calling external services, or making hosted savings claims.
