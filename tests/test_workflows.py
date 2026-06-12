@@ -42,6 +42,36 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertTrue(all(FULL_SHA_ACTION_RE.fullmatch(line) for line in uses_lines))
         self.assertEqual(combined.count("persist-credentials: false"), combined.count("actions/checkout@"))
 
+
+    def test_ci_release_gates_have_explicit_timeouts(self):
+        ci = read(".github/workflows/ci.yml")
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 15\n        run: python scripts/prepublish_check.py", ci)
+        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ci)
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python scripts/prepublish_check.py", ci)
+        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 8\n        run: python scripts/release_smoke.py", ci)
+
+
+    def test_ci_release_gates_install_node_before_npm_checks(self):
+        ci = read(".github/workflows/ci.yml")
+        self.assertEqual(ci.count("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e"), 2)
+        self.assertEqual(ci.count('node-version: "22"'), 2)
+        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
+        for job in (ubuntu_job, macos_job):
+            self.assertLess(job.index("name: Set up Node"), job.index("name: Run prepublish release gate"))
+            self.assertLess(job.index("name: Set up Node"), job.index("name: Run staged plugin release smoke"))
+
+    def test_homebrew_formula_template_uses_release_placeholders(self):
+        template = read("packaging/homebrew/context-guard.rb.template")
+        docs = read("docs/distribution.md")
+
+        self.assertIn("v{{VERSION}}.tar.gz", template)
+        self.assertIn("REPLACE_WITH_RELEASE_TARBALL_SHA256", template)
+        self.assertNotIn("v0.4.8", template)
+        self.assertIn("rendered", docs.lower())
+        self.assertIn("Formula/context-guard.rb", docs)
+        self.assertIn("Do not run Homebrew audit/install directly against the placeholder template", docs)
+        self.assertIn("bare semver version", docs)
+
     def test_ci_runs_swift_tests_in_macos_package_job(self):
         ci = read(".github/workflows/ci.yml")
         self.assertIn("  test-and-prepublish-macos:", ci)

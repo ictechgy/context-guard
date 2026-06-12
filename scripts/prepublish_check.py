@@ -27,6 +27,11 @@ PLUGIN_MANIFEST = PLUGIN_DIR / ".claude-plugin" / "plugin.json"
 MARKETPLACE_MANIFEST = ROOT / ".claude-plugin" / "marketplace.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
 NPM_PACKAGE = ROOT / "package.json"
+HOMEBREW_TEMPLATE = ROOT / "packaging" / "homebrew" / "context-guard.rb.template"
+TESTS_DIR = ROOT / "tests"
+BRIEF_MODE_SNIPPET_TEST = TESTS_DIR / "test_brief_mode_snippets.py"
+TEST_DISCOVERY_PATTERN = "test_*.py"
+TEST_DISCOVERY_TIMEOUT_SECONDS = 600
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
@@ -291,6 +296,10 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
+def running_in_ci() -> bool:
+    return os.environ.get("CI", "").lower() == "true" or os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+
+
 def compact_label_text(value: str, limit: int = PATH_LABEL_MAX_CHARS) -> str:
     compact = " ".join(CONTROL_CHAR_RE.sub(" ", value.strip()).split())
     compact = URL_USERINFO_RE.sub(r"\1[REDACTED]@", compact)
@@ -534,9 +543,34 @@ def check_npm_package_metadata(version: str) -> None:
             fail(f"npm package files allowlist includes forbidden path: {item}")
 
 
+def check_homebrew_formula_template(version: str) -> None:
+    try:
+        text = HOMEBREW_TEMPLATE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        fail(f"missing Homebrew formula template: {safe_path_label(HOMEBREW_TEMPLATE)}")
+    except OSError as exc:
+        fail(
+            f"could not read Homebrew formula template: {safe_path_label(HOMEBREW_TEMPLATE)}: "
+            f"{compact_label_text(exc.strerror or exc.__class__.__name__, 80)}"
+        )
+    if "{{VERSION}}" not in text:
+        fail(f"Homebrew formula template must use {{{{VERSION}}}} placeholder: {safe_path_label(HOMEBREW_TEMPLATE)}")
+    concrete_tags = sorted(set(re.findall(r"archive/refs/tags/v(\d+\.\d+\.\d+)\.tar\.gz", text)))
+    if concrete_tags:
+        fail(
+            "Homebrew formula template must not contain concrete release tag(s); "
+            f"render the template during release instead: {', '.join(concrete_tags)}"
+        )
+    stale_mentions = sorted(set(match for match in re.findall(r"v(\d+\.\d+\.\d+)", text) if match != version))
+    if stale_mentions:
+        fail(f"Homebrew formula template contains stale version mention(s): {', '.join(stale_mentions)}")
+
+
 def check_npm_pack_file_list() -> None:
     npm = shutil.which("npm")
     if npm is None:
+        if running_in_ci():
+            fail("npm package check requires npm in CI; ensure actions/setup-node ran before release gates")
         print("npm package check: skipped (npm not found)")
         return
     with tempfile.TemporaryDirectory(prefix="context-guard-npm-pack-") as td:
@@ -791,18 +825,37 @@ def check_python_compiles() -> None:
                 fail(f"python compile failed for {safe_path_label(path)}: {compact_label_text(exc.msg, 160)}")
 
 
+def discoverable_test_paths() -> list[Path]:
+    if not TESTS_DIR.is_dir():
+        fail(f"missing tests directory: {safe_path_label(TESTS_DIR)}")
+    return sorted(path for path in TESTS_DIR.glob(TEST_DISCOVERY_PATTERN) if path.is_file())
+
+
+def check_test_discovery_includes_brief_mode_snippets() -> None:
+    tests = discoverable_test_paths()
+    if BRIEF_MODE_SNIPPET_TEST not in tests:
+        fail(
+            "unittest discovery pattern does not include brief-mode snippet tests: "
+            f"{safe_path_label(BRIEF_MODE_SNIPPET_TEST)}"
+        )
+
+
 def run_tests() -> None:
+    check_test_discovery_includes_brief_mode_snippets()
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    for test_path in (ROOT / "tests" / "test_context_guard_kit.py", ROOT / "tests" / "test_workflows.py"):
+    try:
         proc = subprocess.run(
-            [sys.executable, str(test_path)],
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", TEST_DISCOVERY_PATTERN],
             cwd=ROOT,
             text=True,
             env=env,
+            timeout=TEST_DISCOVERY_TIMEOUT_SECONDS,
         )
-        if proc.returncode != 0:
-            fail(f"test suite {safe_path_label(test_path)} failed with exit code {proc.returncode}")
+    except subprocess.TimeoutExpired:
+        fail(f"test discovery timed out after {TEST_DISCOVERY_TIMEOUT_SECONDS}s")
+    if proc.returncode != 0:
+        fail(f"test discovery failed with exit code {proc.returncode}")
 
 
 def main() -> int:
@@ -816,6 +869,7 @@ def main() -> int:
     plugin = check_manifest()
     check_release_notes(plugin["version"])
     check_npm_package_metadata(plugin["version"])
+    check_homebrew_formula_template(plugin["version"])
     check_bin_copies()
     check_skill_allowed_tool_commands()
     remove_generated_plugin_bin_python_caches()

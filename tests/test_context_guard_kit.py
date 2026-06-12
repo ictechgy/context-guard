@@ -71,6 +71,8 @@ PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
 FILTER_SCRIPTS = [KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"]
 TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"]
+LOCAL_PROXY_NONCE_HEADER = "X-ContextGuard-Proxy-Nonce"
+LOCAL_PROXY_NONCES_BY_PORT: dict[int, str] = {}
 
 
 def reserve_loopback_port() -> int:
@@ -87,13 +89,19 @@ def request_loopback_with_retries(
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
+    include_proxy_nonce: bool = True,
 ):
     deadline = time.time() + timeout
     last_error: Exception | None = None
+    request_headers = dict(headers or {})
+    if include_proxy_nonce and LOCAL_PROXY_NONCE_HEADER not in request_headers:
+        nonce = LOCAL_PROXY_NONCES_BY_PORT.get(port)
+        if nonce:
+            request_headers[LOCAL_PROXY_NONCE_HEADER] = nonce
     while time.time() < deadline:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.0)
         try:
-            conn.request(method, path, body=body, headers=headers or {})
+            conn.request(method, path, body=body, headers=request_headers)
             response = conn.getresponse()
             body = response.read()
             return response.status, body, dict(response.getheaders())
@@ -105,12 +113,51 @@ def request_loopback_with_retries(
     raise AssertionError(f"local proxy did not accept request on port {port}: {last_error}")
 
 
+
+
+def request_loopback_with_duplicate_nonce(port: int, path: str, nonce: str, *, timeout: float = 5.0) -> tuple[int, bytes]:
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        f"{LOCAL_PROXY_NONCE_HEADER}: {nonce}\r\n"
+        f"{LOCAL_PROXY_NONCE_HEADER}: {nonce}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("utf-8")
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0) as sock:
+                sock.sendall(request)
+                sock.shutdown(socket.SHUT_WR)
+                raw = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    raw += chunk
+                header, _, body = raw.partition(b"\r\n\r\n")
+                status_line = header.splitlines()[0].decode("ascii", "replace") if header else ""
+                parts = status_line.split()
+                if len(parts) < 2 or not parts[1].isdigit():
+                    raise AssertionError(f"invalid HTTP response: {status_line!r}")
+                return int(parts[1]), body
+        except (ConnectionRefusedError, OSError) as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise AssertionError(f"local proxy did not accept duplicate-nonce request on port {port}: {last_error}")
+
+
 def kill_process_if_running(proc: subprocess.Popen) -> None:
     try:
         if proc.poll() is None:
             proc.kill()
             proc.communicate(timeout=5)
     finally:
+        ready_port = getattr(proc, "_context_guard_ready_port", None)
+        if ready_port is not None:
+            LOCAL_PROXY_NONCES_BY_PORT.pop(int(ready_port), None)
         ready_tmp = getattr(proc, "_context_guard_ready_tmp", None)
         if ready_tmp is not None:
             ready_tmp.cleanup()
@@ -157,7 +204,23 @@ def popen_local_proxy_with_ready(args: list[str], **kwargs) -> subprocess.Popen:
     setattr(proc, "_context_guard_ready_file", ready_file)
     try:
         ready_payload = wait_for_local_proxy_ready(proc, ready_file)
+        client_auth = ready_payload.get("client_auth")
+        if not isinstance(client_auth, dict):
+            raise AssertionError(f"local proxy readiness missing client_auth: {ready_payload!r}")
+        nonce = client_auth.get("nonce")
+        header = client_auth.get("header")
+        bind = ready_payload.get("bind")
+        bind_port = bind.get("port") if isinstance(bind, dict) else None
+        if not isinstance(nonce, str) or not nonce:
+            raise AssertionError(f"local proxy readiness missing nonce: {ready_payload!r}")
+        if header != LOCAL_PROXY_NONCE_HEADER:
+            raise AssertionError(f"local proxy readiness unexpected nonce header: {header!r}")
+        if not isinstance(bind_port, int):
+            raise AssertionError(f"local proxy readiness missing bind port: {ready_payload!r}")
+        LOCAL_PROXY_NONCES_BY_PORT[bind_port] = nonce
         setattr(proc, "_context_guard_ready_payload", ready_payload)
+        setattr(proc, "_context_guard_ready_port", bind_port)
+        setattr(proc, "_context_guard_proxy_nonce", nonce)
         setattr(proc, "_context_guard_ready_mode", stat.S_IMODE(ready_file.stat().st_mode))
     except Exception:
         kill_process_if_running(proc)
@@ -1236,11 +1299,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             local_proxy["commands"],
                         )
                         self.assertIn(
-                            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
+                            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once --ready-file <path>",
                             local_proxy["commands"],
                         )
                         self.assertIn(
-                            "context-guard experiments serve local-proxy --diagnostic-ledger-jsonl <path> ...",
+                            "context-guard experiments serve local-proxy --ready-file <ready-file> --diagnostic-ledger-jsonl <path> ...",
                             local_proxy["commands"],
                         )
                         self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
@@ -1268,6 +1331,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("literal loopback", local_proxy["config_effect"])
                         self.assertIn("blocks credential material", local_proxy["config_effect"])
                         self.assertIn("design-only", local_proxy["config_effect"])
+                        self.assertIn("private ready-file nonce handoff", local_proxy["evidence_contract"])
                         self.assertIn("forwarding acknowledgement", local_proxy["evidence_contract"])
                         self.assertIn("no credential forwarding or persistence", local_proxy["evidence_contract"])
                         self.assertIn("threat model", local_proxy["evidence_contract"])
@@ -4651,6 +4715,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(ready_payload["bind"]["host"], "127.0.0.1")
                     self.assertEqual(ready_payload["bind"]["port"], proxy_port)
                     self.assertEqual(getattr(proc, "_context_guard_ready_mode"), 0o600)
+                    nonce = getattr(proc, "_context_guard_proxy_nonce")
+                    self.assertNotIn(nonce, stdout + stderr)
+                    self.assertNotIn(LOCAL_PROXY_NONCE_HEADER.lower(), seen_requests[-1]["headers"])
                     self.assertNotIn("ready_file", payload)
                     self.assertTrue(payload["policy"]["listener_started"])
                     self.assertTrue(payload["policy"]["traffic_forwarded"])
@@ -4787,6 +4854,132 @@ class ClaudeTokenKitTests(unittest.TestCase):
         upstream_thread.start()
         try:
             for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script, case="missing_nonce"):
+                    proxy_port = reserve_loopback_port()
+                    proc = popen_local_proxy_with_ready(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/missing-nonce",
+                            include_proxy_nonce=False,
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"missing_proxy_nonce", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "missing_proxy_nonce")
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(seen_requests, [])
+                    self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), stdout + stderr)
+
+                with self.subTest(script=script, case="invalid_nonce"):
+                    proxy_port = reserve_loopback_port()
+                    proc = popen_local_proxy_with_ready(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/invalid-nonce",
+                            headers={LOCAL_PROXY_NONCE_HEADER: "wrong-nonce"},
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"invalid_proxy_nonce", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "invalid_proxy_nonce")
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(seen_requests, [])
+                    self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), stdout + stderr)
+
+                with self.subTest(script=script, case="duplicate_nonce"):
+                    proxy_port = reserve_loopback_port()
+                    proc = popen_local_proxy_with_ready(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    nonce = getattr(proc, "_context_guard_proxy_nonce")
+                    try:
+                        status, body = request_loopback_with_duplicate_nonce(proxy_port, "/duplicate-nonce", nonce)
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"duplicate_proxy_nonce", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "duplicate_proxy_nonce")
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(seen_requests, [])
+                    self.assertNotIn(nonce, stdout + stderr)
+
                 with self.subTest(script=script, case="sensitive_header"):
                     proxy_port = reserve_loopback_port()
                     proc = popen_local_proxy_with_ready(
@@ -4834,6 +5027,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertNotIn("sk-ant-secret", stdout + stderr)
 
             unsafe_cases = [
+                (
+                    "missing_ready_file_for_proxy_nonce",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "missing_ready_file_for_proxy_nonce",
+                ),
                 (
                     "missing_forwarding_ack",
                     ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--once"],
@@ -5048,6 +5246,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(ready_payload["status"], "listener_ready")
                 self.assertEqual(ready_payload["bind"]["host"], "127.0.0.1")
                 self.assertEqual(ready_payload["bind"]["port"], payload["bind"]["port"])
+                self.assertEqual(ready_payload["client_auth"]["header"], LOCAL_PROXY_NONCE_HEADER)
+                self.assertTrue(ready_payload["client_auth"]["required"])
+                self.assertIsInstance(ready_payload["client_auth"]["nonce"], str)
+                self.assertTrue(ready_payload["client_auth"]["nonce"])
                 self.assertEqual(ready_mode, 0o600)
 
     def test_experimental_local_proxy_serve_blocks_bodies_limits_responses_and_idle_clients(self):
@@ -5476,8 +5678,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn("sk-ant", serialized)
                         self.assertNotIn("Authorization: Bearer", serialized)
                         self.assertNotIn("session=", serialized)
+                        self.assertNotIn(LOCAL_PROXY_NONCE_HEADER, serialized)
+                        self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), serialized)
                         self.assertNotIn("/diagnostic-row", stdout + stderr)
                         self.assertNotIn("raw-target", stdout + stderr)
+                        self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), stdout + stderr)
 
                 with self.subTest(script=script, case="blocked_request_no_row"):
                     with tempfile.TemporaryDirectory() as tmp:
@@ -5565,6 +5770,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         root = Path(tmp)
                         target = root / "target.jsonl"
                         ledger = root / "diagnostics.jsonl"
+                        ready_file = root / "ready.json"
                         ledger.symlink_to(target)
                         proc = subprocess.run(
                             [
@@ -5585,6 +5791,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                                 "--once",
                                 "--diagnostic-ledger-jsonl",
                                 str(ledger),
+                                "--ready-file",
+                                str(ready_file),
                                 "--json",
                             ],
                             text=True,
@@ -5606,6 +5814,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 with self.subTest(script=script, case="directory_ledger_rejected"):
                     with tempfile.TemporaryDirectory() as tmp:
                         ledger = Path(tmp) / "ledger-dir"
+                        ready_file = Path(tmp) / "ready.json"
                         ledger.mkdir()
                         proc = subprocess.run(
                             [
@@ -5626,6 +5835,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                                 "--once",
                                 "--diagnostic-ledger-jsonl",
                                 str(ledger),
+                                "--ready-file",
+                                str(ready_file),
                                 "--json",
                             ],
                             text=True,
