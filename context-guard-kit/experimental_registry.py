@@ -22,6 +22,7 @@ import re
 import secrets
 import shlex
 import socket
+from socketserver import TCPServer
 from pathlib import Path
 import stat
 import sys
@@ -3415,6 +3416,12 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
 
     address_family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
     class LocalProxyHTTPServer(HTTPServer):
+        def server_bind(self) -> None:
+            TCPServer.server_bind(self)
+            host, port = self.server_address[:2]
+            self.server_name = str(host)
+            self.server_port = int(port)
+
         def get_request(self) -> tuple[Any, Any]:
             request, client_address = super().get_request()
             request.settimeout(timeout_seconds)

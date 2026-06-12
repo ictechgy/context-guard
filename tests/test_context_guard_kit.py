@@ -5013,6 +5013,43 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertRegex(payload["forward_result"]["error"], message_pattern)
                         self.assertNotIn(ready_file_text, proc.stdout + proc.stderr)
 
+    def test_experimental_local_proxy_serve_listener_bind_avoids_reverse_dns(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_local_proxy_no_dns_{index}")
+                original_getfqdn = module.socket.getfqdn
+
+                def fail_getfqdn(name=""):
+                    raise AssertionError(f"unexpected reverse DNS lookup for {name!r}")
+
+                module.socket.getfqdn = fail_getfqdn
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ready_file = Path(tmp) / "ready.json"
+                        payload = {
+                            "bind": {"host": "127.0.0.1", "port": reserve_loopback_port()},
+                            "target": {"host": "127.0.0.1", "port": reserve_loopback_port()},
+                            "runtime_limits": {
+                                "max_request_bytes": 1,
+                                "max_response_bytes": 1,
+                                "timeout_seconds": 0.1,
+                            },
+                        }
+                        result = module.serve_local_proxy_once(payload, ready_file=str(ready_file))
+                        ready_payload = json.loads(ready_file.read_text(encoding="utf-8"))
+                        ready_mode = stat.S_IMODE(ready_file.stat().st_mode)
+                finally:
+                    module.socket.getfqdn = original_getfqdn
+
+                self.assertTrue(result["listener_started"])
+                self.assertTrue(result["ready_file_written"])
+                self.assertEqual(result["blocked_reason"], "timeout_waiting_for_request")
+                self.assertEqual(ready_payload["schema_version"], "contextguard.experiments.local-proxy-ready.v1")
+                self.assertEqual(ready_payload["status"], "listener_ready")
+                self.assertEqual(ready_payload["bind"]["host"], "127.0.0.1")
+                self.assertEqual(ready_payload["bind"]["port"], payload["bind"]["port"])
+                self.assertEqual(ready_mode, 0o600)
+
     def test_experimental_local_proxy_serve_blocks_bodies_limits_responses_and_idle_clients(self):
         seen_requests: list[str] = []
 
