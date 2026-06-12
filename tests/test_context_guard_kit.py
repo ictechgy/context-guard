@@ -1092,14 +1092,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("missed-context", visual_ocr["evidence_contract"].lower())
 
                         learned = experiments["learned-compression"]
-                        self.assertEqual(learned["runtime_status"], "available-dry-run")
+                        self.assertEqual(learned["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan learned-compression", learned["commands"])
+                        self.assertIn(
+                            "context-guard experiments emit learned-compression --exact-fallback-receipt <id> --reexpand-command <cmd>",
+                            learned["commands"],
+                        )
                         self.assertIn("plan learned-compression", learned["opt_in_flags"])
+                        self.assertIn("emit learned-compression", learned["opt_in_flags"])
                         self.assertIn("--sanitized", learned["opt_in_flags"])
                         self.assertIn("--trusted-source", learned["opt_in_flags"])
+                        self.assertIn("--replacement-text|--replacement-file", learned["opt_in_flags"])
+                        self.assertIn("explicit emit command", learned["config_effect"])
+                        self.assertIn("verified exact local fallback", learned["evidence_contract"])
                         self.assertIn("--exact-fallback-receipt", learned["opt_in_flags"])
                         self.assertIn("--reexpand-command", learned["opt_in_flags"])
-                        self.assertIn("does not run learned compressors", learned["config_effect"])
+                        self.assertIn("do not run learned compressors", learned["config_effect"])
                         self.assertIn("protected", learned["evidence_contract"].lower())
 
                         self_hosted = experiments["self-hosted-metrics-ledger"]
@@ -2747,6 +2755,311 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for forbidden in ("import requests", "urllib.request", "http.client", "import socket", "import subprocess"):
             self.assertNotIn(forbidden, source)
 
+    def test_experimental_learned_compression_emit_runtime(self):
+        safe_prose = (
+            "this sanitized paragraph describes goals and tradeoffs for a workflow without exact tokens. "
+            "the note is trusted prose and keeps detailed source material in the fallback artifact.\n"
+        )
+        candidate = "brief prose of goals and tradeoffs.\n"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    stored = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                        input=safe_prose,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_id = json.loads(stored.stdout)["artifact_id"]
+                    reexpand = f"context-guard-artifact get {receipt_id} --full"
+
+                    plan = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "learned-compression",
+                            "--sanitized",
+                            "--trusted-source",
+                            "--exact-fallback-receipt",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--json",
+                        ],
+                        input=safe_prose,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    plan_payload = json.loads(plan.stdout)
+                    self.assertEqual(plan_payload["mode"], "dry_run")
+                    self.assertEqual(plan_payload["status"], "ready_for_human_review")
+                    self.assertIsNone(plan_payload["candidate_replacement"])
+
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "learned-compression",
+                            "--sanitized",
+                            "--trusted-source",
+                            "--exact-fallback-receipt",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-text",
+                            candidate,
+                            "--json",
+                        ],
+                        input=safe_prose,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "learned-compression")
+                    self.assertEqual(payload["mode"], "emit")
+                    self.assertEqual(payload["status"], "candidate_emitted")
+                    self.assertTrue(payload["exact_fallback"]["available"])
+                    self.assertTrue(payload["exact_fallback"]["valid_command_shape"])
+                    self.assertTrue(payload["exact_fallback"]["verified"])
+                    self.assertEqual(payload["exact_fallback"]["verification"]["content_sha256"], payload["input"]["sha256"])
+                    self.assertFalse(payload["policy"]["runtime_compression_allowed"])
+                    self.assertTrue(payload["policy"]["caller_supplied_candidate_allowed"])
+                    self.assertFalse(payload["policy"]["learned_compressor_called"])
+                    self.assertFalse(payload["policy"]["embedding_or_reranker_called"])
+                    self.assertFalse(payload["policy"]["model_call_allowed"])
+                    self.assertFalse(payload["policy"]["subprocess_allowed"])
+                    self.assertEqual(payload["candidate_replacement"]["text"], candidate)
+                    self.assertTrue(payload["candidate_replacement"]["caller_supplied"])
+                    self.assertEqual(payload["candidate_scan"]["protected_signals"], [])
+                    self.assertLess(
+                        payload["compression_evidence"]["bytes_after"],
+                        payload["compression_evidence"]["bytes_before"],
+                    )
+                    self.assertTrue(payload["compression_evidence"]["byte_reduction_proxy_only"])
+                    self.assertFalse(payload["compression_evidence"]["hosted_api_token_savings_claim_allowed"])
+                    self.assertFalse(payload["compression_evidence"]["hosted_api_cost_savings_claim_allowed"])
+                    self.assertIn("does not run a learned compressor", payload["claim_boundary"])
+
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    stored = subprocess.run(
+                        [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                        input=safe_prose,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_id = json.loads(stored.stdout)["artifact_id"]
+                    reexpand = f"context-guard-artifact get {receipt_id} --full"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "emit",
+                            "learned-compression",
+                            "--sanitized",
+                            "--trusted-source",
+                            "--exact-fallback-receipt",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-text",
+                            candidate,
+                            "--json",
+                        ],
+                        input=safe_prose,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "candidate_emitted")
+                    self.assertTrue(payload["exact_fallback"]["verified"])
+
+    def test_experimental_learned_compression_emit_blocks_unsafe_inputs(self):
+        safe_prose = (
+            "this sanitized paragraph describes goals and tradeoffs for a workflow without exact tokens. "
+            "the note is trusted prose and keeps detailed source material in the fallback artifact.\n"
+        )
+        candidate = "brief prose of goals and tradeoffs.\n"
+        receipt_id = "abcdef1234567890"
+        reexpand = f"context-guard-artifact get {receipt_id} --full"
+        cases = [
+            (
+                "missing_artifact",
+                safe_prose,
+                receipt_id,
+                reexpand,
+                candidate,
+                "fallback_receipt_not_found",
+            ),
+            (
+                "protected_candidate",
+                safe_prose,
+                receipt_id,
+                reexpand,
+                "return value\n",
+                "candidate_protected_code_like",
+            ),
+            (
+                "not_compact",
+                safe_prose,
+                receipt_id,
+                reexpand,
+                safe_prose + "extra prose\n",
+                "candidate_not_smaller_than_input",
+            ),
+            (
+                "untrusted_original",
+                safe_prose,
+                receipt_id,
+                reexpand,
+                candidate,
+                "untrusted_input",
+            ),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, source_text, case_receipt, case_reexpand, case_candidate, blocker in cases:
+                with self.subTest(script=script, case=name):
+                    args = [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "learned-compression",
+                        "--sanitized",
+                        "--exact-fallback-receipt",
+                        case_receipt,
+                        "--reexpand-command",
+                        case_reexpand,
+                        "--replacement-text",
+                        case_candidate,
+                        "--json",
+                    ]
+                    if name != "untrusted_original":
+                        args.insert(5, "--trusted-source")
+                    proc = subprocess.run(
+                        args,
+                        input=source_text,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 1)
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["status"], "blocked_until_candidate_ready")
+                    self.assertNotIn("candidate_replacement", payload)
+                    self.assertFalse(payload["policy"]["caller_supplied_candidate_allowed"])
+                    self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
+
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                other_text = "this alternate trusted paragraph has different source material for fallback.\n"
+                stored = subprocess.run(
+                    [sys.executable, str(KIT_DIR / "context_escrow.py"), "store", "--json"],
+                    input=other_text,
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                mismatch_receipt = json.loads(stored.stdout)["artifact_id"]
+                mismatch_reexpand = f"context-guard-artifact get {mismatch_receipt} --full"
+                mismatch = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "learned-compression",
+                        "--sanitized",
+                        "--trusted-source",
+                        "--exact-fallback-receipt",
+                        mismatch_receipt,
+                        "--reexpand-command",
+                        mismatch_reexpand,
+                        "--replacement-text",
+                        candidate,
+                        "--json",
+                    ],
+                    input=safe_prose,
+                    text=True,
+                    capture_output=True,
+                    cwd=root,
+                )
+                self.assertEqual(mismatch.returncode, 1)
+                mismatch_payload = json.loads(mismatch.stdout)
+                self.assertIn("fallback_content_mismatch", mismatch_payload["review_plan"]["readiness_blockers"])
+                self.assertNotIn("candidate_replacement", mismatch_payload)
+
+                target = root / "candidate.txt"
+                target.write_text(candidate, encoding="utf-8")
+                symlink = root / "candidate-link.txt"
+                symlink.symlink_to(target)
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "emit",
+                        "learned-compression",
+                        "--sanitized",
+                        "--trusted-source",
+                        "--exact-fallback-receipt",
+                        receipt_id,
+                        "--reexpand-command",
+                        reexpand,
+                        "--replacement-file",
+                        str(symlink),
+                        "--json",
+                    ],
+                    input=safe_prose,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("learned-compression candidate replacement", proc.stderr)
+                self.assertIn("must be a regular file", proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+                if hasattr(os, "mkfifo"):
+                    fifo = root / "candidate.fifo"
+                    os.mkfifo(fifo)
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "emit",
+                            "learned-compression",
+                            "--sanitized",
+                            "--trusted-source",
+                            "--exact-fallback-receipt",
+                            receipt_id,
+                            "--reexpand-command",
+                            reexpand,
+                            "--replacement-file",
+                            str(fifo),
+                            "--json",
+                        ],
+                        input=safe_prose,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("learned-compression candidate replacement", proc.stderr)
+                    self.assertIn("must be a regular file", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
     def test_experimental_learned_compression_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -2761,8 +3074,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8").lower()
                 self.assertRegex(text, r"learned[-/ ]compression|learned compression")
-                self.assertRegex(text, r"dry-run (?:checker|safety checker)|dry-run checker|dry-run policy|dry-run 안전성 checker")
-                self.assertRegex(text, r"not shipped|not ship|제공하지|shipped가 아닙니다")
+                self.assertRegex(text, r"dry-run (?:checker|safety checker)|dry-run checker|dry-run policy|dry-run 안전성 checker|deny-by-default")
+                self.assertRegex(text, r"not shipped|not ship|does not ship|never runs|does not run|제공하지|하지 않습니다|shipped가 아닙니다")
+                if doc.name != "experimental-benchmark-fixtures.md":
+                    self.assertIn("emit learned-compression", text)
+                    self.assertRegex(text, r"caller-supplied|호출자|사용자")
                 self.assertNotIn("context-guard-learned-compression", text)
                 self.assertNotIn("learned compressor runtime is shipped", text)
 

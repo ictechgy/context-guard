@@ -91,6 +91,12 @@ Broader context-diff compaction remains gated if it would automatically generate
 
 Broader visual-token reduction remains gated if it would generate crops, invoke OCR/image models, prune visual tokens inside model architectures, replace full evidence without review, or claim provider savings.
 
+## Graduated local experiment — learned-compression candidate emitter
+
+`context-guard experiments emit learned-compression --exact-fallback-receipt ... --reexpand-command ...` is the explicit local runtime promoted from the learned-compression gate. It does not run learned compressors, embeddings, rerankers, model calls, subprocesses, or external services; the compact prose candidate must be supplied by the caller, both original and candidate text must pass the deny-by-default protected-signal scan, and the exact local fallback artifact content must match the input. The emitted byte reduction is proxy evidence only and cannot support hosted API token/cost savings claims without the shared promotion gate.
+
+Broader learned/synthetic compression remains gated if it would generate replacement text, execute a compressor command, use embeddings/rerankers/model calls, compress protected or prompt-like content, or claim provider savings.
+
 ## Graduated local experiment — receipt-backed output trimming
 
 `context-guard-trim-output --digest ... --artifact-receipt` is the first reversible local transform experiment promoted from this roadmap. It stores only sanitized command output in the existing local artifact store and emits exact re-expand commands for omitted details. It is opt-in, does not change default trimming behavior, and does not create a hosted API token/cost savings claim; benchmark reports must still use matched successful tasks and provider-measured primary token fields before reporting token savings.
@@ -154,5 +160,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.

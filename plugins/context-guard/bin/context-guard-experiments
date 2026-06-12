@@ -37,6 +37,8 @@ DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR = Path(".context-guard") / "artifacts"
 LEGACY_CONTEXT_DIFF_ARTIFACT_DIR = Path(".claude-token-optimizer") / "artifacts"
 MAX_VISUAL_OCR_TEXT_BYTES = 64_000
 MAX_LEARNED_COMPRESSION_INPUT_BYTES = 128_000
+MAX_LEARNED_COMPRESSION_REPLACEMENT_BYTES = 64_000
+MAX_LEARNED_COMPRESSION_ARTIFACT_METADATA_BYTES = 64_000
 MAX_SELF_HOSTED_METRICS_INPUT_BYTES = 64_000
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
 SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
@@ -213,23 +215,34 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     ),
     Experiment(
         id="learned-compression",
-        name="Learned/synthetic compression safe gate",
-        summary="Deny-by-default dry-run safety gate for already-sanitized unprotected prose only.",
+        name="Learned/synthetic compression candidate gate",
+        summary="Explicit local runtime for caller-supplied compact prose candidates with verified exact fallback.",
         stability="experimental",
         default_enabled=False,
         risk_level="high",
         claim_boundary="Semantic compression cannot claim savings or correctness without matched-task quality and provider token evidence.",
         gate_requirements=("explicit opt-in", "sanitized unprotected prose only", "protected-zone denial", "exact fallback or receipt"),
-        runtime_status="available-dry-run",
-        commands=("context-guard experiments plan learned-compression",),
-        opt_in_flags=("plan learned-compression", "--sanitized", "--trusted-source", "--exact-fallback-receipt", "--reexpand-command"),
+        runtime_status="available-explicit-runtime",
+        commands=(
+            "context-guard experiments plan learned-compression",
+            "context-guard experiments emit learned-compression --exact-fallback-receipt <id> --reexpand-command <cmd>",
+        ),
+        opt_in_flags=(
+            "plan learned-compression",
+            "emit learned-compression",
+            "--sanitized",
+            "--trusted-source",
+            "--exact-fallback-receipt",
+            "--reexpand-command",
+            "--replacement-text|--replacement-file",
+        ),
         config_effect=(
-            "Registry enablement records project-local intent only; learned compression remains a dry-run policy check "
-            "and does not run learned compressors, embeddings, model calls, or replacements."
+            "Registry enablement records project-local intent only; learned-compression candidates emit only through "
+            "the explicit emit command and do not run learned compressors, embeddings, rerankers, model calls, subprocesses, or external services."
         ),
         evidence_contract=(
-            "Dry-run eligibility requires caller-asserted sanitized trusted prose, exact local fallback handles, and "
-            "denial of protected or prompt-like signals."
+            "Emitted candidates require caller-asserted sanitized trusted prose, verified exact local fallback content, "
+            "a smaller caller-supplied prose candidate, and denial of protected or prompt-like signals."
         ),
     ),
     Experiment(
@@ -2608,6 +2621,104 @@ def valid_learned_reexpand_command(receipt_id: str | None, command: str | None) 
     return False, "invalid_reexpand_command"
 
 
+def verify_learned_fallback_artifact(
+    receipt_id: str | None,
+    *,
+    expected_sha256: str,
+    expected_bytes: int,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    if not receipt_id or not LEARNED_ARTIFACT_ID_RE.fullmatch(receipt_id):
+        return False, "invalid_reexpand_command", {"checked": False, "read_directories": []}
+    read_dirs = context_diff_artifact_read_dirs()
+    details: dict[str, Any] = {
+        "checked": True,
+        "read_directories": [str(path) for path in read_dirs],
+        "matched_directory": None,
+        "content_sha256": None,
+        "content_bytes": None,
+    }
+    for directory in read_dirs:
+        content_path, meta_path = context_diff_artifact_paths(directory, receipt_id)
+        meta_loaded = read_bounded_regular_file(
+            meta_path,
+            max_bytes=MAX_LEARNED_COMPRESSION_ARTIFACT_METADATA_BYTES,
+            label="learned-compression fallback metadata",
+            missing_ok=True,
+        )
+        content_loaded = read_bounded_regular_file(
+            content_path,
+            max_bytes=max(MAX_LEARNED_COMPRESSION_INPUT_BYTES, expected_bytes),
+            label="learned-compression fallback content",
+            missing_ok=True,
+        )
+        if meta_loaded is None and content_loaded is None:
+            continue
+        if meta_loaded is None or content_loaded is None:
+            return False, "fallback_receipt_invalid", details
+        meta_raw, meta_truncated = meta_loaded
+        content_raw, content_truncated = content_loaded
+        if meta_truncated or content_truncated:
+            return False, "fallback_receipt_invalid", details
+        try:
+            metadata = json.loads(meta_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, "fallback_receipt_invalid", details
+        if not isinstance(metadata, dict) or metadata.get("artifact_id") != receipt_id:
+            return False, "fallback_receipt_invalid", details
+        stored = metadata.get("stored_output")
+        stored_sha = stored.get("sha256") if isinstance(stored, dict) else None
+        stored_bytes = stored.get("bytes") if isinstance(stored, dict) else None
+        actual_sha = hashlib.sha256(content_raw).hexdigest()
+        actual_bytes = len(content_raw)
+        details.update({
+            "matched_directory": str(directory),
+            "content_sha256": actual_sha,
+            "content_bytes": actual_bytes,
+        })
+        if stored_sha != actual_sha or stored_bytes != actual_bytes:
+            return False, "fallback_receipt_invalid", details
+        if actual_sha != expected_sha256 or actual_bytes != expected_bytes:
+            return False, "fallback_content_mismatch", details
+        return True, None, details
+    return False, "fallback_receipt_not_found", details
+
+
+def read_learned_candidate_replacement(args: argparse.Namespace) -> tuple[str | None, dict[str, Any]]:
+    if args.replacement_text is not None and args.replacement_file:
+        raise RegistryError("learned-compression emit accepts only one of --replacement-text or --replacement-file")
+    if args.replacement_text is not None:
+        text = str(args.replacement_text)
+        raw = text.encode("utf-8")
+        truncated = len(raw) > MAX_LEARNED_COMPRESSION_REPLACEMENT_BYTES
+        raw = raw[:MAX_LEARNED_COMPRESSION_REPLACEMENT_BYTES]
+        text = raw.decode("utf-8", errors="replace")
+        source_label = "inline"
+    elif args.replacement_file:
+        path = Path(args.replacement_file)
+        loaded = read_bounded_regular_file(
+            path,
+            max_bytes=MAX_LEARNED_COMPRESSION_REPLACEMENT_BYTES,
+            label="learned-compression candidate replacement",
+        )
+        assert loaded is not None
+        raw, truncated = loaded
+        text = raw.decode("utf-8", errors="replace")
+        source_label = path.name
+    else:
+        text = None
+        raw = b""
+        truncated = False
+        source_label = None
+    return text, {
+        "source_label": source_label,
+        "bytes": len(raw),
+        "lines": len(text.splitlines()) if text is not None else 0,
+        "sha256": hashlib.sha256(raw).hexdigest() if text is not None else None,
+        "truncated": truncated,
+        "max_bytes": MAX_LEARNED_COMPRESSION_REPLACEMENT_BYTES,
+    }
+
+
 def learned_compression_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
     text, input_meta = read_learned_input(args)
     receipt_id = args.exact_fallback_receipt.strip() if args.exact_fallback_receipt else None
@@ -2699,6 +2810,133 @@ def command_plan_learned_compression(args: argparse.Namespace) -> int:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0
+
+
+def learned_compression_emit_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = learned_compression_plan_payload(args)
+    receipt_id = args.exact_fallback_receipt.strip() if args.exact_fallback_receipt else None
+    reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
+    reexpand_valid, _fallback_blocker = valid_learned_reexpand_command(receipt_id, reexpand_command)
+    fallback_verified = False
+    fallback_blocker = None
+    fallback_verification: dict[str, Any] = {"checked": False, "read_directories": []}
+    if reexpand_valid:
+        fallback_verified, fallback_blocker, fallback_verification = verify_learned_fallback_artifact(
+            receipt_id,
+            expected_sha256=payload["input"]["sha256"],
+            expected_bytes=payload["input"]["bytes"],
+        )
+
+    candidate_text, candidate_meta = read_learned_candidate_replacement(args)
+    candidate_counts = learned_signal_counts(candidate_text or "")
+    candidate_content_type = learned_content_type(candidate_text or "", candidate_counts)
+
+    blockers = list(payload["review_plan"]["readiness_blockers"])
+    if fallback_blocker:
+        blockers.append(fallback_blocker)
+    if candidate_text is None or not candidate_text.strip():
+        blockers.append("missing_candidate_replacement")
+    if candidate_meta["truncated"]:
+        blockers.append("candidate_replacement_truncated")
+    if (
+        candidate_text is not None
+        and not candidate_meta["truncated"]
+        and candidate_meta["bytes"] >= payload["input"]["bytes"]
+    ):
+        blockers.append("candidate_not_smaller_than_input")
+    if candidate_text is not None and candidate_text.strip() and candidate_content_type != "prose":
+        blockers.append("candidate_non_prose_input")
+    for blocker, count in candidate_counts.items():
+        if count:
+            blockers.append(f"candidate_{blocker}")
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+
+    payload["mode"] = "emit"
+    payload["status"] = "candidate_emitted" if ready else "blocked_until_candidate_ready"
+    payload["policy"] = dict(payload["policy"])
+    payload["policy"].update({
+        "runtime_compression_allowed": False,
+        "caller_supplied_candidate_required": True,
+        "caller_supplied_candidate_allowed": ready,
+        "lossy_replacement_allowed": ready,
+        "learned_compressor_called": False,
+        "embedding_or_reranker_called": False,
+        "model_call_allowed": False,
+        "subprocess_allowed": False,
+    })
+    payload["exact_fallback"] = {
+        "required": True,
+        "available": bool(receipt_id and reexpand_command and reexpand_valid and fallback_verified),
+        "receipt_id": receipt_id,
+        "cli": reexpand_command,
+        "verified": fallback_verified,
+        "valid_command_shape": reexpand_valid,
+        "verification": fallback_verification,
+        "note": "Emit mode validates exact local fallback command shape and verifies local artifact content matches the input prose.",
+    }
+    payload["candidate_scan"] = {
+        "content_type": candidate_content_type,
+        "counts": candidate_counts,
+        "protected_signals": [name for name, count in candidate_counts.items() if count],
+    }
+    payload["replacement"] = candidate_meta
+    payload["review_plan"]["readiness_blockers"] = blockers
+    payload["review_plan"]["protected_signals"] = [name for name, count in payload["protected_signal_scan"]["counts"].items() if count]
+    payload["review_plan"]["candidate_protected_signals"] = [
+        name for name, count in candidate_counts.items() if count
+    ]
+    payload["review_plan"]["next_steps"] = [
+        "Human-review the caller-supplied candidate against the exact fallback before using it.",
+        "Reject candidates that omit protected facts, prompt-like text, paths, code, diffs, identifiers, or numeric constants.",
+        "Treat byte reduction as local proxy evidence only; do not claim hosted token/cost savings.",
+    ]
+    payload["claim_boundary"] = (
+        "Explicit local learned-compression candidate emission only; ContextGuard does not run a learned compressor, "
+        "model, embedding, reranker, subprocess, or external service, and byte reduction is not hosted API token or cost evidence."
+    )
+    bytes_after = candidate_meta["bytes"] if candidate_text is not None else 0
+    payload["compression_evidence"] = {
+        "bytes_before": payload["input"]["bytes"],
+        "bytes_after": bytes_after,
+        "byte_reduction": max(0, payload["input"]["bytes"] - bytes_after),
+        "byte_reduction_proxy_only": True,
+        "hosted_api_token_savings_claim_allowed": False,
+        "hosted_api_cost_savings_claim_allowed": False,
+    }
+    if ready and candidate_text is not None:
+        payload["candidate_replacement"] = {
+            "text": candidate_text,
+            "bytes": candidate_meta["bytes"],
+            "lines": candidate_meta["lines"],
+            "sha256": candidate_meta["sha256"],
+            "source_label": candidate_meta["source_label"],
+            "caller_supplied": True,
+        }
+    else:
+        payload.pop("candidate_replacement", None)
+    return payload
+
+
+def command_emit_learned_compression(args: argparse.Namespace) -> int:
+    payload = learned_compression_emit_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "candidate_emitted":
+            print("ContextGuard learned-compression candidate emitted")
+            print(
+                f"Candidate: bytes={payload['replacement']['bytes']} "
+                f"sha256={payload['replacement']['sha256']}"
+            )
+            print(f"Exact fallback: {payload['exact_fallback']['cli']}")
+        else:
+            print("ContextGuard learned-compression candidate blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "candidate_emitted" else 1
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -2865,6 +3103,22 @@ def build_parser() -> argparse.ArgumentParser:
     emit_visual_ocr.add_argument("--missed-context-note", action="append", help="Potential context outside crop/OCR text. Repeatable.")
     emit_visual_ocr.add_argument("--json", action="store_true", help="Emit JSON output.")
     emit_visual_ocr.set_defaults(func=command_emit_visual_crop_ocr)
+
+    emit_learned = emit_sub.add_parser(
+        "learned-compression",
+        help="Emit a caller-supplied compact prose candidate only with verified exact fallback.",
+    )
+    emit_learned.add_argument("--input", help="Read original prose text from a file instead of stdin.")
+    emit_learned.add_argument("--source-label", help="Safe label to use for the input source in reports.")
+    emit_learned.add_argument("--sanitized", action="store_true", help="Assert input is already sanitized.")
+    emit_learned.add_argument("--trusted-source", action="store_true", help="Assert input came from a trusted source.")
+    emit_learned.add_argument("--exact-fallback-receipt", required=True, help="Local exact fallback receipt id for the original text.")
+    emit_learned.add_argument("--reexpand-command", required=True, help="Local exact re-expand command bound to the receipt id.")
+    learned_replacement_group = emit_learned.add_mutually_exclusive_group(required=True)
+    learned_replacement_group.add_argument("--replacement-text", help="Caller-supplied compact prose candidate to emit.")
+    learned_replacement_group.add_argument("--replacement-file", help="Read caller-supplied compact prose candidate from a file.")
+    emit_learned.add_argument("--json", action="store_true", help="Emit JSON output.")
+    emit_learned.set_defaults(func=command_emit_learned_compression)
 
     record_parser = sub.add_parser("record", help="Run explicit local runtime recorders for experimental lanes.")
     record_sub = record_parser.add_subparsers(dest="record_command", required=True)
