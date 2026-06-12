@@ -4,14 +4,18 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-06-12
+
 - Added `context-guard experiments plan local-proxy-external-forwarding`, a design-only dry-run gate for future external forwarding proposals with explicit intent, HTTPS allowlist, threat model notes, credential redaction policy, provider-evidence boundary, and no DNS lookup, external service call, traffic forwarding, credential persistence, or hosted savings claim.
 - Added optional `context-guard experiments serve local-proxy --diagnostic-ledger-jsonl ...` shifted-cost diagnostic rows for successful literal-loopback forwarded requests without raw headers, bodies, credential persistence, external forwarding, or hosted savings claims.
 - Added an explicit `context-guard experiments serve local-proxy ...` one-shot loopback forwarding MVP that requires runtime and forwarding acknowledgements, literal loopback bind/target IPs, bounded bytes/timeouts, and credential-free requests while keeping external forwarding, CONNECT/TLS proxying, API-key persistence, and hosted savings claims disallowed.
+- Added a hidden diagnostic readiness receipt for local-proxy serve tests and kept listener startup deterministic on macOS by avoiding reverse-DNS during bind.
 - Added an explicit `context-guard experiments record local-proxy-runtime-gate --ledger-jsonl ...` runtime that appends one localhost-only gate row without starting listeners, forwarding traffic, performing DNS lookup, persisting API keys, calling external services, or making hosted savings claims.
 - Added an explicit `context-guard experiments emit learned-compression ...` runtime that emits only caller-supplied compact prose candidates after deny-by-default protected-signal checks and verified exact local fallback content, without running compressors/models or making hosted savings claims.
 - Added an explicit `context-guard experiments emit visual-crop-ocr ...` runtime that emits local caller-supplied visual crop/OCR evidence packs while preserving full evidence receipts, missed-context guardrails, no-service boundaries, and hosted savings claim denial.
 - Added an explicit `context-guard experiments emit context-diff-compaction --receipt-id ... --reexpand-command ...` runtime for caller-supplied compact diff replacements gated by exact local artifact content matching the input diff plus re-expand metadata.
 - Added an explicit `context-guard experiments record self-hosted-metrics-ledger --ledger-jsonl ...` runtime for local self-hosted metrics sidecar rows while keeping dry-run previews read-only and hosted API savings claims disallowed.
+- Polished the English and Korean README release guidance so install, experiment, and claim-boundary wording match the shipped product.
 
 ## [0.4.8] - 2026-06-11
 
