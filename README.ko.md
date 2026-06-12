@@ -324,7 +324,7 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
 - `cache_layout_advice`: 긴 세션 분리, prefix 안정화 같은 순위화된 **확인/실험**으로 신호를 바꾸되, 관측된 issue와 가설/입증된 cause를 분리합니다.
 - `--feasibility-json` / [`mac_visibility`](docs/mac-visibility-feasibility-schema.md): 로컬 macOS 가시화 surface가 바인딩할 수 있는 계약입니다. 안정적인 top-level field만 가리키며, `summary`는 primary UI binding 대상이 아닙니다.
 
-이 필드들은 원문 프롬프트를 출력하지 않고 provider cache hit나 live headroom을 증명하지 않습니다. 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
+이 필드들은 prompt prefix 근처의 volatile content 가능성, stable-prefix 후보, cache-miss 가설, TTL/headroom evidence gap을 알려줄 수 있습니다. 원문 프롬프트를 출력하지 않고 provider cache hit나 live headroom을 증명하지 않으며, 대화 기록 스키마가 충분한 증거를 드러내지 않으면 `missing`, `partial`, `hypothesis`, `unavailable`일 수 있습니다.
 
 ### 상태표시줄에서 컨텍스트와 캐시 상태 확인
 
@@ -381,7 +381,7 @@ local-proxy 예시는 side effect 기준으로 나뉩니다.
 
 - `plan local-proxy`는 advisory metadata만 만들며 forwarding을 켜지 않습니다.
 - `record local-proxy-runtime-gate`는 localhost-only gate row 하나만 append하고 listener 시작, traffic forwarding, API key 저장, hosted API 절감 주장을 하지 않습니다.
-- `serve local-proxy`는 별도 MVP입니다. `--runtime-gate-ack --forwarding-gate-ack --once`가 모두 필요하고 literal loopback IP에만 bind/forward하며 credential-bearing 요청, hostname DNS target, external forwarding, CONNECT/TLS proxying, API-key persistence, hosted savings claim을 차단합니다.
+- `serve local-proxy`는 별도 MVP입니다. `--runtime-gate-ack --forwarding-gate-ack --once`가 모두 필요하고 literal loopback IP에만 bind/forward하며 byte/time limit을 적용하고 credential-bearing 요청, hostname DNS target, external forwarding, CONNECT/TLS proxying, API-key persistence, hosted savings claim을 차단합니다.
 - `--diagnostic-ledger-jsonl`을 지정하면 successful forwarded request 뒤에만 shifted-cost 진단 row를 append하며 raw header, request body, response body, hosted-savings evidence를 저장하지 않습니다.
 - `plan local-proxy-external-forwarding`은 dry-run design gate일 뿐입니다. explicit external intent, design ack, HTTPS host allowlist, threat model note, credential redaction policy, provider-evidence boundary를 요구하지만 listener 시작, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime 제공, hosted savings claim을 하지 않습니다.
 

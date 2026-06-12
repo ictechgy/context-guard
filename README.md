@@ -273,11 +273,11 @@ Artifact mode is for capture and retrieval. It stores sanitized output under `.c
 
 A few boundaries are intentional:
 
-- Add `--explain` for compact deterministic selection/build reasons in JSON or text output.
+- Add `--explain` for compact deterministic local selection/build reasons in JSON or text output.
 - `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
 - Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
-- `context-guard-pack suggest` is the lower-level additive planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
+- `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.
 - Bounded receipts are stored under `.context-guard/packs`. When path/root display is safe, JSON output includes copy-pasteable `slice` commands for exact sanitized retrieval; otherwise it records `retrieval_omitted_reason`.
 
