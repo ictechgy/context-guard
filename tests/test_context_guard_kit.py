@@ -86,7 +86,7 @@ def request_loopback_with_retries(
     method: str = "GET",
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
-    timeout: float = 20.0,
+    timeout: float = 5.0,
 ):
     deadline = time.time() + timeout
     last_error: Exception | None = None
@@ -5170,7 +5170,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                     sock = None
                     try:
-                        deadline = time.time() + 20
+                        deadline = time.time() + 5
                         last_error: Exception | None = None
                         while time.time() < deadline:
                             try:
