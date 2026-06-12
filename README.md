@@ -27,7 +27,7 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; `doctor` reports next commands and makes no changes.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first and does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
@@ -170,7 +170,7 @@ Setup is explicit, project-local, and reversible. The plugin does not configure 
 
 ## Install with npm/npx
 
-The npm package exposes a canonical `context-guard` command plus the backwards-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself.
+The npm package exposes a canonical `context-guard` command plus the backwards-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself. If setup cannot find bundled or checkout-local helpers, `PATH` fallback remains disabled by default; use `--allow-path-helper-fallback` only for trusted helper directories after `context-guard doctor`/`setup --verify` confirms the plan.
 
 ```bash
 npm install -g @ictechgy/context-guard
@@ -476,6 +476,8 @@ To use shorter commands during local development, add the plugin bin directory t
 export PATH="$PWD/plugins/context-guard/bin:$PATH"
 context-guard-setup --plan
 ```
+
+Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled/check-out helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper before writing commands.
 
 ## Release checks
 

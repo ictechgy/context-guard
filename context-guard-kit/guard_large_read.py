@@ -607,6 +607,9 @@ def deny_response(reason: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print("ContextGuard helper: context-guard-guard-read")
+        return 0
     if truthy_disabled(env_value(GUARD_ENV, LEGACY_GUARD_ENV)):
         print("{}")
         return 0

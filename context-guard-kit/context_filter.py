@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -86,16 +87,171 @@ def compact(text: str, limit: int = 160) -> str:
     return text[: max(0, limit - 20)] + f"…[trimmed:{len(text)}]"
 
 
-def read_json_limited(path: Path) -> tuple[Any | None, list[str]]:
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
+DIR_FD_OPEN_SUPPORTED = bool(os.supports_dir_fd and os.open in os.supports_dir_fd)
+DIR_FD_STAT_SUPPORTED = bool(os.supports_dir_fd and os.stat in os.supports_dir_fd)
+DIR_FD_MKDIR_SUPPORTED = bool(os.supports_dir_fd and os.mkdir in os.supports_dir_fd)
+NONBLOCK_SUPPORTED = hasattr(os, "O_NONBLOCK")
+
+
+def os_error_detail(exc: OSError) -> str:
+    detail = exc.strerror or str(exc) or exc.__class__.__name__
+    if exc.errno is not None:
+        return f"{detail} (errno {exc.errno})"
+    return detail
+
+
+def normalized_link_target(parent: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = parent / target
+    return Path(os.path.normpath(str(target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
     try:
-        size = path.stat().st_size
-        if size > MAX_CONFIG_BYTES:
-            return None, [f"config file too large: {size}>{MAX_CONFIG_BYTES} bytes"]
-        raw = path.read_text(encoding="utf-8")
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def normalize_config_path(path: Path) -> Path:
+    path = path.expanduser()
+    if any(part == ".." for part in path.parts):
+        raise OSError("config path must not contain parent traversal")
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return normalize_allowed_first_absolute_symlink(Path(os.path.normpath(str(path))))
+
+
+def no_follow_dir_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        raise OSError("O_NOFOLLOW is required for safe config reads")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def no_follow_file_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        raise OSError("O_NOFOLLOW is required for safe config reads")
+    if not NONBLOCK_SUPPORTED:
+        raise OSError("O_NONBLOCK is required for safe config reads")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def open_config_parent_no_follow(path: Path) -> int:
+    if not DIR_FD_OPEN_SUPPORTED:
+        raise OSError("dir_fd open support is required for safe config reads")
+    flags = no_follow_dir_flags()
+    if path.is_absolute():
+        anchor = path.anchor or os.sep
+        current_fd = os.open(anchor, os.O_RDONLY | (os.O_CLOEXEC if hasattr(os, "O_CLOEXEC") else 0))
+        parts = path.parts[1:-1]
+    else:
+        current_fd = os.open(".", flags)
+        parts = path.parts[:-1]
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                raise OSError("config path must not contain parent traversal")
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise OSError("config path must not traverse non-directory components")
+            except Exception:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
+
+
+def read_config_text_no_follow(path: Path, max_bytes: int) -> tuple[str | None, list[str]]:
+    parent_fd = -1
+    fd = -1
+    try:
+        path = normalize_config_path(path)
+        parent_fd = open_config_parent_no_follow(path)
+        leaf = path.name
+        if leaf in {"", ".", ".."}:
+            return None, ["config path must name a regular file"]
+        if not DIR_FD_STAT_SUPPORTED:
+            raise OSError("dir_fd stat support is required for safe config reads")
+        try:
+            st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None, ["could not read config: missing file"]
+        if not stat.S_ISREG(st.st_mode):
+            return None, ["config must be a regular file"]
+        if st.st_size > max_bytes:
+            return None, [f"config file too large: {st.st_size}>{max_bytes} bytes"]
+        fd = os.open(leaf, no_follow_file_flags(), dir_fd=parent_fd)
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            return None, ["config must be a regular file"]
+        if fst.st_size > max_bytes:
+            return None, [f"config file too large: {fst.st_size}>{max_bytes} bytes"]
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > max_bytes:
+            return None, [f"config file too large: >{max_bytes} bytes"]
+        try:
+            return raw.decode("utf-8"), []
+        except UnicodeDecodeError as exc:
+            return None, [f"could not decode config UTF-8: {exc.reason}"]
     except OSError as exc:
-        return None, [f"could not read config: {exc.strerror or exc.__class__.__name__}"]
+        return None, [f"could not read config safely: {os_error_detail(exc)}"]
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def read_json_limited(path: Path) -> tuple[Any | None, list[str]]:
+    raw, read_errors = read_config_text_no_follow(path, MAX_CONFIG_BYTES)
+    if read_errors:
+        return None, read_errors
     try:
-        return json.loads(raw), []
+        return json.loads(raw if raw is not None else ""), []
     except json.JSONDecodeError as exc:
         return None, [f"invalid JSON at line {exc.lineno}: {exc.msg}"]
 

@@ -40,3 +40,4 @@ Safety:
 - Prefer project-local `.claude/settings.json`.
 - `context-guard-setup --verify` is a local read-only health check and never applies settings.
 - Setup's post-apply scan is local, read-only, and prints a summary only; it does not mutate settings.
+- Setup should use packaged/check-out helper paths by default; only pass `--allow-path-helper-fallback` when the user explicitly trusts a PATH-installed ContextGuard helper set.

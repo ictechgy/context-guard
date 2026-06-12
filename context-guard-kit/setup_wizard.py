@@ -13,11 +13,14 @@ import datetime as _dt
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +94,8 @@ DEFAULT_EFFORT = "medium"
 DEFAULT_FAILED_ATTEMPT_NUDGE = True
 DEFAULT_POST_SETUP_SCAN_TOP = 5
 POST_SETUP_SCAN_TIMEOUT_SECONDS = 20
+PATH_HELPER_PROBE_TIMEOUT_SECONDS = 5
+PATH_HELPER_PROBE_MAX_OUTPUT_BYTES = 4096
 PRIVATE_DIR_MODE = stat.S_IRWXU
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -1355,7 +1360,130 @@ def matcher_covers(existing: Any, desired: str) -> bool:
     return not parts or "*" in parts or desired.lower() in parts
 
 
-def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None) -> list[str]:
+def _path_has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor) if path.is_absolute() else Path.cwd()
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    for part in parts:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+    return False
+
+
+def _probe_path_helper_identity(path: Path, helper_name: str) -> None:
+    env = os.environ.copy()
+    system_path = os.pathsep.join(part for part in ("/usr/bin", "/bin", "/usr/sbin", "/sbin") if Path(part).is_dir())
+    env["PATH"] = str(path.parent) + (os.pathsep + system_path if system_path else "")
+    try:
+        proc = subprocess.Popen(
+            [str(path), "--help"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise SystemExit(f"PATH helper {helper_name!r} identity probe failed: {exc.strerror or exc.__class__.__name__}") from exc
+
+    output = bytearray()
+    selector = selectors.DefaultSelector()
+    streams = [stream for stream in (proc.stdout, proc.stderr) if stream is not None]
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + PATH_HELPER_PROBE_TIMEOUT_SECONDS
+
+    def stop_probe() -> None:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop_probe()
+                raise SystemExit(f"PATH helper {helper_name!r} identity probe timed out; refusing fallback")
+            for key, _mask in selector.select(timeout=min(0.1, remaining)):
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 4096)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                output.extend(chunk)
+                if len(output) > PATH_HELPER_PROBE_MAX_OUTPUT_BYTES:
+                    stop_probe()
+                    raise SystemExit(f"PATH helper {helper_name!r} identity probe output exceeded {PATH_HELPER_PROBE_MAX_OUTPUT_BYTES} bytes")
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            stop_probe()
+            raise SystemExit(f"PATH helper {helper_name!r} identity probe timed out; refusing fallback")
+    finally:
+        selector.close()
+        for stream in streams:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    if returncode != 0:
+        raise SystemExit(f"PATH helper {helper_name!r} identity probe exited {returncode}; refusing fallback")
+    decoded = output.decode("utf-8", errors="replace")
+    lowered = decoded.lower()
+    if "contextguard" not in lowered and "context-guard" not in lowered and helper_name.lower() not in lowered:
+        raise SystemExit(f"PATH helper {helper_name!r} identity probe did not identify ContextGuard; refusing fallback")
+
+
+def validate_path_helper_fallback(helper_name: str, found: str) -> Path:
+    raw = Path(found)
+    if not raw.is_absolute():
+        raise SystemExit(f"PATH helper {helper_name!r} did not resolve to an absolute path; refusing fallback")
+    try:
+        canonical = raw.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(f"PATH helper {helper_name!r} could not be canonicalized: {exc.strerror or exc.__class__.__name__}") from exc
+    normalized_raw = _normalize_allowed_first_absolute_symlink(Path(os.path.normpath(str(raw))))
+    if normalized_raw != canonical:
+        raise SystemExit(f"PATH helper {helper_name!r} traverses a symlink or alias; refusing fallback")
+    if _path_has_symlink_component(canonical):
+        raise SystemExit(f"PATH helper {helper_name!r} has a symlink parent or leaf; refusing fallback")
+    if canonical.name != helper_name:
+        raise SystemExit(f"PATH helper {helper_name!r} resolved to unexpected basename {canonical.name!r}; refusing fallback")
+    fd = _open_regular_no_symlink(canonical)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not os.access(canonical, os.X_OK):
+            raise SystemExit(f"PATH helper {helper_name!r} must be an executable regular file; refusing fallback")
+    finally:
+        os.close(fd)
+    _probe_path_helper_identity(canonical, helper_name)
+    return canonical
+
+
+def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None, allow_path_fallback: bool = False) -> list[str]:
     """Return argv for a bundled helper without invoking a shell."""
     script_dir = Path(__file__).resolve().parent
     colocated = script_dir / helper_name
@@ -1368,46 +1496,49 @@ def helper_argv(helper_name: str, kit_script: str, *, shell: str | None = None) 
     if kit_path.exists():
         prefix = [shell] if shell else [sys.executable]
         return [*prefix, str(kit_path)]
-    found = shutil.which(helper_name)
-    if found:
-        return [str(Path(found).resolve())]
+    if allow_path_fallback:
+        found = shutil.which(helper_name)
+        if found:
+            return [str(validate_path_helper_fallback(helper_name, found))]
+        raise SystemExit(f"Could not resolve required helper {helper_name!r} from PATH even though --allow-path-helper-fallback was supplied.")
     raise SystemExit(
-        f"Could not resolve required helper {helper_name!r}; install the plugin or run from a checked-out repository."
+        f"Could not resolve required helper {helper_name!r}; install the plugin or run from a complete checkout. "
+        "PATH helper fallback is disabled by default; pass --allow-path-helper-fallback only for trusted helpers."
     )
 
 
-def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None) -> str:
+def helper_command(helper_name: str, kit_script: str, *, shell: str | None = None, allow_path_fallback: bool = False) -> str:
     """hook 에 기록할 단일 셸 명령 문자열을 반환한다.
 
     경로에 공백이나 셸 메타문자가 들어와도 안전하도록 모든 분기에서 `shlex.join` 으로
     quote 한다. PATH 에서 찾은 helper 도 절대 경로로 고정해 hook hijacking 을 막는다.
     """
-    argv = helper_argv(helper_name, kit_script, shell=shell)
+    argv = helper_argv(helper_name, kit_script, shell=shell, allow_path_fallback=allow_path_fallback)
     return shlex.join(argv)
 
 
-def statusline_setting() -> dict[str, str]:
-    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash")}
+def statusline_setting(*, allow_path_fallback: bool = False) -> dict[str, str]:
+    return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash", allow_path_fallback=allow_path_fallback)}
 
 
-def bash_hook_setting() -> dict[str, Any]:
+def bash_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
     return {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py")}],
+        "hooks": [{"type": "command", "command": helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)}],
     }
 
 
-def read_hook_setting() -> dict[str, Any]:
+def read_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
     return {
         "matcher": "Read",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_GUARD_READ, "guard_large_read.py")}],
+        "hooks": [{"type": "command", "command": helper_command(HELPER_GUARD_READ, "guard_large_read.py", allow_path_fallback=allow_path_fallback)}],
     }
 
 
-def failed_nudge_setting() -> dict[str, Any]:
+def failed_nudge_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
     return {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_FAILED_NUDGE, "failed_attempt_nudge.py")}],
+        "hooks": [{"type": "command", "command": helper_command(HELPER_FAILED_NUDGE, "failed_attempt_nudge.py", allow_path_fallback=allow_path_fallback)}],
     }
 
 
@@ -1595,9 +1726,9 @@ def summarize_diet_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_post_setup_diet_scan(root: Path) -> dict[str, Any]:
+def run_post_setup_diet_scan(root: Path, *, allow_path_fallback: bool = False) -> dict[str, Any]:
     argv = [
-        *helper_argv(HELPER_DIET, "context_guard_diet.py"),
+        *helper_argv(HELPER_DIET, "context_guard_diet.py", allow_path_fallback=allow_path_fallback),
         "scan",
         str(root),
         "--json",
@@ -1661,6 +1792,8 @@ def _setup_command(args: argparse.Namespace, *, apply: bool, root: Path | None =
         parts.extend(["--agent", ",".join(selected)])
     elif normalize_scope(getattr(args, "scope", "project")) == "user":
         parts.extend(["--agent", "claude"])
+    if getattr(args, "allow_path_helper_fallback", False):
+        parts.append("--allow-path-helper-fallback")
     if getattr(args, "with_init", False):
         parts.append("--with-init")
     if getattr(args, "with_skill", False):
@@ -1694,7 +1827,7 @@ def _doctor_status(checks: list[dict[str, Any]]) -> str:
     return "ok"
 
 
-def _helper_availability_check(*, include_diet: bool = True) -> dict[str, Any]:
+def _helper_availability_check(*, include_diet: bool = True, allow_path_fallback: bool = False) -> dict[str, Any]:
     helpers = {
         HELPER_STATUSLINE: "statusline_merged.sh",
         HELPER_REWRITE_BASH: "rewrite_bash_for_token_budget.py",
@@ -1707,7 +1840,7 @@ def _helper_availability_check(*, include_diet: bool = True) -> dict[str, Any]:
     missing: list[str] = []
     for helper, kit_script in helpers.items():
         try:
-            resolved[helper] = shlex.join(helper_argv(helper, kit_script, shell=("bash" if kit_script.endswith(".sh") else None)))
+            resolved[helper] = shlex.join(helper_argv(helper, kit_script, shell=("bash" if kit_script.endswith(".sh") else None), allow_path_fallback=allow_path_fallback))
         except SystemExit:
             missing.append(helper)
     if missing:
@@ -1716,7 +1849,7 @@ def _helper_availability_check(*, include_diet: bool = True) -> dict[str, Any]:
             "error",
             "error",
             "Some ContextGuard helper commands could not be resolved.",
-            detail={"missing": missing, "resolved": resolved},
+            detail={"missing": missing, "resolved": resolved, "allow_path_helper_fallback": allow_path_fallback},
             next_action="Reinstall ContextGuard or run from a complete checkout.",
         )
     return doctor_check(
@@ -1724,7 +1857,7 @@ def _helper_availability_check(*, include_diet: bool = True) -> dict[str, Any]:
         "ok",
         "low",
         "Required ContextGuard helper commands are resolvable.",
-        detail={"resolved": resolved},
+        detail={"resolved": resolved, "allow_path_helper_fallback": allow_path_fallback},
     )
 
 
@@ -1751,7 +1884,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
     scope = normalize_scope(getattr(args, "scope", "project"))
     root = resolve_scope_root(args.root, scope)
     settings_path = root / SETTINGS_REL
-    helper_check = _helper_availability_check(include_diet=not getattr(args, "no_diet_scan", False))
+    helper_check = _helper_availability_check(include_diet=not getattr(args, "no_diet_scan", False), allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)))
     checks: list[dict[str, Any]] = [helper_check]
     warnings: list[str] = []
     if scope == "user":
@@ -1840,7 +1973,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     choices = choices_from_args(args)
-    actions = apply_choices(settings, choices) if claude_targeted else []
+    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
     changed = (settings != original) if claude_targeted else False
     if changed:
         checks.append(doctor_check(
@@ -1907,7 +2040,7 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         ))
     else:
         diet_next_action = shlex.join(["context-guard", "diet", "scan", str(root), "--json"])
-        diet_scan = run_post_setup_diet_scan(root)
+        diet_scan = run_post_setup_diet_scan(root, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)))
         if diet_scan.get("status") != "completed":
             checks.append(doctor_check(
                 "diet-scan",
@@ -1986,7 +2119,7 @@ def render_doctor_text(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
+def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fallback: bool = False) -> list[str]:
     actions: list[str] = []
     if choices.model_defaults:
         if not settings.get("model"):
@@ -1996,7 +2129,7 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
             settings["effortLevel"] = DEFAULT_EFFORT
             actions.append(f"set default effortLevel to {DEFAULT_EFFORT}")
     if choices.statusline:
-        statusline = statusline_setting()
+        statusline = statusline_setting(allow_path_fallback=allow_path_fallback)
         if "statusLine" not in settings:
             settings["statusLine"] = statusline
             actions.append("enabled token statusline")
@@ -2005,15 +2138,15 @@ def apply_choices(settings: dict[str, Any], choices: Choices) -> list[str]:
     if choices.denies:
         ensure_permissions(settings, actions)
     if choices.bash_hook:
-        bash_hook = bash_hook_setting()
+        bash_hook = bash_hook_setting(allow_path_fallback=allow_path_fallback)
         bash_command = bash_hook["hooks"][0]["command"]
         ensure_pre_tool_hook(settings, bash_hook, bash_command, "Bash trim/sanitize", actions)
     if choices.read_guard:
-        read_hook = read_hook_setting()
+        read_hook = read_hook_setting(allow_path_fallback=allow_path_fallback)
         read_command = read_hook["hooks"][0]["command"]
         ensure_pre_tool_hook(settings, read_hook, read_command, "large Read guard", actions)
     if choices.failed_attempt_nudge:
-        nudge_hook = failed_nudge_setting()
+        nudge_hook = failed_nudge_setting(allow_path_fallback=allow_path_fallback)
         nudge_command = nudge_hook["hooks"][0]["command"]
         ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
     return actions
@@ -2285,7 +2418,7 @@ def run(args: argparse.Namespace) -> SetupResult:
     if interactive:
         choices = interactive_choices(choices)
 
-    actions = apply_choices(settings, choices) if claude_targeted else []
+    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
     changed = (settings != original) if claude_targeted else False
 
     apply_requested = bool(args.yes and not args.dry_run and not args.plan)
@@ -2371,7 +2504,7 @@ def run(args: argparse.Namespace) -> SetupResult:
 
     diet_scan = None
     if (applied or (apply_requested and claude_targeted)) and not getattr(args, "no_diet_scan", False):
-        diet_scan = run_post_setup_diet_scan(root)
+        diet_scan = run_post_setup_diet_scan(root, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)))
 
     return SetupResult(
         root=root,
@@ -2417,6 +2550,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
     parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")
+    parser.add_argument("--allow-path-helper-fallback", action="store_true", help="allow trusted PATH helper resolution only after bundled/repo helpers are missing and identity validation passes")
     parser.add_argument(
         "--agent",
         action="append",

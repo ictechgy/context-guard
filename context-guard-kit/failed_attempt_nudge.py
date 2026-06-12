@@ -484,6 +484,9 @@ def count_consecutive_failures(entries: list[dict], fp: str) -> int:
 
 
 def main() -> int:
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print("ContextGuard helper: context-guard-failed-nudge")
+        return 0
     raw_payload, oversized = read_bounded_stdin_text()
     if oversized:
         sys.stderr.write("context-guard-failed-nudge: oversized hook JSON skipped\n")

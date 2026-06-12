@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import sys
 import time
@@ -183,15 +184,50 @@ def sanitize_one_line(text: str, *, show_paths: bool = False) -> str:
     return cap_utf8_bytes(cap_line(" ".join(sanitized.strip().split())), MAX_COMMAND_PREVIEW_BYTES)
 
 
-def ensure_private_dir(path: Path) -> None:
-    path = normalize_allowed_first_absolute_symlink(path)
-    reject_symlink_components(path)
-    path.mkdir(parents=True, exist_ok=True)
-    reject_symlink_components(path)
+NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
+DIR_FD_OPEN_SUPPORTED = bool(os.supports_dir_fd and os.open in os.supports_dir_fd)
+DIR_FD_MKDIR_SUPPORTED = bool(os.supports_dir_fd and os.mkdir in os.supports_dir_fd)
+DIR_FD_STAT_SUPPORTED = bool(os.supports_dir_fd and os.stat in os.supports_dir_fd)
+DIR_FD_UNLINK_SUPPORTED = bool(os.supports_dir_fd and os.unlink in os.supports_dir_fd)
+
+
+def dir_fd_replace_supported() -> bool:
+    # Some Python builds support src_dir_fd/dst_dir_fd for os.replace without
+    # listing os.replace in os.supports_dir_fd, so use a signature/probe-light
+    # check instead of os.supports_dir_fd membership.
     try:
-        os.chmod(path, 0o700)
-    except OSError:
-        pass
+        import inspect
+
+        signature = inspect.signature(os.replace)
+    except (TypeError, ValueError):
+        return True
+    return "src_dir_fd" in signature.parameters and "dst_dir_fd" in signature.parameters
+
+
+DIR_FD_REPLACE_SUPPORTED = dir_fd_replace_supported()
+
+
+def os_error_detail(exc: OSError) -> str:
+    detail = exc.strerror or str(exc) or exc.__class__.__name__
+    if exc.errno is not None:
+        return f"{detail} (errno {exc.errno})"
+    return detail
+
+
+def reject_parent_traversal(path: Path, *, label: str) -> None:
+    if any(part == ".." for part in path.expanduser().parts):
+        raise ValueError(f"{label} must not contain parent traversal")
+
+
+def ensure_private_dir(path: Path) -> None:
+    fd = open_private_directory_no_follow(path, label="artifact directory", create=True)
+    try:
+        try:
+            os.fchmod(fd, 0o700)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
 
 
 def reject_symlink_components(path: Path) -> None:
@@ -243,33 +279,156 @@ def read_bounded_private_text(path: Path, max_bytes: int) -> str:
         os.close(fd)
 
 
+def no_follow_dir_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        raise RuntimeError("artifact writes require O_NOFOLLOW support")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def temp_file_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        raise RuntimeError("artifact writes require O_NOFOLLOW support")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def open_private_directory_no_follow(path: Path, *, label: str, create: bool) -> int:
+    reject_parent_traversal(path, label=label)
+    path = normalize_allowed_first_absolute_symlink(path.expanduser())
+    if not DIR_FD_OPEN_SUPPORTED:
+        raise RuntimeError(f"{label} requires dir_fd open support")
+    if create and not DIR_FD_MKDIR_SUPPORTED:
+        raise RuntimeError(f"{label} requires dir_fd mkdir support")
+    flags = no_follow_dir_flags()
+    if path.is_absolute():
+        current_fd = os.open(path.anchor or os.sep, os.O_RDONLY | (os.O_CLOEXEC if hasattr(os, "O_CLOEXEC") else 0))
+        parts = path.parts[1:]
+    else:
+        current_fd = os.open(".", flags)
+        parts = path.parts
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                raise RuntimeError(f"{label} must not contain parent traversal")
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, 0o700, dir_fd=current_fd)
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise RuntimeError(f"{label} must not traverse non-directory components")
+            except Exception:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    except OSError as exc:
+        raise RuntimeError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
+
+
+def precheck_artifact_leaf(parent_fd: int, leaf: str, *, label: str) -> None:
+    if not DIR_FD_STAT_SUPPORTED:
+        raise RuntimeError(f"{label} requires dir_fd stat support")
+    try:
+        st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise RuntimeError(f"{label} must be missing or a regular file")
+
+
+def write_all_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written <= 0:
+            raise OSError("short write")
+        offset += written
+
+
+def fsync_required(fd: int, *, label: str, committed: bool = False) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if committed:
+            raise RuntimeError(f"committed_but_parent_fsync_failed: {os_error_detail(exc)}") from exc
+        raise RuntimeError(f"could not fsync {label}: {os_error_detail(exc)}") from exc
+
+
 def write_private_text(path: Path, text: str) -> None:
-    path = normalize_allowed_first_absolute_symlink(path)
-    ensure_private_dir(path.parent)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{time.time_ns()}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(str(tmp), flags, 0o600)
+    reject_parent_traversal(path, label="artifact file")
+    path = normalize_allowed_first_absolute_symlink(path.expanduser())
+    if not DIR_FD_REPLACE_SUPPORTED:
+        raise RuntimeError("artifact writes require dir_fd replace support")
+    if not DIR_FD_UNLINK_SUPPORTED:
+        raise RuntimeError("artifact writes require dir_fd unlink support")
+    parent_fd = open_private_directory_no_follow(path.parent, label="artifact directory", create=True)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-    except Exception:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    try:
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    try:
-        os.chmod(path, 0o600)
+        os.fchmod(parent_fd, 0o700)
     except OSError:
         pass
+    fd = -1
+    temp_leaf: str | None = None
+    try:
+        leaf = path.name
+        if leaf in {"", ".", ".."}:
+            raise RuntimeError("artifact file must name a regular file")
+        precheck_artifact_leaf(parent_fd, leaf, label="artifact file")
+        for _attempt in range(20):
+            candidate = f".{leaf}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+            try:
+                fd = os.open(candidate, temp_file_flags(), 0o600, dir_fd=parent_fd)
+                temp_leaf = candidate
+                break
+            except FileExistsError:
+                continue
+        if fd < 0 or temp_leaf is None:
+            raise RuntimeError("could not create temporary artifact file")
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("temporary artifact file must be a regular file")
+        os.fchmod(fd, 0o600)
+        write_all_fd(fd, text.encode("utf-8"))
+        fsync_required(fd, label="artifact temp file")
+        os.close(fd)
+        fd = -1
+        fsync_required(parent_fd, label="artifact directory before replace")
+        os.replace(temp_leaf, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        temp_leaf = None
+        fsync_required(parent_fd, label="artifact directory after replace", committed=True)
+    except OSError as exc:
+        raise RuntimeError(f"could not write artifact file: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp_leaf is not None:
+            try:
+                os.unlink(temp_leaf, dir_fd=parent_fd)
+            except OSError:
+                pass
+        os.close(parent_fd)
 
 
 def read_bounded_stdin(max_bytes: int) -> tuple[str, bool, int]:
@@ -283,6 +442,7 @@ def read_bounded_stdin(max_bytes: int) -> tuple[str, bool, int]:
 def artifact_paths(directory: Path, artifact_id: str) -> tuple[Path, Path]:
     if not ARTIFACT_ID_RE.fullmatch(artifact_id):
         raise ValueError("artifact id must be 16-64 lowercase hex chars")
+    reject_parent_traversal(directory, label="artifact directory")
     directory = normalize_allowed_first_absolute_symlink(directory)
     return directory / f"{artifact_id}.txt", directory / f"{artifact_id}.json"
 
@@ -295,7 +455,9 @@ def artifact_read_directories(raw_dir: str) -> list[Path]:
     default. Reads and listings include that legacy default so old receipts keep
     working; stores intentionally continue to use only the new path.
     """
-    primary = normalize_allowed_first_absolute_symlink(Path(raw_dir).expanduser())
+    raw_path = Path(raw_dir).expanduser()
+    reject_parent_traversal(raw_path, label="artifact directory")
+    primary = normalize_allowed_first_absolute_symlink(raw_path)
     directories = [primary]
     if Path(raw_dir).expanduser() == Path(DEFAULT_ARTIFACT_DIR):
         legacy = normalize_allowed_first_absolute_symlink(Path(LEGACY_ARTIFACT_DIR).expanduser())

@@ -21,6 +21,11 @@
 #                              (미지정 시 자기 옆 디렉토리만 사용; PATH 탐색 안 함)
 set -u
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  printf 'ContextGuard helper: context-guard-statusline-merged\n'
+  exit 0
+fi
+
 statusline_input_tmp=''
 
 statusline_tmp_base() {

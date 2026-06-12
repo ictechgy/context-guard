@@ -424,6 +424,9 @@ def build_sanitized_command(wrapper: str, command: str) -> str:
 
 
 def main() -> int:
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        print("ContextGuard helper: context-guard-rewrite-bash")
+        return 0
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError as exc:

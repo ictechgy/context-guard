@@ -3222,6 +3222,12 @@ def local_proxy_has_sensitive_headers(headers: Any) -> list[str]:
     found: list[str] = []
     for name, value in headers.items():
         lower = str(name).lower()
+        if lower == LOCAL_PROXY_NONCE_HEADER.lower():
+            # The per-run proxy nonce is a local client-auth secret delivered only
+            # through the 0600 ready file. It is validated before this check and is
+            # never forwarded upstream; do not let random nonce bytes
+            # probabilistically trip the generic secret-like header detector.
+            continue
         if lower in LOCAL_PROXY_SENSITIVE_HEADER_NAMES:
             found.append(lower)
         elif local_proxy_secret_like(name):
