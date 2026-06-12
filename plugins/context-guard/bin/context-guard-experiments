@@ -22,6 +22,7 @@ import re
 import secrets
 import shlex
 import socket
+from socketserver import TCPServer
 from pathlib import Path
 import stat
 import sys
@@ -60,6 +61,7 @@ LOCAL_PROXY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-plan.v1"
 LOCAL_PROXY_GATE_SCHEMA_VERSION = "contextguard.experiments.local-proxy-gate.v1"
 LOCAL_PROXY_FORWARD_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward.v1"
 LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward-diagnostic.v1"
+LOCAL_PROXY_READY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-ready.v1"
 LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION = "contextguard.experiments.local-proxy-external-forwarding-design.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
@@ -690,6 +692,65 @@ def write_regular_file_no_follow(path: Path, data: bytes, *, label: str) -> None
         if temp_leaf is not None:
             try:
                 os.unlink(temp_leaf, dir_fd=parent_fd)
+            except OSError:
+                pass
+        try:
+            os.fsync(parent_fd)
+        except OSError:
+            pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+
+
+def _reject_parent_traversal(path: Path, *, label: str) -> None:
+    if any(part == ".." for part in path.parts):
+        raise RegistryError(f"{label} must not contain parent traversal")
+
+
+def write_regular_file_no_follow_exclusive(path: Path, data: bytes, *, label: str, mode: int = 0o600) -> None:
+    _reject_parent_traversal(path, label=label)
+    path = normalize_local_path(path)
+    parent_fd = open_directory_no_follow(path.parent, label=f"{label} parent")
+    if parent_fd is None:  # pragma: no cover - missing_ok is not enabled.
+        raise RegistryError(f"could not inspect {label} parent")
+    fd = -1
+    created = False
+    success = False
+    try:
+        leaf = _leaf_name(path, label=label)
+        exists = _precheck_regular_leaf(parent_fd, leaf, label=label, missing_ok=True)
+        if exists:
+            raise RegistryError(f"{label} must not already exist")
+        flags = _temp_file_open_flags(label=label)
+        fd = os.open(leaf, flags, mode, dir_fd=parent_fd)
+        created = True
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RegistryError(f"{label} must be a regular file")
+        try:
+            os.fchmod(fd, mode)
+        except OSError:
+            pass
+        write_all_fd(fd, data)
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        success = True
+    except FileExistsError as exc:
+        raise RegistryError(f"{label} must not already exist") from exc
+    except OSError as exc:
+        raise RegistryError(f"could not write {label}: {os_error_detail(exc)}") from exc
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if created and not success:
+            try:
+                os.unlink(_leaf_name(path, label=label), dir_fd=parent_fd)
             except OSError:
                 pass
         try:
@@ -3179,7 +3240,26 @@ def local_proxy_response_headers(headers: Any) -> list[tuple[str, str]]:
     return result
 
 
-def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
+def write_local_proxy_ready_file(path: str | None, *, bind_host: str, bind_port: int) -> None:
+    if not path:
+        return
+    ready_payload = {
+        "schema_version": LOCAL_PROXY_READY_SCHEMA_VERSION,
+        "experiment_id": "local-proxy",
+        "mode": "serve",
+        "status": "listener_ready",
+        "diagnostic_only": True,
+        "pid": os.getpid(),
+        "bind": {
+            "host": bind_host,
+            "port": bind_port,
+        },
+    }
+    data = json.dumps(ready_payload, sort_keys=True).encode("utf-8") + b"\n"
+    write_regular_file_no_follow_exclusive(Path(path), data, label="local proxy ready file", mode=0o600)
+
+
+def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = None) -> dict[str, Any]:
     bind_host = payload["bind"]["host"]
     bind_port = int(payload["bind"]["port"])
     target_host = payload["target"]["host"]
@@ -3201,6 +3281,8 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
         "upstream_response_bytes": 0,
         "downstream_status": None,
         "sensitive_headers_blocked": [],
+        "listener_started": False,
+        "ready_file_written": False,
     }
 
     def finish_blocked(handler: BaseHTTPRequestHandler, status_code: int, reason: str, *, sensitive: list[str] | None = None) -> None:
@@ -3334,6 +3416,12 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
 
     address_family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
     class LocalProxyHTTPServer(HTTPServer):
+        def server_bind(self) -> None:
+            TCPServer.server_bind(self)
+            host, port = self.server_address[:2]
+            self.server_name = str(host)
+            self.server_port = int(port)
+
         def get_request(self) -> tuple[Any, Any]:
             request, client_address = super().get_request()
             request.settimeout(timeout_seconds)
@@ -3346,6 +3434,19 @@ def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
         raise RegistryError(f"could not start local proxy listener: {os_error_detail(exc)}") from exc
     httpd.timeout = timeout_seconds
     try:
+        try:
+            write_local_proxy_ready_file(ready_file, bind_host=bind_host, bind_port=bind_port)
+            server_result["ready_file_written"] = bool(ready_file)
+            server_result["listener_started"] = True
+        except RegistryError as exc:
+            server_result.update({
+                "served_once": False,
+                "forwarded": False,
+                "blocked_reason": "ready_file_write_failed",
+                "downstream_status": None,
+                "error": sanitize_local_proxy_value(str(exc)),
+            })
+            return server_result
         httpd.handle_request()
         if not server_result["served_once"]:
             server_result.update({
@@ -3372,15 +3473,21 @@ def command_serve_local_proxy(args: argparse.Namespace) -> int:
             diagnostic_ledger["reason"] = "preflight_failed"
             diagnostic_ledger["error"] = sanitize_local_proxy_value(str(exc))
     if payload["status"] == "ready_to_serve":
-        payload["network_actions"]["listener_started"] = True
-        result = serve_local_proxy_once(payload)
+        result = serve_local_proxy_once(payload, ready_file=args.ready_file)
         payload["forward_result"] = result
+        payload["network_actions"]["listener_started"] = bool(result.get("listener_started"))
         payload["network_actions"]["outbound_forwarding_attempted"] = bool(result["forward_attempted"])
         payload["network_actions"]["dns_lookup_attempted"] = False
         payload["network_actions"]["external_services_called"] = False
-        payload["policy"]["listener_started"] = True
+        payload["policy"]["listener_started"] = bool(result.get("listener_started"))
         payload["policy"]["traffic_forwarded"] = bool(result["forwarded"])
-        payload["status"] = "served_once" if result["forwarded"] else "blocked_request"
+        if result["forwarded"]:
+            payload["status"] = "served_once"
+        elif result.get("blocked_reason") == "ready_file_write_failed":
+            payload["status"] = "blocked_until_local_proxy_forwarding_ready"
+            payload["review_plan"]["readiness_blockers"].append("ready_file_write_failed")
+        else:
+            payload["status"] = "blocked_request"
     maybe_write_local_proxy_forward_diagnostic(payload)
     payload.pop("_diagnostic_ledger_write_path", None)
     if args.json:
@@ -4194,6 +4301,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Listener/upstream timeout seconds, 0.1..{LOCAL_PROXY_MAX_TIMEOUT_SECONDS}.",
     )
+    serve_local_proxy.add_argument("--ready-file", help=argparse.SUPPRESS)
     serve_local_proxy.add_argument("--json", action="store_true", help="Emit JSON output after the single request completes.")
     serve_local_proxy.set_defaults(func=command_serve_local_proxy)
 

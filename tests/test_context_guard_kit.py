@@ -106,9 +106,15 @@ def request_loopback_with_retries(
 
 
 def kill_process_if_running(proc: subprocess.Popen) -> None:
-    if proc.poll() is None:
-        proc.kill()
-        proc.communicate(timeout=5)
+    try:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+    finally:
+        ready_tmp = getattr(proc, "_context_guard_ready_tmp", None)
+        if ready_tmp is not None:
+            ready_tmp.cleanup()
+            setattr(proc, "_context_guard_ready_tmp", None)
 
 
 def communicate_process_or_kill(proc: subprocess.Popen, *, timeout: float = 10):
@@ -117,6 +123,46 @@ def communicate_process_or_kill(proc: subprocess.Popen, *, timeout: float = 10):
     except subprocess.TimeoutExpired as exc:
         kill_process_if_running(proc)
         raise AssertionError(f"process did not exit within {timeout}s") from exc
+
+
+def wait_for_local_proxy_ready(proc: subprocess.Popen, ready_file: Path, *, timeout: float = 20.0) -> dict[str, object]:
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            stdout, stderr = proc.communicate(timeout=5)
+            raise AssertionError(
+                "local proxy exited before listener readiness; "
+                f"returncode={proc.returncode}; stdout={stdout!r}; stderr={stderr!r}"
+            )
+        if ready_file.exists():
+            try:
+                payload = json.loads(ready_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+                time.sleep(0.05)
+                continue
+            if payload.get("status") != "listener_ready":
+                raise AssertionError(f"local proxy readiness payload was not ready: {payload!r}")
+            return payload
+        time.sleep(0.05)
+    raise AssertionError(f"local proxy did not publish listener readiness: {last_error}")
+
+
+def popen_local_proxy_with_ready(args: list[str], **kwargs) -> subprocess.Popen:
+    ready_tmp = tempfile.TemporaryDirectory()
+    ready_file = Path(ready_tmp.name) / "ready.json"
+    proc = subprocess.Popen([*args, "--ready-file", str(ready_file)], **kwargs)
+    setattr(proc, "_context_guard_ready_tmp", ready_tmp)
+    setattr(proc, "_context_guard_ready_file", ready_file)
+    try:
+        ready_payload = wait_for_local_proxy_ready(proc, ready_file)
+        setattr(proc, "_context_guard_ready_payload", ready_payload)
+        setattr(proc, "_context_guard_ready_mode", stat.S_IMODE(ready_file.stat().st_mode))
+    except Exception:
+        kill_process_if_running(proc)
+        raise
+    return proc
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -4564,7 +4610,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             for script in EXPERIMENT_SCRIPTS:
                 with self.subTest(script=script):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -4598,6 +4644,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     payload = json.loads(stdout)
                     self.assertEqual(payload["status"], "served_once")
                     self.assertEqual(payload["mode"], "serve")
+                    ready_payload = getattr(proc, "_context_guard_ready_payload")
+                    self.assertEqual(ready_payload["schema_version"], "contextguard.experiments.local-proxy-ready.v1")
+                    self.assertEqual(ready_payload["status"], "listener_ready")
+                    self.assertTrue(ready_payload["diagnostic_only"])
+                    self.assertEqual(ready_payload["bind"]["host"], "127.0.0.1")
+                    self.assertEqual(ready_payload["bind"]["port"], proxy_port)
+                    self.assertEqual(getattr(proc, "_context_guard_ready_mode"), 0o600)
+                    self.assertNotIn("ready_file", payload)
                     self.assertTrue(payload["policy"]["listener_started"])
                     self.assertTrue(payload["policy"]["traffic_forwarded"])
                     self.assertTrue(payload["policy"]["forwarding_gate_acknowledged"])
@@ -4619,7 +4673,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
                 with self.subTest(dispatcher=dispatcher):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(dispatcher),
@@ -4661,6 +4715,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     proxy_port = reserve_loopback_port()
                     with tempfile.TemporaryDirectory() as tmp:
                         input_path = Path(tmp) / "serve-local-proxy.json"
+                        input_ready_path = Path(tmp) / "input-ready.json"
                         input_path.write_text(
                             json.dumps({
                                 "local_proxy": {
@@ -4674,11 +4729,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                                     "max_request_bytes": 1024,
                                     "max_response_bytes": 2048,
                                     "timeout_seconds": 2,
+                                    "ready_file": str(input_ready_path),
                                 }
                             }),
                             encoding="utf-8",
                         )
-                        proc = subprocess.Popen(
+                        proc = popen_local_proxy_with_ready(
                             [
                                 sys.executable,
                                 str(script),
@@ -4702,7 +4758,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn(b"upstream ok /input-json", body)
                     payload = json.loads(stdout)
                     self.assertEqual(payload["status"], "served_once")
-                    self.assertEqual(payload["input"]["ignored_keys"], [])
+                    self.assertEqual(payload["input"]["ignored_keys"], ["ready_file"])
+                    self.assertFalse(input_ready_path.exists())
+                    self.assertNotIn(str(input_ready_path), stdout + stderr)
                     self.assertEqual(payload["runtime_limits"]["max_request_bytes"], 1024)
                     self.assertEqual(payload["runtime_limits"]["max_response_bytes"], 2048)
                     self.assertEqual(payload["runtime_limits"]["timeout_seconds"], 2.0)
@@ -4731,7 +4789,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             for script in EXPERIMENT_SCRIPTS:
                 with self.subTest(script=script, case="sensitive_header"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -4868,6 +4926,130 @@ class ClaudeTokenKitTests(unittest.TestCase):
             upstream.server_close()
             upstream_thread.join(timeout=5)
 
+    def test_experimental_local_proxy_serve_ready_file_diagnostic_is_hidden_and_safe(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script, case="help_hidden"):
+                help_proc = subprocess.run(
+                    [sys.executable, str(script), "serve", "local-proxy", "--help"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertNotIn("--ready-file", help_proc.stdout)
+                self.assertNotIn("ready_file", help_proc.stdout)
+
+            ready_cases = []
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+
+                preexisting = root / "preexisting-ready.json"
+                preexisting.write_text("{}", encoding="utf-8")
+                ready_cases.append(("preexisting", preexisting, "must not already exist"))
+
+                target = root / "target-ready.json"
+                final_symlink = root / "ready-link.json"
+                final_symlink.symlink_to(target)
+                ready_cases.append(("final_symlink", final_symlink, r"(?i)must be a regular file|too many levels"))
+
+                directory_leaf = root / "ready-dir"
+                directory_leaf.mkdir()
+                ready_cases.append(("directory_leaf", directory_leaf, "must be a regular file"))
+
+                real_parent = root / "real-parent"
+                real_parent.mkdir()
+                symlink_parent = root / "parent-link"
+                symlink_parent.symlink_to(real_parent, target_is_directory=True)
+                ready_cases.append(("symlink_parent", symlink_parent / "ready.json", r"(?i)could not inspect local proxy ready file parent|too many levels|not a directory"))
+
+                traversal_parent = root / "traversal"
+                traversal_parent.mkdir()
+                traversal = traversal_parent / ".." / "ready-traversal.json"
+                ready_cases.append(("parent_traversal", traversal, "must not contain parent traversal"))
+
+                for name, ready_file, message_pattern in ready_cases:
+                    with self.subTest(script=script, case=name):
+                        ledger = root / f"{name}-diagnostics.jsonl"
+                        ready_file_text = str(ready_file)
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(reserve_loopback_port()),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                "8787",
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--ready-file",
+                                ready_file_text,
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_forwarding_ready")
+                        self.assertIn("ready_file_write_failed", payload["review_plan"]["readiness_blockers"])
+                        self.assertFalse(payload["policy"]["listener_started"])
+                        self.assertFalse(payload["policy"]["traffic_forwarded"])
+                        self.assertFalse(payload["network_actions"]["listener_started"])
+                        self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                        self.assertFalse(payload["diagnostic_ledger"]["write_performed"])
+                        self.assertEqual(payload["diagnostic_ledger"]["reason"], "not_forwarded")
+                        self.assertFalse(ledger.exists())
+                        self.assertEqual(payload["forward_result"]["blocked_reason"], "ready_file_write_failed")
+                        self.assertFalse(payload["forward_result"]["listener_started"])
+                        self.assertFalse(payload["forward_result"]["ready_file_written"])
+                        self.assertRegex(payload["forward_result"]["error"], message_pattern)
+                        self.assertNotIn(ready_file_text, proc.stdout + proc.stderr)
+
+    def test_experimental_local_proxy_serve_listener_bind_avoids_reverse_dns(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_local_proxy_no_dns_{index}")
+                original_getfqdn = module.socket.getfqdn
+
+                def fail_getfqdn(name=""):
+                    raise AssertionError(f"unexpected reverse DNS lookup for {name!r}")
+
+                module.socket.getfqdn = fail_getfqdn
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        ready_file = Path(tmp) / "ready.json"
+                        payload = {
+                            "bind": {"host": "127.0.0.1", "port": reserve_loopback_port()},
+                            "target": {"host": "127.0.0.1", "port": reserve_loopback_port()},
+                            "runtime_limits": {
+                                "max_request_bytes": 1,
+                                "max_response_bytes": 1,
+                                "timeout_seconds": 0.1,
+                            },
+                        }
+                        result = module.serve_local_proxy_once(payload, ready_file=str(ready_file))
+                        ready_payload = json.loads(ready_file.read_text(encoding="utf-8"))
+                        ready_mode = stat.S_IMODE(ready_file.stat().st_mode)
+                finally:
+                    module.socket.getfqdn = original_getfqdn
+
+                self.assertTrue(result["listener_started"])
+                self.assertTrue(result["ready_file_written"])
+                self.assertEqual(result["blocked_reason"], "timeout_waiting_for_request")
+                self.assertEqual(ready_payload["schema_version"], "contextguard.experiments.local-proxy-ready.v1")
+                self.assertEqual(ready_payload["status"], "listener_ready")
+                self.assertEqual(ready_payload["bind"]["host"], "127.0.0.1")
+                self.assertEqual(ready_payload["bind"]["port"], payload["bind"]["port"])
+                self.assertEqual(ready_mode, 0o600)
+
     def test_experimental_local_proxy_serve_blocks_bodies_limits_responses_and_idle_clients(self):
         seen_requests: list[str] = []
 
@@ -4897,7 +5079,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             for script in EXPERIMENT_SCRIPTS:
                 with self.subTest(script=script, case="request_body_exceeds_limit"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -4938,7 +5120,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="request_body_not_allowed"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -4981,7 +5163,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="unlisted_sensitive_header"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -5024,7 +5206,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="secret_like_header_name_redacted"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -5067,7 +5249,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="response_exceeds_limit"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -5106,7 +5288,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="response_sensitive_content"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -5143,7 +5325,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
                 with self.subTest(script=script, case="idle_accepted_socket_times_out"):
                     proxy_port = reserve_loopback_port()
-                    proc = subprocess.Popen(
+                    proc = popen_local_proxy_with_ready(
                         [
                             sys.executable,
                             str(script),
@@ -5220,7 +5402,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         ledger = Path(tmp) / long_name
                         target_path = "/diagnostic-row?marker=raw-target"
                         proxy_port = reserve_loopback_port()
-                        proc = subprocess.Popen(
+                        proc = popen_local_proxy_with_ready(
                             [
                                 sys.executable,
                                 str(script),
@@ -5301,7 +5483,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     with tempfile.TemporaryDirectory() as tmp:
                         ledger = Path(tmp) / "diagnostics.jsonl"
                         proxy_port = reserve_loopback_port()
-                        proc = subprocess.Popen(
+                        proc = popen_local_proxy_with_ready(
                             [
                                 sys.executable,
                                 str(script),
