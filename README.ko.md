@@ -289,9 +289,12 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ```bash
 git diff | ./plugins/context-guard/bin/context-guard-compress --json
 pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
+cat evidence.txt | ./plugins/context-guard/bin/context-guard-compress --json --protected-policy
 ```
 
 `context-guard-compress`는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류한 뒤 JSON compact, diff 컨텍스트 접기, 중복 로그·검색 라인 제거, 공백 정규화 같은 결정적 축소를 적용합니다. 모델 토큰 절감을 관측했다고 주장하지 않으며, 바이트 수는 관측값으로, 토큰 수는 추정치로만 표시합니다. 손실형 요약 기록은 정확한 재조회를 위해 `context-guard-artifact store` 사용을 안내합니다.
+
+입력에 코드 펜스, diff, 식별자, 숫자 상수, 해시, 경로, 스택 프레임, 따옴표 문자열, JSON 키처럼 의미 보존이 중요한 구역이 있을 때는 `--protected-policy`를 추가하세요. 이 플래그는 기본 압축 동작을 바꾸지 않고, 의미·표현 변환을 거부하며 구조적 변환과 보관본 재조회만 허용하는 `protected_zone_policy`와 `transform_policy` 메타데이터를 추가합니다. 원문 보호 구간 대신 class/count 정책 메타데이터만 저장합니다.
 
 ### 명령 출력을 줄이거나 요약하기
 
@@ -299,7 +302,7 @@ pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
+head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 요약 모드에서 가림 처리된 전체 출력을 로컬 `context-guard-artifact` 보관본에 저장하려면 `--artifact-receipt`를 함께 사용하세요. 생략된 세부 내용에 의존하기 전에 출력된 `context-guard-artifact get ...` 명령으로 전체 내용을 다시 가져오세요. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
 
 ### 검색·diff 출력 민감정보 가림
 
