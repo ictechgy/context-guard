@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import http.client
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import hashlib
 import ipaddress
 import json
@@ -19,6 +21,7 @@ import os
 import re
 import secrets
 import shlex
+import socket
 from pathlib import Path
 import stat
 import sys
@@ -55,6 +58,7 @@ MAX_SELF_HOSTED_JSON_DEPTH = 100
 MAX_SELF_HOSTED_JSON_NODES = 10_000
 LOCAL_PROXY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-plan.v1"
 LOCAL_PROXY_GATE_SCHEMA_VERSION = "contextguard.experiments.local-proxy-gate.v1"
+LOCAL_PROXY_FORWARD_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
@@ -62,6 +66,32 @@ LOCAL_PROXY_DEFAULT_TARGET_PORT = 0
 LOCAL_PROXY_LOCALHOST_NAMES = {"localhost"}
 LOCAL_PROXY_TRUE_VALUES = {"1", "on", "true", "yes", "y"}
 LOCAL_PROXY_FALSE_VALUES = {"", "0", "false", "n", "no", "off"}
+LOCAL_PROXY_DEFAULT_MAX_REQUEST_BYTES = 64 * 1024
+LOCAL_PROXY_DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
+LOCAL_PROXY_MAX_FORWARD_BYTES = 2 * 1024 * 1024
+LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS = 5.0
+LOCAL_PROXY_MAX_TIMEOUT_SECONDS = 30.0
+LOCAL_PROXY_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "x-anthropic-api-key",
+    "x-openai-api-key",
+    "openai-api-key",
+    "cookie",
+    "set-cookie",
+}
+LOCAL_PROXY_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 ALLOWED_FIRST_COMPONENT_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -298,10 +328,12 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         commands=(
             "context-guard experiments plan local-proxy",
             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
+            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
         ),
         opt_in_flags=(
             "plan local-proxy",
             "record local-proxy-runtime-gate",
+            "serve local-proxy",
             "--bind-host",
             "--bind-port",
             "--target-host",
@@ -309,16 +341,22 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "--upstream-url",
             "--ledger-jsonl",
             "--runtime-gate-ack",
+            "--forwarding-gate-ack",
+            "--once",
+            "--max-request-bytes",
+            "--max-response-bytes",
             "--external-forwarding-intent",
             "--persist-api-key",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; local proxy gate records emit only through the "
-            "explicit record command and do not bind sockets, forward traffic, persist API keys, or call external services."
+            "Registry enablement records project-local intent only; local proxy record/serve runtimes run only through "
+            "explicit commands. Serve binds and forwards only literal loopback addresses, blocks credential material, "
+            "and never persists API keys or calls non-local services."
         ),
         evidence_contract=(
-            "Recorded gate rows require localhost-only bind/target metadata, explicit runtime gate acknowledgement, "
-            "no listener, no forwarding, no raw API-key persistence, and shifted-cost accounting boundaries."
+            "Gate rows require localhost-only bind/target metadata and explicit runtime gate acknowledgement. Serve "
+            "evidence requires loopback-only bind/target IPs, explicit forwarding acknowledgement, no credential "
+            "forwarding or persistence, bounded bytes/timeouts, and shifted-cost accounting boundaries."
         ),
     ),
 )
@@ -2150,12 +2188,26 @@ def local_proxy_secret_like(value: Any) -> bool:
     return "[REDACTED]" in sanitize_local_proxy_value(value)
 
 
+def local_proxy_bytes_secret_like(value: bytes) -> bool:
+    return local_proxy_secret_like(value.decode("utf-8", errors="replace"))
+
+
 def is_localhost_host(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     host = value.strip().strip("[]").lower().rstrip(".")
     if host in LOCAL_PROXY_LOCALHOST_NAMES:
         return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_loopback_ip_literal(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    host = value.strip().strip("[]").lower().rstrip(".")
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -2181,6 +2233,30 @@ def normalize_local_proxy_port(value: Any, *, default: int) -> tuple[int, bool]:
     except (TypeError, ValueError):
         return default, False
     return port, 0 <= port <= 65535
+
+
+def normalize_local_proxy_int_limit(value: Any, *, default: int, maximum: int) -> tuple[int, bool]:
+    if value is None or value == "":
+        return default, True
+    if isinstance(value, bool):
+        return default, False
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default, False
+    return parsed, 1 <= parsed <= maximum
+
+
+def normalize_local_proxy_timeout(value: Any) -> tuple[float, bool]:
+    if value is None or value == "":
+        return LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS, True
+    if isinstance(value, bool):
+        return LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS, False
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS, False
+    return parsed, 0.1 <= parsed <= LOCAL_PROXY_MAX_TIMEOUT_SECONDS
 
 
 def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2253,6 +2329,11 @@ def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], 
         "persist_api_key",
         "external_forwarding_intent",
         "runtime_gate_ack",
+        "forwarding_gate_ack",
+        "once",
+        "max_request_bytes",
+        "max_response_bytes",
+        "timeout_seconds",
     }
     ignored.extend(sanitize_self_hosted_ignored_key(key) for key in envelope if key not in allowed)
     return dict(envelope), {
@@ -2265,7 +2346,7 @@ def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], 
 
 
 def coalesce_local_proxy_value(args: argparse.Namespace, payload: dict[str, Any], attr: str, key: str) -> Any:
-    value = getattr(args, attr)
+    value = getattr(args, attr, None)
     return value if value is not None else payload.get(key)
 
 
@@ -2290,7 +2371,7 @@ def parse_local_proxy_json_bool(value: Any) -> tuple[bool, bool]:
 
 
 def coalesce_local_proxy_bool(args: argparse.Namespace, payload: dict[str, Any], attr: str, key: str) -> tuple[bool, bool]:
-    if getattr(args, attr):
+    if getattr(args, attr, False):
         return True, True
     return parse_local_proxy_json_bool(payload.get(key))
 
@@ -2609,6 +2690,353 @@ def command_record_local_proxy_runtime_gate(args: argparse.Namespace) -> int:
                 print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(payload["claim_boundary"])
     return 0 if payload["status"] == "recorded" else 1
+
+
+def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload = local_proxy_plan_payload(args)
+    input_payload, _input_meta = read_local_proxy_payload(args)
+    forwarding_gate_ack, forwarding_gate_ack_valid = coalesce_local_proxy_bool(
+        args,
+        input_payload,
+        "forwarding_gate_ack",
+        "forwarding_gate_ack",
+    )
+    once, once_valid = coalesce_local_proxy_bool(args, input_payload, "once", "once")
+    max_request_bytes, max_request_valid = normalize_local_proxy_int_limit(
+        coalesce_local_proxy_value(args, input_payload, "max_request_bytes", "max_request_bytes"),
+        default=LOCAL_PROXY_DEFAULT_MAX_REQUEST_BYTES,
+        maximum=LOCAL_PROXY_MAX_FORWARD_BYTES,
+    )
+    max_response_bytes, max_response_valid = normalize_local_proxy_int_limit(
+        coalesce_local_proxy_value(args, input_payload, "max_response_bytes", "max_response_bytes"),
+        default=LOCAL_PROXY_DEFAULT_MAX_RESPONSE_BYTES,
+        maximum=LOCAL_PROXY_MAX_FORWARD_BYTES,
+    )
+    timeout_seconds, timeout_valid = normalize_local_proxy_timeout(
+        coalesce_local_proxy_value(args, input_payload, "timeout_seconds", "timeout_seconds")
+    )
+    bind_host = payload["bind"]["host"]
+    target_host = payload["target"]["host"]
+    bind_ip_literal = is_loopback_ip_literal(bind_host)
+    target_ip_literal = is_loopback_ip_literal(target_host)
+    upstream_url = payload["target"].get("upstream_url")
+    upstream_scheme = ""
+    if upstream_url:
+        try:
+            upstream_scheme = urlparse(str(upstream_url)).scheme.lower()
+        except ValueError:
+            upstream_scheme = "invalid"
+
+    payload["mode"] = "serve"
+    payload["schema_version"] = LOCAL_PROXY_FORWARD_SCHEMA_VERSION
+    payload["claim_boundary"] = (
+        "Explicit local proxy forwarding MVP only; binds and forwards literal loopback IPs, blocks credential "
+        "material, persists no API keys, performs no DNS lookup, calls no external services, and makes no hosted "
+        "API token/cost savings claim."
+    )
+    payload["policy"] = dict(payload["policy"])
+    payload["policy"].update({
+        "dry_run_only": False,
+        "forwarding_runtime": True,
+        "forwarding_gate_acknowledged": forwarding_gate_ack,
+        "once_required": True,
+        "once": once,
+        "literal_loopback_ip_only": True,
+        "listener_started": False,
+        "traffic_forwarded": False,
+        "stable_runtime_behavior_changed": False,
+    })
+    payload["forwarding"] = dict(payload["forwarding"])
+    payload["forwarding"].update({
+        "actual_local_forwarding_runtime": True,
+        "forwarding_gate_acknowledged": forwarding_gate_ack,
+        "external_forwarding_allowed": False,
+        "connect_tunneling_allowed": False,
+        "https_mitm_allowed": False,
+    })
+    payload["runtime_limits"] = {
+        "once": once,
+        "max_request_bytes": max_request_bytes,
+        "max_response_bytes": max_response_bytes,
+        "timeout_seconds": timeout_seconds,
+    }
+    payload["forward_result"] = None
+
+    blockers = list(payload["review_plan"]["readiness_blockers"])
+    if not payload["policy"]["runtime_gate_acknowledged"]:
+        blockers.append("missing_runtime_gate_ack")
+    if not forwarding_gate_ack_valid:
+        blockers.append("invalid_forwarding_gate_ack")
+    if not once_valid:
+        blockers.append("invalid_once")
+    if not forwarding_gate_ack:
+        blockers.append("missing_forwarding_gate_ack")
+    if not once:
+        blockers.append("once_required_for_forwarding_mvp")
+    if payload["bind"]["port"] <= 0:
+        blockers.append("bind_port_required_for_listener")
+    if payload["target"]["port"] <= 0:
+        blockers.append("target_port_required_for_forwarding")
+    if not bind_ip_literal:
+        blockers.append("bind_host_must_be_loopback_ip_literal")
+    if not target_ip_literal:
+        blockers.append("target_host_must_be_loopback_ip_literal")
+    if upstream_scheme and upstream_scheme != "http":
+        blockers.append("unsupported_upstream_url_scheme")
+    if not max_request_valid:
+        blockers.append("invalid_max_request_bytes")
+    if not max_response_valid:
+        blockers.append("invalid_max_response_bytes")
+    if not timeout_valid:
+        blockers.append("invalid_timeout_seconds")
+    blockers = list(dict.fromkeys(blockers))
+    payload["review_plan"]["readiness_blockers"] = blockers
+    payload["review_plan"]["next_steps"] = [
+        "Use this MVP only for local loopback HTTP forwarding.",
+        "Keep external forwarding, CONNECT tunneling, credential persistence, and hosted savings claims behind later gates.",
+        "Use --once plus byte/time limits for bounded operation.",
+    ]
+    payload["status"] = "ready_to_serve" if not blockers else "blocked_until_local_proxy_forwarding_ready"
+    return payload
+
+
+def local_proxy_has_sensitive_headers(headers: Any) -> list[str]:
+    found: list[str] = []
+    for name, value in headers.items():
+        lower = str(name).lower()
+        if lower in LOCAL_PROXY_SENSITIVE_HEADER_NAMES:
+            found.append(lower)
+        elif local_proxy_secret_like(name):
+            found.append("redacted_sensitive_header")
+        elif local_proxy_secret_like(value):
+            found.append(lower)
+    return sorted(set(found))
+
+
+def local_proxy_safe_forward_headers(headers: Any, *, target_host: str, target_port: int) -> dict[str, str]:
+    return {
+        "Host": f"{target_host}:{target_port}",
+        "Connection": "close",
+    }
+
+
+def local_proxy_response_headers(headers: Any) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for name, value in headers.items():
+        lower = str(name).lower()
+        if lower in LOCAL_PROXY_SENSITIVE_HEADER_NAMES or lower in LOCAL_PROXY_HOP_BY_HOP_HEADERS:
+            continue
+        if lower not in {"content-type"}:
+            continue
+        if local_proxy_secret_like(name) or local_proxy_secret_like(value):
+            continue
+        result.append((str(name), str(value)))
+    return result
+
+
+def serve_local_proxy_once(payload: dict[str, Any]) -> dict[str, Any]:
+    bind_host = payload["bind"]["host"]
+    bind_port = int(payload["bind"]["port"])
+    target_host = payload["target"]["host"]
+    target_port = int(payload["target"]["port"])
+    limits = payload["runtime_limits"]
+    max_request_bytes = int(limits["max_request_bytes"])
+    max_response_bytes = int(limits["max_response_bytes"])
+    timeout_seconds = float(limits["timeout_seconds"])
+    server_result: dict[str, Any] = {
+        "served_once": False,
+        "forwarded": False,
+        "blocked_reason": None,
+        "forward_attempted": False,
+        "request_method": None,
+        "request_target": None,
+        "inbound_request_bytes": 0,
+        "upstream_status": None,
+        "upstream_response_bytes": 0,
+        "downstream_status": None,
+        "sensitive_headers_blocked": [],
+    }
+
+    def finish_blocked(handler: BaseHTTPRequestHandler, status_code: int, reason: str, *, sensitive: list[str] | None = None) -> None:
+        server_result.update({
+            "served_once": True,
+            "forwarded": False,
+            "blocked_reason": reason,
+            "downstream_status": status_code,
+            "sensitive_headers_blocked": sorted(set(sensitive or [])),
+        })
+        body = json.dumps({"status": "blocked", "reason": reason}, sort_keys=True).encode("utf-8")
+        handler.send_response(status_code)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        if handler.command != "HEAD":
+            handler.wfile.write(body)
+
+    class LocalProxyHandler(BaseHTTPRequestHandler):
+        server_version = "ContextGuardLocalProxy/0"
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - BaseHTTPRequestHandler API.
+            return
+
+        def do_CONNECT(self) -> None:
+            server_result["request_method"] = "CONNECT"
+            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            finish_blocked(self, 405, "connect_tunneling_not_allowed")
+
+        def do_HEAD(self) -> None:
+            self.forward_request()
+
+        def do_GET(self) -> None:
+            self.forward_request()
+
+        def do_POST(self) -> None:
+            self.block_method()
+
+        def do_PUT(self) -> None:
+            self.block_method()
+
+        def do_PATCH(self) -> None:
+            self.block_method()
+
+        def block_method(self) -> None:
+            server_result["request_method"] = self.command
+            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            finish_blocked(self, 405, "method_not_allowed")
+
+        def do_DELETE(self) -> None:
+            self.block_method()
+
+        def do_OPTIONS(self) -> None:
+            self.block_method()
+
+        def do_TRACE(self) -> None:
+            self.block_method()
+
+        def forward_request(self) -> None:
+            server_result["request_method"] = self.command
+            server_result["request_target"] = sanitize_local_proxy_value(self.path)
+            if local_proxy_secret_like(self.path):
+                finish_blocked(self, 400, "secret_like_request_target")
+                return
+            parsed_target = urlparse(self.path)
+            if parsed_target.scheme or parsed_target.netloc:
+                finish_blocked(self, 400, "absolute_proxy_url_not_allowed")
+                return
+            if str(self.headers.get("Transfer-Encoding", "")).strip():
+                finish_blocked(self, 400, "transfer_encoding_not_allowed")
+                return
+            sensitive_headers = local_proxy_has_sensitive_headers(self.headers)
+            if sensitive_headers:
+                finish_blocked(self, 403, "sensitive_request_headers_blocked", sensitive=sensitive_headers)
+                return
+            raw_length = self.headers.get("Content-Length")
+            try:
+                content_length = int(raw_length) if raw_length else 0
+            except ValueError:
+                finish_blocked(self, 400, "invalid_content_length")
+                return
+            if content_length < 0 or content_length > max_request_bytes:
+                finish_blocked(self, 413, "request_body_exceeds_limit")
+                return
+            if content_length:
+                finish_blocked(self, 400, "request_body_not_allowed_for_forwarding_mvp")
+                return
+            body = self.rfile.read(content_length) if content_length else b""
+            server_result["inbound_request_bytes"] = len(body)
+            path = self.path if self.path.startswith("/") else f"/{self.path}"
+            conn = http.client.HTTPConnection(target_host, target_port, timeout=timeout_seconds)
+            try:
+                server_result["forward_attempted"] = True
+                conn.request(
+                    self.command,
+                    path,
+                    body=body,
+                    headers=local_proxy_safe_forward_headers(self.headers, target_host=target_host, target_port=target_port),
+                )
+                response = conn.getresponse()
+                response_body = response.read(max_response_bytes + 1)
+                if len(response_body) > max_response_bytes:
+                    finish_blocked(self, 502, "upstream_response_exceeds_limit")
+                    return
+                if local_proxy_bytes_secret_like(response_body):
+                    finish_blocked(self, 502, "upstream_response_sensitive_content_blocked")
+                    return
+                self.send_response(response.status, response.reason)
+                for header_name, header_value in local_proxy_response_headers(response.headers):
+                    self.send_header(header_name, header_value)
+                self.send_header("Content-Length", str(len(response_body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(response_body)
+                server_result.update({
+                    "served_once": True,
+                    "forwarded": True,
+                    "blocked_reason": None,
+                    "upstream_status": response.status,
+                    "upstream_response_bytes": len(response_body),
+                    "downstream_status": response.status,
+                })
+            except (OSError, http.client.HTTPException, TimeoutError) as exc:
+                finish_blocked(self, 502, "upstream_forward_error")
+                server_result["error"] = sanitize_local_proxy_value(str(exc))
+            finally:
+                conn.close()
+
+    address_family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    class LocalProxyHTTPServer(HTTPServer):
+        def get_request(self) -> tuple[Any, Any]:
+            request, client_address = super().get_request()
+            request.settimeout(timeout_seconds)
+            return request, client_address
+
+    LocalProxyHTTPServer.address_family = address_family
+    try:
+        httpd = LocalProxyHTTPServer((bind_host, bind_port), LocalProxyHandler)
+    except OSError as exc:
+        raise RegistryError(f"could not start local proxy listener: {os_error_detail(exc)}") from exc
+    httpd.timeout = timeout_seconds
+    try:
+        httpd.handle_request()
+        if not server_result["served_once"]:
+            server_result.update({
+                "blocked_reason": "timeout_waiting_for_request",
+                "downstream_status": None,
+            })
+    finally:
+        httpd.server_close()
+    return server_result
+
+
+def command_serve_local_proxy(args: argparse.Namespace) -> int:
+    payload = local_proxy_forward_payload(args)
+    if payload["status"] == "ready_to_serve":
+        payload["network_actions"]["listener_started"] = True
+        result = serve_local_proxy_once(payload)
+        payload["forward_result"] = result
+        payload["network_actions"]["outbound_forwarding_attempted"] = bool(result["forward_attempted"])
+        payload["network_actions"]["dns_lookup_attempted"] = False
+        payload["network_actions"]["external_services_called"] = False
+        payload["policy"]["listener_started"] = True
+        payload["policy"]["traffic_forwarded"] = bool(result["forwarded"])
+        payload["status"] = "served_once" if result["forwarded"] else "blocked_request"
+    if args.json:
+        emit_json(payload)
+    else:
+        if payload["status"] == "served_once":
+            print("ContextGuard local proxy served one loopback request")
+        else:
+            print("ContextGuard local proxy serve blocked")
+            print(f"Status: {payload['status']}")
+            if payload["review_plan"]["readiness_blockers"]:
+                print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+            if payload.get("forward_result") and payload["forward_result"].get("blocked_reason"):
+                print(f"Request blocker: {payload['forward_result']['blocked_reason']}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "served_once" else 1
 
 
 LEARNED_CODE_FENCE_RE = re.compile(r"(?m)^\s*(?:```|~~~)")
@@ -3326,6 +3754,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     record_local_proxy.add_argument("--json", action="store_true", help="Emit JSON output.")
     record_local_proxy.set_defaults(func=command_record_local_proxy_runtime_gate)
+
+    serve_parser = sub.add_parser("serve", help="Run explicit bounded local servers for experimental lanes.")
+    serve_sub = serve_parser.add_subparsers(dest="serve_command", required=True)
+    serve_local_proxy = serve_sub.add_parser(
+        "local-proxy",
+        help="Serve one bounded localhost-only HTTP forwarding request.",
+    )
+    serve_local_proxy.add_argument("--input", help="Read a local_proxy JSON envelope from a file instead of CLI flags.")
+    serve_local_proxy.add_argument("--bind-host", help="Bind host; actual serving requires a literal loopback IP.")
+    serve_local_proxy.add_argument("--bind-port", default=None, help="Bind port; must be a nonzero explicit port for serving.")
+    serve_local_proxy.add_argument("--target-host", help="Target host; actual forwarding requires a literal loopback IP.")
+    serve_local_proxy.add_argument("--target-port", default=None, help="Target port; must be a nonzero explicit port for forwarding.")
+    serve_local_proxy.add_argument("--upstream-url", help="Optional upstream URL; host must be a literal loopback IP for serving.")
+    serve_local_proxy.add_argument("--proxy-label", help="Safe label for this local proxy serve run.")
+    serve_local_proxy.add_argument("--api-key", help="Blocked/redacted API key material; never persisted or emitted raw.")
+    serve_local_proxy.add_argument("--authorization-header", help="Blocked/redacted Authorization header; never persisted or emitted raw.")
+    serve_local_proxy.add_argument("--persist-api-key", action="store_true", help="Declare API-key persistence intent; blocked.")
+    serve_local_proxy.add_argument(
+        "--external-forwarding-intent",
+        action="store_true",
+        help="Declare external forwarding intent; blocked in this local-only runtime.",
+    )
+    serve_local_proxy.add_argument(
+        "--runtime-gate-ack",
+        action="store_true",
+        help="Acknowledge this is an explicit experimental runtime.",
+    )
+    serve_local_proxy.add_argument(
+        "--forwarding-gate-ack",
+        action="store_true",
+        help="Acknowledge this starts a loopback-only forwarding listener for one bounded request.",
+    )
+    serve_local_proxy.add_argument("--once", action="store_true", help="Serve exactly one accepted or blocked request; required for this MVP.")
+    serve_local_proxy.add_argument(
+        "--max-request-bytes",
+        default=None,
+        help=f"Maximum request body bytes, 1..{LOCAL_PROXY_MAX_FORWARD_BYTES}.",
+    )
+    serve_local_proxy.add_argument(
+        "--max-response-bytes",
+        default=None,
+        help=f"Maximum upstream response bytes, 1..{LOCAL_PROXY_MAX_FORWARD_BYTES}.",
+    )
+    serve_local_proxy.add_argument(
+        "--timeout-seconds",
+        default=None,
+        help=f"Listener/upstream timeout seconds, 0.1..{LOCAL_PROXY_MAX_TIMEOUT_SECONDS}.",
+    )
+    serve_local_proxy.add_argument("--json", action="store_true", help="Emit JSON output after the single request completes.")
+    serve_local_proxy.set_defaults(func=command_serve_local_proxy)
 
     return parser
 

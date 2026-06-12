@@ -4,6 +4,8 @@ import csv
 import contextlib
 import errno
 import hashlib
+import http.client
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import importlib.machinery
 import importlib.util
@@ -12,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -68,6 +71,52 @@ PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
 FILTER_SCRIPTS = [KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"]
 TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"]
+
+
+def reserve_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def request_loopback_with_retries(
+    port: int,
+    path: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+):
+    deadline = time.time() + timeout
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.0)
+        try:
+            conn.request(method, path, body=body, headers=headers or {})
+            response = conn.getresponse()
+            body = response.read()
+            return response.status, body, dict(response.getheaders())
+        except (ConnectionRefusedError, OSError, http.client.HTTPException) as exc:
+            last_error = exc
+            time.sleep(0.05)
+        finally:
+            conn.close()
+    raise AssertionError(f"local proxy did not accept request on port {port}: {last_error}")
+
+
+def kill_process_if_running(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.communicate(timeout=5)
+
+
+def communicate_process_or_kill(proc: subprocess.Popen, *, timeout: float = 10):
+    try:
+        return proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        kill_process_if_running(proc)
+        raise AssertionError(f"process did not exit within {timeout}s") from exc
 
 
 def run_hook(script: Path, command: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
@@ -1139,18 +1188,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "context-guard experiments record local-proxy-runtime-gate --ledger-jsonl <path>",
                             local_proxy["commands"],
                         )
+                        self.assertIn(
+                            "context-guard experiments serve local-proxy --bind-host 127.0.0.1 --bind-port <port> --target-host 127.0.0.1 --target-port <port> --runtime-gate-ack --forwarding-gate-ack --once",
+                            local_proxy["commands"],
+                        )
                         self.assertIn("plan local-proxy", local_proxy["opt_in_flags"])
                         self.assertIn("record local-proxy-runtime-gate", local_proxy["opt_in_flags"])
+                        self.assertIn("serve local-proxy", local_proxy["opt_in_flags"])
                         self.assertIn("--bind-host", local_proxy["opt_in_flags"])
                         self.assertIn("--target-host", local_proxy["opt_in_flags"])
                         self.assertIn("--ledger-jsonl", local_proxy["opt_in_flags"])
                         self.assertIn("--runtime-gate-ack", local_proxy["opt_in_flags"])
+                        self.assertIn("--forwarding-gate-ack", local_proxy["opt_in_flags"])
+                        self.assertIn("--once", local_proxy["opt_in_flags"])
+                        self.assertIn("--max-request-bytes", local_proxy["opt_in_flags"])
+                        self.assertIn("--max-response-bytes", local_proxy["opt_in_flags"])
                         self.assertIn("--external-forwarding-intent", local_proxy["opt_in_flags"])
                         self.assertIn("--persist-api-key", local_proxy["opt_in_flags"])
-                        self.assertIn("explicit record command", local_proxy["config_effect"])
-                        self.assertIn("do not bind sockets", local_proxy["config_effect"])
-                        self.assertIn("forward traffic", local_proxy["config_effect"])
-                        self.assertIn("API-key persistence", local_proxy["evidence_contract"])
+                        self.assertIn("explicit commands", local_proxy["config_effect"])
+                        self.assertIn("literal loopback", local_proxy["config_effect"])
+                        self.assertIn("blocks credential material", local_proxy["config_effect"])
+                        self.assertIn("forwarding acknowledgement", local_proxy["evidence_contract"])
+                        self.assertIn("no credential forwarding or persistence", local_proxy["evidence_contract"])
 
     def test_existing_explicit_experiment_flags_work_without_registry_enablement(self):
         for index, script in enumerate(TRIM_SCRIPTS):
@@ -2194,8 +2253,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn(name, package["bin"])
             self.assertFalse((PLUGIN_BIN / name).exists())
         source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
-        for forbidden in ("import requests", "urllib.request", "http.client", "import socket", "import subprocess"):
+        for forbidden in ("import requests", "urllib.request", "import subprocess"):
             self.assertNotIn(forbidden, source)
+        self.assertIn("LOCAL_PROXY_FORWARD_SCHEMA_VERSION", source)
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
@@ -2758,8 +2818,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn(name, package["bin"])
             self.assertFalse((PLUGIN_BIN / name).exists())
         source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
-        for forbidden in ("import requests", "urllib.request", "http.client", "import socket", "import subprocess"):
+        for forbidden in ("import requests", "urllib.request", "import subprocess"):
             self.assertNotIn(forbidden, source)
+        self.assertIn("LOCAL_PROXY_FORWARD_SCHEMA_VERSION", source)
 
     def test_experimental_learned_compression_emit_runtime(self):
         safe_prose = (
@@ -4320,6 +4381,660 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         for secret_fragment in secret_fragments:
                             self.assertNotIn(secret_fragment, proc.stdout + proc.stderr)
 
+    def test_experimental_local_proxy_serve_forwards_one_loopback_request(self):
+        seen_requests: list[dict[str, object]] = []
+
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                seen_requests.append({
+                    "path": self.path,
+                    "headers": {key.lower(): value for key, value in self.headers.items()},
+                })
+                body = f"upstream ok {self.path}".encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("X-Upstream", "loopback")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, headers = request_loopback_with_retries(proxy_port, "/hello?name=contextguard")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 0, stdout + stderr)
+                    self.assertEqual(status, 200)
+                    self.assertIn(b"upstream ok /hello?name=contextguard", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "served_once")
+                    self.assertEqual(payload["mode"], "serve")
+                    self.assertTrue(payload["policy"]["listener_started"])
+                    self.assertTrue(payload["policy"]["traffic_forwarded"])
+                    self.assertTrue(payload["policy"]["forwarding_gate_acknowledged"])
+                    self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                    self.assertFalse(payload["network_actions"]["external_services_called"])
+                    self.assertTrue(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(payload["forward_result"]["request_target"], "/hello?name=contextguard")
+                    self.assertTrue(payload["forward_result"]["forwarded"])
+                    self.assertEqual(payload["forward_result"]["upstream_status"], 200)
+                    self.assertNotIn("authorization", seen_requests[-1]["headers"])
+                    self.assertNotIn("X-Upstream", headers)
+                    self.assertNotIn("x-upstream", headers)
+
+            for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+                with self.subTest(dispatcher=dispatcher):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(dispatcher),
+                            "experiments",
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        cwd=ROOT,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(proxy_port, "/dispatcher")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 0, stdout + stderr)
+                    self.assertEqual(status, 200)
+                    self.assertIn(b"upstream ok /dispatcher", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "served_once")
+                    self.assertTrue(payload["forward_result"]["forwarded"])
+
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script, case="input_json_forwarding_fields"):
+                    proxy_port = reserve_loopback_port()
+                    with tempfile.TemporaryDirectory() as tmp:
+                        input_path = Path(tmp) / "serve-local-proxy.json"
+                        input_path.write_text(
+                            json.dumps({
+                                "local_proxy": {
+                                    "bind_host": "127.0.0.1",
+                                    "bind_port": proxy_port,
+                                    "target_host": "127.0.0.1",
+                                    "target_port": upstream.server_port,
+                                    "runtime_gate_ack": True,
+                                    "forwarding_gate_ack": True,
+                                    "once": True,
+                                    "max_request_bytes": 1024,
+                                    "max_response_bytes": 2048,
+                                    "timeout_seconds": 2,
+                                }
+                            }),
+                            encoding="utf-8",
+                        )
+                        proc = subprocess.Popen(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--input",
+                                str(input_path),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, _headers = request_loopback_with_retries(proxy_port, "/input-json")
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 0, stdout + stderr)
+                    self.assertEqual(status, 200)
+                    self.assertIn(b"upstream ok /input-json", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "served_once")
+                    self.assertEqual(payload["input"]["ignored_keys"], [])
+                    self.assertEqual(payload["runtime_limits"]["max_request_bytes"], 1024)
+                    self.assertEqual(payload["runtime_limits"]["max_response_bytes"], 2048)
+                    self.assertEqual(payload["runtime_limits"]["timeout_seconds"], 2.0)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
+    def test_experimental_local_proxy_serve_blocks_credentials_and_unsafe_startup(self):
+        seen_requests: list[str] = []
+
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                seen_requests.append(self.path)
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script, case="sensitive_header"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/blocked",
+                            headers={"Authorization": "Bearer sk-ant-secret-secret-secret"},
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"sensitive_request_headers_blocked", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "blocked_request")
+                    self.assertFalse(payload["policy"]["traffic_forwarded"])
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "sensitive_request_headers_blocked")
+                    self.assertIn("authorization", payload["forward_result"]["sensitive_headers_blocked"])
+                    self.assertEqual(seen_requests, [])
+                    self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+            unsafe_cases = [
+                (
+                    "missing_forwarding_ack",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--once"],
+                    "missing_forwarding_gate_ack",
+                ),
+                (
+                    "missing_once",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack"],
+                    "once_required_for_forwarding_mvp",
+                ),
+                (
+                    "localhost_name_rejected_for_no_dns",
+                    ["--bind-host", "localhost", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "bind_host_must_be_loopback_ip_literal",
+                ),
+                (
+                    "target_port_required",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "target_port_required_for_forwarding",
+                ),
+                (
+                    "bind_port_required",
+                    ["--bind-host", "127.0.0.1", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "bind_port_required_for_listener",
+                ),
+                (
+                    "target_localhost_name_rejected_for_no_dns",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "localhost", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "target_host_must_be_loopback_ip_literal",
+                ),
+                (
+                    "api_key_cli_blocked",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--api-key", "sk-ant-secret-secret-secret", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "api_key_material_provided",
+                ),
+                (
+                    "external_forwarding_blocked",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--external-forwarding-intent", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "external_forwarding_intent_not_allowed",
+                ),
+                (
+                    "invalid_max_request_bytes",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once", "--max-request-bytes", "0"],
+                    "invalid_max_request_bytes",
+                ),
+                (
+                    "invalid_max_response_bytes",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once", "--max-response-bytes", "999999999"],
+                    "invalid_max_response_bytes",
+                ),
+                (
+                    "invalid_timeout_seconds",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--target-host", "127.0.0.1", "--target-port", "8787", "--runtime-gate-ack", "--forwarding-gate-ack", "--once", "--timeout-seconds", "0"],
+                    "invalid_timeout_seconds",
+                ),
+                (
+                    "https_upstream_rejected_for_no_tls_proxying",
+                    ["--bind-host", "127.0.0.1", "--bind-port", "8765", "--upstream-url", "https://127.0.0.1:8787/proxy", "--runtime-gate-ack", "--forwarding-gate-ack", "--once"],
+                    "unsupported_upstream_url_scheme",
+                ),
+            ]
+            for script in EXPERIMENT_SCRIPTS:
+                for name, args, blocker in unsafe_cases:
+                    with self.subTest(script=script, case=name):
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                *args,
+                                "--json",
+                            ],
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(proc.returncode, 1)
+                        payload = json.loads(proc.stdout)
+                        self.assertEqual(payload["status"], "blocked_until_local_proxy_forwarding_ready")
+                        self.assertIn(blocker, payload["review_plan"]["readiness_blockers"])
+                        self.assertFalse(payload["policy"]["listener_started"])
+                        self.assertFalse(payload["policy"]["traffic_forwarded"])
+                        self.assertFalse(payload["network_actions"]["listener_started"])
+                        self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                        self.assertFalse(payload["network_actions"]["dns_lookup_attempted"])
+                        self.assertFalse(payload["network_actions"]["external_services_called"])
+                        self.assertNotIn("sk-ant-secret", proc.stdout + proc.stderr)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
+    def test_experimental_local_proxy_serve_blocks_bodies_limits_responses_and_idle_clients(self):
+        seen_requests: list[str] = []
+
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                seen_requests.append(self.path)
+                if self.path == "/large-response":
+                    body = b"x" * 32
+                elif self.path == "/sensitive-output":
+                    body = b"api_key=sk-ant-secret-secret-secret"
+                else:
+                    body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Set-Cookie", "session=sk-ant-secret-secret-secret")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script, case="request_body_exceeds_limit"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--max-request-bytes",
+                            "1",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(proxy_port, "/body-too-large", body=b"xx")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    self.assertEqual(status, 413)
+                    self.assertIn(b"request_body_exceeds_limit", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "blocked_request")
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "request_body_exceeds_limit")
+                    self.assertNotIn("/body-too-large", seen_requests)
+
+                with self.subTest(script=script, case="request_body_not_allowed"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/body-payload",
+                            body=b"api_key=sk-ant-secret-secret-secret",
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertEqual(status, 400)
+                    self.assertIn(b"request_body_not_allowed_for_forwarding_mvp", body)
+                    payload = json.loads(stdout)
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "request_body_not_allowed_for_forwarding_mvp")
+                    self.assertNotIn("/body-payload", seen_requests)
+                    self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+                with self.subTest(script=script, case="unlisted_sensitive_header"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/header-check",
+                            headers={"X-Auth-Token": "sk-ant-secret-secret-secret"},
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"sensitive_request_headers_blocked", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "sensitive_request_headers_blocked")
+                    self.assertIn("redacted_sensitive_header", payload["forward_result"]["sensitive_headers_blocked"])
+                    self.assertNotIn("/header-check", seen_requests)
+                    self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+                with self.subTest(script=script, case="secret_like_header_name_redacted"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/header-name",
+                            headers={"sk-ant-secret-secret-secret": "blocked"},
+                        )
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertEqual(status, 403)
+                    self.assertIn(b"sensitive_request_headers_blocked", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "sensitive_request_headers_blocked")
+                    self.assertIn("redacted_sensitive_header", payload["forward_result"]["sensitive_headers_blocked"])
+                    self.assertNotIn("/header-name", seen_requests)
+                    self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+                with self.subTest(script=script, case="response_exceeds_limit"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--max-response-bytes",
+                            "8",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(proxy_port, "/large-response")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    self.assertEqual(status, 502)
+                    self.assertIn(b"upstream_response_exceeds_limit", body)
+                    payload = json.loads(stdout)
+                    self.assertTrue(payload["network_actions"]["outbound_forwarding_attempted"])
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "upstream_response_exceeds_limit")
+
+                with self.subTest(script=script, case="response_sensitive_content"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    try:
+                        status, body, _headers = request_loopback_with_retries(proxy_port, "/sensitive-output")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1)
+                    self.assertEqual(status, 502)
+                    self.assertIn(b"upstream_response_sensitive_content_blocked", body)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "upstream_response_sensitive_content_blocked")
+                    self.assertNotIn("sk-ant-secret", stdout + stderr)
+
+                with self.subTest(script=script, case="idle_accepted_socket_times_out"):
+                    proxy_port = reserve_loopback_port()
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--timeout-seconds",
+                            "0.5",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    sock = None
+                    try:
+                        deadline = time.time() + 5
+                        last_error: Exception | None = None
+                        while time.time() < deadline:
+                            try:
+                                sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=1)
+                                break
+                            except OSError as exc:
+                                last_error = exc
+                                time.sleep(0.05)
+                        if sock is None:
+                            raise AssertionError(f"local proxy did not accept idle socket: {last_error}")
+                        stdout, stderr = communicate_process_or_kill(proc, timeout=5)
+                    finally:
+                        if sock is not None:
+                            sock.close()
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 1, stdout + stderr)
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "blocked_request")
+                    self.assertEqual(payload["forward_result"]["blocked_reason"], "timeout_waiting_for_request")
+                    self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
     def test_experimental_self_hosted_metrics_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -4364,9 +5079,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("local-proxy", text)
                 self.assertRegex(text, r"dry-run|advisory|드라이런|advisory plan")
                 self.assertRegex(text, r"localhost-only|localhost")
-                self.assertRegex(text, r"no listener|forwards no traffic|proxy forwarding runtime|proxy forwarding|실제 proxy forwarding")
+                self.assertRegex(text, r"serve local-proxy|loopback-only|literal loopback|proxy forwarding|실제 proxy forwarding")
                 self.assertRegex(text, r"api[- ]?key|api key")
-                self.assertNotIn("actual proxy forwarding runtime is shipped", text)
+                self.assertNotIn("external proxy forwarding runtime is shipped", text)
                 self.assertNotIn("persists api keys", text)
         for doc in boundary_docs:
             with self.subTest(boundary_doc=doc):
@@ -4378,6 +5093,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"dns lookup|dns")
                 self.assertRegex(text, r"external service")
                 self.assertRegex(text, r"api[- ]?key|api key")
+                self.assertRegex(text, r"connect|tls")
                 self.assertRegex(text, r"hosted.*savings|hosted api 절감")
 
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):

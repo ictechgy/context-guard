@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added an explicit `context-guard experiments serve local-proxy ...` one-shot loopback forwarding MVP that requires runtime and forwarding acknowledgements, literal loopback bind/target IPs, bounded bytes/timeouts, and credential-free requests while keeping external forwarding, CONNECT/TLS proxying, API-key persistence, and hosted savings claims disallowed.
 - Added an explicit `context-guard experiments record local-proxy-runtime-gate --ledger-jsonl ...` runtime that appends one localhost-only gate row without starting listeners, forwarding traffic, performing DNS lookup, persisting API keys, calling external services, or making hosted savings claims.
 - Added an explicit `context-guard experiments emit learned-compression ...` runtime that emits only caller-supplied compact prose candidates after deny-by-default protected-signal checks and verified exact local fallback content, without running compressors/models or making hosted savings claims.
 - Added an explicit `context-guard experiments emit visual-crop-ocr ...` runtime that emits local caller-supplied visual crop/OCR evidence packs while preserving full evidence receipts, missed-context guardrails, no-service boundaries, and hosted savings claim denial.
