@@ -28,9 +28,26 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("environment:", pages)
         self.assertIn("name: github-pages", pages)
         self.assertIn("actions/upload-pages-artifact@", pages)
+        self.assertIn("name: Refuse unexpected hidden docs files", pages)
+        self.assertLess(
+            pages.index("name: Refuse unexpected hidden docs files"),
+            pages.index("name: Upload docs artifact"),
+        )
+        self.assertIn(
+            "[ -L docs/.nojekyll ] || [ ! -f docs/.nojekyll ] || [ -s docs/.nojekyll ]",
+            pages,
+        )
+        self.assertIn("find docs -name '.*' ! -path 'docs/.nojekyll' -print", pages)
         self.assertIn("include-hidden-files: true", pages)
         self.assertIn("actions/deploy-pages@", pages)
-        self.assertTrue((ROOT / "docs" / ".nojekyll").is_file())
+        nojekyll = ROOT / "docs" / ".nojekyll"
+        self.assertTrue(nojekyll.is_file())
+        self.assertFalse(nojekyll.is_symlink())
+        self.assertEqual(nojekyll.stat().st_size, 0)
+        hidden_docs_paths = sorted(
+            str(path.relative_to(ROOT)) for path in (ROOT / "docs").rglob(".*")
+        )
+        self.assertEqual(hidden_docs_paths, ["docs/.nojekyll"])
 
     def test_first_party_actions_are_pinned_to_full_sha_with_non_persistent_checkout_credentials(self):
         workflows = [read(".github/workflows/pages.yml"), read(".github/workflows/ci.yml")]
