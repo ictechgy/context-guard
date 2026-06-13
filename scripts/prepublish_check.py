@@ -169,6 +169,10 @@ FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
     "version",
     "postversion",
 }
+FORBIDDEN_NPM_FILE_ALLOWLIST_PREFIXES = (
+    "context-guard-kit",
+    "context-guard-kit/",
+)
 FORBIDDEN_NPM_PACK_PREFIXES = (
     ".git/",
     ".omx/",
@@ -197,8 +201,6 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "NOTICE",
     "README.ko.md",
     "README.md",
-    "context-guard-kit/README.md",
-    "context-guard-kit/settings.example.json",
     "docs/distribution.md",
     "docs/cache-diagnostics-schema.md",
     "docs/cache-diagnostics.schema.json",
@@ -506,6 +508,11 @@ def check_npm_package_metadata(version: str) -> None:
             fail("npm package files allowlist contains a non-string/empty entry")
         if item.startswith((".git", ".omx", ".context-guard", ".claude-token-optimizer", ".serena")):
             fail(f"npm package files allowlist includes forbidden path: {item}")
+        if item == "context-guard-kit" or item.startswith(FORBIDDEN_NPM_FILE_ALLOWLIST_PREFIXES):
+            fail(
+                "npm package files allowlist must not include checkout-only context-guard-kit sources: "
+                f"{item}"
+            )
 
 
 def check_homebrew_formula_template(version: str) -> None:

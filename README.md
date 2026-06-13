@@ -443,7 +443,7 @@ These are directions the project has tracked, not committed features. Nothing he
 
 - `.claude-plugin/marketplace.json` — Claude Code marketplace manifest.
 - `plugins/context-guard/` — installable Claude Code plugin package.
-- `context-guard-kit/` — underlying Python/Bash helper tools.
+- `context-guard-kit/` — checkout-local Python/Bash helper sources. npm packages ship the synchronized `plugins/context-guard/bin` and `plugins/context-guard/lib` copies instead of duplicating this source tree.
 - `docs/index.html` — static landing page for the project.
 - `tests/` — regression tests for helper behavior.
 
@@ -489,7 +489,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the exact-copy contract up front; `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
+When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the maintainer exact-copy contract up front; npm packages intentionally ship only the synchronized plugin-local `plugins/context-guard/bin` entrypoints and `plugins/context-guard/lib` helpers to avoid duplicate implementation payloads. `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
 
 Versioned release notes live in [CHANGELOG.md](CHANGELOG.md); the prepublish gate requires an entry matching the plugin manifest version before publishing.
 

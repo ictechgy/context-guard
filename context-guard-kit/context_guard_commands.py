@@ -185,9 +185,11 @@ DISPATCHER_SMOKE_CASES: tuple[dict[str, Any], ...] = (
 
 
 def expected_command_pack_files() -> tuple[str, ...]:
-    files = {f"context-guard-kit/{kit_name}" for kit_name, _bin_name in IMPLEMENTATION_PAIRS}
-    files.update(f"plugins/context-guard/bin/{bin_name}" for _kit_name, bin_name in IMPLEMENTATION_PAIRS)
-    files.update(f"context-guard-kit/{kit_name}" for kit_name, _plugin_rel in HELPER_PAIRS)
+    # npm packages ship the plugin-local executable/helper copies only. The
+    # checkout-local ``context-guard-kit`` files remain the source of truth for
+    # maintainers and are kept byte-synchronized with these packaged copies by
+    # ``scripts/sync_plugin_copies.py`` and ``scripts/prepublish_check.py``.
+    files = {f"plugins/context-guard/bin/{bin_name}" for _kit_name, bin_name in IMPLEMENTATION_PAIRS}
     files.update(f"plugins/context-guard/{plugin_rel}" for _kit_name, plugin_rel in HELPER_PAIRS)
     files.update(f"plugins/context-guard/bin/{wrapper}" for wrapper in LEGACY_WRAPPERS)
     return tuple(sorted(files))
