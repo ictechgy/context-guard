@@ -50,7 +50,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(hidden_docs_paths, ["docs/.nojekyll"])
 
     def test_first_party_actions_are_pinned_to_full_sha_with_non_persistent_checkout_credentials(self):
-        workflows = [read(".github/workflows/pages.yml"), read(".github/workflows/ci.yml")]
+        workflows = [
+            read(".github/workflows/pages.yml"),
+            read(".github/workflows/ci.yml"),
+            read(".github/workflows/npm-publish.yml"),
+        ]
         combined = "\n".join(workflows)
 
         self.assertIsNone(UNPINNED_ACTION_RE.search(combined))
@@ -64,6 +68,29 @@ class WorkflowSecurityTests(unittest.TestCase):
 
         self.assertIn("actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6", pages)
         self.assertNotIn("actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5", pages)
+
+
+    def test_npm_publish_workflow_uses_oidc_trusted_publishing_without_environment(self):
+        workflow = read(".github/workflows/npm-publish.yml")
+
+        self.assertIn("name: Publish npm package", workflow)
+        self.assertIn("types: [published]", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("environment:", workflow)
+        self.assertNotIn("NODE_AUTH_TOKEN", workflow)
+        self.assertNotIn("NPM_TOKEN", workflow)
+        self.assertIn('node-version: "24"', workflow)
+        self.assertIn('registry-url: "https://registry.npmjs.org"', workflow)
+        self.assertIn("package-manager-cache: false", workflow)
+        self.assertIn("python3 scripts/sync_plugin_copies.py --check", workflow)
+        self.assertIn("python3 scripts/prepublish_check.py", workflow)
+        self.assertIn("python3 scripts/release_smoke.py", workflow)
+        self.assertIn('npm publish --dry-run --access public --tag "$NPM_DIST_TAG"', workflow)
+        self.assertIn('npm publish --access public --tag "$NPM_DIST_TAG"', workflow)
+        self.assertIn("confirm_publish=true", workflow)
+        self.assertIn("release tag {tag} does not match package version", workflow)
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")

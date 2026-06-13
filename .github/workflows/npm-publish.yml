@@ -1,0 +1,118 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, matching package.json (for example v0.4.9)"
+        required: true
+        type: string
+      confirm_publish:
+        description: "Confirm publishing this tag to npm"
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node for npm trusted publishing
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Verify publish target and OIDC toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo "::error::release tag is required"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.confirm_publish }}" != "true" ]; then
+            echo "::error::workflow_dispatch publishes require confirm_publish=true"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag):
+              sys.exit(f"release tag must look like vMAJOR.MINOR.PATCH: {tag}")
+
+          package = json.loads(Path("package.json").read_text(encoding="utf-8"))
+          plugin = json.loads(Path("plugins/context-guard/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
+          version = package.get("version")
+          if plugin.get("version") != version:
+              sys.exit(f"plugin/package version mismatch: {plugin.get('version')} != {version}")
+          if tag != f"v{version}":
+              sys.exit(f"release tag {tag} does not match package version v{version}")
+
+          def version_tuple(raw: str) -> tuple[int, int, int]:
+              match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", raw)
+              if match is None:
+                  sys.exit(f"could not parse version: {raw}")
+              return tuple(int(part) for part in match.groups())
+
+          node_version = subprocess.check_output(["node", "--version"], text=True).strip()
+          npm_version = subprocess.check_output(["npm", "--version"], text=True).strip()
+          if version_tuple(node_version) < (22, 14, 0):
+              sys.exit(f"Node {node_version} is too old for npm trusted publishing")
+          if version_tuple(npm_version) < (11, 5, 1):
+              sys.exit(f"npm {npm_version} is too old for npm trusted publishing")
+          dist_tag = "next" if "-" in version else "latest"
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
+              env.write(f"NPM_DIST_TAG={dist_tag}\n")
+          print(f"publishing {package['name']}@{version} from {tag} with npm dist-tag {dist_tag}")
+          PY
+
+      - name: Verify synchronized package sources
+        run: python3 scripts/sync_plugin_copies.py --check
+
+      - name: Run prepublish release gate
+        timeout-minutes: 15
+        run: python3 scripts/prepublish_check.py
+
+      - name: Run staged plugin release smoke
+        timeout-minutes: 5
+        run: python3 scripts/release_smoke.py
+
+      - name: Preview npm package publish
+        run: npm publish --dry-run --access public --tag "$NPM_DIST_TAG"
+
+      - name: Publish npm package with trusted publishing
+        run: npm publish --access public --tag "$NPM_DIST_TAG"
