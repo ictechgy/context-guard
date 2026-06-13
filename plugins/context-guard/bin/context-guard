@@ -13,41 +13,124 @@ from pathlib import Path
 import subprocess
 import stat
 import sys
-from typing import NoReturn
+from types import ModuleType
+from typing import Any, NoReturn
 
 COMMAND_NAME = "context-guard"
 PACKAGE_NAME = "@ictechgy/context-guard"
 MAX_VERSION_METADATA_BYTES = 64 * 1024
+MAX_COMMAND_MANIFEST_BYTES = 128 * 1024
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
 
-HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
-    "setup": ("context-guard-setup",),
-    "doctor": ("context-guard-setup", "--verify"),
-    "audit": ("context-guard-audit",),
-    "diet": ("context-guard-diet",),
-    "experiments": ("context-guard-experiments",),
-    "scan": ("context-guard-diet", "scan"),
-    "trim-output": ("context-guard-trim-output",),
-    "trim": ("context-guard-trim-output",),
-    "sanitize-output": ("context-guard-sanitize-output",),
-    "sanitize": ("context-guard-sanitize-output",),
-    "filter": ("context-guard-filter",),
-    "artifact": ("context-guard-artifact",),
-    "pack": ("context-guard-pack",),
-    "tool-prune": ("context-guard-tool-prune",),
-    "compress": ("context-guard-compress",),
-    "cost": ("context-guard-cost",),
-    "bench": ("context-guard-bench",),
-    "read-symbol": ("context-guard-read-symbol",),
-    "rewrite-bash": ("context-guard-rewrite-bash",),
-    "guard-read": ("context-guard-guard-read",),
-    "failed-nudge": ("context-guard-failed-nudge",),
-    "statusline": ("context-guard-statusline",),
-    "statusline-merged": ("context-guard-statusline-merged",),
-}
+MANIFEST_LOAD_ERROR: str | None = None
+
+
+def _manifest_candidates(script_dir: Path) -> tuple[Path, ...]:
+    # Layout-aware and intentionally narrow: checkout scripts load only the
+    # colocated kit manifest; packaged plugin/npm bins load only plugin-local
+    # ../lib. A stray bin/context_guard_commands.py must not shadow the package
+    # manifest.
+    if script_dir.name == "context-guard-kit":
+        return (script_dir / "context_guard_commands.py",)
+    if script_dir.name == "bin":
+        return (script_dir.parent / "lib" / "context_guard_commands.py",)
+    return ()
+
+
+def _manifest_open_flags() -> int | None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def _read_manifest_source(path: Path) -> str | None:
+    flags = _manifest_open_flags()
+    if flags is None:
+        return None
+    fd = -1
+    try:
+        fd = os.open(path, flags)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_COMMAND_MANIFEST_BYTES:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, MAX_COMMAND_MANIFEST_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_COMMAND_MANIFEST_BYTES:
+                return None
+        return b"".join(chunks).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _load_manifest_from_path(path: Path) -> ModuleType | None:
+    source = _read_manifest_source(path)
+    if source is None:
+        return None
+    module = ModuleType("_context_guard_commands_manifest")
+    try:
+        exec(compile(source, str(path), "exec"), module.__dict__)
+    except Exception:
+        return None
+    return module
+
+
+def _coerce_helper_subcommands(value: Any) -> dict[str, tuple[str, ...]] | None:
+    if not isinstance(value, dict):
+        return None
+    coerced: dict[str, tuple[str, ...]] = {}
+    for key, command in value.items():
+        if not isinstance(key, str) or not key:
+            return None
+        if not isinstance(command, (tuple, list)) or not command:
+            return None
+        parts: list[str] = []
+        for part in command:
+            if not isinstance(part, str) or not part:
+                return None
+            parts.append(part)
+        coerced[key] = tuple(parts)
+    return coerced
+
+
+def load_helper_subcommands() -> dict[str, tuple[str, ...]]:
+    global MANIFEST_LOAD_ERROR
+    script_dir = Path(__file__).resolve().parent
+    candidates = _manifest_candidates(script_dir)
+    for candidate in candidates:
+        module = _load_manifest_from_path(candidate)
+        if module is None:
+            continue
+        loaded = _coerce_helper_subcommands(getattr(module, "DISPATCHER_SUBCOMMANDS", None))
+        if loaded is not None:
+            MANIFEST_LOAD_ERROR = None
+            return loaded
+    MANIFEST_LOAD_ERROR = "could not load trusted command manifest from " + ", ".join(str(path) for path in candidates)
+    return {}
+
+
+HELPER_SUBCOMMANDS: dict[str, tuple[str, ...]] = load_helper_subcommands()
 
 
 def _script_dir() -> Path:
@@ -310,6 +393,8 @@ def run_helper(command: str, argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help", "help"}:
+        if MANIFEST_LOAD_ERROR:
+            fail(MANIFEST_LOAD_ERROR)
         print_help()
         return 0
     if args[0] in {"-V", "--version", "version"}:
@@ -317,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command = args.pop(0).strip().lower()
     if command not in HELPER_SUBCOMMANDS:
+        if MANIFEST_LOAD_ERROR:
+            fail(MANIFEST_LOAD_ERROR)
         fail(f"unknown subcommand {command!r}. Run '{COMMAND_NAME} --help'.")
     return run_helper(command, args)
 

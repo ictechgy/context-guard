@@ -21,6 +21,7 @@ from typing import Any, Callable, NamedTuple, NoReturn
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "context-guard"
 PLUGIN_BIN = ROOT / "plugins" / "context-guard" / "bin"
+MAX_COMMAND_MANIFEST_BYTES = 128 * 1024
 PACKAGE_REQUIRED_FILES = (".claude-plugin/plugin.json",)
 PACKAGE_REQUIRED_DIRS = ("bin", "lib", "skills")
 PACKAGE_COPY_IGNORE_NAMES = {
@@ -35,49 +36,76 @@ REQUIRED_COMMANDS = (
     "context-guard-diet",
     "context-guard-audit",
 )
+
+
+def manifest_open_flags() -> int | None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def read_manifest_source(path: Path) -> str | None:
+    flags = manifest_open_flags()
+    if flags is None:
+        return None
+    fd = -1
+    try:
+        fd = os.open(path, flags)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_COMMAND_MANIFEST_BYTES:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, MAX_COMMAND_MANIFEST_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_COMMAND_MANIFEST_BYTES:
+                return None
+        return b"".join(chunks).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def load_command_manifest():
+    manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
+    source = read_manifest_source(manifest_path)
+    if source is None:
+        raise SystemExit(f"could not load trusted command manifest source: {manifest_path}")
+    namespace: dict[str, object] = {}
+    try:
+        exec(compile(source, str(manifest_path), "exec"), namespace)
+    except Exception as exc:
+        raise SystemExit(f"could not execute trusted command manifest source: {manifest_path}: {exc}") from exc
+    return type("CommandManifest", (), namespace)
+
+
+COMMAND_MANIFEST = load_command_manifest()
 ENTRYPOINT_SMOKE_COMMANDS: dict[str, dict[str, Any]] = {
-    "context-guard": {"args": ["--version"], "mode": "text"},
-    "context-guard-read-symbol": {"args": ["--help"], "mode": "text"},
-    "context-guard-sanitize-output": {"args": ["--help"], "mode": "text"},
-    "context-guard-artifact": {"args": ["--help"], "mode": "text"},
-    "context-guard-audit": {"args": ["--help"], "mode": "text"},
-    "context-guard-bench": {"args": ["--help"], "mode": "text"},
-    "context-guard-compress": {"args": ["--help"], "mode": "text"},
-    "context-guard-cost": {"args": ["--help"], "mode": "text"},
-    "context-guard-pack": {"args": ["--help"], "mode": "text"},
-    "context-guard-tool-prune": {"args": ["--help"], "mode": "text"},
-    "context-guard-diet": {"args": ["--help"], "mode": "text"},
-    "context-guard-experiments": {"args": ["--help"], "mode": "text"},
-    "context-guard-failed-nudge": {"args": [], "mode": "hook-json"},
-    "context-guard-filter": {"args": ["--help"], "mode": "text"},
-    "context-guard-guard-read": {"args": [], "mode": "hook-json"},
-    "context-guard-rewrite-bash": {"args": [], "mode": "hook-json"},
-    "context-guard-setup": {"args": ["--help"], "mode": "text"},
-    "context-guard-statusline": {"args": [], "mode": "statusline"},
-    "context-guard-statusline-merged": {"args": [], "mode": "statusline"},
-    "context-guard-trim-output": {"args": ["--help"], "mode": "text"},
-    # Legacy wrappers kept so existing automation does not break during the rebrand.
-    "claude-read-symbol": {"args": ["--help"], "mode": "text"},
-    "claude-sanitize-output": {"args": ["--help"], "mode": "text"},
-    "claude-token-artifact": {"args": ["--help"], "mode": "text"},
-    "claude-token-audit": {"args": ["--help"], "mode": "text"},
-    "claude-token-bench": {"args": ["--help"], "mode": "text"},
-    "claude-token-diet": {"args": ["--help"], "mode": "text"},
-    "claude-token-failed-nudge": {"args": [], "mode": "hook-json"},
-    "claude-token-guard-read": {"args": [], "mode": "hook-json"},
-    "claude-token-rewrite-bash": {"args": [], "mode": "hook-json"},
-    "claude-token-setup": {"args": ["--help"], "mode": "text"},
-    "claude-token-statusline": {"args": [], "mode": "statusline"},
-    "claude-token-statusline-merged": {"args": [], "mode": "statusline"},
-    "claude-trim-output": {"args": ["--help"], "mode": "text"},
+    name: {"args": list(plan["args"]), "mode": str(plan["mode"])}
+    for name, plan in COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES.items()
 }
 
-DISPATCHER_SMOKE_COMMANDS: tuple[dict[str, Any], ...] = (
-    {"entrypoint": "context-guard", "args": ["experiments", "list", "--json"], "mode": "json"},
-    {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
-    {"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"},
-    {"entrypoint": "context-guard-pack", "args": ["auto", "--help"], "mode": "text"},
+DISPATCHER_SMOKE_COMMANDS: tuple[dict[str, Any], ...] = tuple(
+    {"entrypoint": str(plan["entrypoint"]), "args": list(plan["args"]), "mode": str(plan["mode"])}
+    for plan in COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES
 )
+
 HOOK_STDIN = "{}"
 STATUSLINE_STDIN = json.dumps({"cwd": ".", "session_id": "release-smoke", "transcript_path": ""})
 STATUSLINE_MAX_CHARS = 1_000
@@ -768,6 +796,17 @@ def run_npm_package_smoke(timeout: float) -> None:
             fail(f"isolated npm install missing context-guard bin: {context_guard}")
         require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
 
+        run_command(
+            [str(context_guard), "--help"],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                None
+                if "  setup" in proc.stdout and "  experiments" in proc.stdout
+                else fail("isolated context-guard --help did not include expected manifest-derived subcommands")
+            ),
+        )
         run_command(
             [str(context_guard), "--version"],
             cwd=project,

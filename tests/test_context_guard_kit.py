@@ -33,29 +33,24 @@ PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "context-guard-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
-IMPLEMENTATION_PAIRS = [
-    (KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"),
-    (KIT_DIR / "context_escrow.py", PLUGIN_BIN / "context-guard-artifact"),
-    (KIT_DIR / "context_compress.py", PLUGIN_BIN / "context-guard-compress"),
-    (KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"),
-    (KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"),
-    (KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"),
-    (KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"),
-    (KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"),
-    (KIT_DIR / "context_guard_diet.py", PLUGIN_BIN / "context-guard-diet"),
-    (KIT_DIR / "experimental_registry.py", PLUGIN_BIN / "context-guard-experiments"),
-    (KIT_DIR / "failed_attempt_nudge.py", PLUGIN_BIN / "context-guard-failed-nudge"),
-    (KIT_DIR / "guard_large_read.py", PLUGIN_BIN / "context-guard-guard-read"),
-    (KIT_DIR / "read_symbol.py", PLUGIN_BIN / "context-guard-read-symbol"),
-    (KIT_DIR / "rewrite_bash_for_token_budget.py", PLUGIN_BIN / "context-guard-rewrite-bash"),
-    (KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "context-guard-sanitize-output"),
-    (KIT_DIR / "setup_wizard.py", PLUGIN_BIN / "context-guard-setup"),
-    (KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "context-guard-trim-output"),
-    (KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"),
-    (KIT_DIR / "statusline_merged.sh", PLUGIN_BIN / "context-guard-statusline-merged"),
-]
-HELPER_PAIRS = [
-    (KIT_DIR / "hook_secret_patterns.py", PLUGIN_LIB / "hook_secret_patterns.py"),
+def load_command_manifest_for_tests():
+    manifest_path = KIT_DIR / "context_guard_commands.py"
+    spec = importlib.util.spec_from_file_location("_context_guard_commands_manifest_tests", manifest_path)
+    if spec is None or spec.loader is None:
+        loader = importlib.machinery.SourceFileLoader("_context_guard_commands_manifest_tests", str(manifest_path))
+        spec = importlib.util.spec_from_loader("_context_guard_commands_manifest_tests", loader)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load command manifest: {manifest_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+COMMAND_MANIFEST = load_command_manifest_for_tests()
+IMPLEMENTATION_PAIRS = [(KIT_DIR / kit, PLUGIN_BIN / bin_name) for kit, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS]
+HELPER_PAIRS = [(KIT_DIR / kit, PLUGIN_DIR / rel) for kit, rel in COMMAND_MANIFEST.HELPER_PAIRS]
+HOOK_SECRET_HELPER_PAIRS = [
+    (kit, plugin) for kit, plugin in HELPER_PAIRS if kit.name == "hook_secret_patterns.py"
 ]
 TRIM_SCRIPTS = [KIT_DIR / "trim_command_output.py", PLUGIN_BIN / "context-guard-trim-output"]
 SANITIZE_SCRIPTS = [KIT_DIR / "sanitize_output.py", PLUGIN_BIN / "context-guard-sanitize-output"]
@@ -341,6 +336,105 @@ class ClaudeTokenKitTests(unittest.TestCase):
             with self.subTest(plugin=plugin):
                 self.assertEqual(kit.read_bytes(), plugin.read_bytes())
                 self.assertEqual(stat.S_IMODE(plugin.stat().st_mode) & 0o111, 0, f"{plugin} should not be executable")
+
+    def test_command_manifest_covers_release_and_runtime_surfaces(self):
+        cli = load_module_from_path(KIT_DIR / "context_guard_cli.py", "context_guard_cli_manifest_test")
+        self.assertEqual(cli.HELPER_SUBCOMMANDS, COMMAND_MANIFEST.DISPATCHER_SUBCOMMANDS)
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["bin"], COMMAND_MANIFEST.NPM_BIN_PATHS)
+        self.assertEqual(set(COMMAND_MANIFEST.NPM_BINS), {bin_name for _kit, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS})
+        self.assertIsNot(COMMAND_MANIFEST.NPM_BINS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
+        self.assertEqual(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS), set(COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES))
+        self.assertTrue(set(COMMAND_MANIFEST.LEGACY_WRAPPERS).issubset(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS)))
+
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_manifest_test")
+        self.assertEqual(prepublish.IMPLEMENTATION_PAIRS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
+        self.assertEqual(prepublish.HELPER_PAIRS, COMMAND_MANIFEST.HELPER_PAIRS)
+        self.assertEqual(prepublish.REQUIRED_NPM_BINS, set(COMMAND_MANIFEST.NPM_BINS))
+        for rel in COMMAND_MANIFEST.expected_command_pack_files():
+            self.assertIn(rel, prepublish.EXPECTED_NPM_PACK_FILES)
+
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_test")
+        self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS, COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES)
+        self.assertEqual(smoke.DISPATCHER_SMOKE_COMMANDS, COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES)
+        self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS))
+        self.assertEqual(smoke.npm_dispatcher_smoke_plan(), COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES)
+
+    def test_context_guard_dispatcher_ignores_pythonpath_command_manifest_shadow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "shadow"
+            shadow.mkdir()
+            (shadow / "context_guard_commands.py").write_text(
+                "DISPATCHER_SUBCOMMANDS = {'pwned': ('context-guard-pwned',)}\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(shadow)
+            for script in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "--help"],
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("  setup", proc.stdout)
+                    self.assertIn("  experiments", proc.stdout)
+                    self.assertNotIn("pwned", proc.stdout)
+                    self.assertNotIn("context-guard-pwned", proc.stdout)
+
+    def test_staged_plugin_dispatcher_runs_with_packaged_command_manifest(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_stage_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staged = smoke.copy_plugin_package_for_smoke(PLUGIN_DIR, root / "installed-plugin")
+            manifest = staged / "lib" / "context_guard_commands.py"
+            self.assertTrue(manifest.is_file())
+            shadow = root / "shadow"
+            shadow.mkdir()
+            malicious = "DISPATCHER_SUBCOMMANDS = {'pwned': ('context-guard-pwned',)}\n"
+            (shadow / "context_guard_commands.py").write_text(malicious, encoding="utf-8")
+            # A stray bin sibling must not shadow the intended plugin-local ../lib manifest.
+            (staged / "bin" / "context_guard_commands.py").write_text(malicious, encoding="utf-8")
+
+            # A valid-looking cached bytecode file must not shadow the checked source.
+            import importlib._bootstrap_external as bootstrap_external
+
+            cache_path = Path(importlib.util.cache_from_source(str(manifest)))
+            cache_path.parent.mkdir(exist_ok=True)
+            st = manifest.stat()
+            cache_path.write_bytes(
+                bootstrap_external._code_to_timestamp_pyc(
+                    compile(malicious, str(manifest), "exec"),
+                    int(st.st_mtime),
+                    st.st_size,
+                )
+            )
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(shadow)
+            dispatcher = staged / "bin" / "context-guard"
+            help_proc = subprocess.run(
+                [str(dispatcher), "--help"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertIn("  setup", help_proc.stdout)
+            self.assertIn("  experiments", help_proc.stdout)
+            self.assertNotIn("pwned", help_proc.stdout)
+            self.assertNotIn("context-guard-pwned", help_proc.stdout)
+            version_proc = subprocess.run(
+                [str(dispatcher), "--version"],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=True,
+            )
+            self.assertRegex(version_proc.stdout.strip(), r"^\d+\.\d+\.\d+")
 
     def test_context_filter_validates_and_filters_successful_output(self):
         for script in FILTER_SCRIPTS:
@@ -16281,7 +16375,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             "npm_" + ("A" * 24) + ".py",
             "AIza" + ("A" * 24) + ".py",
         ]
-        for pair_index, (kit_helper, plugin_helper) in enumerate(HELPER_PAIRS):
+        for pair_index, (kit_helper, plugin_helper) in enumerate(HOOK_SECRET_HELPER_PAIRS):
             for helper in (kit_helper, plugin_helper):
                 module = load_module_from_path(helper, f"_hook_label_helper_{pair_index}_{helper.parent.name}")
                 for name in sensitive_names:
