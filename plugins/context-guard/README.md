@@ -1,12 +1,12 @@
 # ContextGuard
 
-ContextGuard is a local-first context-hygiene toolkit for AI coding and tool agents. It ships as a Claude Code plugin first, then extends the same project-local guardrails to other agents through plain local helper commands and advisory brief-mode rule snippets.
+ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships as a Claude Code plugin first, then extends the same project-local guardrails to other agents through plain local helper commands and advisory brief-mode rule snippets.
 
-Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context hygiene scan, does not mutate global Claude settings, and does not configure external AI offload.
+Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context management scan, does not mutate global Claude settings, and does not configure external AI offload.
 
 ## Token-waste paths it targets
 
-ContextGuard is a local context-hygiene layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, cache-friendly prompt layout can be audited from bounded redacted segment hashes, and audit/benchmark evidence stays tied to your own tasks.
+ContextGuard is a local context management layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, cache-friendly prompt layout can be audited from bounded redacted segment hashes, and audit/benchmark evidence stays tied to your own tasks.
 
 ## Rebrand note
 
@@ -91,7 +91,7 @@ context-guard-statusline-merged
 ## What the helpers do
 
 - **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; use `--no-diet-scan` when automation needs setup output without the post-apply scan. `PATH` helper fallback is default-off and requires `--allow-path-helper-fallback` plus identity validation.
-- **Context hygiene scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, large or secret-like agent rule files, and advisory context-exclusion recommendations for bulky/sensitive local paths. Its `--top` cap applies to both context-like files and context-exclusion recommendations.
+- **Context management scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, large or secret-like agent rule files, and advisory context-exclusion recommendations for bulky/sensitive local paths. Its `--top` cap applies to both context-like files and context-exclusion recommendations.
 - **Structural-waste doctor** is an opt-in read-only `context-guard-diet structural-waste` report for duplicate rule units, stale Python import candidates, unused skill candidates, excessive MCP/tool schema catalogs, and repeated file reads or duplicate tool calls in local JSON/JSONL logs. It does not mutate config, call the network, or print raw prompt/tool-input text; low-confidence import/skill findings are review prompts, not delete instructions.
 - **Large-read guard and symbol reader** guide the agent from search to symbol slices to small line ranges before attempting a whole-file read. Supported source slices include Python, JavaScript/TypeScript, Go, and Rust.
 - **Declarative output filter** validates user-owned JSON filter files outside package code and applies the first matching line filter only as an explicit `run --config ... -- <command>` wrapper. Invalid configs, no-match commands, filter errors, empty filtered output, and protected `git`/test/lint/`gh` command failures preserve original stdout/stderr and exit code. Filtered mode applies line rules to combined stdout+stderr and writes the filtered result to stdout; `--json-report` diagnostics go to stderr, except protected nonzero passthrough suppresses reports to keep stderr raw. It is local and opt-in, with no savings guarantee.

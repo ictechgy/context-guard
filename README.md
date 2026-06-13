@@ -76,7 +76,7 @@ ContextGuard complements provider and semantic caches, and sits next to prompt c
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| Experimental planners and local runtimes | Reviewing local-proxy ideas with dry-run local plans, external-forwarding design plans, explicit gate records, and a one-shot loopback forwarding MVP. Related lanes cover explicit local context-diff, visual evidence-pack, learned-compression candidate, and self-hosted metrics runtimes. | Default-off and explicit-command-only. Local proxy `record` rows still start no listener and forward no traffic, while `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request with a ready-file nonce and credential headers blocked. No compressor/model execution, generated compression, OCR/crop service, external forwarding, hostname DNS targets, credential persistence, or hosted-savings claim ships without separate evidence and future PR gates. |
+| Experimental planners and local runtimes | Default-off and explicit-command-only; covers local-proxy plans and gate records plus narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request. No compressor/model execution, OCR/crop service, external forwarding, credential persistence, or hosted-savings claim ships without separate evidence and future PR gates. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
@@ -125,7 +125,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | --- | --- |
 | Claude Code plugin skills | Guided setup, optimization, and transcript usage audits. |
 | Project-local setup wizard | Applies recommended `.claude/settings.json` options without touching global settings. |
-| Context hygiene scanner | Finds missing guardrails, noisy hooks, broad reads, large context files, secret-like files, excessive MCP servers, and expensive defaults. |
+| Context management scanner | Finds missing guardrails, noisy hooks, broad reads, large context files, secret-like files, excessive MCP servers, and expensive defaults. |
 | Structural-waste doctor | Opt-in local diagnostics for duplicate rules, stale imports, unused skill candidates, oversized tool schemas, and repeated read/tool-call loops. |
 | Large-read guard and symbol reader | Nudges the agent toward `rg`, symbol reads, and small line ranges instead of full-file reads. |
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
@@ -214,7 +214,7 @@ context-guard setup --agent claude --scope user --verify --json
 
 Both modes are read-only configuration checks. `doctor` reports recommended next commands, and `setup --verify` checks whether setup is complete without applying changes. With `--json`, the report is written to stdout.
 
-### Scan context hygiene
+### Scan context management
 
 ```bash
 ./plugins/context-guard/bin/context-guard-diet scan .
@@ -435,7 +435,7 @@ Shipped experimental checker/planner surfaces, plus explicit local context-diff,
 
 ## What is not yet shipped
 
-These are directions the project has noted, not committed features. Nothing here ships unless documented elsewhere in the repository.
+These are directions the project has tracked, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
 - Learned/synthetic compressor execution or generated replacement text beyond the caller-supplied learned candidate emitter, generated crop/OCR or visual-token pruning runtime beyond the caller-supplied visual evidence-pack emitter, self-hosted KV/latent optimization beyond explicit local metrics recording, and external/daemon/credential-bearing proxy forwarding beyond the one-shot literal-loopback local proxy MVP. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or broader runtime feature claim.
 
