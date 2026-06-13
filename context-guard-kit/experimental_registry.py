@@ -26,6 +26,7 @@ from socketserver import TCPServer
 from pathlib import Path
 import stat
 import sys
+import time
 from typing import Any, NoReturn
 import unicodedata
 from urllib.parse import urlparse
@@ -3319,16 +3320,26 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         "client_auth_header": LOCAL_PROXY_NONCE_HEADER,
         "client_auth_delivered": False,
         "client_auth_nonce_forwarded": False,
+        "auth_failures": 0,
     }
 
-    def finish_blocked(handler: BaseHTTPRequestHandler, status_code: int, reason: str, *, sensitive: list[str] | None = None) -> None:
-        server_result.update({
-            "served_once": True,
+    def finish_blocked(
+        handler: BaseHTTPRequestHandler,
+        status_code: int,
+        reason: str,
+        *,
+        sensitive: list[str] | None = None,
+        consume_once: bool = True,
+    ) -> None:
+        updates = {
             "forwarded": False,
             "blocked_reason": reason,
             "downstream_status": status_code,
             "sensitive_headers_blocked": sorted(set(sensitive or [])),
-        })
+        }
+        if consume_once:
+            updates["served_once"] = True
+        server_result.update(updates)
         body = json.dumps({"status": "blocked", "reason": reason}, sort_keys=True).encode("utf-8")
         handler.send_response(status_code)
         handler.send_header("Content-Type", "application/json")
@@ -3348,14 +3359,17 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         def authorize_request(self) -> bool:
             values = self.headers.get_all(LOCAL_PROXY_NONCE_HEADER, [])
             if len(values) == 0:
-                finish_blocked(self, 403, "missing_proxy_nonce")
+                server_result["auth_failures"] = int(server_result.get("auth_failures", 0)) + 1
+                finish_blocked(self, 403, "missing_proxy_nonce", consume_once=False)
                 return False
             if len(values) != 1:
-                finish_blocked(self, 403, "duplicate_proxy_nonce")
+                server_result["auth_failures"] = int(server_result.get("auth_failures", 0)) + 1
+                finish_blocked(self, 403, "duplicate_proxy_nonce", consume_once=False)
                 return False
             candidate = str(values[0])
             if not secrets.compare_digest(candidate, auth_nonce):
-                finish_blocked(self, 403, "invalid_proxy_nonce")
+                server_result["auth_failures"] = int(server_result.get("auth_failures", 0)) + 1
+                finish_blocked(self, 403, "invalid_proxy_nonce", consume_once=False)
                 return False
             return True
 
@@ -3504,8 +3518,14 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
                 "error": sanitize_local_proxy_value(str(exc)),
             })
             return server_result
-        httpd.handle_request()
-        if not server_result["served_once"]:
+        deadline = time.monotonic() + timeout_seconds
+        while not server_result["served_once"]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            httpd.timeout = max(0.001, min(timeout_seconds, remaining))
+            httpd.handle_request()
+        if not server_result["served_once"] and not server_result.get("blocked_reason"):
             server_result.update({
                 "blocked_reason": "timeout_waiting_for_request",
                 "downstream_status": None,
