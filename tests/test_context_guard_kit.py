@@ -20084,22 +20084,28 @@ for malformed in malformed_values:
                     self.assertIn("cache ", proc.stdout)
                     self.assertRegex(proc.stdout, r"cache \d+%")
 
-    def test_statusline_extracts_fields_with_one_jq_invocation(self):
-        real_jq = shutil.which("jq")
-        if not real_jq:
-            self.skipTest("jq unavailable")
+    def test_statusline_extracts_fields_without_jq_or_nested_python(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
                     fake_bin = root / "bin"
                     fake_bin.mkdir()
-                    count_file = root / "jq-count.txt"
+                    python_count_file = root / "python-count.txt"
+                    jq_count_file = root / "jq-count.txt"
+                    fake_python = fake_bin / "python3"
+                    fake_python.write_text(
+                        "#!/usr/bin/env bash\n"
+                        f"printf 'x\\n' >> {shlex.quote(str(python_count_file))}\n"
+                        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
+                        encoding="utf-8",
+                    )
+                    os.chmod(fake_python, stat.S_IRWXU)
                     fake_jq = fake_bin / "jq"
                     fake_jq.write_text(
                         "#!/usr/bin/env bash\n"
-                        f"printf 'x\\n' >> {shlex.quote(str(count_file))}\n"
-                        f"exec {shlex.quote(real_jq)} \"$@\"\n",
+                        f"printf 'x\\n' >> {shlex.quote(str(jq_count_file))}\n"
+                        "exit 42\n",
                         encoding="utf-8",
                     )
                     os.chmod(fake_jq, stat.S_IRWXU)
@@ -20122,7 +20128,8 @@ for malformed in malformed_values:
                     self.assertIn("Sonnet", proc.stdout)
                     self.assertIn("ctx 86% ⚠", proc.stdout)
                     self.assertIn("cost $0.123", proc.stdout)
-                    self.assertEqual(count_file.read_text(encoding="utf-8").splitlines(), ["x"])
+                    self.assertEqual(python_count_file.read_text(encoding="utf-8").splitlines(), ["x"])
+                    self.assertFalse(jq_count_file.exists())
 
     def test_statusline_transcript_metrics_cache_is_private_and_omits_raw_values(self):
         secret = "ghp_" + ("D" * 36)
