@@ -1,13 +1,15 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool agents. It starts as a Claude Code plugin: install once, apply per project, and roll back when needed. Its guardrails trim noisy output, prefer symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
+ContextGuard is a local-first context management toolkit for AI coding and tool agents. It starts as a Claude Code plugin: install once, apply per project, and roll back when needed.
+
+Its guardrails trim noisy output, prefer symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
-Install and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available; configuration changes happen later through an explicit setup command.
+Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available. Configuration changes happen later through an explicit setup command.
 
 | If you use... | Install | Activate |
 | --- | --- | --- |
@@ -27,7 +29,7 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first and does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first and does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
@@ -170,7 +172,7 @@ Setup is explicit, project-local, and reversible. The plugin does not configure 
 
 ## Install with npm/npx
 
-The npm package exposes a canonical `context-guard` command plus the backwards-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself. If setup cannot find bundled or checkout-local helpers, `PATH` fallback remains disabled by default; use `--allow-path-helper-fallback` only for trusted helper directories after `context-guard doctor`/`setup --verify` confirms the plan.
+The npm package exposes a canonical `context-guard` command plus backward-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself. If setup cannot find bundled or checkout-local helpers, `PATH` fallback remains disabled by default; use `--allow-path-helper-fallback` only for trusted helper directories after `context-guard doctor` or `setup --verify` confirms the plan.
 
 ```bash
 npm install -g @ictechgy/context-guard
@@ -437,13 +439,20 @@ Shipped experimental checker/planner surfaces, plus explicit local context-diff,
 
 These are directions the project has tracked, not committed features. Nothing here ships unless documented elsewhere in the repository.
 
-- Learned/synthetic compressor execution or generated replacement text beyond the caller-supplied learned candidate emitter, generated crop/OCR or visual-token pruning runtime beyond the caller-supplied visual evidence-pack emitter, self-hosted KV/latent optimization beyond explicit local metrics recording, and external/daemon/credential-bearing proxy forwarding beyond the one-shot literal-loopback local proxy MVP. See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md); those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or broader runtime feature claim.
+ContextGuard does not yet ship:
+
+- learned/synthetic compressor execution or generated replacement text beyond the caller-supplied learned candidate emitter
+- generated crop/OCR or visual-token pruning runtime beyond the caller-supplied visual evidence-pack emitter
+- self-hosted KV/latent optimization beyond explicit local metrics recording
+- external, daemon, or credential-bearing proxy forwarding beyond the one-shot literal-loopback local proxy MVP
+
+See the [experimental token-reduction radar](research/experimental-token-reduction-radar.md) and [fixture-only experimental benchmark starters](docs/experimental-benchmark-fixtures.md). Those lanes remain experimental/non-shipped under the later-roadmap gate until matched successful tasks, failure-rate guardrails, human-correction tracking, shifted-cost accounting, provider-measured token/cost evidence, and separate future PR gates justify any hosted API savings claim or broader runtime feature claim.
 
 ## Repository layout
 
 - `.claude-plugin/marketplace.json` — Claude Code marketplace manifest.
 - `plugins/context-guard/` — installable Claude Code plugin package.
-- `context-guard-kit/` — checkout-local Python/Bash helper sources. npm packages ship the synchronized `plugins/context-guard/bin` and `plugins/context-guard/lib` copies instead of duplicating this source tree.
+- `context-guard-kit/` — checkout-local Python/Bash helper sources. npm packages ship synchronized `plugins/context-guard/bin` and `plugins/context-guard/lib` copies instead of duplicating this source tree.
 - `docs/index.html` — static landing page for the project.
 - `tests/` — regression tests for helper behavior.
 
@@ -477,7 +486,7 @@ export PATH="$PWD/plugins/context-guard/bin:$PATH"
 context-guard-setup --plan
 ```
 
-Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled/check-out helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper before writing commands.
+Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled or checkout-local helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper before writing commands.
 
 ## Release checks
 
@@ -489,7 +498,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the maintainer exact-copy contract up front; npm packages intentionally ship only the synchronized plugin-local `plugins/context-guard/bin` entrypoints and `plugins/context-guard/lib` helpers to avoid duplicate implementation payloads. `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
+When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the maintainer-facing exact-copy contract up front. npm packages intentionally ship only the synchronized plugin-local `plugins/context-guard/bin` entrypoints and `plugins/context-guard/lib` helpers to avoid duplicate implementation payloads. `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
 
 Versioned release notes live in [CHANGELOG.md](CHANGELOG.md); the prepublish gate requires an entry matching the plugin manifest version before publishing.
 
