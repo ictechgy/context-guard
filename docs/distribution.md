@@ -29,7 +29,7 @@ Project scope is the default. `context-guard doctor` and `context-guard setup --
 
 ## Runtime requirements
 
-The helpers are Python/shell scripts packaged through npm and Homebrew. Supported machines need:
+The helpers are Python/shell scripts packaged through npm and Homebrew as plugin-local `plugins/context-guard/bin` entrypoints plus `plugins/context-guard/lib` helpers; checkout-only `context-guard-kit` sources are not duplicated in the npm tarball. Supported machines need:
 
 - macOS or Linux
 - Python 3 available as `python3`

@@ -343,6 +343,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(package["bin"], COMMAND_MANIFEST.NPM_BIN_PATHS)
+        self.assertTrue(
+            all(not item.startswith("context-guard-kit") for item in package["files"]),
+            "npm files allowlist must ship plugin-local copies only, not checkout-only kit sources",
+        )
         self.assertEqual(set(COMMAND_MANIFEST.NPM_BINS), {bin_name for _kit, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS})
         self.assertIsNot(COMMAND_MANIFEST.NPM_BINS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
         self.assertEqual(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS), set(COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES))
@@ -354,6 +358,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(prepublish.REQUIRED_NPM_BINS, set(COMMAND_MANIFEST.NPM_BINS))
         for rel in COMMAND_MANIFEST.expected_command_pack_files():
             self.assertIn(rel, prepublish.EXPECTED_NPM_PACK_FILES)
+        for kit_name, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS:
+            self.assertIn(f"plugins/context-guard/bin/{bin_name}", prepublish.EXPECTED_NPM_PACK_FILES)
+            self.assertNotIn(f"context-guard-kit/{kit_name}", prepublish.EXPECTED_NPM_PACK_FILES)
+        for kit_name, plugin_rel in COMMAND_MANIFEST.HELPER_PAIRS:
+            self.assertIn(f"plugins/context-guard/{plugin_rel}", prepublish.EXPECTED_NPM_PACK_FILES)
+            self.assertNotIn(f"context-guard-kit/{kit_name}", prepublish.EXPECTED_NPM_PACK_FILES)
+        self.assertFalse(
+            any(rel.startswith("context-guard-kit/") for rel in prepublish.EXPECTED_NPM_PACK_FILES),
+            "npm expected pack files should not reintroduce checkout-only kit payloads",
+        )
 
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_test")
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS, COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES)
@@ -6299,7 +6313,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_experiments_test")
         self.assertIn(("experimental_registry.py", "context-guard-experiments"), prepublish.IMPLEMENTATION_PAIRS)
         self.assertIn("context-guard-experiments", prepublish.REQUIRED_NPM_BINS)
-        self.assertIn("context-guard-kit/experimental_registry.py", prepublish.EXPECTED_NPM_PACK_FILES)
+        self.assertNotIn("context-guard-kit/experimental_registry.py", prepublish.EXPECTED_NPM_PACK_FILES)
         self.assertIn("plugins/context-guard/bin/context-guard-experiments", prepublish.EXPECTED_NPM_PACK_FILES)
 
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_experiments_test")
@@ -7932,7 +7946,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_cost_test")
         self.assertIn(("cost_guard.py", "context-guard-cost"), prepublish.IMPLEMENTATION_PAIRS)
         self.assertIn("context-guard-cost", prepublish.REQUIRED_NPM_BINS)
-        self.assertIn("context-guard-kit/cost_guard.py", prepublish.EXPECTED_NPM_PACK_FILES)
+        self.assertNotIn("context-guard-kit/cost_guard.py", prepublish.EXPECTED_NPM_PACK_FILES)
         self.assertIn("plugins/context-guard/bin/context-guard-cost", prepublish.EXPECTED_NPM_PACK_FILES)
 
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
@@ -8554,8 +8568,37 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 prepublish.ROOT, prepublish.NPM_PACKAGE = old_root, old_package
         self.assertIn("install-time lifecycle scripts", str(ctx.exception))
 
+    def test_prepublish_check_rejects_context_guard_kit_npm_allowlist_entries(self):
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_npm_files_metadata_test")
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            for command in prepublish.REQUIRED_NPM_BINS:
+                path = bin_dir / command
+                path.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+                path.chmod(0o700)
+            package_json = tmp / "package.json"
+            package = {
+                "name": "@ictechgy/context-guard",
+                "version": "1.2.3",
+                "license": "Apache-2.0",
+                "bin": {command: f"bin/{command}" for command in prepublish.REQUIRED_NPM_BINS},
+                "files": ["bin/**", "README.md", "context-guard-kit/*.py"],
+            }
+            package_json.write_text(json.dumps(package), encoding="utf-8")
+            old_root, old_package = prepublish.ROOT, prepublish.NPM_PACKAGE
+            try:
+                prepublish.ROOT = tmp
+                prepublish.NPM_PACKAGE = package_json
+                with self.assertRaises(SystemExit) as ctx:
+                    prepublish.check_npm_package_metadata("1.2.3")
+            finally:
+                prepublish.ROOT, prepublish.NPM_PACKAGE = old_root, old_package
+        self.assertIn("checkout-only context-guard-kit sources", str(ctx.exception))
+
     def test_prepublish_check_rejects_unexpected_npm_pack_files(self):
-        unexpected = KIT_DIR / "unexpected_release_gate.py"
+        unexpected = PLUGIN_LIB / "unexpected_release_gate.py"
         try:
             unexpected.write_text("print('unexpected package file')\n", encoding="utf-8")
             proc = subprocess.run(
@@ -8566,7 +8609,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             combined = proc.stdout + proc.stderr
             self.assertIn("npm pack includes unexpected files", combined)
-            self.assertIn("context-guard-kit/unexpected_release_gate.py", combined)
+            self.assertIn("plugins/context-guard/lib/unexpected_release_gate.py", combined)
         finally:
             try:
                 unexpected.unlink()

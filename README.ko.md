@@ -408,7 +408,7 @@ local-proxy 예시는 side effect 기준으로 나뉩니다.
 
 - `.claude-plugin/marketplace.json` — Claude Code 마켓플레이스 매니페스트입니다.
 - `plugins/context-guard/` — 설치형 Claude Code 플러그인 패키지입니다.
-- `context-guard-kit/` — 기반 Python/Bash 헬퍼 도구입니다.
+- `context-guard-kit/` — 체크아웃 로컬 Python/Bash 헬퍼 소스입니다. npm 패키지는 이 소스 트리를 중복 포장하지 않고 동기화된 `plugins/context-guard/bin` 및 `plugins/context-guard/lib` 복사본을 배포합니다.
 - `docs/index.html` — 프로젝트용 정적 랜딩 페이지입니다.
 - `tests/` — 헬퍼 동작을 검증하는 회귀 테스트입니다.
 
@@ -454,7 +454,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-헬퍼가 `context-guard-kit/` 아래에서 바뀌었다면 게이트 전에 `python3 scripts/sync_plugin_copies.py --write`를 실행하세요. `sync_plugin_copies.py --check`는 exact-copy 계약을 먼저 확인합니다. `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
+헬퍼가 `context-guard-kit/` 아래에서 바뀌었다면 게이트 전에 `python3 scripts/sync_plugin_copies.py --write`를 실행하세요. `sync_plugin_copies.py --check`는 maintainer exact-copy 계약을 먼저 확인합니다. npm 패키지는 구현 payload 중복을 피하기 위해 동기화된 플러그인 로컬 `plugins/context-guard/bin` 엔트리포인트와 `plugins/context-guard/lib` 헬퍼만 배포합니다. `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
 
 버전별 릴리스 노트는 [CHANGELOG.md](CHANGELOG.md)에 기록하며, 사전 배포 게이트는 플러그인 매니페스트 버전과 일치하는 항목이 있는지 확인합니다.
 
