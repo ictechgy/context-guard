@@ -328,7 +328,7 @@
     <section id="problem" class="shell">
       <div class="section-head">
         <h2>컨텍스트가 커질수록 판단은 흐려집니다.</h2>
-        <p>긴 로그, 전체 파일 읽기, 반복 실패 출력, 민감 정보가 섞인 검색 결과는 AI 코딩 에이전트 세션의 컨텍스트를 빠르게 과도하게 키웁니다.</p>
+        <p>긴 로그, 전체 파일 읽기, 반복 실패 출력, 민감 정보가 섞인 검색 결과는 AI 코딩 에이전트 세션의 컨텍스트를 빠르게 키웁니다.</p>
       </div>
       <div class="problem-grid">
         <article class="card"><span class="icon">01</span><h3>긴 출력</h3><p>테스트·빌드 로그가 대화에 그대로 들어오면 중요한 실패 원인이 묻힙니다.</p></article>
@@ -412,7 +412,7 @@
 
     <section id="experiments" class="shell">
       <div class="section-head">
-        <h2>실험 기능은 명시 명령 없이는 런타임 동작이 켜지지 않습니다.</h2>
+        <h2>실험 기능은 명시적 명령 없이는 런타임 동작이 켜지지 않습니다.</h2>
         <p><code>context-guard experiments</code>는 프로젝트 로컬 의도와 검토용 메타데이터를 기록합니다. 대부분의 lane은 dry-run checker/planner이고, context-diff는 명시적 <code>emit ... --receipt-id ...</code> 로컬 replacement payload, visual crop/OCR은 명시적 <code>emit visual-crop-ocr</code> evidence pack, learned compression은 명시적 <code>emit learned-compression</code> caller-supplied candidate, self-hosted metrics는 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록, local proxy는 localhost-only plan, design-only <code>plan local-proxy-external-forwarding</code> gate, 명시적 <code>record local-proxy-runtime-gate</code> gate row, private ready-file nonce가 필요한 one-shot <code>serve local-proxy</code> loopback forwarding MVP와 successful forwarded request용 optional shifted-cost diagnostic JSONL row만 제공합니다. hosted API 절감이나 더 넓은 런타임 기능으로 주장하려면 별도 evidence gate와 future PR gate가 필요합니다.</p>
       </div>
       <div class="feature-grid">
