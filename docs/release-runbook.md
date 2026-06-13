@@ -69,6 +69,16 @@ Before publishing a versioned artifact, verify:
 - `scripts/sync_plugin_copies.py --check` reports `plugin copies synchronized`.
 - No generated caches, logs, or symlinks are inside `plugins/context-guard/`.
 
+## npm trusted publishing
+
+npm publishing uses trusted publishing/OIDC through `.github/workflows/npm-publish.yml`.
+The npm package trusted-publisher configuration must use workflow filename
+`npm-publish.yml` and an empty environment name. The workflow publishes only
+from an existing GitHub release tag or an explicit manual dispatch tag, verifies
+that the tag matches `package.json` and plugin manifest versions, runs the same
+release gates, and uses `id-token: write` without `NODE_AUTH_TOKEN` or
+`NPM_TOKEN`.
+
 ## Clean-install smoke coverage
 
 `release_smoke.py` automates the read-only subset of the clean-install smoke by staging the plugin into a temporary package copy and running:
