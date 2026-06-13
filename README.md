@@ -38,7 +38,7 @@ ContextGuard is intentionally conservative about savings claims. It reduces comm
 ContextGuard ships first as a Claude Code plugin, which is still the fastest path to value. After installation, the same local-first guardrails can be reused by other AI coding and tool agents through:
 
 - **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
-- **Advisory brief-mode rule snippets** you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
+- **Advisory brief-mode rule snippets** that you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
 - **Dry-run cross-agent setup** that writes only local files, backs up before changing anything, and applies only with explicit approval.
 
 Current setup surfaces:
@@ -63,7 +63,7 @@ ContextGuard does not make the model cheaper by itself. It reduces avoidable con
 | Whole-file reads for one function | Suggest search, symbol slices, bounded outlines, and small line ranges before a full read. |
 | Long test, build, search, or diff output | Trim output, emit structured digests, or store large logs locally and return compact receipts. |
 | Repeated failing commands | Warn after repeated Bash failures so the agent changes strategy before more stale logs enter context. |
-| Secret-like or noisy terminal output | Apply best-effort, pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
+| Secret-like or noisy terminal output | Apply best-effort pattern-based redaction for common credential patterns and sensitive-looking paths before output is copied into context. |
 | Unknown token/cost hotspots | Surface statusline signals, transcript audits, and matched benchmark reports for before/after evidence. |
 | Anthropic API requests that may miss prompt cache | `context-guard cost preflight` estimates input size, breakpoint-level cache risk, and low/mid/high cost ranges before a call; default mode warns only. |
 | Volatile context before stable prompt prefixes | Audit bounded redacted prompt-segment hashes and flag likely cache-unfriendly prompt layouts without exposing raw prompt text. |
