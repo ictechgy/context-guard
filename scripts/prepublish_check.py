@@ -68,36 +68,72 @@ SENSITIVE_LABEL_RE = re.compile(
     r")"
 )
 PATH_LABEL_MAX_CHARS = 160
+MAX_COMMAND_MANIFEST_BYTES = 128 * 1024
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
 
-IMPLEMENTATION_PAIRS = (
-    ("context_guard_cli.py", "context-guard"),
-    ("cost_guard.py", "context-guard-cost"),
-    ("benchmark_runner.py", "context-guard-bench"),
-    ("context_escrow.py", "context-guard-artifact"),
-    ("context_compress.py", "context-guard-compress"),
-    ("context_pack.py", "context-guard-pack"),
-    ("context_filter.py", "context-guard-filter"),
-    ("tool_schema_pruner.py", "context-guard-tool-prune"),
-    ("claude_transcript_cost_audit.py", "context-guard-audit"),
-    ("context_guard_diet.py", "context-guard-diet"),
-    ("experimental_registry.py", "context-guard-experiments"),
-    ("failed_attempt_nudge.py", "context-guard-failed-nudge"),
-    ("guard_large_read.py", "context-guard-guard-read"),
-    ("read_symbol.py", "context-guard-read-symbol"),
-    ("rewrite_bash_for_token_budget.py", "context-guard-rewrite-bash"),
-    ("sanitize_output.py", "context-guard-sanitize-output"),
-    ("setup_wizard.py", "context-guard-setup"),
-    ("statusline.sh", "context-guard-statusline"),
-    ("statusline_merged.sh", "context-guard-statusline-merged"),
-    ("trim_command_output.py", "context-guard-trim-output"),
-)
-HELPER_PAIRS = (
-    ("hook_secret_patterns.py", "lib/hook_secret_patterns.py"),
-)
+def manifest_open_flags() -> int | None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def read_manifest_source(path: Path) -> str | None:
+    flags = manifest_open_flags()
+    if flags is None:
+        return None
+    fd = -1
+    try:
+        fd = os.open(path, flags)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_COMMAND_MANIFEST_BYTES:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(64 * 1024, MAX_COMMAND_MANIFEST_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_COMMAND_MANIFEST_BYTES:
+                return None
+        return b"".join(chunks).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def load_command_manifest():
+    manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
+    source = read_manifest_source(manifest_path)
+    if source is None:
+        raise SystemExit(f"could not load trusted command manifest source: {manifest_path}")
+    namespace: dict[str, object] = {}
+    try:
+        exec(compile(source, str(manifest_path), "exec"), namespace)
+    except Exception as exc:
+        raise SystemExit(f"could not execute trusted command manifest source: {manifest_path}: {exc}") from exc
+    return type("CommandManifest", (), namespace)
+
+
+COMMAND_MANIFEST = load_command_manifest()
+IMPLEMENTATION_PAIRS = COMMAND_MANIFEST.IMPLEMENTATION_PAIRS
+HELPER_PAIRS = COMMAND_MANIFEST.HELPER_PAIRS
 
 FORBIDDEN_PACKAGE_NAMES = {
     ".DS_Store",
@@ -114,23 +150,7 @@ FORBIDDEN_PACKAGE_DIRS = {
     ".mypy_cache",
     ".ruff_cache",
 }
-REQUIRED_NPM_BINS = {
-    "context-guard",
-    "context-guard-setup",
-    "context-guard-diet",
-    "context-guard-experiments",
-    "context-guard-audit",
-    "context-guard-trim-output",
-    "context-guard-sanitize-output",
-    "context-guard-filter",
-    "context-guard-artifact",
-    "context-guard-pack",
-    "context-guard-tool-prune",
-    "context-guard-compress",
-    "context-guard-cost",
-    "context-guard-bench",
-    "context-guard-read-symbol",
-}
+REQUIRED_NPM_BINS = set(COMMAND_MANIFEST.NPM_BINS)
 FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
     "dependencies",
     "preinstall",
@@ -171,35 +191,14 @@ KOREAN_DOCS = (
     PLUGIN_DIR / "README.ko.md",
     ROOT / "docs" / "index.html",
 )
-EXPECTED_NPM_PACK_FILES = {
+BASE_EXPECTED_NPM_PACK_FILES = {
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
     "README.ko.md",
     "README.md",
     "context-guard-kit/README.md",
-    "context-guard-kit/benchmark_runner.py",
-    "context-guard-kit/claude_transcript_cost_audit.py",
-    "context-guard-kit/context_compress.py",
-    "context-guard-kit/context_escrow.py",
-    "context-guard-kit/context_guard_cli.py",
-    "context-guard-kit/context_guard_diet.py",
-    "context-guard-kit/experimental_registry.py",
-    "context-guard-kit/cost_guard.py",
-    "context-guard-kit/context_filter.py",
-    "context-guard-kit/context_pack.py",
-    "context-guard-kit/failed_attempt_nudge.py",
-    "context-guard-kit/guard_large_read.py",
-    "context-guard-kit/hook_secret_patterns.py",
-    "context-guard-kit/read_symbol.py",
-    "context-guard-kit/rewrite_bash_for_token_budget.py",
-    "context-guard-kit/sanitize_output.py",
     "context-guard-kit/settings.example.json",
-    "context-guard-kit/setup_wizard.py",
-    "context-guard-kit/statusline.sh",
-    "context-guard-kit/statusline_merged.sh",
-    "context-guard-kit/tool_schema_pruner.py",
-    "context-guard-kit/trim_command_output.py",
     "docs/distribution.md",
     "docs/cache-diagnostics-schema.md",
     "docs/cache-diagnostics.schema.json",
@@ -231,49 +230,15 @@ EXPECTED_NPM_PACK_FILES = {
     "plugins/context-guard/NOTICE",
     "plugins/context-guard/README.ko.md",
     "plugins/context-guard/README.md",
-    "plugins/context-guard/bin/claude-read-symbol",
-    "plugins/context-guard/bin/claude-sanitize-output",
-    "plugins/context-guard/bin/claude-token-artifact",
-    "plugins/context-guard/bin/claude-token-audit",
-    "plugins/context-guard/bin/claude-token-bench",
-    "plugins/context-guard/bin/claude-token-diet",
-    "plugins/context-guard/bin/claude-token-failed-nudge",
-    "plugins/context-guard/bin/claude-token-guard-read",
-    "plugins/context-guard/bin/claude-token-rewrite-bash",
-    "plugins/context-guard/bin/claude-token-setup",
-    "plugins/context-guard/bin/claude-token-statusline",
-    "plugins/context-guard/bin/claude-token-statusline-merged",
-    "plugins/context-guard/bin/claude-trim-output",
-    "plugins/context-guard/bin/context-guard",
-    "plugins/context-guard/bin/context-guard-artifact",
-    "plugins/context-guard/bin/context-guard-audit",
-    "plugins/context-guard/bin/context-guard-bench",
-    "plugins/context-guard/bin/context-guard-compress",
-    "plugins/context-guard/bin/context-guard-cost",
-    "plugins/context-guard/bin/context-guard-diet",
-    "plugins/context-guard/bin/context-guard-experiments",
-    "plugins/context-guard/bin/context-guard-failed-nudge",
-    "plugins/context-guard/bin/context-guard-filter",
-    "plugins/context-guard/bin/context-guard-guard-read",
-    "plugins/context-guard/bin/context-guard-pack",
-    "plugins/context-guard/bin/context-guard-read-symbol",
-    "plugins/context-guard/bin/context-guard-rewrite-bash",
-    "plugins/context-guard/bin/context-guard-sanitize-output",
-    "plugins/context-guard/bin/context-guard-setup",
-    "plugins/context-guard/bin/context-guard-statusline",
-    "plugins/context-guard/bin/context-guard-statusline-merged",
-    "plugins/context-guard/bin/context-guard-tool-prune",
-    "plugins/context-guard/bin/context-guard-trim-output",
     "plugins/context-guard/brief/README.md",
     "plugins/context-guard/brief/brief-mode.lite.md",
     "plugins/context-guard/brief/brief-mode.standard.md",
     "plugins/context-guard/brief/brief-mode.ultra.md",
-    "plugins/context-guard/lib/hook_secret_patterns.py",
     "plugins/context-guard/skills/audit/SKILL.md",
     "plugins/context-guard/skills/optimize/SKILL.md",
     "plugins/context-guard/skills/setup/SKILL.md",
 }
-
+EXPECTED_NPM_PACK_FILES = BASE_EXPECTED_NPM_PACK_FILES | set(COMMAND_MANIFEST.expected_command_pack_files())
 
 def remove_generated_plugin_bin_python_caches() -> None:
     # Tests and reviewer diagnostics may import/compile suffix-less Python bin
