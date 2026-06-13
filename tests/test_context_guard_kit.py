@@ -5088,6 +5088,81 @@ class ClaudeTokenKitTests(unittest.TestCase):
             upstream.server_close()
             upstream_thread.join(timeout=5)
 
+    def test_experimental_local_proxy_auth_failure_does_not_consume_one_shot(self):
+        seen_requests: list[str] = []
+
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                seen_requests.append(self.path)
+                body = b"upstream accepted"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script):
+                    proxy_port = reserve_loopback_port()
+                    proc = popen_local_proxy_with_ready(
+                        [
+                            sys.executable,
+                            str(script),
+                            "serve",
+                            "local-proxy",
+                            "--bind-host",
+                            "127.0.0.1",
+                            "--bind-port",
+                            str(proxy_port),
+                            "--target-host",
+                            "127.0.0.1",
+                            "--target-port",
+                            str(upstream.server_port),
+                            "--runtime-gate-ack",
+                            "--forwarding-gate-ack",
+                            "--once",
+                            "--json",
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    nonce = getattr(proc, "_context_guard_proxy_nonce")
+                    request_count_before_bad_auth = len(seen_requests)
+                    try:
+                        bad_status, bad_body, _bad_headers = request_loopback_with_retries(
+                            proxy_port,
+                            "/bad-auth",
+                            headers={LOCAL_PROXY_NONCE_HEADER: "wrong-nonce"},
+                        )
+                        self.assertEqual(bad_status, 403)
+                        self.assertIn(b"invalid_proxy_nonce", bad_body)
+                        self.assertEqual(len(seen_requests), request_count_before_bad_auth)
+
+                        good_status, good_body, _good_headers = request_loopback_with_retries(proxy_port, "/after-failure")
+                        stdout, stderr = communicate_process_or_kill(proc)
+                    finally:
+                        kill_process_if_running(proc)
+                    self.assertEqual(proc.returncode, 0, stdout + stderr)
+                    self.assertEqual(good_status, 200)
+                    self.assertEqual(good_body, b"upstream accepted")
+                    self.assertEqual(seen_requests[-1], "/after-failure")
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["status"], "served_once")
+                    self.assertTrue(payload["forward_result"]["forwarded"])
+                    self.assertEqual(payload["forward_result"]["auth_failures"], 1)
+                    self.assertNotIn(nonce, stdout + stderr)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
     def test_experimental_local_proxy_serve_blocks_credentials_and_unsafe_startup(self):
         seen_requests: list[str] = []
 
@@ -5125,6 +5200,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "--runtime-gate-ack",
                             "--forwarding-gate-ack",
                             "--once",
+                            "--timeout-seconds",
+                            "1.0",
                             "--json",
                         ],
                         text=True,
@@ -5168,6 +5245,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "--runtime-gate-ack",
                             "--forwarding-gate-ack",
                             "--once",
+                            "--timeout-seconds",
+                            "1.0",
                             "--json",
                         ],
                         text=True,
@@ -5211,6 +5290,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                             "--runtime-gate-ack",
                             "--forwarding-gate-ack",
                             "--once",
+                            "--timeout-seconds",
+                            "1.0",
                             "--json",
                         ],
                         text=True,
