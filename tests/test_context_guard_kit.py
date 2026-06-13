@@ -9795,13 +9795,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("artifact store", payload["metadata"]["retrieval_hint"])
                 self.assertIn("+new_value = \"quoted literal\"", payload["content"])
 
-    def _run_pack(self, script: Path, cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def _run_pack(self, script: Path, cwd: Path, *args: str, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(script), *args],
             cwd=cwd,
             text=True,
             capture_output=True,
             check=check,
+            timeout=timeout,
         )
 
     def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
@@ -10357,6 +10358,81 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(first["included_sources"][0]["path"], "src.py")
                     self.assertTrue(any(item["reason"] == "duplicate_source" for item in first["omitted_sources"]))
                     self.assertTrue(any(item["reason"] == "invalid_lines" for item in first["omitted_sources"]))
+
+    def test_context_pack_manifest_rejects_fifo_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("mkfifo unavailable")
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    manifest = root / "pack.fifo"
+                    try:
+                        os.mkfifo(manifest)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("fifo unavailable")
+                    proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--manifest",
+                        str(manifest),
+                        "--json",
+                        "--no-artifact",
+                        check=False,
+                        timeout=2,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("manifest", proc.stderr)
+                    self.assertIn("regular file", proc.stderr)
+
+    def test_context_pack_manifest_rejects_symlink_and_oversized_before_parsing(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real = root / "real-pack.json"
+                    real.write_text(json.dumps({"version": 1, "sources": []}), encoding="utf-8")
+                    linked = root / "linked-pack.json"
+                    try:
+                        linked.symlink_to(real)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink unavailable")
+                    symlink_proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--manifest",
+                        str(linked),
+                        "--json",
+                        "--no-artifact",
+                        check=False,
+                        timeout=2,
+                    )
+                    self.assertNotEqual(symlink_proc.returncode, 0)
+                    self.assertIn("manifest", symlink_proc.stderr)
+
+                    oversized = root / "oversized-pack.json"
+                    oversized.write_bytes(b" " * 1_000_001)
+                    oversized_proc = self._run_pack(
+                        script,
+                        root,
+                        "build",
+                        "--root",
+                        ".",
+                        "--manifest",
+                        str(oversized),
+                        "--json",
+                        "--no-artifact",
+                        check=False,
+                        timeout=2,
+                    )
+                    self.assertNotEqual(oversized_proc.returncode, 0)
+                    self.assertIn("manifest exceeds trusted size cap", oversized_proc.stderr)
 
     def test_context_pack_slice_returns_exact_sanitized_lines(self):
         secret = "ghp_" + ("A" * 36)
