@@ -235,6 +235,30 @@ def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
     return "".join(out), redacted
 
 
+def sanitize_source_lines(handle: Any, requested: LineRange | None) -> tuple[list[str], int, int]:
+    """Sanitize a source stream while retaining only the requested line window.
+
+    Explicit line-window retrieval still scans the complete file so global
+    redaction counts and total line counts stay compatible with previous
+    outputs, but it no longer materializes a sanitized all-lines list before
+    slicing.
+    """
+    sanitizer = load_line_sanitizer()
+    selected: list[str] = []
+    redacted = 0
+    total_lines = 0
+    collect_all = requested is None
+    start = requested.start if requested is not None else 1
+    end = requested.end if requested is not None else 0
+    for total_lines, raw_line in enumerate(handle, start=1):
+        sanitized, did_redact = sanitizer.sanitize(raw_line)  # type: ignore[attr-defined]
+        if did_redact:
+            redacted += 1
+        if collect_all or start <= total_lines <= end:
+            selected.append(sanitized)
+    return selected, total_lines, redacted
+
+
 def byte_len(text: str) -> int:
     return len(text.encode("utf-8", errors="replace"))
 
@@ -582,19 +606,15 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
         return None, omission(spec, reason, path=display, redacted_path=redacted_path)
     try:
         with handle:
-            raw_text = handle.read()
+            requested = spec.lines
+            selected, total_lines, redacted_lines = sanitize_source_lines(handle, requested)
     except OSError:
         return None, omission(spec, "unsafe_path", path=display, redacted_path=redacted_path)
-    sanitized, redacted_lines = sanitize_text(raw_text)
-    all_lines = sanitized.splitlines(True)
-    if not all_lines:
+    if total_lines <= 0:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
-    total_lines = len(all_lines)
-    requested = spec.lines or LineRange(1, total_lines)
+    requested = requested or LineRange(1, total_lines)
     if requested.start > total_lines:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
-    end = min(requested.end, total_lines)
-    selected = all_lines[requested.start - 1:end]
     if not selected:
         return None, omission(spec, "empty_source", path=display, redacted_path=redacted_path)
     return ResolvedSource(
