@@ -9927,6 +9927,33 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(data["token_proxy"]["measurement"], "estimated")
                     self.assertEqual(data["token_proxy"]["method"], "chars_div_4")
 
+    def test_context_pack_partial_budget_renders_only_final_partial_block(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_partial_render_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "big.txt").write_text("".join(f"line {i:04d}\n" for i in range(4096)), encoding="utf-8")
+                    original_render_block = module.render_block
+                    render_calls: list[int] = []
+
+                    def counted_render_block(*args, **kwargs):
+                        render_calls.append(1)
+                        return original_render_block(*args, **kwargs)
+
+                    with mock.patch.object(module, "render_block", side_effect=counted_render_block):
+                        data = module.build_pack(
+                            root,
+                            [module.SourceSpec(path="big.txt", priority=1)],
+                            budget_bytes=1600,
+                            root_arg=".",
+                            store_artifact=False,
+                        )
+
+                    self.assertEqual(data["sources"]["partial"], 1)
+                    self.assertEqual(len(render_calls), 1)
+                    self.assertLessEqual(data["pack_bytes"], data["budget_bytes"])
+
 
     def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
