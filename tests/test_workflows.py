@@ -59,6 +59,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertTrue(all(FULL_SHA_ACTION_RE.fullmatch(line) for line in uses_lines))
         self.assertEqual(combined.count("persist-credentials: false"), combined.count("actions/checkout@"))
 
+    def test_pages_configure_action_uses_node24_release(self):
+        pages = read(".github/workflows/pages.yml")
+
+        self.assertIn("actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6", pages)
+        self.assertNotIn("actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5", pages)
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")
