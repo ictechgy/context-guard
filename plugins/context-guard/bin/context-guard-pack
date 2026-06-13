@@ -806,7 +806,11 @@ def retrieval_for(root_arg: str, display_path: str, lines: LineRange, *, redacte
     return retrieval_cli(safe_root, display_path, lines), None
 
 
-def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, status: str, included: LineRange) -> str:
+BLOCK_OPEN = "\n\n```text\n"
+BLOCK_CLOSE = "```\n\n"
+
+
+def render_block_header(source: ResolvedSource, *, root_arg: str, status: str, included: LineRange) -> str:
     title = source.spec.label or source.display_path
     requested = source.requested_lines or LineRange(1, source.total_lines)
     retrieval, retrieval_omitted_reason = retrieval_for(root_arg, source.display_path, included, redacted_path=source.redacted_path)
@@ -822,7 +826,11 @@ def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, sta
         header.append(f"Retrieval: `{retrieval}`")
     elif retrieval_omitted_reason:
         header.append(f"Retrieval omitted: {retrieval_omitted_reason}")
-    return "\n".join(header) + "\n\n```text\n" + "".join(lines) + ("" if not lines or lines[-1].endswith("\n") else "\n") + "```\n\n"
+    return "\n".join(header)
+
+
+def render_block(source: ResolvedSource, lines: list[str], *, root_arg: str, status: str, included: LineRange) -> str:
+    return render_block_header(source, root_arg=root_arg, status=status, included=included) + BLOCK_OPEN + "".join(lines) + ("" if not lines or lines[-1].endswith("\n") else "\n") + BLOCK_CLOSE
 
 
 def source_metadata(source: ResolvedSource, *, status: str, lines: list[str], included: LineRange, root_arg: str) -> dict[str, Any]:
@@ -862,21 +870,63 @@ def budget_omission(source: ResolvedSource, *, root_arg: str) -> dict[str, Any]:
     return item
 
 
-def fit_partial_lines(source: ResolvedSource, remaining: int, *, root_arg: str) -> tuple[list[str], str | None, LineRange | None]:
+def included_range_for_line_count(source: ResolvedSource, line_count: int) -> LineRange:
+    start = source.requested_lines.start if source.requested_lines else 1
+    return LineRange(start, start + line_count - 1)
+
+
+def line_byte_prefixes(lines: list[str]) -> list[int]:
+    prefixes = [0]
+    total = 0
+    for line in lines:
+        total += byte_len(line)
+        prefixes.append(total)
+    return prefixes
+
+
+def render_block_byte_len(
+    source: ResolvedSource,
+    line_count: int,
+    line_prefixes: list[int],
+    *,
+    root_arg: str,
+    status: str,
+    included: LineRange,
+) -> int:
+    body_bytes = line_prefixes[line_count]
+    if line_count > 0 and not source.selected_lines[line_count - 1].endswith("\n"):
+        body_bytes += 1
+    return byte_len(render_block_header(source, root_arg=root_arg, status=status, included=included)) + byte_len(BLOCK_OPEN) + body_bytes + byte_len(BLOCK_CLOSE)
+
+
+def fit_partial_lines(
+    source: ResolvedSource,
+    remaining: int,
+    *,
+    root_arg: str,
+    line_prefixes: list[int] | None = None,
+) -> tuple[list[str], str | None, LineRange | None]:
     if remaining <= 0:
         return [], None, None
-    picked: list[str] = []
-    for line in source.selected_lines:
-        candidate = picked + [line]
-        included = LineRange(source.requested_lines.start if source.requested_lines else 1, (source.requested_lines.start if source.requested_lines else 1) + len(candidate) - 1)
-        block = render_block(source, candidate, root_arg=root_arg, status="partial", included=included)
-        if byte_len(block) <= remaining:
-            picked = candidate
-        else:
-            break
-    if not picked:
+    if not source.selected_lines:
         return [], None, None
-    included = LineRange(source.requested_lines.start if source.requested_lines else 1, (source.requested_lines.start if source.requested_lines else 1) + len(picked) - 1)
+    prefixes = line_prefixes if line_prefixes is not None else line_byte_prefixes(source.selected_lines)
+    best = 0
+    low = 1
+    high = len(source.selected_lines)
+    while low <= high:
+        mid = (low + high) // 2
+        included = included_range_for_line_count(source, mid)
+        block_bytes = render_block_byte_len(source, mid, prefixes, root_arg=root_arg, status="partial", included=included)
+        if block_bytes <= remaining:
+            best = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+    if best <= 0:
+        return [], None, None
+    picked = source.selected_lines[:best]
+    included = included_range_for_line_count(source, best)
     return picked, render_block(source, picked, root_arg=root_arg, status="partial", included=included), included
 
 
@@ -1149,17 +1199,17 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
         parts.append(header)
         current_pack_bytes += header_bytes
     for source in resolved:
-        start_line = source.requested_lines.start if source.requested_lines else 1
-        included_range = LineRange(start_line, start_line + len(source.selected_lines) - 1)
-        full_block = render_block(source, source.selected_lines, root_arg=root_arg, status="included", included=included_range)
-        full_block_bytes = byte_len(full_block)
+        line_prefixes = line_byte_prefixes(source.selected_lines)
+        included_range = included_range_for_line_count(source, len(source.selected_lines))
+        full_block_bytes = render_block_byte_len(source, len(source.selected_lines), line_prefixes, root_arg=root_arg, status="included", included=included_range)
         remaining = budget_bytes - current_pack_bytes
         if full_block_bytes <= remaining:
+            full_block = render_block(source, source.selected_lines, root_arg=root_arg, status="included", included=included_range)
             parts.append(full_block)
             current_pack_bytes += full_block_bytes
             included.append(source_metadata(source, status="included", lines=source.selected_lines, included=included_range, root_arg=root_arg))
             continue
-        partial_lines, partial_block, partial_range = fit_partial_lines(source, remaining, root_arg=root_arg)
+        partial_lines, partial_block, partial_range = fit_partial_lines(source, remaining, root_arg=root_arg, line_prefixes=line_prefixes)
         if partial_block is not None and partial_range is not None:
             parts.append(partial_block)
             current_pack_bytes += byte_len(partial_block)
@@ -1519,7 +1569,8 @@ def source_selected_range(source: ResolvedSource) -> LineRange:
 
 def resolved_block_bytes(source: ResolvedSource, *, root_arg: str) -> int:
     included = source_selected_range(source)
-    return byte_len(render_block(source, source.selected_lines, root_arg=root_arg, status="included", included=included))
+    line_prefixes = line_byte_prefixes(source.selected_lines)
+    return render_block_byte_len(source, len(source.selected_lines), line_prefixes, root_arg=root_arg, status="included", included=included)
 
 
 def manifest_source_for_candidate(source: ResolvedSource, *, priority: int, label: str | None) -> dict[str, Any]:
@@ -1874,11 +1925,19 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
             })
             continue
         final_seen.add(final_identity)
-        source_bytes = resolved_block_bytes(source, root_arg=root_arg)
+        line_prefixes = line_byte_prefixes(source.selected_lines)
+        source_bytes = render_block_byte_len(
+            source,
+            len(source.selected_lines),
+            line_prefixes,
+            root_arg=root_arg,
+            status="included",
+            included=source_selected_range(source),
+        )
         remaining = budget - current_bytes
         if source_bytes > remaining:
             if not selected and remaining > 0:
-                partial_lines, _partial_block, partial_range = fit_partial_lines(source, remaining, root_arg=root_arg)
+                partial_lines, _partial_block, partial_range = fit_partial_lines(source, remaining, root_arg=root_arg, line_prefixes=line_prefixes)
                 if partial_range is not None and partial_lines:
                     partial_spec = SourceSpec(
                         path=candidate.path,
@@ -1895,7 +1954,15 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
                         omitted.append(omitted_item)
                         continue
                     assert source is not None
-                    source_bytes = resolved_block_bytes(source, root_arg=root_arg)
+                    partial_prefixes = line_byte_prefixes(source.selected_lines)
+                    source_bytes = render_block_byte_len(
+                        source,
+                        len(source.selected_lines),
+                        partial_prefixes,
+                        root_arg=root_arg,
+                        status="included",
+                        included=source_selected_range(source),
+                    )
                 else:
                     omitted.append({"path": source.display_path, "status": "omitted", "reason": "budget_exhausted", "priority": candidate.score})
                     continue
