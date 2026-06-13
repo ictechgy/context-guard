@@ -17,7 +17,7 @@ cd apps/contextguard-mac
 swift run ContextGuardMac
 ```
 
-The prototype resolves `context-guard-audit` from `PATH` first. When launched from this repository it can also use the repo-local helper at `../../plugins/context-guard/bin/context-guard-audit` as an executable fallback.
+The prototype does not resolve `context-guard-audit` from arbitrary `PATH`. When launched from this repository it uses the repo-local helper at `../../plugins/context-guard/bin/context-guard-audit` as a trusted executable fallback and rejects fallback paths that traverse symlinks.
 
 ## Test
 

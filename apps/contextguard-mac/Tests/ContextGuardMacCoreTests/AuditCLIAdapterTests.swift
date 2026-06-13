@@ -18,7 +18,7 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertEqual(report.totals.tokens.cacheRead, 800)
     }
 
-    func testPathResolutionPrefersPathBeforeFallback() throws {
+    func testPathResolutionIgnoresPathShadowAndUsesFallback() throws {
         let temp = try temporaryDirectory()
         let pathDir = temp.appendingPathComponent("path-bin", isDirectory: true)
         let fallbackDir = temp.appendingPathComponent("fallback-bin", isDirectory: true)
@@ -31,7 +31,20 @@ final class AuditCLIAdapterTests: XCTestCase {
         let adapter = AuditCLIAdapter(fallbackExecutableURL: fallbackHelper, timeout: 2, environment: ["PATH": pathDir.path])
         let report = try adapter.loadReport(transcriptDirectory: temp)
 
-        XCTAssertEqual(report.totals.costUSDObserved ?? -1, 0.1111, accuracy: 0.000001)
+        XCTAssertEqual(report.totals.costUSDObserved ?? -1, 9.9999, accuracy: 0.000001)
+    }
+
+    func testPathOnlyExecutableIsNotResolved() throws {
+        let temp = try temporaryDirectory()
+        let pathDir = temp.appendingPathComponent("path-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: pathDir, withIntermediateDirectories: true)
+        _ = try writeHelper(in: pathDir, body: "/bin/cat <<'JSON'\n\(feasibilityFixture())\nJSON\n")
+
+        let adapter = AuditCLIAdapter(timeout: 1, environment: ["PATH": pathDir.path])
+
+        XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .executableNotFound)
+        }
     }
 
     func testExecutableNotFoundIsActionable() throws {
@@ -60,6 +73,39 @@ final class AuditCLIAdapterTests: XCTestCase {
 
         XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
             XCTAssertEqual(error as? AuditCLIAdapterError, .fallbackNotExecutable(temp.path))
+        }
+    }
+
+    func testFallbackSymlinkLeafIsRejectedAsExecutable() throws {
+        let temp = try temporaryDirectory()
+        let realDir = temp.appendingPathComponent("real-bin", isDirectory: true)
+        let linkDir = temp.appendingPathComponent("link-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkDir, withIntermediateDirectories: true)
+        let realHelper = try writeHelper(in: realDir, body: "/bin/cat <<'JSON'\n\(feasibilityFixture())\nJSON\n")
+        let link = linkDir.appendingPathComponent("context-guard-audit")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: realHelper)
+
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: link, timeout: 1, environment: ["PATH": ""])
+
+        XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .fallbackNotExecutable(link.path))
+        }
+    }
+
+    func testFallbackSymlinkParentIsRejectedAsExecutable() throws {
+        let temp = try temporaryDirectory()
+        let realDir = temp.appendingPathComponent("real-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        _ = try writeHelper(in: realDir, body: "/bin/cat <<'JSON'\n\(feasibilityFixture())\nJSON\n")
+        let linkedParent = temp.appendingPathComponent("linked-bin", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: realDir)
+        let fallback = linkedParent.appendingPathComponent("context-guard-audit")
+
+        let adapter = AuditCLIAdapter(fallbackExecutableURL: fallback, timeout: 1, environment: ["PATH": ""])
+
+        XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
+            XCTAssertEqual(error as? AuditCLIAdapterError, .fallbackNotExecutable(fallback.path))
         }
     }
 
