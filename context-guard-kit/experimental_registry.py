@@ -2687,8 +2687,13 @@ def coalesce_local_proxy_bool(args: argparse.Namespace, payload: dict[str, Any],
     return parse_local_proxy_json_bool(payload.get(key))
 
 
-def local_proxy_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
-    input_payload, input_meta = read_local_proxy_payload(args)
+def local_proxy_plan_payload(
+    args: argparse.Namespace,
+    input_payload: dict[str, Any] | None = None,
+    input_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if input_payload is None or input_meta is None:
+        input_payload, input_meta = read_local_proxy_payload(args)
     bind_host_raw = coalesce_local_proxy_value(args, input_payload, "bind_host", "bind_host")
     bind_port_raw = coalesce_local_proxy_value(args, input_payload, "bind_port", "bind_port")
     target_host_raw = coalesce_local_proxy_value(args, input_payload, "target_host", "target_host")
@@ -3004,8 +3009,8 @@ def command_record_local_proxy_runtime_gate(args: argparse.Namespace) -> int:
 
 
 def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
-    payload = local_proxy_plan_payload(args)
-    input_payload, _input_meta = read_local_proxy_payload(args)
+    input_payload, input_meta = read_local_proxy_payload(args)
+    payload = local_proxy_plan_payload(args, input_payload=input_payload, input_meta=input_meta)
     forwarding_gate_ack, forwarding_gate_ack_valid = coalesce_local_proxy_bool(
         args,
         input_payload,

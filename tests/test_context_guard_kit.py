@@ -4299,6 +4299,47 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn(module.LOCAL_PROXY_NONCE_HEADER.lower(), sensitive_headers)
                 self.assertIn("x-contextguard-test", sensitive_headers)
 
+    def test_experimental_local_proxy_forward_payload_reads_input_once(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_experimental_registry_local_proxy_single_read_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    input_path = root / "local-proxy.json"
+                    input_path.write_text(
+                        json.dumps({
+                            "local_proxy": {
+                                "bind_host": "127.0.0.1",
+                                "bind_port": 18081,
+                                "target_host": "127.0.0.1",
+                                "target_port": 18082,
+                                "runtime_gate_ack": True,
+                                "forwarding_gate_ack": True,
+                                "once": True,
+                                "max_request_bytes": 4096,
+                                "max_response_bytes": 4096,
+                                "timeout_seconds": 1.0,
+                            }
+                        }),
+                        encoding="utf-8",
+                    )
+                    args = argparse.Namespace(input=str(input_path))
+                    calls = {"count": 0}
+                    original = module.read_local_proxy_payload
+
+                    def counted_read(read_args):
+                        calls["count"] += 1
+                        return original(read_args)
+
+                    with mock.patch.object(module, "read_local_proxy_payload", side_effect=counted_read):
+                        payload = module.local_proxy_forward_payload(args)
+
+                    self.assertEqual(calls["count"], 1)
+                    self.assertEqual(payload["status"], "ready_to_serve")
+                    self.assertEqual(payload["runtime_limits"]["max_request_bytes"], 4096)
+                    self.assertTrue(payload["policy"]["runtime_gate_acknowledged"])
+                    self.assertTrue(payload["policy"]["forwarding_gate_acknowledged"])
+
     def assert_local_proxy_gate_row_has_no_runtime_actions(self, row):
         self.assertFalse(row["policy"]["listener_started"])
         self.assertFalse(row["policy"]["traffic_forwarded"])
@@ -6445,6 +6486,31 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertGreater(bp["cost_delta_if_miss"], 100)
         self.assertGreater(payload["cost_estimate"]["if_all_cache_miss_usd_mid"], 100)
         self.assertGreater(payload["token_estimate"]["cacheable_tokens_mid"], bp["section_tokens_estimated"])
+
+    def test_cost_guard_fingerprint_derives_display_hmac_from_single_digest(self):
+        module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_single_digest_test")
+        breakpoints, _meta = module.extract_cache_breakpoints({
+            "cache_breakpoints": [
+                {"kind": "system", "text": "stable prefix one"},
+                {"kind": "message", "text": "stable prefix two"},
+            ],
+        })
+        self.assertEqual(len(breakpoints), 2)
+        calls = {"count": 0}
+        original = module.keyed_hmac_bytes
+
+        def counted_hmac(key, data):
+            calls["count"] += 1
+            return original(key, data)
+
+        with mock.patch.object(module, "keyed_hmac_bytes", side_effect=counted_hmac):
+            fingerprints, redactions = module.build_fingerprints(breakpoints, b"k" * 32)
+
+        self.assertEqual(redactions, 0)
+        self.assertEqual(calls["count"], len(breakpoints))
+        for fingerprint in fingerprints:
+            self.assertEqual(fingerprint["display_hmac"], "hmac-sha256:" + fingerprint["hmac"][:16])
+            self.assertRegex(fingerprint["hmac"], r"^[0-9a-f]{64}$")
 
     def test_cost_guard_blocked_preflight_does_not_seed_cache_hit(self):
         request = cost_guard_request()
@@ -10204,12 +10270,51 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
-                    (root / "file.txt").write_text(f"one\nTOKEN={secret}\nthree\nfour\n", encoding="utf-8")
+                    outside_window_secret = "sk-" + ("B" * 32)
+                    (root / "file.txt").write_text(
+                        f"one\nTOKEN={secret}\nthree\nfour\nOUTSIDE={outside_window_secret}\n",
+                        encoding="utf-8",
+                    )
                     proc = self._run_pack(script, root, "slice", "--root", ".", "--path", "file.txt", "--lines", "2:3", "--json")
                     data = json.loads(proc.stdout)
                     self.assertEqual(data["query"]["returned_lines"], 2)
                     self.assertEqual(data["content"], "TOKEN=[REDACTED]\nthree\n")
+                    self.assertEqual(data["redaction"]["redacted_lines"], 2)
                     self.assertNotIn(secret, proc.stdout)
+                    self.assertNotIn(outside_window_secret, proc.stdout)
+
+                    eof_proc = self._run_pack(script, root, "slice", "--root", ".", "--path", "file.txt", "--lines", "99:100", "--json", check=False)
+                    self.assertNotEqual(eof_proc.returncode, 0)
+                    self.assertEqual(json.loads(eof_proc.stdout)["reason"], "empty_source")
+
+    def test_context_pack_line_window_streams_without_handle_read_and_counts_global_redactions(self):
+        secret = "sk-" + ("C" * 32)
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_streaming_window_{index}")
+                lines = ["one\n", "two\n", f"SECRET={secret}\n", "four\n"]
+
+                class StreamingOnlyHandle:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *_exc):
+                        return False
+
+                    def __iter__(self):
+                        return iter(lines)
+
+                    def read(self, *_args, **_kwargs):
+                        raise AssertionError("line-window resolution must not call read()")
+
+                with mock.patch.object(module, "open_regular_under_root", return_value=(StreamingOnlyHandle(), "")):
+                    source, omitted = module.resolve_source(Path("/safe-root"), module.SourceSpec(path="file.txt", lines=module.LineRange(2, 2)))
+
+                self.assertIsNone(omitted)
+                self.assertEqual(source.selected_lines, ["two\n"])
+                self.assertEqual(source.total_lines, 4)
+                self.assertEqual(source.redacted_lines, 1)
+                self.assertNotIn(secret, "".join(source.selected_lines))
 
     def test_context_pack_caches_sanitizer_factory_not_instances(self):
         sanitizer_body = (
@@ -19727,6 +19832,228 @@ for malformed in malformed_values:
                     )
                     self.assertIn("cache ", proc.stdout)
                     self.assertRegex(proc.stdout, r"cache \d+%")
+
+    def test_statusline_extracts_fields_with_one_jq_invocation(self):
+        real_jq = shutil.which("jq")
+        if not real_jq:
+            self.skipTest("jq unavailable")
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake_bin = root / "bin"
+                    fake_bin.mkdir()
+                    count_file = root / "jq-count.txt"
+                    fake_jq = fake_bin / "jq"
+                    fake_jq.write_text(
+                        "#!/usr/bin/env bash\n"
+                        f"printf 'x\\n' >> {shlex.quote(str(count_file))}\n"
+                        f"exec {shlex.quote(real_jq)} \"$@\"\n",
+                        encoding="utf-8",
+                    )
+                    os.chmod(fake_jq, stat.S_IRWXU)
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 86},
+                        "cost": {"total_cost_usd": 0.123},
+                        "workspace": {"current_dir": str(root)},
+                    }
+                    env = os.environ.copy()
+                    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+                    proc = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("Sonnet", proc.stdout)
+                    self.assertIn("ctx 86% ⚠", proc.stdout)
+                    self.assertIn("cost $0.123", proc.stdout)
+                    self.assertEqual(count_file.read_text(encoding="utf-8").splitlines(), ["x"])
+
+    def test_statusline_transcript_metrics_cache_is_private_and_omits_raw_values(self):
+        secret = "ghp_" + ("D" * 36)
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    home = root / "home"
+                    workspace = root / "workspace"
+                    workspace.mkdir()
+                    transcript = workspace / "session.jsonl"
+                    first_line = json.dumps({
+                        "message": {"usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 100,
+                        }},
+                        "note": secret,
+                    }) + "\n"
+                    transcript.write_text(first_line, encoding="utf-8")
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 10},
+                        "cost": {"total_cost_usd": 0.0},
+                        "workspace": {"current_dir": str(workspace)},
+                        "transcript_path": str(transcript),
+                    }
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
+                    first = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("cache 80%", first.stdout)
+                    self.assertIn("reuse 8.0x", first.stdout)
+                    st = transcript.stat()
+                    replacement = json.dumps({"usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    }})
+                    self.assertLess(len(replacement), len(first_line))
+                    transcript.write_text(replacement + (" " * (len(first_line) - len(replacement) - 1)) + "\n", encoding="utf-8")
+                    os.utime(transcript, ns=(st.st_atime_ns, st.st_mtime_ns))
+                    second = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertEqual(second.stdout, first.stdout)
+
+                    cache_dir = home / ".cache" / "context-guard" / "statusline"
+                    self.assertEqual(stat.S_IMODE(cache_dir.stat().st_mode), 0o700)
+                    cache_files = list(cache_dir.glob("*.json"))
+                    self.assertEqual(len(cache_files), 1)
+                    cache_file = cache_files[0]
+                    self.assertEqual(stat.S_IMODE(cache_file.stat().st_mode), 0o600)
+                    cache_text = cache_file.read_text(encoding="utf-8")
+                    for raw in (str(transcript), str(workspace), "Sonnet", secret, "cache_read_input_tokens"):
+                        self.assertNotIn(raw, cache_text)
+                    cached = json.loads(cache_text)
+                    self.assertEqual(cached["cache_pct"], "80")
+                    self.assertEqual(cached["reuse_x"], "8.0")
+                    self.assertRegex(cached["path_hash"], r"^[0-9a-f]{64}$")
+
+    def test_statusline_disables_cache_without_workspace_directory_creation_when_home_inside_workspace(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    workspace = root / "workspace"
+                    workspace.mkdir()
+                    home = workspace / "home"
+                    transcript = workspace / "session.jsonl"
+                    first_line = json.dumps({"message": {"usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 800,
+                        "cache_creation_input_tokens": 100,
+                    }}}) + "\n"
+                    transcript.write_text(first_line, encoding="utf-8")
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 10},
+                        "cost": {"total_cost_usd": 0.0},
+                        "workspace": {"current_dir": str(workspace)},
+                        "transcript_path": str(transcript),
+                    }
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
+                    first = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("cache 80%", first.stdout)
+                    self.assertFalse((home / ".cache").exists())
+
+                    st = transcript.stat()
+                    replacement = json.dumps({"usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    }})
+                    self.assertLess(len(replacement), len(first_line))
+                    transcript.write_text(replacement + (" " * (len(first_line) - len(replacement) - 1)) + "\n", encoding="utf-8")
+                    os.utime(transcript, ns=(st.st_atime_ns, st.st_mtime_ns))
+                    second = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertNotIn("cache ", second.stdout)
+                    self.assertFalse((home / ".cache").exists())
+
+    def test_statusline_ignores_tampered_out_of_range_cache_metrics(self):
+        for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    home = root / "home"
+                    workspace = root / "workspace"
+                    workspace.mkdir()
+                    transcript = workspace / "session.jsonl"
+                    transcript.write_text(
+                        json.dumps({"message": {"usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 800,
+                            "cache_creation_input_tokens": 100,
+                        }}}) + "\n",
+                        encoding="utf-8",
+                    )
+                    payload = {
+                        "model": {"display_name": "Sonnet"},
+                        "context_window": {"used_percentage": 10},
+                        "cost": {"total_cost_usd": 0.0},
+                        "workspace": {"current_dir": str(workspace)},
+                        "transcript_path": str(transcript),
+                    }
+                    env = os.environ.copy()
+                    env["HOME"] = str(home)
+                    env["CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS"] = "30"
+                    first = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("cache 80%", first.stdout)
+                    cache_file = next((home / ".cache" / "context-guard" / "statusline").glob("*.json"))
+                    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                    cached["cache_pct"] = "9999"
+                    cached["reuse_x"] = "9999999.0"
+                    cache_file.write_text(json.dumps(cached, sort_keys=True) + "\n", encoding="utf-8")
+                    os.chmod(cache_file, 0o600)
+                    second = subprocess.run(
+                        ["bash", str(script)],
+                        input=json.dumps(payload),
+                        text=True,
+                        capture_output=True,
+                        env=env,
+                        check=True,
+                    )
+                    self.assertIn("cache 80%", second.stdout)
+                    self.assertIn("reuse 8.0x", second.stdout)
+                    self.assertNotIn("9999", second.stdout)
 
     def test_statusline_rejects_symlinked_transcript_path(self):
         for script in [KIT_DIR / "statusline.sh", PLUGIN_BIN / "context-guard-statusline"]:

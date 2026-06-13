@@ -78,9 +78,27 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-jq_get() {
-  jq -r "$1 // empty" <<<"$input" 2>/dev/null || true
-}
+statusline_fields=$(jq -r '[
+  ("v:" + ((.model.display_name // "") | tostring)),
+  ("v:" + ((.model.id // "") | tostring)),
+  ("v:" + ((.context_window.used_percentage // "") | tostring)),
+  ("v:" + ((.cost.total_cost_usd // "") | tostring)),
+  ("v:" + ((.workspace.current_dir // "") | tostring)),
+  ("v:" + ((.transcript_path // "") | tostring))
+] | @tsv' <<<"$input" 2>/dev/null || true)
+model_display=''
+model_id=''
+context_raw=''
+cost_raw=''
+cwd=''
+transcript_path=''
+IFS=$'\t' read -r model_display model_id context_raw cost_raw cwd transcript_path _ <<<"$statusline_fields"
+model_display=${model_display#v:}
+model_id=${model_id#v:}
+context_raw=${context_raw#v:}
+cost_raw=${cost_raw#v:}
+cwd=${cwd#v:}
+transcript_path=${transcript_path#v:}
 
 strip_terminal_sequences() {
   if command -v perl >/dev/null 2>&1; then
@@ -151,12 +169,11 @@ git_head_branch() {
   return 1
 }
 
-model=$(jq_get '.model.display_name')
-model=${model:-$(jq_get '.model.id')}
+model=$model_display
+model=${model:-$model_id}
 model=${model:-unknown}
 model=$(sanitize_status "$model")
 
-context_raw=$(jq_get '.context_window.used_percentage')
 context_is_numeric=0
 if [[ -n "$context_raw" ]]; then
   if context_pct=$(LC_NUMERIC=C printf '%.0f' "$context_raw" 2>/dev/null); then
@@ -179,14 +196,13 @@ if (( context_is_numeric )); then
   fi
 fi
 
-cost=$(jq_get '.cost.total_cost_usd')
+cost=$cost_raw
 if [[ -n "$cost" ]]; then
   cost=$(printf '$%.3f' "$cost" 2>/dev/null || sanitize_status "$cost")
 else
   cost='n/a'
 fi
 
-cwd=$(jq_get '.workspace.current_dir')
 dir=${cwd##*/}
 dir=${dir:-.}
 dir=$(sanitize_status "$dir")
@@ -204,21 +220,30 @@ fi
 # NOTE: keep the token-key list and usage-extraction shape in sync with claude_transcript_cost_audit.py
 # so the statusline metric matches the audit metric for the same transcript.
 metrics_label=''
-transcript_path=$(jq_get '.transcript_path')
 if [[ -n "$transcript_path" && -r "$transcript_path" ]] && command -v python3 >/dev/null 2>&1; then
-  transcript_metrics=$(python3 - "$transcript_path" 2>/dev/null <<'PYEOF' || true
+  transcript_metrics=$(python3 - "$transcript_path" "$cwd" 2>/dev/null <<'PYEOF' || true
 import json
 import os
+import re
 import stat
 import sys
+import time
+import hashlib
+import math
 
 path = sys.argv[1] if len(sys.argv) > 1 else ""
+workspace_dir = sys.argv[2] if len(sys.argv) > 2 else ""
 if not path:
     sys.exit(0)
 
 # Bounded tail read so the statusline never stalls on huge transcripts.
 TAIL_BYTES = 1024 * 1024
 MAX_RECORDS = 300
+CACHE_SCHEMA_VERSION = 1
+DEFAULT_CACHE_TTL_SECONDS = 2.0
+MAX_CACHE_TTL_SECONDS = 30.0
+MAX_CACHE_BYTES = 4096
+METRIC_RE = re.compile(r"^\d+(?:\.\d)?$")
 
 
 def _int_or_zero(value):
@@ -252,8 +277,6 @@ def _extract_usage(record):
     return None
 
 
-input_tokens = cache_read = cache_creation = 0
-
 def _open_regular_transcript(path):
     flags = os.O_RDONLY
     if hasattr(os, "O_CLOEXEC"):
@@ -271,7 +294,7 @@ def _open_regular_transcript(path):
         if not stat.S_ISREG(opened.st_mode):
             os.close(fd)
             return None
-        return fd, opened.st_size
+        return fd, opened
     except Exception:
         os.close(fd)
         raise
@@ -292,11 +315,206 @@ def _read_tail(fd, size):
     return b"".join(chunks), read_size
 
 
+def _cache_ttl_seconds():
+    raw = os.environ.get("CONTEXT_GUARD_STATUSLINE_CACHE_TTL_SECONDS", "")
+    if raw == "":
+        return DEFAULT_CACHE_TTL_SECONDS
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return 0.0
+    return min(ttl, MAX_CACHE_TTL_SECONDS)
+
+
+def _path_contains(parent, child):
+    try:
+        parent_real = os.path.realpath(parent)
+        child_real = os.path.realpath(child)
+        return os.path.commonpath([parent_real, child_real]) == parent_real
+    except Exception:
+        return False
+
+
+def _private_cache_dir(workspace):
+    home = os.path.expanduser("~")
+    if not home or not os.path.isabs(home):
+        return None
+    root = os.path.join(home, ".cache", "context-guard", "statusline")
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace) and _path_contains(workspace, root):
+        return None
+    try:
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        st = os.lstat(root)
+        if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            return None
+        if st.st_uid != os.getuid():
+            return None
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.chmod(root, 0o700)
+            st = os.lstat(root)
+            if stat.S_IMODE(st.st_mode) != 0o700:
+                return None
+        return root
+    except Exception:
+        return None
+
+
+def _identity(path, st):
+    absolute = os.path.abspath(path)
+    path_hash = hashlib.sha256(os.fsencode(absolute)).hexdigest()
+    return {
+        "path_hash": path_hash,
+        "size": int(st.st_size),
+        "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+        "dev": int(getattr(st, "st_dev", 0)),
+        "ino": int(getattr(st, "st_ino", 0)),
+    }
+
+
+def _cache_path(identity):
+    root = _private_cache_dir(workspace_dir)
+    if not root:
+        return None
+    return os.path.join(root, f"{identity['path_hash']}.json")
+
+
+def _open_no_follow_read(path):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_CACHE_BYTES:
+            os.close(fd)
+            return None
+        return fd, int(st.st_size)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _metric_parts(cache_pct, reuse_x):
+    cache_pct = _validated_metric(cache_pct, minimum=0.0, maximum=100.0)
+    if cache_pct is None:
+        return None
+    if reuse_x is not None:
+        reuse_x = _validated_metric(reuse_x, minimum=0.0, maximum=1_000_000.0)
+        if reuse_x is None:
+            return None
+    parts = [f"cache_pct={cache_pct}"]
+    if reuse_x:
+        parts.append(f"reuse_x={reuse_x}")
+    return " ".join(parts)
+
+
+def _validated_metric(value, *, minimum, maximum):
+    if not isinstance(value, str) or not METRIC_RE.match(value):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        return None
+    return value
+
+
+def _read_cache(identity, ttl):
+    if ttl <= 0:
+        return None
+    path = _cache_path(identity)
+    if not path:
+        return None
+    try:
+        opened = _open_no_follow_read(path)
+        if opened is None:
+            return None
+        fd, size = opened
+        try:
+            raw = os.read(fd, size + 1)
+        finally:
+            os.close(fd)
+        data = json.loads(raw.decode("utf-8", errors="strict"))
+        if not isinstance(data, dict):
+            return None
+        if data.get("schema_version") != CACHE_SCHEMA_VERSION:
+            return None
+        computed_at = float(data.get("computed_at", 0))
+        now = time.time()
+        if not math.isfinite(computed_at):
+            return None
+        if now - computed_at > ttl or computed_at - now > ttl:
+            return None
+        for key, value in identity.items():
+            if data.get(key) != value:
+                return None
+        return _metric_parts(data.get("cache_pct"), data.get("reuse_x"))
+    except Exception:
+        return None
+
+
+def _write_cache(identity, cache_pct, reuse_x):
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return
+    path = _cache_path(identity)
+    if not path:
+        return
+    payload = {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        **identity,
+        "computed_at": time.time(),
+        "cache_pct": cache_pct,
+        "reuse_x": reuse_x,
+    }
+    raw = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(raw) > MAX_CACHE_BYTES:
+        return
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    fd = -1
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp_path, flags, 0o600)
+        os.write(fd, raw)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+input_tokens = cache_read = cache_creation = 0
+
 try:
     opened = _open_regular_transcript(path)
     if opened is None:
         sys.exit(0)
-    fd, size = opened
+    fd, st = opened
+    size = int(st.st_size)
+    identity = _identity(path, st)
+    cached = _read_cache(identity, _cache_ttl_seconds())
+    if cached:
+        os.close(fd)
+        print(cached)
+        sys.exit(0)
     try:
         chunk, read_size = _read_tail(fd, size)
     finally:
@@ -330,9 +548,12 @@ try:
     if denom <= 0 or cache_read <= 0:
         sys.exit(0)
     pct = max(0.0, min(100.0, cache_read / denom * 100))
-    parts = [f"cache_pct={pct:.0f}"]
-    if cache_creation > 0:
-        parts.append(f"reuse_x={cache_read / cache_creation:.1f}")
+    cache_pct = f"{pct:.0f}"
+    reuse_x = f"{cache_read / cache_creation:.1f}" if cache_creation > 0 else None
+    _write_cache(identity, cache_pct, reuse_x)
+    parts = [f"cache_pct={cache_pct}"]
+    if reuse_x:
+        parts.append(f"reuse_x={reuse_x}")
     print(" ".join(parts))
 except Exception:
     sys.exit(0)

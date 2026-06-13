@@ -1122,8 +1122,12 @@ def load_or_create_hmac_key(store_dir: Path) -> bytes:
         cleanup_key_lock(lock_dir, locked)
 
 
+def keyed_hmac_bytes(key: bytes, data: bytes) -> str:
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
 def keyed_hmac(key: bytes, text: str) -> str:
-    return hmac.new(key, text.encode("utf-8", errors="replace"), hashlib.sha256).hexdigest()
+    return keyed_hmac_bytes(key, text.encode("utf-8", errors="replace"))
 
 
 def ledger_path(store_dir: Path) -> Path:
@@ -1503,10 +1507,12 @@ def build_fingerprints(breakpoints: list[CacheBreakpoint], key: bytes) -> tuple[
     for bp in breakpoints:
         canonical = json_bytes(bp.prefix)
         section_canonical = json_bytes(bp.section)
+        canonical_bytes = canonical.encode("utf-8", errors="replace")
+        digest = keyed_hmac_bytes(key, canonical_bytes)
         bp_redactions = secret_count_in_text(canonical)
         redactions += bp_redactions
         prefix_tokens = token_proxy_text(canonical)
-        prefix_bytes = byte_len_text(canonical)
+        prefix_bytes = len(canonical_bytes)
         prefix_delta_tokens = max(0, prefix_tokens - previous_prefix_tokens)
         prefix_delta_bytes = max(0, prefix_bytes - previous_prefix_bytes)
         previous_prefix_tokens = max(previous_prefix_tokens, prefix_tokens)
@@ -1516,8 +1522,8 @@ def build_fingerprints(breakpoints: list[CacheBreakpoint], key: bytes) -> tuple[
                 "breakpoint_id": bp.breakpoint_id,
                 "kind": bp.kind,
                 "ttl": bp.ttl,
-                "hmac": keyed_hmac(key, canonical),
-                "display_hmac": "hmac-sha256:" + keyed_hmac(key, canonical)[:16],
+                "hmac": digest,
+                "display_hmac": "hmac-sha256:" + digest[:16],
                 "prefix_bytes": prefix_bytes,
                 "prefix_delta_bytes": prefix_delta_bytes,
                 "section_bytes": byte_len_text(section_canonical),
