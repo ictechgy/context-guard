@@ -16,7 +16,7 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .executableNotFound:
-            return "context-guard-audit was not found in PATH and no executable fallback is configured."
+            return "No trusted context-guard-audit executable fallback is configured."
         case .fallbackNotExecutable(let path):
             return "Configured context-guard-audit fallback is not executable: \(path)"
         case .timedOut(let timeout):
@@ -36,6 +36,8 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
 }
 
 public struct AuditCLIAdapter {
+    public static let trustedExecutablePATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
     public var fallbackExecutableURL: URL?
     public var timeout: TimeInterval
     public var maxOutputBytes: Int
@@ -57,19 +59,6 @@ public struct AuditCLIAdapter {
     }
 
     public func resolveExecutable() throws -> URL {
-        if let pathValue = environment["PATH"] {
-            for entry in pathValue.split(separator: ":", omittingEmptySubsequences: true) {
-                let entryPath = String(entry)
-                guard entryPath.hasPrefix("/") else {
-                    continue
-                }
-                let candidate = URL(fileURLWithPath: entryPath, isDirectory: true).appendingPathComponent("context-guard-audit")
-                if let executable = validatedExecutable(candidate) {
-                    return executable
-                }
-            }
-        }
-
         if let fallbackExecutableURL {
             if let executable = validatedExecutable(fallbackExecutableURL) {
                 return executable
@@ -112,7 +101,7 @@ public struct AuditCLIAdapter {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = [transcriptDirectory.path, "--feasibility-json"] + (includeRecommendations ? ["--recommend"] : [])
-        process.environment = environment
+        process.environment = trustedProcessEnvironment()
         process.currentDirectoryURL = outputDirectory
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
@@ -192,21 +181,75 @@ public struct AuditCLIAdapter {
     }
 
     private func validatedExecutable(_ url: URL) -> URL? {
-        guard url.isFileURL, url.path.hasPrefix("/") else {
+        let standardized = normalizeAllowedFirstAbsoluteSymlink(url.standardizedFileURL)
+        guard standardized.isFileURL, standardized.path.hasPrefix("/") else {
             return nil
         }
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        guard !pathContainsSymlink(standardized) else {
             return nil
         }
-        guard fileManager.isExecutableFile(atPath: url.path) else {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: standardized.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else {
             return nil
         }
-        let resolved = url.resolvingSymlinksInPath()
-        guard fileManager.isExecutableFile(atPath: resolved.path) else {
+        guard fileManager.isExecutableFile(atPath: standardized.path) else {
             return nil
         }
-        return resolved
+        return standardized
+    }
+
+    private func normalizeAllowedFirstAbsoluteSymlink(_ url: URL) -> URL {
+        let components = url.standardizedFileURL.pathComponents
+        guard components.count >= 3, components[0] == "/" else {
+            return url.standardizedFileURL
+        }
+        let expectedTargets = [
+            "tmp": "/private/tmp",
+            "var": "/private/var",
+        ]
+        let first = components[1]
+        guard let expected = expectedTargets[first] else {
+            return url.standardizedFileURL
+        }
+        let link = URL(fileURLWithPath: "/").appendingPathComponent(first)
+        guard let destination = try? fileManager.destinationOfSymbolicLink(atPath: link.path) else {
+            return url.standardizedFileURL
+        }
+        let target: URL
+        if destination.hasPrefix("/") {
+            target = URL(fileURLWithPath: destination)
+        } else {
+            target = URL(fileURLWithPath: "/").appendingPathComponent(destination)
+        }
+        guard target.path == expected else {
+            return url.standardizedFileURL
+        }
+        var normalized = URL(fileURLWithPath: expected, isDirectory: true)
+        for component in components.dropFirst(2) {
+            normalized.appendPathComponent(component)
+        }
+        return normalized
+    }
+
+    private func pathContainsSymlink(_ url: URL) -> Bool {
+        let components = url.pathComponents
+        guard !components.isEmpty else {
+            return true
+        }
+        var current = components[0] == "/" ? URL(fileURLWithPath: "/", isDirectory: true) : URL(fileURLWithPath: components[0])
+        for component in components.dropFirst() {
+            current.appendPathComponent(component)
+            if (try? fileManager.destinationOfSymbolicLink(atPath: current.path)) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func trustedProcessEnvironment() -> [String: String] {
+        var result = environment
+        result["PATH"] = Self.trustedExecutablePATH
+        return result
     }
 
     private func outputFileExceedsLimit(_ url: URL) throws -> Bool {
