@@ -11928,6 +11928,68 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertTrue(repo_map["safety"]["no_network"])
                     self.assertTrue(repo_map["safety"]["no_model_or_embedding"])
 
+    def test_context_pack_auto_explain_repo_map_prioritizes_seed_paths_without_full_scan(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_repo_map_focus_scan_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "target.py").write_text("def target_entry():\n    return 1\n", encoding="utf-8")
+                    for item_index in range(module.MAX_REPO_MAP_SCAN_FILES + 80):
+                        (root / f"irrelevant_{item_index:03d}.txt").write_text(
+                            f"irrelevant filler {item_index}\n",
+                            encoding="utf-8",
+                        )
+
+                    args = argparse.Namespace(
+                        files=["target.py"],
+                        output=[],
+                        test_output=[],
+                        diff=None,
+                        top=module.DEFAULT_SUGGEST_TOP,
+                        context_lines=module.DEFAULT_SUGGEST_CONTEXT_LINES,
+                        no_artifact=True,
+                    )
+                    suggest_payload = {
+                        "query": "",
+                        "sources": [{"path": "target.py", "priority": 1, "score": 1, "reason": "explicit file request"}],
+                        "omitted_sources": [],
+                    }
+                    build_payload = {
+                        "included_sources": [{
+                            "path": "target.py",
+                            "priority": 1,
+                            "status": "included",
+                            "requested_lines": {"start": 1, "end": 2},
+                            "included_lines": {"start": 1, "end": 2},
+                        }],
+                        "omitted_sources": [],
+                        "sources": {"included": 1, "partial": 0, "omitted": 0},
+                        "redaction": {},
+                    }
+                    scanned: list[str] = []
+                    original_read = module.read_repo_map_text
+
+                    def counted_read(repo_root, rel_path):
+                        scanned.append(rel_path)
+                        return original_read(repo_root, rel_path)
+
+                    with mock.patch.object(module, "read_repo_map_text", side_effect=counted_read):
+                        repo_map = module.build_repo_map_payload(
+                            root,
+                            args,
+                            suggest_payload,
+                            build_payload,
+                            root_arg=".",
+                        )
+
+                    self.assertIn("target.py", scanned)
+                    self.assertLessEqual(len(scanned), module.MAX_REPO_MAP_SCAN_FILES)
+                    self.assertLess(len(scanned), module.MAX_REPO_MAP_SCAN_FILES + 81)
+                    self.assertEqual(repo_map["caps"]["scan_files"], len(scanned))
+                    self.assertTrue(repo_map["caps"]["scan_files_capped"])
+                    self.assertIn("target.py", json.dumps(repo_map, ensure_ascii=False, sort_keys=True))
+
     def test_context_pack_auto_explain_matches_exact_build_sources_before_fallbacks(self):
         for index, script in enumerate(PACK_SCRIPTS):
             with self.subTest(script=script):

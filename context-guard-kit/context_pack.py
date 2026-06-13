@@ -52,6 +52,7 @@ MAX_SUGGEST_INPUT_BYTES = 256_000
 MAX_QUERY_SCAN_FILES = 2_000
 MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
 MAX_REPO_MAP_FILES = 1_000
+MAX_REPO_MAP_SCAN_FILES = 160
 MAX_REPO_MAP_BYTES_PER_FILE = 120_000
 MAX_REPO_MAP_TREE_ENTRIES = 30
 MAX_REPO_MAP_SIGNATURE_ENTRIES = 40
@@ -2121,20 +2122,53 @@ def read_repo_map_text(root: Path, rel_path: str) -> tuple[dict[str, Any] | None
     }, None
 
 
-def repo_map_records(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def repo_map_path_scan_priority(rel_path: str, *, seed_paths: set[str], query_terms: set[str], input_index: int) -> tuple[int, int, str]:
+    rel, reason = lexical_rel(rel_path)
+    display = repo_map_safe_raw_path_label(rel_path)
+    redacted = False
+    if rel is not None and not reason:
+        display, redacted = repo_map_display_rel_path(rel.as_posix())
+    score = 0
+    if not redacted and display in seed_paths:
+        score += 1_000_000
+    if is_repo_map_text_path(display):
+        score += 10_000
+    score += suggest_score_path(display, query_terms)
+    if Path(display).name.lower() in {"readme", "readme.md", "readme.mdx"}:
+        score += 250
+    return (-score, input_index, display)
+
+
+def repo_map_scan_paths(paths: list[str], *, seed_paths: set[str], query_terms: set[str]) -> list[str]:
+    ranked = sorted(
+        enumerate(paths[:MAX_REPO_MAP_FILES]),
+        key=lambda item: repo_map_path_scan_priority(item[1], seed_paths=seed_paths, query_terms=query_terms, input_index=item[0]),
+    )
+    return [path for _index, path in ranked[:MAX_REPO_MAP_SCAN_FILES]]
+
+
+def repo_map_records(root: Path, *, seed_paths: set[str], query_terms: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     paths = git_ls_files(root)
+    candidate_paths = paths[:MAX_REPO_MAP_FILES]
     path_cap_reached = len(paths) > MAX_REPO_MAP_FILES
+    scan_paths = repo_map_scan_paths(candidate_paths, seed_paths=seed_paths, query_terms=query_terms)
+    scan_cap_reached = len(candidate_paths) > len(scan_paths)
     records: list[dict[str, Any]] = []
     omitted: list[dict[str, Any]] = []
-    for rel_path in paths[:MAX_REPO_MAP_FILES]:
+    for rel_path in scan_paths:
         record, omission_item = read_repo_map_text(root, rel_path)
         if record is not None:
             records.append(record)
         elif omission_item is not None and omission_item.get("reason") != "unsupported_file_type":
             omitted.append({key: value for key, value in omission_item.items() if value is not None})
     caps = {
-        "max_files": MAX_REPO_MAP_FILES,
-        "files_capped": path_cap_reached,
+        "max_files": MAX_REPO_MAP_SCAN_FILES,
+        "files_capped": path_cap_reached or scan_cap_reached,
+        "max_candidate_files": MAX_REPO_MAP_FILES,
+        "candidate_files": len(candidate_paths),
+        "candidate_files_capped": path_cap_reached,
+        "scan_files": len(scan_paths),
+        "scan_files_capped": scan_cap_reached,
         "max_bytes_per_file": MAX_REPO_MAP_BYTES_PER_FILE,
         "bytes_per_file_capped_count": sum(1 for item in records if item.get("bytes_capped")),
         "max_tree_entries": MAX_REPO_MAP_TREE_ENTRIES,
@@ -2484,18 +2518,19 @@ def build_repo_map_payload(
     *,
     root_arg: str,
 ) -> dict[str, Any]:
-    records, omitted, caps = repo_map_records(root)
+    query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
+    seed_paths = repo_map_seed_paths(args, suggest_payload, build_payload)
+    records, omitted, caps = repo_map_records(root, seed_paths=seed_paths, query_terms=query_terms)
     record_by_path = {str(record["path"]): record for record in records}
     signatures = extract_signatures(records)
     secret_scan = build_secret_scan(records)
     edges = collect_import_edges(records)
-    query_terms = suggest_tokens(str(suggest_payload.get("query", "")))
     graph_rank = build_graph_rank(
         records,
         signatures,
         edges,
         query_terms=query_terms,
-        seed_paths=repo_map_seed_paths(args, suggest_payload, build_payload),
+        seed_paths=seed_paths,
         secret_scan=secret_scan,
     )
     retrieval = repo_map_retrieval(record_by_path, signatures, graph_rank, root_arg=root_arg)
