@@ -60,6 +60,10 @@ MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
+ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 SECRET_CONTENT_RE = re.compile(
     r"(?is)("
@@ -366,13 +370,150 @@ def cap_label(value: object, default: str | None = None, limit: int = MAX_LABEL_
     return text
 
 
-def read_manifest(path: Path) -> list[SourceSpec]:
+def normalized_link_target(anchor: Path, raw_target: str) -> Path:
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = anchor / target
+    return Path(os.path.normpath(str(target)))
+
+
+def normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+    """Normalize common macOS absolute path aliases before no-follow traversal."""
+
+    if not path.is_absolute() or len(path.parts) < 2:
+        return path
+    first = path.parts[1]
+    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+    if expected is None:
+        return path
+    link = Path(path.anchor) / first
     try:
-        raw = path.read_bytes()
+        if not stat.S_ISLNK(os.lstat(link).st_mode):
+            return path
+        if normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+            return path
+    except OSError:
+        return path
+    return expected.joinpath(*path.parts[2:])
+
+
+def manifest_safe_read_supported() -> bool:
+    return hasattr(os, "O_NOFOLLOW") and os.open in getattr(os, "supports_dir_fd", set())
+
+
+def manifest_directory_open_flags(*, follow_final: bool = False) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if not follow_final:
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def manifest_file_open_flags() -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    for name in ("O_CLOEXEC", "O_NONBLOCK", "O_NOCTTY"):
+        flags |= getattr(os, name, 0)
+    return flags
+
+
+def manifest_leaf_name(path: Path) -> str:
+    name = path.name
+    if name in {"", ".", ".."}:
+        raise PackError("manifest path must name a regular file")
+    return name
+
+
+def open_manifest_parent_no_follow(path: Path) -> int:
+    if not manifest_safe_read_supported():
+        raise PackError("safe manifest reads require O_NOFOLLOW and dir_fd support")
+    path = path.expanduser()
+    if any(part == ".." for part in path.parts):
+        raise PackError("manifest path must not contain parent traversal")
+    if path.is_absolute():
+        path = normalize_allowed_first_absolute_symlink(Path(os.path.normpath(str(path))))
+        current_fd = os.open(path.anchor or os.sep, manifest_directory_open_flags(follow_final=True))
+        parts = path.parts[1:-1]
+    else:
+        path = Path(os.path.normpath(str(path)))
+        current_fd = os.open(".", manifest_directory_open_flags())
+        parts = path.parts[:-1]
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                raise PackError("manifest path must not contain parent traversal")
+            next_fd = -1
+            try:
+                next_fd = os.open(part, manifest_directory_open_flags(), dir_fd=current_fd)
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise PackError("manifest path must not traverse non-directory components")
+            except (OSError, PackError):
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except OSError:
+                        pass
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+
+def read_manifest_bytes_no_follow(path: Path) -> bytes:
+    parent_fd = -1
+    fd = -1
+    try:
+        leaf = manifest_leaf_name(path.expanduser())
+        parent_fd = open_manifest_parent_no_follow(path)
+        fd = os.open(leaf, manifest_file_open_flags(), dir_fd=parent_fd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PackError("manifest must be a regular file")
+        if st.st_size > MAX_MANIFEST_BYTES:
+            raise PackError(f"manifest exceeds trusted size cap: {st.st_size} > {MAX_MANIFEST_BYTES}")
+        chunks: list[bytes] = []
+        remaining = MAX_MANIFEST_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise PackError(f"manifest exceeds trusted size cap: {len(raw)} > {MAX_MANIFEST_BYTES}")
+        return raw
+    except PackError:
+        raise
     except OSError as exc:
         raise PackError(f"could not read manifest: {exc.strerror or exc.__class__.__name__}") from exc
-    if len(raw) > MAX_MANIFEST_BYTES:
-        raise PackError(f"manifest exceeds trusted size cap: {len(raw)} > {MAX_MANIFEST_BYTES}")
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+
+def read_manifest(path: Path) -> list[SourceSpec]:
+    raw = read_manifest_bytes_no_follow(path)
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
