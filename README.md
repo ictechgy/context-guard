@@ -135,7 +135,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
-| Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, and adds `--explain` for compact local selection reasons plus bounded repo-map metadata. |
+| Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` local top-k advisory metadata. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
 | Protected-zone policy receipts | Opt-in `context-guard-compress --protected-policy` and `context-guard cost compile` metadata mark code/diff/path/hash/JSON/literal zones as structural-only with exact retrieval guidance. |
@@ -263,11 +263,11 @@ Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized
   --diff HEAD \
   --manifest-out suggested-pack.json \
   --pack-out context-pack.md \
-  --budget-bytes 12000 --json --explain
+  --budget-bytes 12000 --json --explain --adaptive-k
 # Or run the two explicit steps:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "review failing tests" --diff HEAD \
-  --manifest-out suggested-pack.json --budget-bytes 12000 --json
+  --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k
 ./plugins/context-guard/bin/context-guard-pack build \
   --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
@@ -280,6 +280,7 @@ A few boundaries are intentional:
 - Add `--explain` for compact deterministic local selection/build reasons in JSON or text output.
 - `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
 - Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
+- Add `--adaptive-k` to `suggest` or `auto` for advisory-only shrink/expand top-k metadata derived from local score distribution, byte-budget fit, and score-mass recall/precision proxies. It never applies the recommendation automatically and does not change the manifest, pack body, receipt, or byte budget.
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.

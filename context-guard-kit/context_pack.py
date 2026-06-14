@@ -43,6 +43,7 @@ SUGGEST_SCHEMA_VERSION = "contextguard.pack-suggest.v1"
 AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
 AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
 REPO_MAP_SCHEMA_VERSION = "contextguard.pack-repo-map.v1"
+ADAPTIVE_K_SCHEMA_VERSION = "contextguard.pack-adaptive-k.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -59,6 +60,7 @@ MAX_REPO_MAP_SIGNATURE_ENTRIES = 40
 MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
 MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
+MAX_ADAPTIVE_K_SCORE_SAMPLES = 200
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
@@ -1851,6 +1853,136 @@ def suggest_build_hint(root_arg: str, manifest_path: str | None, budget: int) ->
     return f"cd {shlex.quote(safe_root)} && {command}", None
 
 
+def percentile_int(values: list[int], numerator: int, denominator: int) -> int:
+    if not values:
+        return 0
+    if denominator <= 0:
+        return values[0]
+    index = min(len(values) - 1, max(0, (len(values) - 1) * numerator // denominator))
+    return values[index]
+
+
+def score_gap_advice(scores: list[int], requested_top: int) -> tuple[int, dict[str, Any], list[str]]:
+    if not scores:
+        return 0, {"after_rank": 0, "delta": 0, "ratio": 0.0}, ["no_candidates"]
+    if len(scores) == 1:
+        return 1, {"after_rank": 1, "delta": 0, "ratio": 0.0}, ["single_candidate"]
+    gaps = [max(0, scores[index] - scores[index + 1]) for index in range(len(scores) - 1)]
+    max_gap = max(gaps)
+    gap_index = gaps.index(max_gap)
+    top_score = max(1, scores[0])
+    ratio = round(max_gap / top_score, 4)
+    if max_gap >= max(250, top_score // 5):
+        elbow_k = gap_index + 1
+        reasons = ["score_elbow"] if elbow_k <= requested_top else ["score_elbow_after_requested_top"]
+    else:
+        elbow_k = min(MAX_SUGGEST_TOP, len(scores))
+        reasons = ["no_strong_score_elbow"]
+    return max(1, elbow_k), {"after_rank": gap_index + 1, "delta": max_gap, "ratio": ratio}, reasons
+
+
+def build_adaptive_k_advisory(
+    *,
+    candidates: list[SuggestCandidate],
+    selected: list[dict[str, Any]],
+    omitted: list[dict[str, Any]],
+    requested_top: int,
+    budget_bytes: int,
+    estimated_pack_bytes: int,
+) -> dict[str, Any]:
+    sampled_candidates = candidates[:MAX_ADAPTIVE_K_SCORE_SAMPLES]
+    scores = [max(0, int(candidate.score)) for candidate in sampled_candidates]
+    score_elbow_k, max_gap_details, reason_codes = score_gap_advice(scores, requested_top)
+    selected_count = len(selected)
+    selected_scores = [max(0, int(item.get("score", item.get("priority", 0)) or 0)) for item in selected]
+    selected_score_mass = sum(selected_scores)
+    analyzed_score_mass = sum(scores)
+    budget_omitted_count = sum(1 for item in omitted if item.get("reason") == "budget_exhausted")
+    budget_limited = bool(budget_omitted_count or estimated_pack_bytes > budget_bytes)
+    remaining_bytes = budget_bytes - estimated_pack_bytes
+    average_selected_bytes = int(estimated_pack_bytes / selected_count) if selected_count else 0
+    if budget_limited:
+        reason_codes.append("budget_limited")
+    if len(candidates) > len(sampled_candidates):
+        reason_codes.append("candidate_sample_capped")
+    if selected_count < min(requested_top, len(candidates)):
+        reason_codes.append("selected_below_requested_top")
+    if selected_count == 0:
+        budget_fit_k = 0
+        if candidates:
+            reason_codes.append("no_budget_fit" if budget_limited else "no_selected_sources")
+    elif budget_limited:
+        budget_fit_k = selected_count
+    else:
+        additional_by_budget = max(0, remaining_bytes // max(1, average_selected_bytes))
+        budget_fit_k = min(MAX_SUGGEST_TOP, len(candidates), selected_count + additional_by_budget)
+        if budget_fit_k > requested_top:
+            reason_codes.append("budget_headroom_expand")
+    if not candidates:
+        recommended_k = 0
+    else:
+        recommended_k = min(
+            max(0, score_elbow_k),
+            max(0, budget_fit_k),
+            len(candidates),
+            MAX_SUGGEST_TOP,
+        )
+    score_values_asc = sorted(scores)
+    top_score = score_values_asc[-1] if score_values_asc else 0
+    return {
+        "schema_version": ADAPTIVE_K_SCHEMA_VERSION,
+        "mode": "advisory",
+        "requested_top": requested_top,
+        "recommended_k": recommended_k,
+        "recommendation": {
+            "apply": False,
+            "reason_codes": sorted(set(reason_codes)),
+            "next_step": "rerun with --top recommended_k if you accept this local proxy advisory",
+        },
+        "score_distribution": {
+            "candidate_count": len(candidates),
+            "analyzed_candidate_count": len(sampled_candidates),
+            "sample_capped": len(candidates) > len(sampled_candidates),
+            "top_score": top_score,
+            "p50_score": percentile_int(score_values_asc, 1, 2),
+            "p90_score": percentile_int(score_values_asc, 9, 10),
+            "min_score": score_values_asc[0] if score_values_asc else 0,
+            "max_gap_details": max_gap_details,
+            "score_elbow_k": score_elbow_k,
+        },
+        "budget_fit": {
+            "budget_bytes": budget_bytes,
+            "estimated_pack_bytes": estimated_pack_bytes,
+            "remaining_bytes": remaining_bytes,
+            "selected_count": selected_count,
+            "budget_omitted_count": budget_omitted_count,
+            "budget_limited": budget_limited,
+            "average_selected_bytes": average_selected_bytes,
+            "budget_fit_k": budget_fit_k,
+        },
+        "recall_precision_proxy": {
+            "measurement": "local_score_mass_proxy",
+            "selected_score_mass": selected_score_mass,
+            "analyzed_score_mass": analyzed_score_mass,
+            "recall_proxy": round(selected_score_mass / analyzed_score_mass, 4) if analyzed_score_mass else 0.0,
+            "precision_proxy": (
+                round((selected_score_mass / max(1, selected_count)) / max(1, top_score), 4)
+                if selected_count
+                else 0.0
+            ),
+            "selected_count": selected_count,
+            "candidate_count": len(candidates),
+        },
+        "claim_boundary": {
+            "deterministic_local_only": True,
+            "no_model_network_or_embedding": True,
+            "token_counts_are_estimated_proxies": True,
+            "provider_token_or_cost_savings_claim_allowed": False,
+            "advisory_does_not_change_manifest_or_pack": True,
+        },
+    }
+
+
 def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[dict[str, Any], int]:
     query_text, _query_redactions = sanitize_text(args.query or "")
     query = " ".join(query_text.split())
@@ -2009,6 +2141,15 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
     }
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    if getattr(args, "adaptive_k", False):
+        payload["adaptive_k"] = build_adaptive_k_advisory(
+            candidates=candidates,
+            selected=selected,
+            omitted=omitted,
+            requested_top=top,
+            budget_bytes=budget,
+            estimated_pack_bytes=estimated_pack_bytes,
+        )
     return payload, 0
 
 
@@ -2797,9 +2938,39 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     }
     if build_hint_omitted_reason:
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
+    if getattr(args, "adaptive_k", False) and isinstance(suggest_payload.get("adaptive_k"), dict):
+        payload["adaptive_k"] = copy.deepcopy(suggest_payload["adaptive_k"])
     if args.explain:
         payload["explain"] = build_auto_explain_payload(args, suggest_payload, build_payload, payload, root=root, root_arg=root_arg)
     return payload, rc
+
+def print_adaptive_k_text(payload: dict[str, Any]) -> None:
+    adaptive = payload.get("adaptive_k")
+    if not isinstance(adaptive, dict):
+        return
+    recommendation = (
+        adaptive.get("recommendation", {})
+        if isinstance(adaptive.get("recommendation"), dict)
+        else {}
+    )
+    score_distribution = (
+        adaptive.get("score_distribution", {})
+        if isinstance(adaptive.get("score_distribution"), dict)
+        else {}
+    )
+    budget_fit = adaptive.get("budget_fit", {}) if isinstance(adaptive.get("budget_fit"), dict) else {}
+    reason_codes = recommendation.get("reason_codes", [])
+    if isinstance(reason_codes, list):
+        reason_text = ",".join(str(item) for item in reason_codes[:5])
+    else:
+        reason_text = str(reason_codes)
+    print(
+        "adaptive-k: "
+        f"recommended={adaptive.get('recommended_k', 0)}/{adaptive.get('requested_top', 0)} "
+        f"candidates={score_distribution.get('candidate_count', 0)} "
+        f"budget_limited={budget_fit.get('budget_limited', False)} "
+        f"apply=false reasons={reason_text or 'none'}"
+    )
 
 
 def print_suggest_text(payload: dict[str, Any]) -> None:
@@ -2817,6 +2988,7 @@ def print_suggest_text(payload: dict[str, Any]) -> None:
         print(f"build: {payload['build_hint']}")
     elif payload.get("build_hint_omitted_reason"):
         print(f"build hint omitted: {payload['build_hint_omitted_reason']}")
+    print_adaptive_k_text(payload)
 
 
 def print_auto_text(payload: dict[str, Any]) -> None:
@@ -2861,6 +3033,7 @@ def print_auto_text(payload: dict[str, Any]) -> None:
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
             reason_text = ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
             print(f"omitted reasons: {reason_text}")
+    print_adaptive_k_text(payload)
     if payload.get("manifest_path"):
         print(f"manifest: {payload['manifest_path']}")
     if payload.get("pack_path"):
@@ -2896,6 +3069,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--top", type=int, default=DEFAULT_SUGGEST_TOP, help="maximum suggested sources")
     suggest.add_argument("--context-lines", type=int, default=DEFAULT_SUGGEST_CONTEXT_LINES, help="line context around diff/output hits")
     suggest.add_argument("--manifest-out", help="write the suggested build manifest to this relative path under root")
+    suggest.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest")
     suggest.add_argument("--json", action="store_true", help="emit JSON payload")
     auto = sub.add_parser("auto", help="suggest a context pack manifest and build the budgeted pack in one local step")
     auto.add_argument("--root", default=".", help="project root; must not be a symlink")
@@ -2912,6 +3086,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--json", action="store_true", help="emit JSON payload")
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
+    auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
     return parser
 
 
