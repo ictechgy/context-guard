@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import stat
 import sys
 import time
@@ -31,6 +32,17 @@ MAX_COMMAND_PREVIEW_BYTES = 2_048
 MAX_TOP_ERROR_RECEIPTS = 12
 MAX_DUPLICATE_GROUPS = 12
 MAX_SUGGESTED_QUERIES = 12
+SEARCH_SCHEMA_VERSION = "contextguard.artifact.search.v1"
+DEFAULT_SEARCH_MAX_ARTIFACTS = 100
+MAX_SEARCH_MAX_ARTIFACTS = 1_000
+DEFAULT_SEARCH_MAX_MATCHES = 40
+MAX_SEARCH_MAX_MATCHES = 1_000
+DEFAULT_SEARCH_CONTEXT_LINES = 1
+MAX_SEARCH_CONTEXT_LINES = 20
+DEFAULT_SEARCH_SNIPPET_CHARS = 360
+MAX_SEARCH_SNIPPET_CHARS = 2_000
+MAX_SEARCH_PATTERN_BYTES = 512
+SEARCH_TRUNCATED_COUNT_UNKNOWN = "lower_bound"
 ARTIFACT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -459,11 +471,15 @@ def artifact_read_directories(raw_dir: str) -> list[Path]:
     reject_parent_traversal(raw_path, label="artifact directory")
     primary = normalize_allowed_first_absolute_symlink(raw_path)
     directories = [primary]
-    if Path(raw_dir).expanduser() == Path(DEFAULT_ARTIFACT_DIR):
+    if default_artifact_dir_requested(raw_dir):
         legacy = normalize_allowed_first_absolute_symlink(Path(LEGACY_ARTIFACT_DIR).expanduser())
         if legacy != primary:
             directories.append(legacy)
     return directories
+
+
+def default_artifact_dir_requested(raw_dir: str) -> bool:
+    return Path(raw_dir).expanduser() == Path(DEFAULT_ARTIFACT_DIR)
 
 
 CONTENT_TYPE_VALUES = ("json", "diff", "log", "search", "code", "prose", "text")
@@ -611,8 +627,27 @@ def build_retrieval_hints(
     return hints
 
 
-def line_query_cli(artifact_id: str, start: int, end: int) -> str:
-    cli = f"context-guard-artifact get {artifact_id} --lines {start}:{end}"
+def artifact_dir_cli_prefix(raw_dir: str | None, *, show_paths: bool = False) -> str:
+    if not raw_dir or default_artifact_dir_requested(raw_dir):
+        return "context-guard-artifact"
+    if not show_paths:
+        return "context-guard-artifact --dir <artifact_dir>"
+    return f"context-guard-artifact --dir {shlex.quote(raw_dir)}"
+
+
+def artifact_dir_cli_is_exact(raw_dir: str | None, *, show_paths: bool = False) -> bool:
+    return not raw_dir or default_artifact_dir_requested(raw_dir) or show_paths
+
+
+def line_query_cli(
+    artifact_id: str,
+    start: int,
+    end: int,
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> str:
+    cli = f"{artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)} get {artifact_id} --lines {start}:{end}"
     requested_lines = end - start + 1
     if requested_lines > DEFAULT_MAX_LINES:
         cli += f" --max-lines {min(requested_lines, MAX_QUERY_LINES)}"
@@ -907,6 +942,26 @@ def load_metadata(directory: Path, artifact_id: str) -> dict[str, object]:
     return data
 
 
+def load_verified_artifact(directory: Path, artifact_id: str) -> tuple[dict[str, object], Path, str]:
+    metadata = load_metadata(directory, artifact_id)
+    content_path, _meta_path = artifact_paths(directory, artifact_id)
+    stored_output = metadata.get("stored_output")
+    expected_sha = stored_output.get("sha256") if isinstance(stored_output, dict) else None
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
+        raise ValueError(f"artifact metadata missing stored_output sha256: {artifact_id}")
+    expected_bytes = stored_output.get("bytes") if isinstance(stored_output, dict) else None
+    if not isinstance(expected_bytes, int) or expected_bytes < 0 or expected_bytes > MAX_MAX_BYTES:
+        raise ValueError(f"artifact metadata has invalid stored_output bytes: {artifact_id}")
+    actual_size = regular_private_file_size(content_path)
+    if actual_size != expected_bytes:
+        raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
+    content = read_bounded_private_text(content_path, expected_bytes)
+    actual_sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+    if actual_sha != expected_sha:
+        raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
+    return metadata, content_path, content
+
+
 def parse_line_range(value: str | None) -> tuple[int, int] | None:
     if not value:
         return None
@@ -926,6 +981,149 @@ def cap_text(text: str, max_chars: int) -> tuple[str, bool]:
     marker = f"\n[context-guard-kit] artifact query capped: {len(text)} chars total\n"
     keep = max(0, max_chars - len(marker))
     return text[:keep].rstrip() + marker, True
+
+
+def search_literal(value: str) -> str:
+    if not value:
+        raise ValueError("search pattern must not be empty")
+    if "\x00" in value:
+        raise ValueError("search pattern must not contain NUL bytes")
+    size = len(value.encode("utf-8", errors="replace"))
+    if size > MAX_SEARCH_PATTERN_BYTES:
+        raise ValueError(f"search pattern exceeds {MAX_SEARCH_PATTERN_BYTES} bytes")
+    return value
+
+
+def safe_query_label(value: str) -> str:
+    return sanitize_one_line(value, show_paths=False)
+
+
+def artifact_dir_label(raw_dir: str) -> str:
+    if default_artifact_dir_requested(raw_dir):
+        return "default"
+    return sanitize_one_line(raw_dir, show_paths=False)
+
+
+def metadata_text_field(metadata: dict[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    if not isinstance(value, str):
+        return None
+    return sanitize_one_line(value, show_paths=False)
+
+
+def metadata_content_type(metadata: dict[str, object]) -> str:
+    value = metadata.get("content_type")
+    return value if isinstance(value, str) and value in CONTENT_TYPE_VALUES else "text"
+
+
+def metadata_candidate_paths(directory: Path, limit: int) -> tuple[list[Path], int, int]:
+    candidates: list[Path] = []
+    skipped = 0
+    truncated_lower_bound = 0
+    if limit <= 0:
+        return candidates, skipped, 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.endswith(".json"):
+                    continue
+                if not ARTIFACT_ID_RE.fullmatch(name[:-5]):
+                    skipped += 1
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        skipped += 1
+                        continue
+                except OSError:
+                    skipped += 1
+                    continue
+                if len(candidates) >= limit:
+                    truncated_lower_bound += 1
+                    break
+                candidates.append(directory / name)
+    except OSError:
+        return candidates, skipped + 1, truncated_lower_bound
+    return sorted(candidates), skipped, truncated_lower_bound
+
+
+def search_match_record(
+    *,
+    artifact_id: str,
+    line_number: int,
+    lines: list[str],
+    context_lines: int,
+    snippet_chars: int,
+    metadata: dict[str, object],
+    raw_dir: str,
+    show_paths: bool,
+) -> dict[str, object]:
+    start = max(1, line_number - context_lines)
+    end = min(len(lines), line_number + context_lines)
+    cli_exact = artifact_dir_cli_is_exact(raw_dir, show_paths=show_paths)
+
+    def line_item(number: int) -> dict[str, object]:
+        return {"line": number, "text": cap_line(lines[number - 1].rstrip("\n"), limit=snippet_chars)}
+
+    return {
+        "artifact_id": artifact_id,
+        "line": line_number,
+        "text": cap_line(lines[line_number - 1].rstrip("\n"), limit=snippet_chars),
+        "context_before": [line_item(number) for number in range(start, line_number)],
+        "context_after": [line_item(number) for number in range(line_number + 1, end + 1)],
+        "content_type": metadata_content_type(metadata),
+        "command_preview": metadata_text_field(metadata, "command_preview"),
+        "retrieval": {
+            "selector": {"type": "lines", "start": start, "end": end},
+            "cli": line_query_cli(artifact_id, start, end, raw_dir=raw_dir, show_paths=show_paths),
+            "exact": cli_exact,
+            "dir_argument": "default" if default_artifact_dir_requested(raw_dir) else ("included" if show_paths else "redacted"),
+            "note": (
+                None
+                if cli_exact
+                else "custom artifact directory is redacted; rerun with the same --dir used for search, or pass search --show-paths to emit a directly executable local CLI"
+            ),
+        },
+    }
+
+
+def search_artifact_content(
+    *,
+    artifact_id: str,
+    metadata: dict[str, object],
+    content: str,
+    literal: str,
+    ignore_case: bool,
+    context_lines: int,
+    snippet_chars: int,
+    remaining_matches: int,
+    raw_dir: str,
+    show_paths: bool,
+) -> tuple[list[dict[str, object]], int]:
+    lines = content.splitlines()
+    needle = literal.casefold() if ignore_case else literal
+    matches: list[dict[str, object]] = []
+    matched_lines = 0
+    for line_number, line in enumerate(lines, start=1):
+        haystack = line.casefold() if ignore_case else line
+        if needle not in haystack:
+            continue
+        matched_lines += 1
+        if len(matches) >= remaining_matches:
+            continue
+        matches.append(
+            search_match_record(
+                artifact_id=artifact_id,
+                line_number=line_number,
+                lines=lines,
+                context_lines=context_lines,
+                snippet_chars=snippet_chars,
+                metadata=metadata,
+                raw_dir=raw_dir,
+                show_paths=show_paths,
+            )
+        )
+    return matches, matched_lines
 
 
 def query_content(
@@ -967,8 +1165,7 @@ def get_command(args: argparse.Namespace) -> int:
         last_missing: FileNotFoundError | None = None
         for directory in artifact_read_directories(args.dir):
             try:
-                metadata = load_metadata(directory, artifact_id)
-                content_path, _meta_path = artifact_paths(directory, artifact_id)
+                metadata, _content_path, content = load_verified_artifact(directory, artifact_id)
                 break
             except FileNotFoundError as exc:
                 last_missing = exc
@@ -977,19 +1174,9 @@ def get_command(args: argparse.Namespace) -> int:
                 raise last_missing
             raise FileNotFoundError(f"artifact not found: {artifact_id}")
         stored_output = metadata.get("stored_output")
-        expected_sha = stored_output.get("sha256") if isinstance(stored_output, dict) else None
-        if not isinstance(expected_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_sha):
-            raise ValueError(f"artifact metadata missing stored_output sha256: {artifact_id}")
         expected_bytes = stored_output.get("bytes") if isinstance(stored_output, dict) else None
-        if not isinstance(expected_bytes, int) or expected_bytes < 0 or expected_bytes > MAX_MAX_BYTES:
+        if not isinstance(expected_bytes, int):
             raise ValueError(f"artifact metadata has invalid stored_output bytes: {artifact_id}")
-        actual_size = regular_private_file_size(content_path)
-        if actual_size != expected_bytes:
-            raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
-        content = read_bounded_private_text(content_path, expected_bytes)
-        actual_sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
-        if actual_sha != expected_sha:
-            raise ValueError(f"artifact content checksum mismatch: {artifact_id}")
         default_max_chars = max(DEFAULT_MAX_CHARS, expected_bytes) if full else DEFAULT_MAX_CHARS
         max_chars = bounded_int(args.max_chars, default_max_chars, 1, MAX_MAX_BYTES)
         line_range = parse_line_range(args.lines)
@@ -1015,6 +1202,138 @@ def get_command(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         sys.stdout.write(selected)
+    return 0
+
+
+def search_command(args: argparse.Namespace) -> int:
+    try:
+        literal = search_literal(args.pattern)
+        max_artifacts = bounded_int(args.max_artifacts, DEFAULT_SEARCH_MAX_ARTIFACTS, 1, MAX_SEARCH_MAX_ARTIFACTS)
+        max_matches = bounded_int(args.max_matches, DEFAULT_SEARCH_MAX_MATCHES, 1, MAX_SEARCH_MAX_MATCHES)
+        context_lines = bounded_int(args.context_lines, DEFAULT_SEARCH_CONTEXT_LINES, 0, MAX_SEARCH_CONTEXT_LINES)
+        snippet_chars = bounded_int(args.max_snippet_chars, DEFAULT_SEARCH_SNIPPET_CHARS, 1, MAX_SEARCH_SNIPPET_CHARS)
+        ignore_case = bool(args.ignore_case)
+        matches: list[dict[str, object]] = []
+        seen: set[str] = set()
+        scanned_artifacts = 0
+        skipped_artifacts = 0
+        total_matched_lines = 0
+        meta_candidates_seen = 0
+        scan_truncated = False
+        scan_truncated_count = 0
+        matched_artifact_ids: set[str] = set()
+
+        for directory in artifact_read_directories(args.dir):
+            remaining_candidates = max_artifacts - meta_candidates_seen
+            if remaining_candidates <= 0:
+                scan_truncated = True
+                break
+            try:
+                reject_symlink_components(directory)
+                directory_is_safe = directory.is_dir() and not directory.is_symlink()
+            except RuntimeError:
+                directory_is_safe = False
+            if not directory_is_safe:
+                continue
+            meta_paths, skipped_candidates, truncated_candidates = metadata_candidate_paths(directory, remaining_candidates)
+            skipped_artifacts += skipped_candidates
+            if truncated_candidates:
+                scan_truncated = True
+                scan_truncated_count += truncated_candidates
+            for meta_path in meta_paths:
+                meta_candidates_seen += 1
+                try:
+                    data = json.loads(read_bounded_private_text(meta_path, MAX_METADATA_BYTES))
+                except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                    skipped_artifacts += 1
+                    continue
+                artifact_id = str(data.get("artifact_id", "")) if isinstance(data, dict) else ""
+                if not (isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(artifact_id)) or artifact_id in seen:
+                    skipped_artifacts += 1
+                    continue
+                seen.add(artifact_id)
+                if scanned_artifacts >= max_artifacts:
+                    scan_truncated = True
+                    scan_truncated_count += 1
+                    continue
+                try:
+                    metadata, _content_path, content = load_verified_artifact(directory, artifact_id)
+                except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+                    skipped_artifacts += 1
+                    continue
+                scanned_artifacts += 1
+                remaining = max(0, max_matches - len(matches))
+                artifact_matches, artifact_match_count = search_artifact_content(
+                    artifact_id=artifact_id,
+                    metadata=metadata,
+                    content=content,
+                    literal=literal,
+                    ignore_case=ignore_case,
+                    context_lines=context_lines,
+                    snippet_chars=snippet_chars,
+                    remaining_matches=remaining,
+                    raw_dir=args.dir,
+                    show_paths=bool(getattr(args, "show_paths", False)),
+                )
+                if artifact_match_count:
+                    matched_artifact_ids.add(artifact_id)
+                total_matched_lines += artifact_match_count
+                matches.extend(artifact_matches)
+        payload = {
+            "tool": "context-guard-artifact",
+            "schema_version": SEARCH_SCHEMA_VERSION,
+            "mode": "search",
+            "query": {
+                "label": safe_query_label(literal),
+                "raw_pattern_stored": False,
+                "literal": True,
+                "ignore_case": ignore_case,
+            },
+            "artifact_dir": artifact_dir_label(args.dir),
+            "scanned_artifacts": scanned_artifacts,
+            "skipped_artifacts": skipped_artifacts,
+            "matched_artifacts": len(matched_artifact_ids),
+            "matched_lines": total_matched_lines,
+            "metadata_candidates_scanned": meta_candidates_seen,
+            "matches": matches,
+            "matches_truncated_count": max(0, total_matched_lines - max_matches),
+            "artifact_scan_truncated": scan_truncated,
+            "artifact_scan_truncated_count": scan_truncated_count,
+            "artifact_scan_truncated_count_mode": SEARCH_TRUNCATED_COUNT_UNKNOWN if scan_truncated else "exact",
+            "limits": {
+                "max_artifacts": max_artifacts,
+                "max_matches": max_matches,
+                "context_lines": context_lines,
+                "max_snippet_chars": snippet_chars,
+            },
+            "sandbox": {
+                "local_only": True,
+                "workflow": ["store", "search", "get"],
+                "exact_rehydration": "use matches[].retrieval.cli when exact=true; for redacted custom dirs, reuse the same --dir or opt into --show-paths",
+            },
+            "claim_boundary": {
+                "local_only": True,
+                "stored_content_is_sanitized_copy": True,
+                "hosted_api_token_or_cost_savings_claim_allowed": False,
+                "exact_rehydration_required_before_relying_on_omitted_detail": True,
+            },
+        }
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"context-guard-artifact: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        for item in payload["matches"]:
+            if isinstance(item, dict):
+                print(f"{item.get('artifact_id')}:{item.get('line')}: {item.get('text')}")
+                retrieval = item.get("retrieval")
+                if isinstance(retrieval, dict):
+                    print(f"  rehydrate={retrieval.get('cli')}")
+        if not payload["matches"]:
+            print("no matches")
+        elif payload["matches_truncated_count"]:
+            print(f"matches_truncated_count={payload['matches_truncated_count']}")
     return 0
 
 
@@ -1080,6 +1399,21 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="list stored artifacts")
     list_parser.add_argument("--json", action="store_true", help="emit list JSON")
     list_parser.set_defaults(func=list_command)
+
+    search = subparsers.add_parser("search", help="search stored sanitized artifacts by literal text")
+    search.add_argument("pattern", help=f"literal substring to search for (max {MAX_SEARCH_PATTERN_BYTES} UTF-8 bytes)")
+    search.add_argument("--ignore-case", action="store_true", help="case-insensitive literal search")
+    search.add_argument("--context-lines", type=int, default=DEFAULT_SEARCH_CONTEXT_LINES, help=f"context lines around each match (default: {DEFAULT_SEARCH_CONTEXT_LINES})")
+    search.add_argument("--max-artifacts", type=int, default=DEFAULT_SEARCH_MAX_ARTIFACTS, help=f"maximum artifacts to scan (default: {DEFAULT_SEARCH_MAX_ARTIFACTS})")
+    search.add_argument("--max-matches", type=int, default=DEFAULT_SEARCH_MAX_MATCHES, help=f"maximum match records to return (default: {DEFAULT_SEARCH_MAX_MATCHES})")
+    search.add_argument("--max-snippet-chars", type=int, default=DEFAULT_SEARCH_SNIPPET_CHARS, help=f"maximum characters per displayed line (default: {DEFAULT_SEARCH_SNIPPET_CHARS})")
+    search.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="show raw custom --dir values in rehydration commands; local debugging only because private paths may be exposed",
+    )
+    search.add_argument("--json", action="store_true", help="emit sandbox search JSON")
+    search.set_defaults(func=search_command)
     return parser
 
 

@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added `context-guard-artifact search`, a local sanitized artifact sandbox search that returns capped literal matches with exact `get --lines` rehydration commands and no hosted savings claims.
 - Added `context-guard-cache-score`, a static local prompt cacheability lint with char/4 proxy labeling, provider caveats, dynamic-prefix warnings, and no provider calls, ledger writes, or savings claims.
 - Extended `context-guard-tool-prune` with `defer-report` for core-vs-deferred tool schema planning backed by the existing sanitized receipt/payload retrieval path.
 - Added a fixture-only token-savings 12-task benchmark starter and executable report-shape tests that preserve matched-task, shifted-cost, and proxy-byte claim boundaries.
