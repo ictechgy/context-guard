@@ -1,21 +1,21 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool agents. It starts as a Claude Code plugin: install once, apply per project, and roll back when needed.
+ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships first as a Claude Code plugin: install it once, enable it per project, and roll it back when needed.
 
-Its guardrails trim noisy output, prefer symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
+It trims noisy output, steers agents toward symbol-level reads, nudges repeated failures, redacts secret-like patterns, and measures usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
-Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available. Configuration changes happen later through an explicit setup command.
+Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available. Configuration changes happen only when you run an explicit setup command.
 
 | If you use... | Install | Activate |
 | --- | --- | --- |
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Run `/context-guard:setup` inside the project. |
 | Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan`, then rerun with `--yes`. |
-| Other rule-file agents | npm/npx install above | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
+| Other rule-file agents | Use the npm/npx install path above. | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
 | macOS/Homebrew users | release path: `brew install ictechgy/tap/context-guard` | Same `context-guard setup ...` commands after install. |
 
 Common commands:
@@ -29,13 +29,13 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first and does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
 ## Claude Code first, other agents too
 
-ContextGuard ships first as a Claude Code plugin, which is still the fastest path to value. After installation, the same local-first guardrails can be reused by other AI coding and tool agents through:
+ContextGuard ships first as a Claude Code plugin, which is still the fastest path to value for Claude users. After installation, the same local-first guardrails can be reused by other AI coding and tool agents through:
 
 - **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
 - **Advisory brief-mode rule snippets** that you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
@@ -78,7 +78,7 @@ ContextGuard complements provider and semantic caches, and sits next to prompt c
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| Experimental planners and local runtimes | Default-off and explicit-command-only; covers local-proxy plans and gate records plus narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request. No compressor/model execution, OCR/crop service, external forwarding, credential persistence, or hosted-savings claim ships without separate evidence and future PR gates. |
+| Experimental planners and local runtimes | Default-off and explicit-command-only; covers local-proxy plans and gate records plus narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request. Compressor/model execution, OCR/crop services, external forwarding, credential persistence, and hosted-savings claims stay out of scope until a separate evidence gate and future PR allow them. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
@@ -134,7 +134,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
-| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, `context-guard route-advisor` summarizes local total-cost/batchability route candidates, stores only keyed HMAC fingerprints where a ledger is used, and stays passive unless `--enforce` is explicit. |
+| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache risk and cost ranges. `context-guard route-advisor` summarizes local total-cost and batchability route candidates, stores only keyed HMAC fingerprints where a ledger is used, and stays passive unless `--enforce` is explicit. |
 | Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` / `--symbol-memory` advisory metadata. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies; `--mode readable` adds an opt-in readable prose preview with exact fallback guidance. |
@@ -321,7 +321,7 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
 ```
 
-`context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Recommendations are candidates only, and hosted token/cost savings claims still require matched successful tasks with non-inferior quality and shifted-cost evidence.
+`context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
 
 ### Compress selected local text conservatively
 

@@ -1,6 +1,6 @@
 # ContextGuard
 
-ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 관리 도구 모음입니다. Claude Code 플러그인으로 먼저 사용할 수 있으며, 한 번 설치한 뒤 프로젝트별로 명시적으로 적용하고 필요하면 되돌릴 수 있습니다. 출력 축약, 심볼 단위 읽기, 반복 실패 알림, 민감정보 패턴 가림, 사용량 측정 가드레일은 로컬 헬퍼 명령과 brief 모드 안내 규칙 스니펫을 통해 다른 에이전트에서도 재사용할 수 있습니다.
+ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스트 관리 도구 모음입니다. Claude Code 플러그인으로 먼저 제공되며, 한 번 설치한 뒤 프로젝트별로 명시적으로 활성화하고 필요하면 되돌릴 수 있습니다. 출력 축약, 심볼 단위 읽기, 반복 실패 알림, 민감정보 패턴 가림, 사용량 측정 가드레일은 로컬 헬퍼 명령과 brief 모드 안내 규칙 스니펫을 통해 다른 에이전트에서도 재사용할 수 있습니다.
 
 - 영문 문서: [`README.md`](README.md)
 - HTML 랜딩 페이지: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([소스](docs/index.html))
@@ -13,7 +13,7 @@ ContextGuard는 AI 코딩·도구 에이전트를 위한 로컬 우선 컨텍스
 | --- | --- | --- |
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` 후 `/plugin install context-guard@context-guard` | 프로젝트에서 `/context-guard:setup` 실행 |
 | Codex CLI 또는 터미널 기반 에이전트 | `npm install -g @ictechgy/context-guard` 또는 일회성 `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan` 확인 후 `--yes`로 적용 |
-| Gemini/Cursor/Windsurf/Cline/Copilot | npm/npx 설치 | 원하는 에이전트만 `context-guard setup --agent ... --scope project --with-init --plan`으로 확인 후 적용 |
+| Gemini/Cursor/Windsurf/Cline/Copilot | 위 npm/npx 설치 경로 사용 | 원하는 에이전트만 `context-guard setup --agent ... --scope project --with-init --plan`으로 확인 후 적용 |
 | macOS/Homebrew 사용자 | 배포 경로: `brew install ictechgy/tap/context-guard` | 설치 후 같은 `context-guard setup ...` 명령 사용 |
 
 자주 쓰는 명령은 다음과 같습니다.
@@ -27,13 +27,13 @@ context-guard setup --agent claude --scope user --verify --json  # 읽기 전용
 context-guard setup --agent claude --scope user --plan
 ```
 
-기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다. setup은 먼저 패키지/체크아웃 내부 헬퍼를 찾으며, 신뢰할 수 있는 설치임이 확인된 경우에만 `--allow-path-helper-fallback`으로 `PATH` 헬퍼 fallback을 허용하세요.
+기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다. setup은 먼저 패키지/체크아웃 내부 헬퍼를 찾습니다. 신뢰할 수 있는 설치임을 확인한 경우에만 `--allow-path-helper-fallback`으로 `PATH` 헬퍼 fallback을 허용하세요.
 
 ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이고, 실제 전후 비교 결과는 각자의 작업에서 측정할 수 있도록 벤치마크 도구를 제공합니다. 저장소마다 효과는 달라질 수 있으며, 고정된 토큰·비용 절감률은 보장하지 않습니다.
 
 ## Claude Code 우선, 다른 에이전트도 함께
 
-ContextGuard는 Claude Code 플러그인으로 시작하는 것이 가장 빠릅니다. 설치 후에는 같은 로컬 우선 가드레일을 다음 방식으로 다른 AI 코딩·도구 에이전트에서도 재사용할 수 있습니다.
+Claude 사용자는 Claude Code 플러그인으로 시작하는 것이 가장 빠릅니다. 설치 후에는 같은 로컬 우선 가드레일을 다음 방식으로 다른 AI 코딩·도구 에이전트에서도 재사용할 수 있습니다.
 
 - **로컬 헬퍼 명령**(`context-guard-*`)은 특정 에이전트에 묶이지 않은 일반 셸 명령으로 실행됩니다.
 - **brief 모드 스니펫**은 에이전트의 지시 파일(`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot 지시 파일 등)에 마커 블록으로 설치하고, 블록을 지우면 제거됩니다.
@@ -131,7 +131,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 | 출력 축약과 민감정보 가림 | 테스트·빌드·검색·diff 출력을 작게 만들고, 에이전트 컨텍스트에 들어가기 전에 민감해 보이는 값을 가립니다. |
 | 선언형 출력 필터 | 사용자 정의 JSON DSL로 성공 출력만 명시적으로 줄이고, 보호해야 하는 실패 출력은 원문 stdout/stderr와 종료 코드를 보존합니다. |
 | 로컬 로그 보관소 | 큰 로그를 대화 밖 로컬 저장소에 보관하고, 요약 정보나 요청한 줄 범위만 다시 가져옵니다. |
-| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정하고, `context-guard route-advisor`가 로컬 총비용·batchability route 후보를 요약하며, ledger를 쓸 때도 원문 대신 keyed HMAC fingerprint만 저장합니다. `--enforce`를 명시하지 않으면 경고만 합니다. |
+| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정합니다. `context-guard route-advisor`는 로컬 총비용과 batchability route 후보를 요약하며, ledger를 쓸 때도 원문 대신 keyed HMAC fingerprint만 저장합니다. `--enforce`를 명시하지 않으면 경고만 합니다. |
 | 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`, `--adaptive-k`, `--symbol-memory`로 로컬 자문 메타데이터를 덧붙일 수 있습니다. |
 | Tool/MCP schema pruner | 로컬 catalog에서 bounded top-k tool/schema 자문 리포트를 만들고, compact 요약 기록과 전체 가림 처리된 payload 재조회 경로를 남깁니다. |
 | 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. `--mode readable`은 exact fallback 안내가 있는 opt-in 산문 preview를 추가합니다. |
@@ -294,7 +294,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
 ```
 
-`context-guard route-advisor`는 로컬 passive advisor입니다. caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽고 total-cost accounting, batchability blocker, batch API·prompt-cache prefix 보존·structured outputs·저비용 모델 평가 같은 route 후보를 출력합니다. queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오지 않으며, provider feature는 caller-supplied 또는 unknown/recheck-required로 표시합니다. 추천은 후보일 뿐이고, hosted token/cost 절감 주장은 여전히 matched successful task, 비열등 quality gate, shifted-cost evidence가 있어야 합니다.
+`context-guard route-advisor`는 로컬 passive advisor입니다. caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽고 total-cost accounting, batchability blocker, batch API·prompt-cache prefix 보존·structured outputs·저비용 모델 평가 같은 route 후보를 출력합니다. queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오지 않으며, provider feature는 caller-supplied 또는 unknown/recheck-required로 표시합니다. 추천은 후보일 뿐입니다. hosted token/cost 절감을 주장하려면 matched successful task, 비열등 quality gate, shifted-cost evidence가 필요합니다.
 
 ### 선택한 로컬 텍스트를 보수적으로 압축하기
 
