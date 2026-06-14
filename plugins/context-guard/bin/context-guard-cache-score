@@ -26,6 +26,7 @@ TOKEN_PROXY_CHARS_PER_TOKEN = 4
 DEFAULT_EXPECTED_REUSES = 1
 MAX_EXPECTED_REUSES = 1_000_000
 MAX_CACHE_MULTIPLIER = 1_000_000.0
+SAVINGS_EPSILON = 1e-12
 PROVIDER_MINIMUM_CACHEABLE_TOKENS = {
     # Provider and model minimums move over time.  These defaults are advisory
     # and can be overridden with --minimum-cacheable-tokens.
@@ -279,6 +280,28 @@ def json_shape_warnings(text: str) -> tuple[str, list[dict[str, Any]]]:
     return "json", warnings
 
 
+def read_premium_relative_savings(reuses: int, *, write_multiplier: float, read_multiplier: float) -> float:
+    return (1.0 - write_multiplier) + (reuses * (1.0 - read_multiplier))
+
+
+def max_profitable_read_premium_reuses(*, write_multiplier: float, read_multiplier: float) -> int:
+    """Return the largest reuse count with strictly positive relative savings."""
+    candidate = max(0, int(math.floor((1.0 - write_multiplier) / (read_multiplier - 1.0))))
+    while candidate > 0 and read_premium_relative_savings(
+        candidate,
+        write_multiplier=write_multiplier,
+        read_multiplier=read_multiplier,
+    ) <= SAVINGS_EPSILON:
+        candidate -= 1
+    while read_premium_relative_savings(
+        candidate + 1,
+        write_multiplier=write_multiplier,
+        read_multiplier=read_multiplier,
+    ) > SAVINGS_EPSILON:
+        candidate += 1
+    return candidate
+
+
 def build_amortization_report(
     *,
     eligible: bool,
@@ -296,6 +319,7 @@ def build_amortization_report(
     """
     supplied = cache_write_multiplier is not None and cache_read_multiplier is not None
     break_even_reuses: int | None = None
+    max_profitable_reuses: int | None = None
     expected_uncached_relative_cost: float | None = None
     expected_cached_relative_cost: float | None = None
     expected_relative_savings: float | None = None
@@ -330,14 +354,28 @@ def build_amortization_report(
             break_even_reuses = 0
             status = "already_break_even_on_write"
             risk = "low"
-        elif cache_read_multiplier > 1.0 and cache_write_multiplier <= 1.0 and expected_reuses == 0:
-            break_even_reuses = 0
-            status = "already_break_even_on_write"
-            risk = "low"
-        elif cache_read_multiplier > 1.0 and expected_relative_savings >= 0:
-            break_even_reuses = 0 if cache_write_multiplier <= 1.0 else None
-            status = "amortizes_with_expected_reuses"
-            risk = "medium"
+        elif cache_read_multiplier > 1.0:
+            if cache_write_multiplier < 1.0:
+                max_profitable_reuses = max_profitable_read_premium_reuses(
+                    write_multiplier=cache_write_multiplier,
+                    read_multiplier=cache_read_multiplier,
+                )
+            if expected_relative_savings < -SAVINGS_EPSILON:
+                status = "no_read_discount"
+                risk = "high"
+            elif expected_reuses == 0:
+                if expected_relative_savings > SAVINGS_EPSILON:
+                    status = "write_discount_only_no_expected_reads"
+                    risk = "low"
+                else:
+                    status = "break_even_only_no_expected_reads"
+                    risk = "medium"
+            elif abs(expected_relative_savings) <= SAVINGS_EPSILON:
+                status = "break_even_only_with_limited_reuses"
+                risk = "medium"
+            else:
+                status = "positive_only_with_limited_reuses"
+                risk = "medium"
         else:
             status = "no_read_discount"
             risk = "high"
@@ -347,6 +385,7 @@ def build_amortization_report(
         "expected_reuses_semantics": "future_cache_reads_after_initial_write",
         "cacheable_prefix_tokens": prefix_tokens,
         "break_even_reuses": break_even_reuses,
+        "max_profitable_reuses": max_profitable_reuses,
         "status": status,
         "risk": risk,
         "cache_write_multiplier": cache_write_multiplier,
@@ -356,7 +395,7 @@ def build_amortization_report(
         "expected_relative_savings": expected_relative_savings,
         "multiplier_baseline": "uncached_prefix_input_cost_equals_1.0",
         "user_supplied_multipliers": supplied,
-        "formula": "expected_cached=write_multiplier + expected_reuses*read_multiplier; expected_uncached=1 + expected_reuses; break_even=ceil((write_multiplier - 1.0)/(1.0-read_multiplier)) only when read_multiplier<1",
+        "formula": "expected_cached=write_multiplier + expected_reuses*read_multiplier; expected_uncached=1 + expected_reuses; break_even=ceil((write_multiplier - 1.0)/(1.0-read_multiplier)) only when read_multiplier<1; max_profitable_reuses is the largest integer reuse count with expected_uncached-expected_cached > 0, only when read_multiplier>1 and write_multiplier<1",
         "claim_boundary": {
             "advisory_only": True,
             "provider_pricing_defaults_included": False,
@@ -459,7 +498,8 @@ def render_text(report: dict[str, Any]) -> str:
         f"warnings: {warning_codes}\n"
         f"amortization: {amortization.get('status', 'unknown')} "
         f"(risk={amortization.get('risk', 'unknown')}, "
-        f"break_even_reuses={amortization.get('break_even_reuses')})\n"
+        f"break_even_reuses={amortization.get('break_even_reuses')}, "
+        f"max_profitable_reuses={amortization.get('max_profitable_reuses')})\n"
         "claim boundary: advisory static lint only; not a measured provider cache hit or cost saving.\n"
     )
 

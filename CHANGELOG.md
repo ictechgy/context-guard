@@ -5,6 +5,7 @@ All notable changes for the ContextGuard plugin are documented here.
 ## [Unreleased]
 
 - Extended Batch 1 token-savings advisory reports with cache-score amortization risk fields, tool-prune deferred-schema proxy accounting, and a benchmark measurement-baseline contract while preserving local-only/no-savings-claim boundaries.
+- Clarified cache-score amortization output for cache-read multipliers above uncached cost by reporting a bounded `max_profitable_reuses` instead of a monotonic break-even reuse count.
 
 ## [0.4.10] - 2026-06-14
 

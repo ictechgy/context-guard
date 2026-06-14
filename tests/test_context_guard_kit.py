@@ -10352,6 +10352,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(amortization["cache_write_multiplier"], 1.25)
                 self.assertEqual(amortization["cache_read_multiplier"], 0.1)
                 self.assertEqual(amortization["break_even_reuses"], 1)
+                self.assertIsNone(amortization["max_profitable_reuses"])
                 self.assertEqual(amortization["status"], "amortizes_with_expected_reuses")
                 self.assertEqual(amortization["risk"], "low")
                 self.assertAlmostEqual(amortization["expected_uncached_relative_cost"], 4.0)
@@ -10380,9 +10381,100 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(premium["status"], "no_read_discount")
                 self.assertEqual(premium["risk"], "high")
                 self.assertIsNone(premium["break_even_reuses"])
+                self.assertEqual(premium["max_profitable_reuses"], 0)
                 self.assertAlmostEqual(premium["expected_uncached_relative_cost"], 2.0)
                 self.assertAlmostEqual(premium["expected_cached_relative_cost"], 2.5)
                 self.assertLess(premium["expected_relative_savings"], 0)
+
+                limited_premium_proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "4",
+                    "--cache-write-multiplier",
+                    "0.5",
+                    "--cache-read-multiplier",
+                    "1.1",
+                    "--json",
+                    input_data=prompt,
+                )
+                limited_premium = json.loads(limited_premium_proc.stdout)["amortization"]
+                self.assertEqual(limited_premium["status"], "positive_only_with_limited_reuses")
+                self.assertEqual(limited_premium["risk"], "medium")
+                self.assertIsNone(limited_premium["break_even_reuses"])
+                self.assertEqual(limited_premium["max_profitable_reuses"], 4)
+                self.assertGreater(limited_premium["expected_relative_savings"], 0)
+                limited_text = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "4",
+                    "--cache-write-multiplier",
+                    "0.5",
+                    "--cache-read-multiplier",
+                    "1.1",
+                    input_data=prompt,
+                )
+                self.assertIn("positive_only_with_limited_reuses", limited_text.stdout)
+                self.assertIn("max_profitable_reuses=4", limited_text.stdout)
+
+                exact_break_even_proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "1",
+                    "--cache-write-multiplier",
+                    "0.5",
+                    "--cache-read-multiplier",
+                    "1.5",
+                    "--json",
+                    input_data=prompt,
+                )
+                exact_break_even = json.loads(exact_break_even_proc.stdout)["amortization"]
+                self.assertEqual(exact_break_even["status"], "break_even_only_with_limited_reuses")
+                self.assertEqual(exact_break_even["risk"], "medium")
+                self.assertEqual(exact_break_even["max_profitable_reuses"], 0)
+                self.assertAlmostEqual(exact_break_even["expected_relative_savings"], 0.0)
+
+                decimal_break_even_proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "2",
+                    "--cache-write-multiplier",
+                    "0.2",
+                    "--cache-read-multiplier",
+                    "1.4",
+                    "--json",
+                    input_data=prompt,
+                )
+                decimal_break_even = json.loads(decimal_break_even_proc.stdout)["amortization"]
+                self.assertEqual(decimal_break_even["status"], "break_even_only_with_limited_reuses")
+                self.assertEqual(decimal_break_even["max_profitable_reuses"], 1)
+                self.assertAlmostEqual(decimal_break_even["expected_relative_savings"], 0.0)
+
+                no_read_break_even_proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "0",
+                    "--cache-write-multiplier",
+                    "1",
+                    "--cache-read-multiplier",
+                    "2",
+                    "--json",
+                    input_data=prompt,
+                )
+                no_read_break_even = json.loads(no_read_break_even_proc.stdout)["amortization"]
+                self.assertEqual(no_read_break_even["status"], "break_even_only_no_expected_reads")
+                self.assertEqual(no_read_break_even["risk"], "medium")
+                self.assertIsNone(no_read_break_even["max_profitable_reuses"])
+                self.assertAlmostEqual(no_read_break_even["expected_relative_savings"], 0.0)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
