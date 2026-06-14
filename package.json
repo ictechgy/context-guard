@@ -59,6 +59,7 @@
     "docs/benchmark-workflows/*.example.jsonl",
     "docs/benchmark-workflow-examples.md",
     "docs/benchmark-fixtures/*.example.json",
+    "docs/benchmark-fixtures/*.example.jsonl",
     "docs/benchmark-fixtures/*.prompt.example.md",
     "docs/experimental-benchmark-fixtures.md",
     "packaging/homebrew/context-guard.rb.template"

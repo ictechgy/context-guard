@@ -227,6 +227,7 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
     "docs/benchmark-fixtures/token-savings-12task.tasks.example.json",
     "docs/benchmark-fixtures/token-savings-12task.variants.example.json",
+    "docs/benchmark-fixtures/token-savings-12task.evidence.example.jsonl",
     "docs/benchmark-fixtures/token-savings-12task-baseline.prompt.example.md",
     "docs/benchmark-fixtures/token-savings-12task-contextguard.prompt.example.md",
     "package.json",

@@ -12,6 +12,23 @@ Use them when designing an experiment that starts from ContextGuard's existing b
 5. Treat byte counts, image dimensions, OCR confidence, and local compressor ratios as proxy evidence. Real token/cost claims require **provider-measured** primary token/cost fields on both sides.
 6. Keep private screenshots, raw secrets, and external service endpoints out of fixture files.
 
+## Local replay evidence
+
+`context-guard-bench --evidence-jsonl <path>` can replay pre-recorded run evidence into the normal CSV/report pipeline without invoking `claude` or any task `success_command`. Pair it with `--report-json` and `--dashboard-md` to regenerate a deterministic local dashboard:
+
+```bash
+context-guard-bench \
+  --tasks docs/benchmark-fixtures/token-savings-12task.tasks.example.json \
+  --variants docs/benchmark-fixtures/token-savings-12task.variants.example.json \
+  --evidence-jsonl docs/benchmark-fixtures/token-savings-12task.evidence.example.jsonl \
+  --csv /tmp/contextguard-token-savings.csv \
+  --report-json /tmp/contextguard-token-savings.report.json \
+  --dashboard-md /tmp/contextguard-token-savings.dashboard.md \
+  --baseline-variant baseline_full_context_fixture
+```
+
+The included token-savings evidence file is deliberately `synthetic_fixture` provenance. It validates replay/dashboard mechanics and byte-proxy reporting only: replay forces synthetic/manual rows to `primary_tokens_measured=false` and `cost_measured=false`, so it is not public hosted API token/cost savings evidence even when token-looking numbers are present. A public claim still requires matched successful tasks, provider-export provenance, provider-measured primary tokens/cost, quality non-inferiority, and shifted-cost accounting.
+
 ## Runner-native variant prompt files
 
 `context-guard-bench` supports optional file-backed `variant_prompt_files` in task fixtures. The map is keyed by variant name and lets a single logical task swap sanitized prompt evidence per variant, for example a baseline raw-output prompt versus a digest plus artifact receipt prompt. Prompt files are resolved relative to the task JSON, must be relative paths, and are read with the same no-follow/symlink-safe posture as task and variant fixtures.
@@ -20,12 +37,12 @@ This runner-native swap only proves command shape and prompt selection until the
 
 ## Included fixture sets
 
-| Fixture set | Task file | Variant file | Intended future experiment |
-| --- | --- | --- | --- |
-| Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized textual evidence, missed-context notes, crop/OCR telemetry, and provider telemetry. |
-| Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
-| Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
-| Token-savings 12-task roadmap | [`benchmark-fixtures/token-savings-12task.tasks.example.json`](benchmark-fixtures/token-savings-12task.tasks.example.json) | [`benchmark-fixtures/token-savings-12task.variants.example.json`](benchmark-fixtures/token-savings-12task.variants.example.json) | Exercise a canonical 12-task spread for bugfix, exploration, review, log analysis, migration, docs, refactor, performance, telemetry, cache layout, tool-schema deferral, and artifact receipt experiments after real success commands and provider telemetry are supplied. |
+| Fixture set | Task file | Variant file | Evidence replay file | Intended future experiment |
+| --- | --- | --- | --- | --- |
+| Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | n/a | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized textual evidence, missed-context notes, crop/OCR telemetry, and provider telemetry. |
+| Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | n/a | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
+| Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | n/a | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
+| Token-savings 12-task roadmap | [`benchmark-fixtures/token-savings-12task.tasks.example.json`](benchmark-fixtures/token-savings-12task.tasks.example.json) | [`benchmark-fixtures/token-savings-12task.variants.example.json`](benchmark-fixtures/token-savings-12task.variants.example.json) | [`benchmark-fixtures/token-savings-12task.evidence.example.jsonl`](benchmark-fixtures/token-savings-12task.evidence.example.jsonl) | Exercise a canonical 12-task spread for bugfix, exploration, review, log analysis, migration, docs, refactor, performance, telemetry, cache layout, tool-schema deferral, and artifact receipt experiments after real success commands and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
 
@@ -41,7 +58,7 @@ The output-transform fixtures describe already-sanitized command output comparis
 
 ## Token-savings 12-task roadmap fixture notes
 
-The token-savings 12-task fixtures are a canonical **fixture-only** spread for roadmap-level A/B design. They demonstrate `variant_prompt_files` for a baseline full-context prompt versus a ContextGuard advisory-foundations prompt that may later include cache layout lint, core-vs-deferred tool schemas, artifact receipts, and claim-safe telemetry. They do not execute `context-guard-cache-score`, `context-guard-tool-prune`, or any provider call.
+The token-savings 12-task fixtures are a canonical **fixture-only** spread for roadmap-level A/B design. They demonstrate `variant_prompt_files` for a baseline full-context prompt versus a ContextGuard advisory-foundations prompt that may later include cache layout lint, core-vs-deferred tool schemas, artifact receipts, and claim-safe telemetry. They do not execute `context-guard-cache-score`, `context-guard-tool-prune`, or any provider call. The companion `token-savings-12task.evidence.example.jsonl` lets users replay deterministic synthetic rows into CSV/report/dashboard outputs while preserving the same non-claim boundary.
 
 For real non-dry-run experiments, replace every placeholder `success_command`, keep task IDs matched across baseline and candidate variants, and require provider-measured primary token/cost data before interpreting `tokens_per_successful_task`, `total_cost_with_shift_usd`, or `external_cost_usd`. Cache predictions, char/4 token proxies, local latency, and byte reductions remain diagnostic proxy evidence unless the generated report contains matched successful task evidence and stays within the 10%p failure-rate guardrail.
 
