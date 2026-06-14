@@ -23,14 +23,20 @@ from typing import Any, NoReturn
 
 TOOL_NAME = "context-guard-tool-prune"
 SCHEMA_VERSION = "contextguard.tool-prune.v1"
+DEFER_SCHEMA_VERSION = "contextguard.tool-prune.defer.v1"
 DEFAULT_STORE_DIR = ".context-guard/tool-prune"
 DEFAULT_TOP = 5
+DEFAULT_CORE_TOP = 3
+DEFAULT_DEFERRED_TOP = 20
+DEFAULT_NAMESPACE_TOP = 20
 DEFAULT_BUDGET_BYTES = 12_000
 DEFAULT_MAX_CATALOG_BYTES = 1_000_000
 DEFAULT_MAX_OUTPUT_BYTES = 65_536
 DEFAULT_MAX_PAYLOAD_BYTES = 1_048_576
 DEFAULT_MAX_RECEIPT_BYTES = 16_384
 MAX_TOP = 200
+MAX_DEFERRED_TOP = 1_000
+MAX_NAMESPACE_TOP = 200
 MAX_LABEL_CHARS = 160
 MAX_DESCRIPTION_CHARS = 360
 MAX_OMITTED_TOOLS = 30
@@ -94,13 +100,17 @@ def byte_len_json(data: Any) -> int:
     return byte_len_text(json_bytes(data))
 
 
+def proxy_tokens(chars: int) -> int:
+    return max(0, (int(chars) + TOKEN_PROXY_CHARS_PER_TOKEN - 1) // TOKEN_PROXY_CHARS_PER_TOKEN)
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def bounded_int(value: object, *, default: int, minimum: int, maximum: int, name: str) -> int:
     try:
-        number = int(value)
+        number = int(default if value is None else value)
     except (TypeError, ValueError, OverflowError):
         fail(f"{name} must be an integer")
     if number < minimum:
@@ -583,6 +593,86 @@ def selected_tool_record(cand: Candidate, receipt_id: str, budget_left: int, *, 
     return record, 0
 
 
+def deferred_tool_record(cand: Candidate, receipt_id: str, *, store_dir: str) -> dict[str, Any]:
+    return {
+        "name": cand.name,
+        "server": cand.server,
+        "score": cand.score,
+        "rank": cand.rank,
+        "description": cand.description,
+        "schema_bytes": byte_len_json(cand.schema),
+        "reason": "deferred_after_core_top",
+        "retrieval": retrieval_command(receipt_id, store_dir=store_dir, tool_name=cand.name),
+    }
+
+
+def namespace_records(
+    ranked: list[Candidate],
+    core_names: set[str],
+    deferred_names: set[str],
+    receipt_id: str,
+    *,
+    store_dir: str,
+    namespace_top: int,
+) -> tuple[list[dict[str, Any]], int]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for cand in ranked:
+        namespace = cand.server or "local"
+        item = grouped.setdefault(
+            namespace,
+            {
+                "namespace": namespace,
+                "tool_count": 0,
+                "core_count": 0,
+                "listed_deferred_count": 0,
+                "sample_tools": [],
+                "retrieval": retrieval_command(receipt_id, store_dir=store_dir),
+            },
+        )
+        item["tool_count"] += 1
+        if cand.name in core_names:
+            item["core_count"] += 1
+        if cand.name in deferred_names:
+            item["listed_deferred_count"] += 1
+        samples = item["sample_tools"]
+        if isinstance(samples, list) and len(samples) < 8:
+            samples.append(cand.name)
+    records = sorted(grouped.values(), key=lambda item: (-int(item["listed_deferred_count"]), str(item["namespace"])))
+    return records[:namespace_top], max(0, len(records) - namespace_top)
+
+
+def build_receipt_and_payload(ranked: list[Candidate], safe_query: str, total_redactions: int, *, store_dir_arg: str, max_payload_bytes: int, max_receipt_bytes: int) -> tuple[str, dict[str, Any], dict[str, Any], Path, Path, Path, int, int]:
+    payload_without_id = build_payload("pending", ranked, safe_query, total_redactions)
+    receipt_id = build_receipt_id(payload_without_id)
+    payload = build_payload(receipt_id, ranked, safe_query, total_redactions)
+    payload_text = json_bytes(payload, indent=2) + "\n"
+    payload_bytes = byte_len_text(payload_text)
+    if payload_bytes > max_payload_bytes:
+        fail(f"payload exceeds --max-payload-bytes: {payload_bytes} > {max_payload_bytes}")
+    payload_sha = sha256_text(payload_text.rstrip("\n"))
+
+    store_dir, receipt_path, payload_path = store_paths(store_dir_arg, receipt_id)
+    receipt = {
+        "tool": TOOL_NAME,
+        "schema_version": SCHEMA_VERSION,
+        "receipt_id": receipt_id,
+        "created_at_unix": int(time.time()),
+        "path": display_path(receipt_path),
+        "payload_path": display_path(payload_path),
+        "payload_sha256": payload_sha,
+        "payload_bytes": payload_bytes,
+        "contains": "compact_metadata_plus_sanitized_payload",
+        "tool_count": len(ranked),
+        "tools": [cand.name for cand in ranked[:50]],
+        "tools_truncated": len(ranked) > 50,
+        "retrieval_hint": retrieval_command(receipt_id, store_dir=store_dir_arg, tool_name="<name>"),
+    }
+    receipt_size = byte_len_text(json_bytes(receipt, indent=2) + "\n")
+    if receipt_size > max_receipt_bytes:
+        fail(f"receipt exceeds --max-receipt-bytes: {receipt_size} > {max_receipt_bytes}")
+    return receipt_id, payload, receipt, store_dir, receipt_path, payload_path, payload_bytes, receipt_size
+
+
 def shrink_result_for_output(result: dict[str, Any], max_output_bytes: int) -> str:
     candidate = json_bytes(result, indent=2) + "\n"
     if byte_len_text(candidate) <= max_output_bytes:
@@ -591,6 +681,7 @@ def shrink_result_for_output(result: dict[str, Any], max_output_bytes: int) -> s
     result = json.loads(json_bytes(result))
     omitted = result.get("omitted_tools")
     while isinstance(omitted, list) and len(omitted) > 0:
+        # The list is halved on each pass, so even a one-item list converges.
         keep = max(0, len(omitted) // 2)
         result["omitted_tools"] = omitted[:keep]
         result["omitted_tools_truncated"] = True
@@ -687,6 +778,138 @@ def select_catalog(args: argparse.Namespace) -> str:
         "redaction": {"redacted_values": total_redactions},
     }
     rendered = shrink_result_for_output(result, max_output_bytes)
+
+    # Only write after every size gate has passed, so failures leave no success receipt.
+    ensure_private_dir(store_dir)
+    written_payload_bytes = write_private_json_atomic(payload_path, payload, max_bytes=max_payload_bytes, label="payload")
+    if written_payload_bytes != payload_bytes:
+        fail("payload byte size changed during write")
+    written_receipt_bytes = write_private_json_atomic(receipt_path, receipt, max_bytes=max_receipt_bytes, label="receipt")
+    if written_receipt_bytes != receipt_size:
+        fail("receipt byte size changed during write")
+    return rendered
+
+
+def defer_report(args: argparse.Namespace) -> str:
+    max_catalog_bytes = bounded_int(args.max_catalog_bytes, default=DEFAULT_MAX_CATALOG_BYTES, minimum=1, maximum=100_000_000, name="--max-catalog-bytes")
+    max_output_bytes = bounded_int(args.max_output_bytes, default=DEFAULT_MAX_OUTPUT_BYTES, minimum=1, maximum=10_000_000, name="--max-output-bytes")
+    max_payload_bytes = bounded_int(args.max_payload_bytes, default=DEFAULT_MAX_PAYLOAD_BYTES, minimum=1, maximum=100_000_000, name="--max-payload-bytes")
+    max_receipt_bytes = bounded_int(args.max_receipt_bytes, default=DEFAULT_MAX_RECEIPT_BYTES, minimum=1, maximum=10_000_000, name="--max-receipt-bytes")
+    core_top = bounded_int(args.core_top, default=DEFAULT_CORE_TOP, minimum=1, maximum=MAX_TOP, name="--core-top")
+    deferred_top = bounded_int(args.deferred_top, default=DEFAULT_DEFERRED_TOP, minimum=0, maximum=MAX_DEFERRED_TOP, name="--deferred-top")
+    namespace_top = bounded_int(args.namespace_top, default=DEFAULT_NAMESPACE_TOP, minimum=0, maximum=MAX_NAMESPACE_TOP, name="--namespace-top")
+    budget_bytes = bounded_int(args.budget_bytes, default=DEFAULT_BUDGET_BYTES, minimum=0, maximum=100_000_000, name="--budget-bytes")
+
+    text = read_limited_path(Path(args.catalog), max_catalog_bytes) if args.catalog else read_limited_stdin(max_catalog_bytes)
+    raw, redactions = parse_catalog_text(text)
+    raw_query = args.query or ""
+    safe_query, query_redactions = redact_string(raw_query)
+    total_redactions = redactions + query_redactions
+    ranked = rank_candidates(normalize_catalog(raw), raw_query)
+    (
+        receipt_id,
+        payload,
+        receipt,
+        store_dir,
+        receipt_path,
+        payload_path,
+        payload_bytes,
+        receipt_size,
+    ) = build_receipt_and_payload(
+        ranked,
+        safe_query,
+        total_redactions,
+        store_dir_arg=args.store_dir,
+        max_payload_bytes=max_payload_bytes,
+        max_receipt_bytes=max_receipt_bytes,
+    )
+
+    core_candidates = ranked[:core_top]
+    deferred_candidates = ranked[core_top:core_top + deferred_top]
+    core_tools: list[dict[str, Any]] = []
+    core_schema_bytes = 0
+    for cand in core_candidates:
+        record, used = selected_tool_record(cand, receipt_id, budget_bytes - core_schema_bytes, store_dir=args.store_dir)
+        core_schema_bytes += used
+        core_tools.append(record)
+    deferred_tools = [deferred_tool_record(cand, receipt_id, store_dir=args.store_dir) for cand in deferred_candidates]
+    core_names = {cand.name for cand in core_candidates}
+    deferred_names = {cand.name for cand in deferred_candidates}
+    deferred_namespaces, deferred_namespaces_truncated_count = namespace_records(
+        ranked,
+        core_names,
+        deferred_names,
+        receipt_id,
+        store_dir=args.store_dir,
+        namespace_top=namespace_top,
+    )
+    all_schema_bytes = sum(byte_len_json(cand.schema) for cand in ranked)
+    tool_stub_report_bytes = byte_len_json(core_tools) + byte_len_json(deferred_tools)
+    result = {
+        "tool": TOOL_NAME,
+        "schema_version": DEFER_SCHEMA_VERSION,
+        "mode": "defer-report",
+        "query": safe_query,
+        "core_top": core_top,
+        "deferred_top": deferred_top,
+        "namespace_top": namespace_top,
+        "candidate_count": len(ranked),
+        "native_provider_integration": False,
+        "core_tools": core_tools,
+        "deferred_tools": deferred_tools,
+        "listed_deferred_count": len(deferred_tools),
+        "total_deferred_count": max(0, len(ranked) - core_top),
+        "deferred_tools_truncated_count": max(0, len(ranked) - core_top - len(deferred_tools)),
+        "deferred_namespaces": deferred_namespaces,
+        "deferred_namespaces_truncated_count": deferred_namespaces_truncated_count,
+        "receipt": {
+            **receipt,
+            "bytes": receipt_size,
+        },
+        "token_proxy": {
+            "measurement": "estimated",
+            "method": "char4_proxy",
+            "chars_per_token": TOKEN_PROXY_CHARS_PER_TOKEN,
+            "all_schema_bytes": all_schema_bytes,
+            "tool_stub_report_bytes": tool_stub_report_bytes,
+            "all_schema_tokens_estimated": proxy_tokens(all_schema_bytes),
+            "tool_stub_report_tokens_estimated": proxy_tokens(tool_stub_report_bytes),
+            "claim_boundary": "proxy_only_not_provider_billed_tokens",
+        },
+        "provider_patterns": [
+            {
+                "provider": "openai",
+                "pattern": "Keep only core tool schemas inline; retrieve deferred schemas through app/tool-search plumbing or the local receipt before invoking a deferred tool.",
+                "native_provider_integration": False,
+            },
+            {
+                "provider": "anthropic",
+                "pattern": "Keep stable, frequently used tool definitions in the cacheable prefix; treat deferred tools as application-managed retrieval, not Claude-native lazy loading.",
+                "native_provider_integration": False,
+            },
+            {
+                "provider": "gemini",
+                "pattern": "Group large tool catalogs by namespace and load only the task-relevant subset before the model call; verify any platform-native tool retrieval separately.",
+                "native_provider_integration": False,
+            },
+        ],
+        "claim_boundary": {
+            "advisory_only": True,
+            "native_provider_integration": False,
+            "provider_tool_search_configured": False,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+            "requires_provider_measured_matched_tasks_for_savings_claims": True,
+        },
+        "redaction": {"redacted_values": total_redactions},
+        "caveats": [
+            "Deferred loading is an application strategy report, not a native provider integration.",
+            "Token proxy values are char/4 estimates over sanitized local JSON, not billed provider tokens.",
+            "Use receipt get commands to retrieve full sanitized schemas before using deferred tools.",
+        ],
+    }
+    rendered = json_bytes(result, indent=2) + "\n"
+    if byte_len_text(rendered) > max_output_bytes:
+        fail(f"defer report exceeds --max-output-bytes: {byte_len_text(rendered)} > {max_output_bytes}")
 
     # Only write after every size gate has passed, so failures leave no success receipt.
     ensure_private_dir(store_dir)
@@ -803,6 +1026,20 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--store-dir", default=DEFAULT_STORE_DIR, help=f"receipt/payload directory (default: {DEFAULT_STORE_DIR})")
     select.add_argument("--json", action="store_true", help="emit JSON (default and only stable output contract)")
 
+    defer = sub.add_parser("defer-report", help="split a local catalog into core inline tools plus deferred receipt-backed tools")
+    defer.add_argument("--catalog", help="catalog JSON path; stdin is used when omitted")
+    defer.add_argument("--query", default="", help="task query used for lexical ranking")
+    defer.add_argument("--core-top", default=DEFAULT_CORE_TOP, help=f"number of core inline tools (default: {DEFAULT_CORE_TOP})")
+    defer.add_argument("--deferred-top", default=DEFAULT_DEFERRED_TOP, help=f"number of deferred tool stubs to list (default: {DEFAULT_DEFERRED_TOP})")
+    defer.add_argument("--namespace-top", default=DEFAULT_NAMESPACE_TOP, help=f"number of deferred namespace summaries to list (default: {DEFAULT_NAMESPACE_TOP})")
+    defer.add_argument("--budget-bytes", default=DEFAULT_BUDGET_BYTES, help=f"inline core schema byte budget (default: {DEFAULT_BUDGET_BYTES})")
+    defer.add_argument("--max-catalog-bytes", default=DEFAULT_MAX_CATALOG_BYTES, help=f"maximum catalog JSON bytes (default: {DEFAULT_MAX_CATALOG_BYTES})")
+    defer.add_argument("--max-output-bytes", default=DEFAULT_MAX_OUTPUT_BYTES, help=f"maximum rendered defer JSON bytes (default: {DEFAULT_MAX_OUTPUT_BYTES})")
+    defer.add_argument("--max-payload-bytes", default=DEFAULT_MAX_PAYLOAD_BYTES, help=f"maximum sanitized payload bytes (default: {DEFAULT_MAX_PAYLOAD_BYTES})")
+    defer.add_argument("--max-receipt-bytes", default=DEFAULT_MAX_RECEIPT_BYTES, help=f"maximum compact receipt bytes (default: {DEFAULT_MAX_RECEIPT_BYTES})")
+    defer.add_argument("--store-dir", default=DEFAULT_STORE_DIR, help=f"receipt/payload directory (default: {DEFAULT_STORE_DIR})")
+    defer.add_argument("--json", action="store_true", help="emit JSON (default and only stable output contract)")
+
     get = sub.add_parser("get", help="retrieve a full sanitized schema from a receipt payload")
     get.add_argument("receipt_id", help="receipt id returned by select")
     get.add_argument("--tool", help="tool name to retrieve; omit to list available names")
@@ -820,6 +1057,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "select":
             sys.stdout.write(select_catalog(args))
+            return 0
+        if args.command == "defer-report":
+            sys.stdout.write(defer_report(args))
             return 0
         if args.command == "get":
             sys.stdout.write(get_schema(args))

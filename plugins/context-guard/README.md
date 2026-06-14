@@ -82,7 +82,10 @@ context-guard-filter run --config .context-guard/filter-dsl.json -- git status -
 context-guard-pack auto --root . --query "review failing tests" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
+context-guard-cache-score --input prompt.json --provider openai --json
+context-guard cache-score --input prompt.txt --provider anthropic --json
 context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
+context-guard-tool-prune defer-report --catalog tools.json --query "review failing tests" --core-top 3 --deferred-top 20 --json
 context-guard-tool-prune get <receipt_id> --tool read_file --json
 context-guard-statusline
 context-guard-statusline-merged

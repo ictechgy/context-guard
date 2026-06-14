@@ -7,9 +7,12 @@ runtime dispatcher, release gates, sync tooling, smoke tests, and unit tests.
 """
 from __future__ import annotations
 
+from typing import Any
+
 IMPLEMENTATION_PAIRS: tuple[tuple[str, str], ...] = (
     ("context_guard_cli.py", "context-guard"),
     ("cost_guard.py", "context-guard-cost"),
+    ("cache_score.py", "context-guard-cache-score"),
     ("benchmark_runner.py", "context-guard-bench"),
     ("context_escrow.py", "context-guard-artifact"),
     ("context_compress.py", "context-guard-compress"),
@@ -38,6 +41,7 @@ HELPER_PAIRS: tuple[tuple[str, str], ...] = (
 NPM_BINS: tuple[str, ...] = (
     "context-guard",
     "context-guard-cost",
+    "context-guard-cache-score",
     "context-guard-bench",
     "context-guard-artifact",
     "context-guard-compress",
@@ -78,6 +82,7 @@ DISPATCHER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "tool-prune": ("context-guard-tool-prune",),
     "compress": ("context-guard-compress",),
     "cost": ("context-guard-cost",),
+    "cache-score": ("context-guard-cache-score",),
     "bench": ("context-guard-bench",),
     "read-symbol": ("context-guard-read-symbol",),
     "rewrite-bash": ("context-guard-rewrite-bash",),
@@ -112,6 +117,7 @@ ENTRYPOINT_SMOKE_CASES: dict[str, dict[str, Any]] = {
     "context-guard-bench": {"args": ["--help"], "mode": "text"},
     "context-guard-compress": {"args": ["--help"], "mode": "text"},
     "context-guard-cost": {"args": ["--help"], "mode": "text"},
+    "context-guard-cache-score": {"args": ["--help"], "mode": "text"},
     "context-guard-pack": {"args": ["--help"], "mode": "text"},
     "context-guard-tool-prune": {"args": ["--help"], "mode": "text"},
     "context-guard-diet": {"args": ["--help"], "mode": "text"},
@@ -160,6 +166,7 @@ PLUGIN_ENTRYPOINTS: tuple[str, ...] = (
     "context-guard-bench",
     "context-guard-compress",
     "context-guard-cost",
+    "context-guard-cache-score",
     "context-guard-diet",
     "context-guard-experiments",
     "context-guard-failed-nudge",
@@ -179,6 +186,7 @@ PLUGIN_ENTRYPOINTS: tuple[str, ...] = (
 DISPATCHER_SMOKE_CASES: tuple[dict[str, Any], ...] = (
     {"entrypoint": "context-guard", "args": ["experiments", "list", "--json"], "mode": "json"},
     {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
+    {"entrypoint": "context-guard", "args": ["cache-score", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["auto", "--help"], "mode": "text"},
 )
