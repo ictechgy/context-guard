@@ -178,6 +178,8 @@ EXTERNAL_SOURCE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], 
 )
 MAX_USAGE_TOKEN_COUNT = 10**12
 MAX_USAGE_COST_USD = 10**9
+MAX_EVIDENCE_JSONL_BYTES = 5_000_000
+MAX_EVIDENCE_JSONL_LINES = 100_000
 # Byte -> token proxy 환산 계수. 측정된 모델 토큰이 아니라 byte delta 기반 보수적
 # 추정치이며, report에서 evidence="inferred"로 분명히 라벨링한다. 영어 텍스트 기준
 # ~4 bytes/token의 통용 근사값을 사용한다.
@@ -188,6 +190,25 @@ MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
 SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
 SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
+EVIDENCE_REPLAY_SOURCE_TYPES = frozenset({"synthetic_fixture", "provider_export", "manual_audit"})
+PROVIDER_EXPORT_PUBLIC_CLAIM_SCOPES = frozenset({
+    "provider_measured_matched_task",
+    "provider_measured_matched_task_public_claim",
+    "hosted_api_provider_measured_matched_task",
+})
+REPLAY_PUBLIC_CLAIM_CANDIDATE_STATUS = "provider_export_public_claim_candidate"
+REPLAY_PROVIDER_CLAIM_GATES_NOT_MET_STATUS = "provider_export_claim_gates_not_met"
+REPLAY_NOT_PUBLIC_CLAIM_STATUS = "replay_only_not_public_claim"
+REPLAY_UNKNOWN_MIXED_CSV_STATUS = "unknown_mixed_csv"
+REPLAY_PUBLIC_CLAIM_ELIGIBLE_RAW_STATUSES = frozenset({
+    "token_and_shifted_cost_savings_observed",
+})
+REPLAY_CLAIM_BOUNDARY = (
+    "Evidence replay is an import/replay mode. Synthetic fixtures and manual audits are never "
+    "hosted API token/cost savings evidence; public claims require complete provider_export "
+    "provenance for every report row plus the normal matched-task quality, token, cost, and "
+    "shifted-cost gates."
+)
 MAX_SELF_HOSTED_LABEL_CHARS = 120
 MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
 MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
@@ -399,6 +420,36 @@ class RunResult:
     provider_cached_tokens_measured: bool = False
     primary_tokens_measured: bool = False
     self_hosted_metrics: dict[str, Any] | None = None
+
+
+@dataclass
+class EvidenceReplayRow:
+    result: RunResult
+    source_type: str
+    provider_name: str | None
+    capture_command_or_export_id: str | None
+    claim_scope: str
+    provider_export_provenance_complete: bool
+    public_claim_eligible: bool
+    line_number: int
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.result.task_id, self.result.variant)
+
+    def provenance_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
+            "mode": "evidence_jsonl_replay",
+            "evidence_source_type": self.source_type,
+            "provider_name": self.provider_name,
+            "capture_command_or_export_id": self.capture_command_or_export_id,
+            "claim_scope": self.claim_scope,
+            "provider_export_provenance_complete": self.provider_export_provenance_complete,
+            "public_claim_eligible": self.public_claim_eligible,
+            "line_number": self.line_number,
+            "claim_boundary": REPLAY_CLAIM_BOUNDARY,
+        }
 
 
 @dataclass
@@ -1362,7 +1413,13 @@ def write_text_no_follow(path: Path, text: str) -> None:
             os.close(fd)
 
 
-def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> None:
+def append_cost_shift_ledger(
+    path: Path,
+    claude_ver: str,
+    result: RunResult,
+    *,
+    replay_provenance: dict[str, Any] | None = None,
+) -> None:
     shifted_cost_known = cost_shift_measured(result)
     byte_metrics_observed = bool(result.bytes_before or result.bytes_after)
     payload = {
@@ -1413,6 +1470,10 @@ def append_cost_shift_ledger(path: Path, claude_ver: str, result: RunResult) -> 
     }
     if result.self_hosted_metrics is not None:
         payload["self_hosted_metrics"] = result.self_hosted_metrics
+    if replay_provenance is not None:
+        payload["replay_provenance"] = replay_provenance
+        payload["evidence_source_type"] = replay_provenance.get("evidence_source_type")
+        payload["public_claim_eligible"] = bool(replay_provenance.get("public_claim_eligible"))
     with csv_file_lock(path, create_parent=True):
         fd = _open_regular_no_symlink(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600, create_parent=True)
         try:
@@ -1486,6 +1547,354 @@ def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
     finally:
         if fd != -1:
             os.close(fd)
+
+
+def file_has_content_no_follow(path: Path) -> bool:
+    try:
+        fd = _open_regular_no_symlink(path)
+    except FileNotFoundError:
+        return False
+    try:
+        return os.fstat(fd).st_size > 0
+    finally:
+        os.close(fd)
+
+
+def require_evidence_object(raw: Any, *, owner: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{owner} evidence row must be a JSON object")
+    return raw
+
+
+def evidence_non_empty_string(raw: Any, *, field: str, owner: str, required: bool = True) -> str | None:
+    if raw is None:
+        if required:
+            raise SystemExit(f"{owner} {field} must be a non-empty string")
+        return None
+    if not isinstance(raw, str):
+        raise SystemExit(f"{owner} {field} must be a string")
+    text = sanitize_note_text(raw)
+    if not text:
+        if required:
+            raise SystemExit(f"{owner} {field} must be a non-empty string")
+        return None
+    return text
+
+
+def evidence_bool(raw: Any, *, field: str, owner: str, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise SystemExit(f"{owner} {field} must be a boolean")
+    return raw
+
+
+def evidence_nonnegative_int(
+    raw: Any,
+    *,
+    field: str,
+    owner: str,
+    default: int = 0,
+    maximum: int = MAX_USAGE_TOKEN_COUNT,
+) -> int:
+    if raw is None:
+        return default
+    value = normalize_usage_token(raw)
+    if value is None or value > maximum:
+        raise SystemExit(f"{owner} {field} must be a finite non-negative integer")
+    return value
+
+
+def evidence_nonnegative_float(
+    raw: Any,
+    *,
+    field: str,
+    owner: str,
+    default: float = 0.0,
+    maximum: float = MAX_USAGE_COST_USD,
+) -> float:
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise SystemExit(f"{owner} {field} must be a finite non-negative number")
+    value = float(raw)
+    if not math.isfinite(value) or value < 0 or value > maximum:
+        raise SystemExit(f"{owner} {field} must be a finite non-negative number")
+    return value
+
+
+def evidence_first(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw:
+            return raw[key]
+    return None
+
+
+def parse_evidence_provenance(raw: dict[str, Any], *, owner: str) -> dict[str, Any]:
+    provenance = raw.get("provenance")
+    if provenance is not None and not isinstance(provenance, dict):
+        raise SystemExit(f"{owner} provenance must be a JSON object")
+    source_raw = (
+        provenance.get("evidence_source_type")
+        if isinstance(provenance, dict) and "evidence_source_type" in provenance
+        else raw.get("evidence_source_type")
+    )
+    source_type = evidence_non_empty_string(source_raw, field="evidence_source_type", owner=owner)
+    assert source_type is not None
+    if source_type not in EVIDENCE_REPLAY_SOURCE_TYPES:
+        raise SystemExit(
+            f"{owner} evidence_source_type must be one of: {', '.join(sorted(EVIDENCE_REPLAY_SOURCE_TYPES))}"
+        )
+    provider_name = evidence_non_empty_string(
+        provenance.get("provider_name") if isinstance(provenance, dict) else raw.get("provider_name"),
+        field="provider_name",
+        owner=owner,
+        required=False,
+    )
+    capture_id = evidence_non_empty_string(
+        (
+            provenance.get("capture_command_or_export_id")
+            if isinstance(provenance, dict) and "capture_command_or_export_id" in provenance
+            else raw.get("capture_command_or_export_id")
+        ),
+        field="capture_command_or_export_id",
+        owner=owner,
+        required=False,
+    )
+    claim_scope = evidence_non_empty_string(
+        provenance.get("claim_scope") if isinstance(provenance, dict) else raw.get("claim_scope"),
+        field="claim_scope",
+        owner=owner,
+    )
+    assert claim_scope is not None
+    provider_authority = (
+        source_type == "provider_export"
+        and provider_name is not None
+        and capture_id is not None
+        and claim_scope in PROVIDER_EXPORT_PUBLIC_CLAIM_SCOPES
+    )
+    return {
+        "source_type": source_type,
+        "provider_name": provider_name,
+        "capture_command_or_export_id": capture_id,
+        "claim_scope": claim_scope,
+        "provider_public_claim_authority": provider_authority,
+    }
+
+
+def parse_evidence_tokens(raw: dict[str, Any], *, owner: str) -> tuple[dict[str, int], set[str]]:
+    token_block = raw.get("tokens")
+    if token_block is not None and not isinstance(token_block, dict):
+        raise SystemExit(f"{owner} tokens must be a JSON object")
+    tokens: dict[str, int] = {}
+    observed: set[str] = set()
+    source = token_block if isinstance(token_block, dict) else {}
+    for bucket, _keys in USAGE_KEY_GROUPS:
+        value = source.get(bucket) if bucket in source else raw.get(bucket)
+        if value is not None:
+            observed.add(bucket)
+        tokens[bucket] = evidence_nonnegative_int(value, field=bucket, owner=owner)
+    return tokens, observed
+
+
+def parse_evidence_row(raw_value: Any, *, owner: str, line_number: int) -> EvidenceReplayRow:
+    raw = require_evidence_object(raw_value, owner=owner)
+    schema = evidence_non_empty_string(raw.get("schema_version"), field="schema_version", owner=owner)
+    if schema != BENCH_RUN_EVIDENCE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{owner} schema_version must be {BENCH_RUN_EVIDENCE_SCHEMA_VERSION}"
+        )
+    task_id = evidence_non_empty_string(raw.get("task_id"), field="task_id", owner=owner)
+    variant = evidence_non_empty_string(raw.get("variant"), field="variant", owner=owner)
+    assert task_id is not None and variant is not None
+    provenance = parse_evidence_provenance(raw, owner=owner)
+    provider_authority = bool(provenance["provider_public_claim_authority"])
+    raw_primary_tokens_measured = evidence_bool(
+        raw.get("primary_tokens_measured"),
+        field="primary_tokens_measured",
+        owner=owner,
+    )
+    raw_cost_measured = evidence_bool(
+        evidence_first(raw, "cost_measured", "primary_cost_measured"),
+        field="cost_measured",
+        owner=owner,
+    )
+    if provenance["source_type"] in {"synthetic_fixture", "manual_audit"}:
+        primary_tokens_measured = False
+        cost_measured = False
+    elif provider_authority:
+        primary_tokens_measured = raw_primary_tokens_measured
+        cost_measured = raw_cost_measured
+    else:
+        if raw_primary_tokens_measured or raw_cost_measured:
+            raise SystemExit(
+                f"{owner} provider_export measured flags require provider_name, "
+                "capture_command_or_export_id, and a provider-measured matched-task claim_scope"
+            )
+        primary_tokens_measured = False
+        cost_measured = False
+
+    tokens, observed_token_buckets = parse_evidence_tokens(raw, owner=owner)
+    if primary_tokens_measured and not {"input_tokens", "output_tokens"}.issubset(observed_token_buckets):
+        raise SystemExit(
+            f"{owner} primary_tokens_measured=true requires input_tokens and output_tokens evidence"
+        )
+    cost_usd = evidence_nonnegative_float(
+        evidence_first(raw, "cost_usd", "primary_cost_usd"),
+        field="cost_usd",
+        owner=owner,
+    )
+    if cost_measured and "cost_usd" not in raw and "primary_cost_usd" not in raw:
+        raise SystemExit(f"{owner} cost_measured=true requires cost_usd evidence")
+
+    if "success" not in raw:
+        raise SystemExit(f"{owner} success must be a boolean")
+    success = evidence_bool(raw.get("success"), field="success", owner=owner)
+    notes = evidence_non_empty_string(raw.get("notes"), field="notes", owner=owner, required=False)
+    model = evidence_non_empty_string(raw.get("model"), field="model", owner=owner, required=False) or "evidence-replay"
+    effort = evidence_non_empty_string(raw.get("effort"), field="effort", owner=owner, required=False) or ""
+    self_hosted_metrics = None
+    if SELF_HOSTED_METRICS_KEY in raw:
+        self_hosted_metrics = normalize_self_hosted_metrics(
+            raw.get(SELF_HOSTED_METRICS_KEY),
+            source="evidence_jsonl.self_hosted_metrics",
+        )
+        if self_hosted_metrics is None:
+            raise SystemExit(f"{owner} self_hosted_metrics must be normalized explicit metrics")
+
+    result = RunResult(
+        task_id=task_id,
+        variant=variant,
+        model=model,
+        effort=effort,
+        tokens=tokens,
+        cost_usd=cost_usd,
+        success=success,
+        notes=notes or f"evidence replay ({provenance['source_type']})",
+        corrections=evidence_nonnegative_int(raw.get("corrections"), field="corrections", owner=owner),
+        cost_measured=cost_measured,
+        wall_time_seconds=evidence_nonnegative_float(
+            raw.get("wall_time_seconds"),
+            field="wall_time_seconds",
+            owner=owner,
+            maximum=MAX_SELF_HOSTED_LATENCY_MS / 1000,
+        ),
+        turns=evidence_nonnegative_int(raw.get("turns"), field="turns", owner=owner),
+        hook_triggers=evidence_nonnegative_int(raw.get("hook_triggers"), field="hook_triggers", owner=owner),
+        bytes_before=evidence_nonnegative_int(raw.get("bytes_before"), field="bytes_before", owner=owner),
+        bytes_after=evidence_nonnegative_int(raw.get("bytes_after"), field="bytes_after", owner=owner),
+        artifacts_used=evidence_nonnegative_int(raw.get("artifacts_used"), field="artifacts_used", owner=owner),
+        external_tokens=evidence_nonnegative_int(raw.get("external_tokens"), field="external_tokens", owner=owner),
+        external_tokens_measured=evidence_bool(
+            raw.get("external_tokens_measured"),
+            field="external_tokens_measured",
+            owner=owner,
+        ),
+        external_cost_usd=evidence_nonnegative_float(
+            raw.get("external_cost_usd"),
+            field="external_cost_usd",
+            owner=owner,
+        ),
+        external_cost_measured=evidence_bool(
+            raw.get("external_cost_measured"),
+            field="external_cost_measured",
+            owner=owner,
+        ),
+        provider_cached_tokens=evidence_nonnegative_int(
+            raw.get("provider_cached_tokens"),
+            field="provider_cached_tokens",
+            owner=owner,
+        ),
+        provider_cached_tokens_measured=evidence_bool(
+            raw.get("provider_cached_tokens_measured"),
+            field="provider_cached_tokens_measured",
+            owner=owner,
+        ),
+        primary_tokens_measured=primary_tokens_measured,
+        self_hosted_metrics=self_hosted_metrics,
+    )
+    return EvidenceReplayRow(
+        result=result,
+        source_type=str(provenance["source_type"]),
+        provider_name=provenance["provider_name"],
+        capture_command_or_export_id=provenance["capture_command_or_export_id"],
+        claim_scope=str(provenance["claim_scope"]),
+        provider_export_provenance_complete=provider_authority,
+        public_claim_eligible=False,
+        line_number=line_number,
+    )
+
+
+def read_evidence_jsonl(path: Path) -> list[EvidenceReplayRow]:
+    fd = _open_regular_no_symlink(path)
+    try:
+        size = os.fstat(fd).st_size
+        if size > MAX_EVIDENCE_JSONL_BYTES:
+            raise SystemExit(
+                f"evidence JSONL exceeds {MAX_EVIDENCE_JSONL_BYTES} bytes: {path}"
+            )
+        rows: list[EvidenceReplayRow] = []
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            for line_number, line in enumerate(handle, start=1):
+                if line_number > MAX_EVIDENCE_JSONL_LINES:
+                    raise SystemExit(
+                        f"evidence JSONL line limit exceeded for {path}: > {MAX_EVIDENCE_JSONL_LINES}"
+                    )
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise SystemExit(
+                        f"{path}:{line_number} evidence row must be JSON: {exc.msg}"
+                    ) from None
+                rows.append(parse_evidence_row(payload, owner=f"{path}:{line_number}", line_number=line_number))
+    finally:
+        if fd != -1:
+            os.close(fd)
+    if not rows:
+        raise SystemExit(f"evidence JSONL contains no rows: {path}")
+    return rows
+
+
+def validate_evidence_coverage(
+    evidence_rows: list[EvidenceReplayRow],
+    runnable_targets: list[tuple[TaskFixture, Variant]],
+) -> dict[tuple[str, str], EvidenceReplayRow]:
+    by_key: dict[tuple[str, str], EvidenceReplayRow] = {}
+    for row in evidence_rows:
+        if row.key in by_key:
+            raise SystemExit(
+                f"duplicate evidence row for {row.key[0]}/{row.key[1]} "
+                f"(lines {by_key[row.key].line_number} and {row.line_number})"
+            )
+        by_key[row.key] = row
+    missing = [
+        f"{task.id}/{variant.name}"
+        for task, variant in runnable_targets
+        if (task.id, variant.name) not in by_key
+    ]
+    if missing:
+        raise SystemExit(f"missing evidence row(s) for selected targets: {', '.join(missing)}")
+    return {
+        (task.id, variant.name): by_key[(task.id, variant.name)]
+        for task, variant in runnable_targets
+    }
+
+
+def run_evidence_fixture(task: TaskFixture, variant: Variant, evidence: EvidenceReplayRow) -> RunResult:
+    result = evidence.result
+    if result.task_id != task.id or result.variant != variant.name:
+        raise SystemExit(
+            f"evidence target mismatch: expected {task.id}/{variant.name}, "
+            f"got {result.task_id}/{result.variant}"
+        )
+    if result.model == "evidence-replay":
+        result.model = task.model
+    if not result.effort:
+        result.effort = task.effort or ""
+    return result
 
 
 def row_int(row: dict[str, str], key: str) -> int:
@@ -2277,18 +2686,230 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         ),
     }
 
+def annotate_replay_report(
+    report: dict[str, Any],
+    replay_rows: list[EvidenceReplayRow],
+    *,
+    mixed_csv: bool,
+) -> dict[str, Any]:
+    source_types = sorted({row.source_type for row in replay_rows})
+    provider_names = sorted({row.provider_name for row in replay_rows if row.provider_name})
+    claim_scopes = sorted({row.claim_scope for row in replay_rows})
+    same_run_complete = (not mixed_csv) and len(replay_rows) == int(report.get("row_count") or 0)
+    all_provider_claim_authority = bool(replay_rows) and all(
+        row.provider_export_provenance_complete for row in replay_rows
+    )
+    raw_claim_status = str(report.get("claim_status") or "")
+    matched_pair_evidence = report.get("matched_pair_evidence")
+    matched_claim_gates_allow_public_claim = (
+        isinstance(matched_pair_evidence, list)
+        and bool(matched_pair_evidence)
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("claim_boundary"), dict)
+            and bool(item["claim_boundary"].get("token_savings_claim_allowed"))
+            and bool(item["claim_boundary"].get("shifted_cost_claim_allowed"))
+            for item in matched_pair_evidence
+        )
+    )
+    report_claim_gates_allow_public_claim = (
+        raw_claim_status in REPLAY_PUBLIC_CLAIM_ELIGIBLE_RAW_STATUSES
+        and matched_claim_gates_allow_public_claim
+    )
+    if not same_run_complete:
+        public_claim_status = REPLAY_UNKNOWN_MIXED_CSV_STATUS
+        public_claim_eligible = False
+    elif all_provider_claim_authority and report_claim_gates_allow_public_claim:
+        public_claim_status = REPLAY_PUBLIC_CLAIM_CANDIDATE_STATUS
+        public_claim_eligible = True
+    elif all_provider_claim_authority:
+        public_claim_status = REPLAY_PROVIDER_CLAIM_GATES_NOT_MET_STATUS
+        public_claim_eligible = False
+    else:
+        public_claim_status = REPLAY_NOT_PUBLIC_CLAIM_STATUS
+        public_claim_eligible = False
+    report["raw_metric_claim_status"] = raw_claim_status
+    report["public_claim_status"] = public_claim_status
+    report["public_claim_eligible"] = public_claim_eligible
+    if not public_claim_eligible:
+        report["claim_status"] = public_claim_status
+    report["replay_evidence"] = {
+        "schema_version": BENCH_RUN_EVIDENCE_SCHEMA_VERSION,
+        "mode": "evidence_jsonl_replay",
+        "row_count": len(replay_rows),
+        "source_types": source_types,
+        "provider_names": provider_names,
+        "claim_scopes": claim_scopes,
+        "same_run_complete": same_run_complete,
+        "mixed_csv": mixed_csv,
+        "provider_export_provenance_complete": all_provider_claim_authority,
+        "report_claim_gates_allow_public_claim": report_claim_gates_allow_public_claim,
+        "public_claim_status": public_claim_status,
+        "public_claim_eligible": public_claim_eligible,
+        "target_keys": [f"{row.result.task_id}/{row.result.variant}" for row in replay_rows],
+        "claim_boundary": REPLAY_CLAIM_BOUNDARY,
+    }
+    return report
+
+
+def report_public_claim_status(report: dict[str, Any]) -> tuple[str, bool | None]:
+    if "public_claim_status" in report:
+        return str(report.get("public_claim_status")), bool(report.get("public_claim_eligible"))
+    return (
+        "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger",
+        None,
+    )
+
+
+def markdown_value(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    text = sanitize_note_text(value)
+    return text.replace("|", "\\|") or "n/a"
+
+
+def render_dashboard_markdown(report: dict[str, Any]) -> str:
+    public_claim_status, public_claim_eligible = report_public_claim_status(report)
+    metric_claim_status = report.get("raw_metric_claim_status", report.get("claim_status"))
+    lines = [
+        "# ContextGuard Benchmark Dashboard",
+        "",
+        f"- Schema: `{markdown_value(report.get('schema'))}`",
+        f"- Baseline variant: `{markdown_value(report.get('baseline_variant'))}`",
+        f"- Rows: {markdown_value(report.get('row_count'))}",
+        f"- Metric claim status: `{markdown_value(metric_claim_status)}`",
+        f"- Public claim status: `{markdown_value(public_claim_status)}`",
+        f"- Public claim eligible: `{markdown_value(public_claim_eligible)}`",
+        "",
+        "> Claim boundary: this dashboard is not a hosted savings claim unless report claim gates "
+        "allow it and public-claim provenance is complete. Proxy byte reductions are diagnostic "
+        "and are not hosted API token savings.",
+        "",
+        "## Variant summary",
+        "",
+        "| Variant | Runs | Successes | Failure rate | Tokens/success | Bytes saved | Token proxy saved | Quality notes |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    summaries = report.get("summary_by_variant") if isinstance(report.get("summary_by_variant"), dict) else {}
+    comparison_by_variant = {
+        item.get("variant"): item
+        for item in report.get("comparisons", [])
+        if isinstance(item, dict)
+    }
+    for variant, summary in sorted(summaries.items()):
+        if not isinstance(summary, dict):
+            continue
+        comparison = comparison_by_variant.get(variant, {})
+        quality = comparison.get("quality_gate") if isinstance(comparison, dict) else None
+        if quality is None and summary.get("is_baseline_strategy"):
+            quality = "baseline"
+        lines.append(
+            "| "
+            + " | ".join([
+                markdown_value(variant),
+                markdown_value(summary.get("runs")),
+                markdown_value(summary.get("successful_runs")),
+                markdown_value(summary.get("failure_rate")),
+                markdown_value(summary.get("tokens_per_successful_task")),
+                markdown_value(summary.get("bytes_saved_successful")),
+                markdown_value(summary.get("token_proxy_saved_successful")),
+                markdown_value(quality),
+            ])
+            + " |"
+        )
+    lines.extend([
+        "",
+        "## Comparisons",
+        "",
+        "| Variant | Quality gate | Matched tasks | Token paired tasks | Token savings % | Shifted cost savings % |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ])
+    comparisons = report.get("comparisons") if isinstance(report.get("comparisons"), list) else []
+    if comparisons:
+        for item in comparisons:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                + " | ".join([
+                    markdown_value(item.get("variant")),
+                    markdown_value(item.get("quality_gate")),
+                    markdown_value(item.get("matched_successful_task_count")),
+                    markdown_value(item.get("paired_token_task_count")),
+                    markdown_value(item.get("token_savings_pct")),
+                    markdown_value(item.get("cost_savings_pct_with_shift")),
+                ])
+                + " |"
+            )
+    else:
+        lines.append("| n/a | n/a | 0 | 0 | n/a | n/a |")
+    replay = report.get("replay_evidence") if isinstance(report.get("replay_evidence"), dict) else None
+    if replay is not None:
+        lines.extend([
+            "",
+            "## Replay evidence provenance",
+            "",
+            f"- Source types: `{markdown_value(', '.join(replay.get('source_types') or []))}`",
+            f"- Claim scopes: `{markdown_value(', '.join(replay.get('claim_scopes') or []))}`",
+            f"- Same-run complete: `{markdown_value(replay.get('same_run_complete'))}`",
+            f"- Mixed/pre-existing CSV: `{markdown_value(replay.get('mixed_csv'))}`",
+            f"- Boundary: {markdown_value(replay.get('claim_boundary'))}",
+        ])
+    else:
+        lines.extend([
+            "",
+            "## Provenance note",
+            "",
+            "- CSV-only dashboards have unknown public-claim provenance unless regenerated from "
+            "the original evidence JSONL or a future trusted provenance ledger.",
+        ])
+    lines.extend([
+        "",
+        "## Re-run context",
+        "",
+        "- Evidence replay: `context-guard-bench --tasks <tasks.json> --variants <variants.json> "
+        "--evidence-jsonl <evidence.jsonl> --csv <results.csv> --report-json <report.json> "
+        "--dashboard-md <dashboard.md>`",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def write_report_outputs(
+    csv_path: Path,
+    report_path: Path | None,
+    dashboard_path: Path | None,
+    baseline_variant: str,
+    *,
+    replay_rows: list[EvidenceReplayRow] | None = None,
+    mixed_csv: bool = False,
+) -> dict[str, Any]:
+    # Keep lock order stable across all derived writes: source CSV first, then
+    # report, then dashboard. Do not introduce a derived-output -> CSV path.
+    with csv_file_lock(csv_path, create_parent=True):
+        report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
+        if replay_rows is not None:
+            report = annotate_replay_report(report, replay_rows, mixed_csv=mixed_csv)
+        if report_path is not None:
+            with csv_file_lock(report_path, create_parent=True):
+                write_text_no_follow(
+                    report_path,
+                    json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                )
+        if dashboard_path is not None:
+            with csv_file_lock(dashboard_path, create_parent=True):
+                write_text_no_follow(dashboard_path, render_dashboard_markdown(report))
+    return report
+
+
 def write_report_json(csv_path: Path, report_path: Path, baseline_variant: str) -> dict[str, Any]:
     # Keep lock order stable across all report writes: source CSV first, derived
     # report second. Do not introduce a report -> CSV path; that can deadlock
     # concurrent report generation.
-    with csv_file_lock(csv_path, create_parent=True):
-        report = summarize_benchmark_rows(read_csv_rows(csv_path), baseline_variant)
-        with csv_file_lock(report_path, create_parent=True):
-            write_text_no_follow(
-                report_path,
-                json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            )
-    return report
+    return write_report_outputs(csv_path, report_path, None, baseline_variant)
 
 
 def sanitize_note_text(value: Any) -> str:
@@ -2351,8 +2972,18 @@ def existing_file_identity(path: Path) -> tuple[int, int] | None:
         os.close(fd)
 
 
-def validate_distinct_output_paths(csv_path: Path, ledger_path: Path | None, report_path: Path | None) -> None:
-    outputs = [("csv", csv_path), ("ledger-jsonl", ledger_path), ("report-json", report_path)]
+def validate_distinct_output_paths(
+    csv_path: Path,
+    ledger_path: Path | None,
+    report_path: Path | None,
+    dashboard_path: Path | None = None,
+) -> None:
+    outputs = [
+        ("csv", csv_path),
+        ("ledger-jsonl", ledger_path),
+        ("report-json", report_path),
+        ("dashboard-md", dashboard_path),
+    ]
     seen: dict[Path, str] = {}
     seen_identity: dict[tuple[int, int], str] = {}
     for label, path in outputs:
@@ -2391,12 +3022,16 @@ def main() -> int:
                         help="optional JSONL ledger path for cost-shift accounting per run")
     parser.add_argument("--report-json", default=None, type=Path,
                         help="optional A/B summary report JSON path generated from --csv after real runs")
+    parser.add_argument("--dashboard-md", default=None, type=Path,
+                        help="optional Markdown dashboard path generated from the benchmark report")
+    parser.add_argument("--evidence-jsonl", default=None, type=Path,
+                        help="optional validated run-evidence JSONL replay input; skips provider invocation")
     parser.add_argument("--baseline-variant", default="baseline",
                         help="variant name used as the report baseline (default: baseline)")
     args = parser.parse_args()
 
     require_no_follow_file_ops_supported()
-    validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json)
+    validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json, args.dashboard_md)
 
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
@@ -2411,6 +3046,61 @@ def main() -> int:
         for task, variant in targets
         if (task.id, variant.name) not in skip_keys
     ]
+    if args.evidence_jsonl is not None:
+        if args.dry_run:
+            for task, variant in targets:
+                if (task.id, variant.name) in skip_keys:
+                    print(f"skip {task.id}/{variant.name} (already in {args.csv})")
+                    continue
+                print(f"evidence replay dry-run: {task.id}/{variant.name} <- {args.evidence_jsonl}")
+            print("completed 0 run(s); results in (dry-run; no CSV writes)")
+            return 0
+        csv_had_preexisting_content = file_has_content_no_follow(args.csv)
+        evidence_rows = read_evidence_jsonl(args.evidence_jsonl)
+        evidence_by_key = validate_evidence_coverage(evidence_rows, runnable_targets)
+        claude_ver = "evidence-replay"
+        completed = 0
+        replay_rows_written: list[EvidenceReplayRow] = []
+        for task, variant in targets:
+            if (task.id, variant.name) in skip_keys:
+                print(f"skip {task.id}/{variant.name} (already in {args.csv})")
+                continue
+            evidence = evidence_by_key[(task.id, variant.name)]
+            print(f"replay {task.id}/{variant.name} ...", flush=True)
+            result = run_evidence_fixture(task, variant, evidence)
+            wrote = append_csv(args.csv, claude_ver, result, skip_existing=args.resume)
+            if wrote:
+                replay_rows_written.append(evidence)
+                if args.ledger_jsonl is not None:
+                    append_cost_shift_ledger(
+                        args.ledger_jsonl,
+                        claude_ver,
+                        result,
+                        replay_provenance=evidence.provenance_payload(),
+                    )
+            completed += 1
+            status = "ok" if result.success else "FAIL"
+            suffix = "" if wrote else " (CSV not updated; row already present)"
+            print(
+                f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
+                f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
+            )
+        if args.report_json is not None or args.dashboard_md is not None:
+            report = write_report_outputs(
+                args.csv,
+                args.report_json,
+                args.dashboard_md,
+                args.baseline_variant,
+                replay_rows=replay_rows_written,
+                mixed_csv=csv_had_preexisting_content or bool(skip_keys) or len(replay_rows_written) != int(completed),
+            )
+            if args.report_json is not None:
+                print(f"report {args.report_json}: {report['claim_status']}")
+            if args.dashboard_md is not None:
+                print(f"dashboard {args.dashboard_md}: {report_public_claim_status(report)[0]}")
+        print(f"completed {completed} run(s); results in {args.csv}")
+        return 0
+
     placeholder_targets = [
         f"{task.id}/{variant.name}"
         for task, variant in runnable_targets
@@ -2463,9 +3153,12 @@ def main() -> int:
             f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
         )
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
-    if args.report_json is not None and not args.dry_run:
-        report = write_report_json(args.csv, args.report_json, args.baseline_variant)
-        print(f"report {args.report_json}: {report['claim_status']}")
+    if (args.report_json is not None or args.dashboard_md is not None) and not args.dry_run:
+        report = write_report_outputs(args.csv, args.report_json, args.dashboard_md, args.baseline_variant)
+        if args.report_json is not None:
+            print(f"report {args.report_json}: {report['claim_status']}")
+        if args.dashboard_md is not None:
+            print(f"dashboard {args.dashboard_md}: {report_public_claim_status(report)[0]}")
     print(f"completed {completed} run(s); results in {target}")
     return 0
 

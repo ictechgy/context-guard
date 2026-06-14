@@ -26,6 +26,7 @@ Use them to decide what evidence a workflow has and what it does **not** prove:
 3. Treat `comparisons[].quality_gate != "pass"` as a warning to inspect failures, correction burden, and unmatched tasks before discussing savings.
 4. Keep byte-proxy, provider-cache, wall-time, and shifted-cost evidence in separate language from provider-measured token/cost claims. Provider-cache telemetry is not independent savings proof.
 5. Keep self-hosted local/model-server latency, memory, and quality metrics in the run-evidence ledger sidecar; do not fold them into hosted API token/cost savings claims unless provider-measured matched-task evidence separately supports that claim.
+6. For deterministic local replay, add `--evidence-jsonl ... --dashboard-md ...`. Synthetic/manual replay evidence regenerates CSV/report/dashboard artifacts, but the report is marked `replay_only_not_public_claim` or `unknown_mixed_csv` unless every report row has complete provider-export provenance.
 
 ## Safe wording
 
@@ -42,3 +43,5 @@ The `.example.json` fixtures intentionally use full `context-guard-bench-report-
 The self-hosted metrics example is a JSONL run-evidence sidecar, not a full report shape. Its fields are additive ledger evidence only: `latency_ms`, `peak_memory_mb`, and normalized `quality_score` describe local/model-server behavior and leave hosted API report calculations unchanged. Use `context-guard experiments plan self-hosted-metrics-ledger --json ...` only as a dry-run ledger-preview checker for explicit metrics; it does not write the benchmark ledger.
 
 For task/variant starter fixtures rather than full report-shape examples, see [`experimental-benchmark-fixtures.md`](experimental-benchmark-fixtures.md). Those files are fixture-only and synthetic dry-run-only starters until users replace the placeholder prompts and success checks; they are not shipped OCR, visual-token, learned-compression, or output-transform benchmark results, and real claims still require provider-measured matched successful tasks plus failure-rate, correction, and shifted-cost guardrails.
+
+The token-savings 12-task starter also includes [`benchmark-fixtures/token-savings-12task.evidence.example.jsonl`](benchmark-fixtures/token-savings-12task.evidence.example.jsonl) for `context-guard-bench --evidence-jsonl` replay. That file is synthetic local replay evidence, not provider-measured savings proof; use it to validate dashboards and claim-boundary handling before collecting real provider exports.

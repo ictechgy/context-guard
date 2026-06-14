@@ -24224,7 +24224,396 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         root / "results.csv",
                         root / "cost-shift.jsonl",
                         root / "report.json",
+                        root / "dashboard.md",
                     )
+
+                    with self.assertRaises(SystemExit) as dashboard_ctx:
+                        module.validate_distinct_output_paths(
+                            root / "results.csv",
+                            root / "cost-shift.jsonl",
+                            root / "report.json",
+                            root / "bench" / ".." / "results.csv",
+                        )
+                    self.assertIn("--dashboard-md must not point to the same path as --csv", str(dashboard_ctx.exception))
+
+    def test_benchmark_runner_replays_evidence_without_provider_and_writes_dashboard(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    placeholder = "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\""
+                    tasks_path = root / "tasks.json"
+                    variants_path = root / "variants.json"
+                    evidence_path = root / "evidence.jsonl"
+                    tasks_path.write_text(json.dumps([
+                        {
+                            "id": "t01",
+                            "prompt": "fixture prompt",
+                            "model": "sonnet",
+                            "effort": "medium",
+                            "max_turns": 1,
+                            "success_command": placeholder,
+                            "success_cwd": ".",
+                        }
+                    ]), encoding="utf-8")
+                    variants_path.write_text(json.dumps([
+                        {"name": "baseline", "extra_args": []},
+                        {"name": "optimized", "extra_args": []},
+                    ]), encoding="utf-8")
+
+                    def evidence_row(variant: str, input_tokens: int, output_tokens: int, bytes_after: int) -> dict:
+                        return {
+                            "schema_version": "contextguard.bench.run-evidence.v1",
+                            "task_id": "t01",
+                            "variant": variant,
+                            "model": "sonnet",
+                            "effort": "medium",
+                            "success": True,
+                            "tokens": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                            "primary_tokens_measured": True,
+                            "cost_usd": 0.123,
+                            "cost_measured": True,
+                            "external_tokens": 0,
+                            "external_tokens_measured": True,
+                            "external_cost_usd": 0,
+                            "external_cost_measured": True,
+                            "bytes_before": 1000,
+                            "bytes_after": bytes_after,
+                            "corrections": 0,
+                            "notes": f"synthetic {variant}",
+                            "provenance": {
+                                "evidence_source_type": "synthetic_fixture",
+                                "capture_command_or_export_id": "unit-test-fixture",
+                                "claim_scope": "local_replay_fixture_not_public_claim",
+                            },
+                        }
+
+                    evidence_path.write_text(
+                        "\n".join([
+                            json.dumps(evidence_row("baseline", 100, 20, 1000)),
+                            json.dumps(evidence_row("optimized", 50, 10, 200)),
+                        ]) + "\n",
+                        encoding="utf-8",
+                    )
+                    dry_csv = root / "dry-results.csv"
+                    dry_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--csv",
+                            str(dry_csv),
+                            "--evidence-jsonl",
+                            str(evidence_path),
+                            "--dry-run",
+                            "--claude-bin",
+                            str(root / "missing-claude"),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("evidence replay dry-run", dry_proc.stdout)
+                    self.assertFalse(dry_csv.exists())
+                    self.assertFalse((root / "dry-results.csv.lock").exists())
+
+                    csv_path = root / "results.csv"
+                    ledger_path = root / "ledger.jsonl"
+                    report_path = root / "report.json"
+                    dashboard_path = root / "dashboard.md"
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--csv",
+                            str(csv_path),
+                            "--evidence-jsonl",
+                            str(evidence_path),
+                            "--ledger-jsonl",
+                            str(ledger_path),
+                            "--report-json",
+                            str(report_path),
+                            "--dashboard-md",
+                            str(dashboard_path),
+                            "--claude-bin",
+                            str(root / "missing-claude"),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("replay t01/baseline", proc.stdout)
+                    self.assertIn("dashboard", proc.stdout)
+                    with csv_path.open(encoding="utf-8", newline="") as f:
+                        rows = list(csv.DictReader(f))
+                    self.assertEqual(len(rows), 2)
+                    self.assertTrue(all(row["claude_version"] == "evidence-replay" for row in rows))
+                    self.assertTrue(all(row["primary_tokens_measured"] == "false" for row in rows))
+                    self.assertTrue(all(row["cost_measured"] == "false" for row in rows))
+
+                    ledger_rows = [
+                        json.loads(line)
+                        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    self.assertEqual(len(ledger_rows), 2)
+                    self.assertEqual(ledger_rows[0]["evidence_source_type"], "synthetic_fixture")
+                    self.assertFalse(ledger_rows[0]["public_claim_eligible"])
+                    self.assertIn("replay_provenance", ledger_rows[0])
+
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+                    self.assertEqual(report["raw_metric_claim_status"], "insufficient_paired_data")
+                    self.assertEqual(report["public_claim_status"], "replay_only_not_public_claim")
+                    self.assertFalse(report["public_claim_eligible"])
+                    self.assertEqual(report["replay_evidence"]["source_types"], ["synthetic_fixture"])
+
+                    dashboard = dashboard_path.read_text(encoding="utf-8")
+                    self.assertIn("Claim boundary", dashboard)
+                    self.assertIn("Quality gate", dashboard)
+                    self.assertIn("context-guard-bench --tasks", dashboard)
+                    self.assertIn("--evidence-jsonl", dashboard)
+
+                    resumed_report = root / "resumed-report.json"
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--csv",
+                            str(csv_path),
+                            "--evidence-jsonl",
+                            str(evidence_path),
+                            "--report-json",
+                            str(resumed_report),
+                            "--resume",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    resumed = json.loads(resumed_report.read_text(encoding="utf-8"))
+                    self.assertEqual(resumed["claim_status"], "unknown_mixed_csv")
+                    self.assertFalse(resumed["public_claim_eligible"])
+
+                    no_evidence_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(tasks_path),
+                            "--variants",
+                            str(variants_path),
+                            "--csv",
+                            str(root / "no-evidence.csv"),
+                            "--claude-bin",
+                            str(root / "missing-claude"),
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(no_evidence_proc.returncode, 2)
+                    self.assertIn("fixture-only placeholder", no_evidence_proc.stderr)
+
+    def test_benchmark_runner_evidence_replay_validation_fails_closed(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_evidence_validation_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    evidence_path = root / "evidence.jsonl"
+
+                    def good_row(**updates):
+                        row = {
+                            "schema_version": "contextguard.bench.run-evidence.v1",
+                            "task_id": "t01",
+                            "variant": "baseline",
+                            "success": True,
+                            "tokens": {"input_tokens": 100, "output_tokens": 20},
+                            "primary_tokens_measured": False,
+                            "cost_usd": 0.0,
+                            "cost_measured": False,
+                            "provenance": {
+                                "evidence_source_type": "synthetic_fixture",
+                                "claim_scope": "local_replay_fixture_not_public_claim",
+                            },
+                        }
+                        row.update(updates)
+                        return row
+
+                    bad_cases = {
+                        "schema": good_row(schema_version="wrong"),
+                        "missing_provenance": {k: v for k, v in good_row().items() if k != "provenance"},
+                        "negative_metric": good_row(bytes_after=-1),
+                    }
+                    for name, row in bad_cases.items():
+                        with self.subTest(case=name):
+                            evidence_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+                            with self.assertRaises(SystemExit):
+                                module.read_evidence_jsonl(evidence_path)
+
+                    evidence_path.write_text(
+                        json.dumps(good_row(cost_usd=float("nan"))) + "\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(SystemExit):
+                        module.read_evidence_jsonl(evidence_path)
+
+                    manual = good_row(
+                        primary_tokens_measured=True,
+                        cost_measured=True,
+                        cost_usd=1.23,
+                        provenance={
+                            "evidence_source_type": "manual_audit",
+                            "claim_scope": "manual_check_not_public_claim",
+                        },
+                    )
+                    evidence_path.write_text(json.dumps(manual) + "\n", encoding="utf-8")
+                    parsed = module.read_evidence_jsonl(evidence_path)[0]
+                    self.assertFalse(parsed.result.primary_tokens_measured)
+                    self.assertFalse(parsed.result.cost_measured)
+                    self.assertFalse(parsed.public_claim_eligible)
+
+                    def provider_row(variant, *, input_tokens, output_tokens, cost_usd, corrections=0,
+                                     measured=True):
+                        return {
+                            "schema_version": "contextguard.bench.run-evidence.v1",
+                            "task_id": "t01",
+                            "variant": variant,
+                            "success": True,
+                            "tokens": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                            "primary_tokens_measured": measured,
+                            "cost_usd": cost_usd,
+                            "cost_measured": measured,
+                            "external_tokens": 0,
+                            "external_tokens_measured": True,
+                            "external_cost_usd": 0,
+                            "external_cost_measured": True,
+                            "bytes_before": 1000,
+                            "bytes_after": 800 if variant == "optimized" else 1000,
+                            "corrections": corrections,
+                            "provenance": {
+                                "evidence_source_type": "provider_export",
+                                "provider_name": "unit-provider",
+                                "capture_command_or_export_id": "export-123",
+                                "claim_scope": "provider_measured_matched_task_public_claim",
+                            },
+                        }
+
+                    def csv_rows_from_replay(replay_rows):
+                        csv_rows = []
+                        for replay in replay_rows:
+                            result = replay.result
+                            shifted = (
+                                result.cost_measured
+                                and result.external_tokens_measured
+                                and (result.external_tokens == 0 or result.external_cost_measured)
+                            )
+                            csv_rows.append({
+                                "task_id": result.task_id,
+                                "variant": result.variant,
+                                "success": "true" if result.success else "false",
+                                "total_tokens": str(sum(result.tokens.values())),
+                                "primary_tokens_measured": "true" if result.primary_tokens_measured else "false",
+                                "cost_usd": f"{result.cost_usd:.6f}",
+                                "cost_measured": "true" if result.cost_measured else "false",
+                                "external_tokens": str(result.external_tokens),
+                                "external_tokens_measured": "true" if result.external_tokens_measured else "false",
+                                "external_cost_usd": f"{result.external_cost_usd:.6f}",
+                                "external_cost_measured": "true" if result.external_cost_measured else "false",
+                                "total_cost_with_shift_usd": (
+                                    f"{(result.cost_usd + result.external_cost_usd):.6f}" if shifted else ""
+                                ),
+                                "bytes_before": str(result.bytes_before),
+                                "bytes_after": str(result.bytes_after),
+                                "corrections": str(result.corrections),
+                            })
+                        return csv_rows
+
+                    evidence_path.write_text(
+                        "\n".join([
+                            json.dumps(provider_row("baseline", input_tokens=100, output_tokens=20, cost_usd=0.12, measured=False)),
+                            json.dumps(provider_row("optimized", input_tokens=50, output_tokens=10, cost_usd=0.06, measured=False)),
+                        ]) + "\n",
+                        encoding="utf-8",
+                    )
+                    provider_incomplete = module.read_evidence_jsonl(evidence_path)
+                    incomplete_report = module.annotate_replay_report(
+                        module.summarize_benchmark_rows(csv_rows_from_replay(provider_incomplete), "baseline"),
+                        provider_incomplete,
+                        mixed_csv=False,
+                    )
+                    self.assertEqual(incomplete_report["raw_metric_claim_status"], "insufficient_paired_data")
+                    self.assertEqual(incomplete_report["claim_status"], "provider_export_claim_gates_not_met")
+                    self.assertFalse(incomplete_report["public_claim_eligible"])
+
+                    evidence_path.write_text(
+                        "\n".join([
+                            json.dumps(provider_row("baseline", input_tokens=100, output_tokens=20, cost_usd=0.12)),
+                            json.dumps(provider_row("optimized", input_tokens=50, output_tokens=10, cost_usd=0.06, corrections=1)),
+                        ]) + "\n",
+                        encoding="utf-8",
+                    )
+                    provider_quality_regression = module.read_evidence_jsonl(evidence_path)
+                    quality_report = module.annotate_replay_report(
+                        module.summarize_benchmark_rows(csv_rows_from_replay(provider_quality_regression), "baseline"),
+                        provider_quality_regression,
+                        mixed_csv=False,
+                    )
+                    self.assertEqual(quality_report["raw_metric_claim_status"], "quality_gate_watch")
+                    self.assertEqual(quality_report["claim_status"], "provider_export_claim_gates_not_met")
+                    self.assertFalse(quality_report["public_claim_eligible"])
+
+                    evidence_path.write_text(
+                        "\n".join([
+                            json.dumps(provider_row("baseline", input_tokens=100, output_tokens=20, cost_usd=0.12)),
+                            json.dumps(provider_row("optimized", input_tokens=50, output_tokens=10, cost_usd=0.06)),
+                        ]) + "\n",
+                        encoding="utf-8",
+                    )
+                    provider_complete = module.read_evidence_jsonl(evidence_path)
+                    complete_report = module.annotate_replay_report(
+                        module.summarize_benchmark_rows(csv_rows_from_replay(provider_complete), "baseline"),
+                        provider_complete,
+                        mixed_csv=False,
+                    )
+                    self.assertEqual(
+                        complete_report["raw_metric_claim_status"],
+                        "token_and_shifted_cost_savings_observed",
+                    )
+                    self.assertEqual(complete_report["claim_status"], "token_and_shifted_cost_savings_observed")
+                    self.assertEqual(complete_report["public_claim_status"], "provider_export_public_claim_candidate")
+                    self.assertTrue(complete_report["public_claim_eligible"])
+
+                    duplicate = "\n".join([json.dumps(good_row()), json.dumps(good_row())]) + "\n"
+                    evidence_path.write_text(duplicate, encoding="utf-8")
+                    rows = module.read_evidence_jsonl(evidence_path)
+                    with self.assertRaises(SystemExit):
+                        module.validate_evidence_coverage(
+                            rows,
+                            [(module.TaskFixture(id="t01", prompt="x"), module.Variant(name="baseline"))],
+                        )
+
+                    evidence_path.write_text(json.dumps(good_row()) + "\n", encoding="utf-8")
+                    rows = module.read_evidence_jsonl(evidence_path)
+                    with self.assertRaises(SystemExit):
+                        module.validate_evidence_coverage(
+                            rows,
+                            [
+                                (module.TaskFixture(id="t01", prompt="x"), module.Variant(name="baseline")),
+                                (module.TaskFixture(id="t01", prompt="x"), module.Variant(name="optimized")),
+                            ],
+                        )
 
     def test_benchmark_runner_preflight_fails_unsupported_platform_before_file_io(self):
         module = load_module_from_path(KIT_DIR / "benchmark_runner.py", "_bench_runner_unsupported_platform")
@@ -25212,6 +25601,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
         for task_path, variant_path in fixture_pairs.values():
             combined += "\n" + task_path.read_text(encoding="utf-8").lower()
             combined += "\n" + variant_path.read_text(encoding="utf-8").lower()
+        for evidence_path in sorted(fixture_dir.glob("*.example.jsonl")):
+            combined += "\n" + evidence_path.read_text(encoding="utf-8").lower()
         for prompt_path in sorted(fixture_dir.glob("*.prompt.example.md")):
             combined += "\n" + prompt_path.read_text(encoding="utf-8").lower()
         return combined
@@ -25232,6 +25623,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
         package_files = set(json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["files"])
         self.assertIn("docs/experimental-benchmark-fixtures.md", package_files)
         self.assertIn("docs/benchmark-fixtures/*.example.json", package_files)
+        self.assertIn("docs/benchmark-fixtures/*.example.jsonl", package_files)
         self.assertIn("docs/benchmark-fixtures/*.prompt.example.md", package_files)
 
         prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
@@ -25251,6 +25643,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
             "docs/benchmark-fixtures/token-savings-12task.tasks.example.json",
             "docs/benchmark-fixtures/token-savings-12task.variants.example.json",
+            "docs/benchmark-fixtures/token-savings-12task.evidence.example.jsonl",
             "docs/benchmark-fixtures/token-savings-12task-baseline.prompt.example.md",
             "docs/benchmark-fixtures/token-savings-12task-contextguard.prompt.example.md",
             'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
@@ -25339,8 +25732,17 @@ class BenchmarkRunnerTests(unittest.TestCase):
     def test_token_savings_12task_fixture_parses_and_generates_claim_safe_report(self):
         fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
         task_path, variant_path = fixture_pairs["token_savings"]
+        evidence_path = fixture_dir / "token-savings-12task.evidence.example.jsonl"
         task_raw = json.loads(task_path.read_text(encoding="utf-8"))
         self.assertEqual(len(task_raw), 12)
+        evidence_raw = [
+            json.loads(line)
+            for line in evidence_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(evidence_raw), 24)
+        self.assertTrue(all(row["provenance"]["evidence_source_type"] == "synthetic_fixture" for row in evidence_raw))
+        self.assertTrue(all(row["primary_tokens_measured"] is False for row in evidence_raw))
         expected_categories = {
             "bugfix",
             "exploration",
@@ -25415,6 +25817,42 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
                 self.assertEqual(len(parsed_tasks), 12)
                 self.assertTrue(all(module.is_placeholder_success_command(task.success_command) for task in parsed_tasks))
+                replay_rows = module.read_evidence_jsonl(evidence_path)
+                replay_targets = module.filter_targets(parsed_tasks, parsed_variants, None, None)
+                replay_by_key = module.validate_evidence_coverage(replay_rows, replay_targets)
+                self.assertEqual(len(replay_by_key), 24)
+                self.assertTrue(all(row.source_type == "synthetic_fixture" for row in replay_rows))
+                self.assertTrue(all(not row.result.primary_tokens_measured for row in replay_rows))
+                self.assertTrue(all(not row.result.cost_measured for row in replay_rows))
+                replay_report = module.annotate_replay_report(
+                    module.summarize_benchmark_rows(
+                        [
+                            {
+                                "task_id": row.result.task_id,
+                                "variant": row.result.variant,
+                                "success": "true" if row.result.success else "false",
+                                "total_tokens": str(sum(row.result.tokens.values())),
+                                "primary_tokens_measured": "false",
+                                "cost_usd": f"{row.result.cost_usd:.6f}",
+                                "cost_measured": "false",
+                                "external_tokens": str(row.result.external_tokens),
+                                "external_tokens_measured": "true" if row.result.external_tokens_measured else "false",
+                                "external_cost_usd": f"{row.result.external_cost_usd:.6f}",
+                                "external_cost_measured": "true" if row.result.external_cost_measured else "false",
+                                "total_cost_with_shift_usd": "",
+                                "bytes_before": str(row.result.bytes_before),
+                                "bytes_after": str(row.result.bytes_after),
+                                "corrections": str(row.result.corrections),
+                            }
+                            for row in replay_rows
+                        ],
+                        "baseline_full_context_fixture",
+                    ),
+                    replay_rows,
+                    mixed_csv=False,
+                )
+                self.assertEqual(replay_report["claim_status"], "replay_only_not_public_claim")
+                self.assertEqual(replay_report["public_claim_status"], "replay_only_not_public_claim")
                 report = module.summarize_benchmark_rows(rows, "baseline_full_context_fixture")
                 self.assertEqual(report["schema"], "context-guard-bench-report-v1")
                 self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")

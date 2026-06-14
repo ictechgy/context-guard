@@ -375,7 +375,7 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
 - 비용 필드가 0이거나 없으면 토큰 절감만 표시하고 실제 비용 절감은 주장하지 않습니다.
 - CSV 스키마는 엄격하게 검사합니다. 벤치마크 헬퍼를 업그레이드한 뒤에는 새 `--csv` 파일을 시작하거나 mismatch 오류가 알려주는 헤더로 마이그레이션하세요.
 
-최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을, 작업 유형별 합성 예시와 안전한 해석 경계는 [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md)을, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md)을 참고하세요.
+최소 보고서 형태 예시는 [`docs/benchmark-report.example.json`](docs/benchmark-report.example.json)을, 작업 유형별 합성 예시와 안전한 해석 경계는 [`docs/benchmark-workflow-examples.md`](docs/benchmark-workflow-examples.md)을, fixture-only 실험 시작 예시는 [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md)을 참고하세요. live provider 실행 전 deterministic local replay가 필요하면 `--evidence-jsonl docs/benchmark-fixtures/token-savings-12task.evidence.example.jsonl --dashboard-md ... --baseline-variant baseline_full_context_fixture`를 사용하세요. Replay mode는 provider와 `success_command`를 실행하지 않고 CSV/report/dashboard를 만들지만 synthetic/manual evidence는 public hosted-savings claim 불가로 표시합니다.
 
 ### 실험 기능 opt-in 관리
 

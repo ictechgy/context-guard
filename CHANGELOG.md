@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added `context-guard-bench --evidence-jsonl` replay and `--dashboard-md` rendering so synthetic/local benchmark evidence can regenerate CSV/report/dashboard artifacts while remaining non-public-claim-eligible unless provider-export provenance is complete.
 - Extended Batch 1 token-savings advisory reports with cache-score amortization risk fields, tool-prune deferred-schema proxy accounting, and a benchmark measurement-baseline contract while preserving local-only/no-savings-claim boundaries.
 - Clarified cache-score amortization output for cache-read multipliers above uncached cost by reporting a bounded `max_profitable_reuses` instead of a monotonic break-even reuse count.
 
