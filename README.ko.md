@@ -131,7 +131,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 | 출력 축약과 민감정보 가림 | 테스트·빌드·검색·diff 출력을 작게 만들고, 에이전트 컨텍스트에 들어가기 전에 민감해 보이는 값을 가립니다. |
 | 선언형 출력 필터 | 사용자 정의 JSON DSL로 성공 출력만 명시적으로 줄이고, 보호해야 하는 실패 출력은 원문 stdout/stderr와 종료 코드를 보존합니다. |
 | 로컬 로그 보관소 | 큰 로그를 대화 밖 로컬 저장소에 보관하고, 요약 정보나 요청한 줄 범위만 다시 가져옵니다. |
-| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 저장하며, `--enforce`를 명시하지 않으면 경고만 합니다. |
+| Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정하고, `context-guard route-advisor`가 로컬 총비용·batchability route 후보를 요약하며, ledger를 쓸 때도 원문 대신 keyed HMAC fingerprint만 저장합니다. `--enforce`를 명시하지 않으면 경고만 합니다. |
 | 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`, `--adaptive-k`, `--symbol-memory`로 로컬 자문 메타데이터를 덧붙일 수 있습니다. |
 | Tool/MCP schema pruner | 로컬 catalog에서 bounded top-k tool/schema 자문 리포트를 만들고, compact 요약 기록과 전체 가림 처리된 payload 재조회 경로를 남깁니다. |
 | 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. `--mode readable`은 exact fallback 안내가 있는 opt-in 산문 preview를 추가합니다. |
@@ -286,6 +286,15 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 ```
 
 `context-guard-tool-prune`은 로컬 tool 또는 MCP catalog를 결정적 lexical heuristic(어휘 기반 휴리스틱)으로 순위화해 제한된 top-k 자문 리포트를 만듭니다. inline schema는 관측된 UTF-8 바이트 예산을 지키고, 누락되거나 예산 때문에 생략된 schema는 `.context-guard/tool-prune`의 compact 요약 기록과 별도 가림 처리 payload로 다시 조회할 수 있습니다. 이 기능은 안내용이며 MCP 설정을 변경하지 않습니다. 토큰 값은 provider가 측정한 절감 수치가 아니라 추정 proxy입니다.
+
+### 총비용, batchability, routing 후보 자문
+
+```bash
+./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
+./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
+```
+
+`context-guard route-advisor`는 로컬 passive advisor입니다. caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽고 total-cost accounting, batchability blocker, batch API·prompt-cache prefix 보존·structured outputs·저비용 모델 평가 같은 route 후보를 출력합니다. queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오지 않으며, provider feature는 caller-supplied 또는 unknown/recheck-required로 표시합니다. 추천은 후보일 뿐이고, hosted token/cost 절감 주장은 여전히 matched successful task, 비열등 quality gate, shifted-cost evidence가 있어야 합니다.
 
 ### 선택한 로컬 텍스트를 보수적으로 압축하기
 

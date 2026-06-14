@@ -55,6 +55,42 @@ LEDGER_OPEN_RETRY_SECONDS = 0.01
 TTL_SECONDS = {"5m": 5 * 60, "1h": 60 * 60}
 ANTHROPIC_DOCS_URL = "https://docs.anthropic.com/en/build-with-claude/prompt-caching"
 ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
+ROUTE_FEATURE_KEYS = ("batch_api", "prompt_cache", "structured_outputs", "lower_cost_models", "tool_search")
+ROUTE_FEATURE_ALIASES = {
+    "batch": "batch_api",
+    "batch-api": "batch_api",
+    "batch_api": "batch_api",
+    "batchapi": "batch_api",
+    "prompt-cache": "prompt_cache",
+    "prompt_cache": "prompt_cache",
+    "cache": "prompt_cache",
+    "structured-output": "structured_outputs",
+    "structured-outputs": "structured_outputs",
+    "structured_output": "structured_outputs",
+    "structured_outputs": "structured_outputs",
+    "json-schema": "structured_outputs",
+    "json_schema": "structured_outputs",
+    "lower-cost-models": "lower_cost_models",
+    "lower_cost_models": "lower_cost_models",
+    "cheap-model": "lower_cost_models",
+    "cheap_models": "lower_cost_models",
+    "tool-search": "tool_search",
+    "tool_search": "tool_search",
+}
+ROUTE_ALLOWED_LATENCY_CLASSES = {"interactive", "async", "batch", "offline", "unknown"}
+ROUTE_ALLOWED_RISK_LEVELS = {"low", "medium", "high", "unknown"}
+ROUTE_ALLOWED_QUALITY_GATES = {"pass", "unknown", "fail"}
+ROUTE_STRUCTURED_TASK_KINDS = {
+    "classify",
+    "classification",
+    "extract",
+    "extraction",
+    "transform",
+    "summarize",
+    "summary",
+    "batch_eval",
+    "eval",
+}
 ALLOWED_FIRST_COMPONENT_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
@@ -1851,6 +1887,718 @@ def preflight_command(args: argparse.Namespace) -> int:
     return 3 if block else 0
 
 
+def advisory_label(value: Any, *, default: str = "unknown", limit: int = 80) -> str:
+    """Return a bounded identifier-like label without echoing secrets or paths."""
+
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    if secret_count_in_text(text):
+        return "redacted"
+    if "/" in text or "\\" in text:
+        return "path-redacted"
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "-", text).strip("-")
+    if not cleaned:
+        return default
+    return cleaned[:limit]
+
+
+ROUTE_MODEL_LOCAL_PATH_FIRST_SEGMENTS = {
+    "checkpoint",
+    "checkpoints",
+    "ckpt",
+    "data",
+    "dataset",
+    "datasets",
+    "model",
+    "models",
+    "private",
+    "tmp",
+    "weights",
+}
+ROUTE_MODEL_LOCAL_PATH_EXTENSIONS = {
+    ".bin",
+    ".ckpt",
+    ".gguf",
+    ".json",
+    ".onnx",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".yaml",
+    ".yml",
+}
+
+
+def route_model_path_like(text: str) -> bool:
+    lower = text.lower()
+    if (
+        text.startswith(("/", "\\", "~", "./", "../"))
+        or "\\" in text
+        or re.match(r"^[A-Za-z]:[\\/]", text) is not None
+        or "/users/" in lower
+        or "/home/" in lower
+        or "/private/" in lower
+    ):
+        return True
+    if "/" not in text:
+        return False
+    segments = text.split("/")
+    if len(segments) != 2 or any(seg in {"", ".", ".."} for seg in segments):
+        return True
+    first = segments[0].strip().lower()
+    if first in ROUTE_MODEL_LOCAL_PATH_FIRST_SEGMENTS:
+        return True
+    last = segments[-1].strip().lower()
+    return any(last.endswith(ext) for ext in ROUTE_MODEL_LOCAL_PATH_EXTENSIONS)
+
+
+def route_model_label(value: Any, *, default: str = "unknown", limit: int = 120) -> str:
+    """Return a model identifier label while redacting local-path-like values."""
+
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text:
+        return default
+    if secret_count_in_text(text):
+        return "redacted"
+    if route_model_path_like(text):
+        return "path-redacted"
+    cleaned = re.sub(r"[^A-Za-z0-9_.:/-]+", "-", text).strip("-")
+    if not cleaned:
+        return default
+    return cleaned[:limit]
+
+
+def route_model_for_pricing(value: Any, fallback: str) -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if not text or secret_count_in_text(text):
+        return fallback
+    return text
+
+
+def finite_nonnegative_value(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def route_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on", "supported", "available"}:
+            return True
+        if text in {"0", "false", "no", "n", "off", "unsupported", "unavailable"}:
+            return False
+        if text in {"", "unknown", "unset", "null", "none"}:
+            return None
+    return None
+
+
+def route_choice(value: Any, allowed: set[str], *, default: str = "unknown") -> str:
+    if value is None:
+        return default
+    text = str(value).strip().lower().replace("-", "_")
+    return text if text in allowed else default
+
+
+def route_nested_dict(data: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def first_present_mapping_value(*containers: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for container in containers:
+        for key in keys:
+            if key in container:
+                return container.get(key)
+    return None
+
+
+def first_nonnegative_cost(*containers: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for container in containers:
+        for key in keys:
+            if key not in container:
+                continue
+            value = finite_nonnegative_value(container.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def sum_nonnegative_costs(container: dict[str, Any], keys: tuple[str, ...]) -> tuple[float, list[str]]:
+    total = 0.0
+    observed: list[str] = []
+    for key in keys:
+        value = finite_nonnegative_value(container.get(key))
+        if value is None:
+            continue
+        total += value
+        observed.append(key)
+    return total, observed
+
+
+def sum_nonnegative_costs_from(*containers: dict[str, Any], keys: tuple[str, ...]) -> tuple[float, list[str]]:
+    total = 0.0
+    observed: list[str] = []
+    for key in keys:
+        value = first_nonnegative_cost(*containers, keys=(key,))
+        if value is None:
+            continue
+        total += value
+        observed.append(key)
+    return total, observed
+
+
+def parse_feature_overrides(raw_features: list[str] | None) -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    for raw in raw_features or []:
+        if "=" in raw:
+            key, raw_value = raw.split("=", 1)
+        elif ":" in raw:
+            key, raw_value = raw.split(":", 1)
+        else:
+            key, raw_value = raw, "true"
+        normalized_key = ROUTE_FEATURE_ALIASES.get(key.strip().lower().replace("_", "-"))
+        display_key = advisory_label(key, default="redacted-route-feature")
+        if normalized_key is None:
+            fail(f"unknown route feature {display_key!r}; expected one of {', '.join(ROUTE_FEATURE_KEYS)}")
+        parsed = route_bool(raw_value)
+        if parsed is None:
+            fail(f"route feature {display_key!r} must be true or false")
+        out[normalized_key] = parsed
+    return out
+
+
+def provider_features_for_workload(workload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    raw_features = workload.get("provider_features")
+    workload_features = raw_features if isinstance(raw_features, dict) else {}
+    flag_features = parse_feature_overrides(getattr(args, "feature", None))
+    features: dict[str, dict[str, Any]] = {}
+    for key in ROUTE_FEATURE_KEYS:
+        supported: bool | None = None
+        source = "unknown"
+        aliases = {key, key.replace("_", "-")}
+        aliases.update(alias for alias, canonical in ROUTE_FEATURE_ALIASES.items() if canonical == key)
+        for alias in sorted(aliases):
+            if alias in workload_features:
+                parsed = route_bool(workload_features.get(alias))
+                if parsed is not None:
+                    supported = parsed
+                    source = "workload"
+                    break
+        if key in flag_features:
+            supported = flag_features[key]
+            source = "flag"
+        features[key] = {
+            "supported": supported,
+            "source": source,
+            "recheck_required": True,
+            "reason": "provider_features are caller-supplied or unknown; recheck current provider documentation before operational routing",
+        }
+    declared = sum(1 for item in features.values() if item["supported"] is not None)
+    return {
+        "features": features,
+        "declared_feature_count": declared,
+        "unknown_feature_count": len(features) - declared,
+        "caller_supplied": declared > 0,
+        "authoritative_provider_matrix": False,
+        "recheck_required": True,
+    }
+
+
+def route_usage_object(workload: dict[str, Any]) -> dict[str, Any]:
+    usage = workload.get("usage") or workload.get("provider_usage")
+    if isinstance(usage, dict):
+        return usage.get("usage") if isinstance(usage.get("usage"), dict) else usage
+    response = workload.get("response")
+    if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+        return response["usage"]
+    telemetry = workload.get("telemetry")
+    if isinstance(telemetry, dict):
+        usage = telemetry.get("usage") or telemetry.get("provider_usage")
+        if isinstance(usage, dict):
+            return usage.get("usage") if isinstance(usage.get("usage"), dict) else usage
+    return {}
+
+
+def usage_has_measured_tokens(usage: dict[str, Any]) -> bool:
+    return any(
+        usage_int(usage, key) > 0
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_creation_input_tokens_5m",
+            "cache_creation_input_tokens_1h",
+            "cache_read_input_tokens",
+        )
+    ) or bool(usage.get("cache_creation"))
+
+
+def cost_from_usage(usage: dict[str, Any], *, profile: dict[str, Any], model: str, exchange: float) -> dict[str, Any]:
+    input_rate, output_rate, model_rate_key = rates_for_model(profile, model)
+    write_mult, read_mult = pricing_multipliers(profile)
+    input_tokens = usage_int(usage, "input_tokens")
+    output_tokens = usage_int(usage, "output_tokens")
+    cache_creation_5m, cache_creation_1h = cache_creation_buckets(usage)
+    cache_read = usage_int(usage, "cache_read_input_tokens")
+    cost_usd = (
+        money(input_tokens, input_rate)
+        + money(output_tokens, output_rate)
+        + money(cache_creation_5m, input_rate, write_mult["5m"])
+        + money(cache_creation_1h, input_rate, write_mult["1h"])
+        + money(cache_read, input_rate, read_mult)
+    )
+    return {
+        "cost_usd": round(cost_usd, 8),
+        "cost_krw": round(krw(cost_usd, exchange), 2),
+        "model_rate_key": model_rate_key,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_creation_input_tokens_5m": cache_creation_5m,
+            "cache_creation_input_tokens_1h": cache_creation_1h,
+            "cache_read_input_tokens": cache_read,
+        },
+    }
+
+
+def request_profile_for_route(workload: dict[str, Any]) -> dict[str, Any]:
+    request = workload.get("request")
+    if not isinstance(request, dict):
+        return {
+            "present": False,
+            "token_proxy": "unavailable",
+            "prompt_tokens_estimated": None,
+            "cache_breakpoint_count": 0,
+            "cacheable_tokens_estimated": 0,
+            "raw_request_emitted": False,
+        }
+    breakpoints, parse_meta = extract_cache_breakpoints(request)
+    fingerprints, redactions = build_fingerprints(breakpoints, b"\0" * 32)
+    cacheable_tokens = max((int(fp.get("tokens_estimated") or 0) for fp in fingerprints), default=0)
+    return {
+        "present": True,
+        "token_proxy": f"chars_div_{TOKEN_PROXY_CHARS_PER_TOKEN}",
+        "prompt_tokens_estimated": token_proxy_obj(strip_known_cache_controls(request)),
+        "cache_breakpoint_count": len(breakpoints),
+        "cacheable_tokens_estimated": cacheable_tokens,
+        "cache_control_markers": int(parse_meta.get("cache_control_markers") or 0),
+        "unsupported_cache_controls": int(parse_meta.get("unsupported_cache_controls") or 0),
+        "secret_like_values_detected": redactions,
+        "raw_request_emitted": False,
+    }
+
+
+def route_task_metadata(workload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    task = route_nested_dict(workload, "task", "task_metadata", "routing")
+    telemetry = route_nested_dict(workload, "telemetry")
+    latency = route_choice(
+        getattr(args, "latency_class", None)
+        or first_present_mapping_value(task, workload, keys=("latency_class", "latency", "mode")),
+        ROUTE_ALLOWED_LATENCY_CLASSES,
+    )
+    risk = route_choice(
+        getattr(args, "risk", None)
+        or first_present_mapping_value(task, workload, keys=("risk", "risk_level")),
+        ROUTE_ALLOWED_RISK_LEVELS,
+    )
+    quality_gate = route_choice(
+        getattr(args, "quality_gate", None)
+        or first_present_mapping_value(task, workload, telemetry, keys=("quality_gate", "quality")),
+        ROUTE_ALLOWED_QUALITY_GATES,
+    )
+    task_kind = advisory_label(
+        getattr(args, "task_kind", None)
+        or first_present_mapping_value(task, workload, keys=("task_kind", "kind", "type")),
+        default="unknown",
+        limit=48,
+    ).lower()
+    deadline_seconds = safe_int(first_present_mapping_value(task, workload, keys=("deadline_seconds", "max_latency_seconds")), 0)
+    return {
+        "latency_class": latency,
+        "risk": risk,
+        "quality_gate": quality_gate,
+        "task_kind": task_kind,
+        "deadline_seconds": deadline_seconds,
+        "requires_interaction": bool(route_bool(first_present_mapping_value(task, workload, keys=("requires_interaction", "interactive_required", "user_blocking")))),
+        "has_external_side_effects": bool(route_bool(first_present_mapping_value(task, workload, keys=("has_external_side_effects", "side_effects")))),
+        "order_sensitive": bool(route_bool(first_present_mapping_value(task, workload, keys=("order_sensitive", "requires_order")))),
+    }
+
+
+def total_cost_accounting_for_route(
+    workload: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    model: str,
+    exchange: float,
+) -> dict[str, Any]:
+    telemetry = route_nested_dict(workload, "telemetry")
+    shifted = route_nested_dict(workload, "shifted_costs", "shifted_cost", "auxiliary_costs")
+    usage = route_usage_object(workload)
+    usage_cost = cost_from_usage(usage, profile=profile, model=model, exchange=exchange) if usage_has_measured_tokens(usage) else None
+
+    primary_cost = first_nonnegative_cost(
+        telemetry,
+        workload,
+        keys=("primary_cost_usd", "provider_cost_usd", "observed_cost_usd", "cost_usd"),
+    )
+    primary_source = "explicit_telemetry" if primary_cost is not None else "unavailable"
+    if primary_cost is None and usage_cost is not None:
+        primary_cost = float(usage_cost["cost_usd"])
+        primary_source = "estimated_from_provider_usage_fields"
+    if primary_cost is None:
+        primary_cost = 0.0
+
+    external_cost_value = first_nonnegative_cost(telemetry, shifted, workload, keys=("external_cost_usd",))
+    external_component_sum, external_components = sum_nonnegative_costs_from(
+        telemetry,
+        shifted,
+        keys=("subagent_cost_usd", "embedding_cost_usd", "reranker_cost_usd", "tool_call_cost_usd", "retry_cost_usd", "auxiliary_provider_cost_usd"),
+    )
+    external_cost_from_aggregate = external_cost_value is not None
+    if external_cost_value is None:
+        external_cost = external_component_sum
+    else:
+        external_cost = external_cost_value
+
+    local_cost_value = first_nonnegative_cost(
+        telemetry,
+        shifted,
+        workload,
+        keys=("local_cost_usd", "self_hosted_cost_usd", "local_model_cost_usd"),
+    )
+    local_component_sum, local_components = sum_nonnegative_costs_from(
+        telemetry,
+        shifted,
+        keys=("local_server_cost_usd", "local_energy_cost_usd", "storage_cost_usd"),
+    )
+    local_cost_from_aggregate = local_cost_value is not None
+    if local_cost_value is None:
+        local_cost = local_component_sum
+    else:
+        local_cost = local_cost_value
+
+    provided_total = first_nonnegative_cost(
+        telemetry,
+        shifted,
+        workload,
+        keys=("total_cost_with_shift_usd", "total_shifted_cost_usd"),
+    )
+    computed_total = primary_cost + external_cost + local_cost
+    total = provided_total if provided_total is not None else computed_total
+    external_tokens = safe_int(first_present_mapping_value(telemetry, shifted, workload, keys=("external_tokens", "subagent_tokens", "embedding_tokens")), 0)
+    retry_count = safe_int(first_present_mapping_value(telemetry, workload, keys=("retry_count", "retries")), 0)
+    subagent_count = safe_int(first_present_mapping_value(telemetry, workload, keys=("subagent_count", "subagents")), 0)
+    tool_call_count = safe_int(first_present_mapping_value(telemetry, workload, keys=("tool_call_count", "tool_calls")), 0)
+    external_cost_supplied = external_cost_from_aggregate or bool(external_components)
+    local_cost_supplied = local_cost_from_aggregate or bool(local_components)
+    provided_total_supplied = provided_total is not None
+    missing_shifted_cost = bool(
+        (external_tokens or retry_count or subagent_count or tool_call_count)
+        and not (external_cost_supplied or local_cost_supplied or provided_total_supplied)
+    )
+    return {
+        "currency": "USD",
+        "primary_cost_usd": round(primary_cost, 8),
+        "primary_cost_source": primary_source,
+        "external_cost_usd": round(external_cost, 8),
+        "local_cost_usd": round(local_cost, 8),
+        "external_cost_supplied": external_cost_supplied,
+        "local_cost_supplied": local_cost_supplied,
+        "external_component_breakdown_usd": round(external_component_sum, 8),
+        "local_component_breakdown_usd": round(local_component_sum, 8),
+        "computed_total_cost_with_shift_usd": round(computed_total, 8),
+        "total_cost_with_shift_usd": round(total, 8),
+        "total_cost_with_shift_krw": round(krw(total, exchange), 2),
+        "provided_total_cost_with_shift_usd": round(provided_total, 8) if provided_total is not None else None,
+        "pricing": {
+            "profile": str(profile.get("name") or "custom"),
+            "release_recheck_required": bool(profile.get("release_recheck_required", True)),
+            "source_urls": profile.get("source_urls", [ANTHROPIC_DOCS_URL, ANTHROPIC_PRICING_URL]),
+            "usd_to_krw": exchange,
+        },
+        "usage_cost_estimate": usage_cost,
+        "components_observed": sorted(set(external_components + local_components)),
+        "run_counters": {
+            "external_tokens": external_tokens,
+            "retry_count": retry_count,
+            "subagent_count": subagent_count,
+            "tool_call_count": tool_call_count,
+        },
+        "measurement_availability": {
+            "provider_usage_tokens": usage_has_measured_tokens(usage),
+            "primary_cost": primary_source != "unavailable",
+            "external_cost": external_cost_supplied,
+            "local_cost": local_cost_supplied,
+            "shifted_cost": bool(external_cost_supplied or local_cost_supplied or provided_total_supplied),
+        },
+        "shifted_cost_accounting": {
+            "required": True,
+            "diagnostic_only": True,
+            "includes_external_or_local_components": bool(external_cost_supplied or local_cost_supplied),
+            "missing_shifted_cost_warning": missing_shifted_cost,
+            "claim_boundary": "total-cost routing is advisory; hosted savings claims require matched successful tasks with non-inferior quality and measured shifted costs",
+        },
+    }
+
+
+def batchability_for_route(task: dict[str, Any], provider_features: dict[str, Any]) -> dict[str, Any]:
+    feature = provider_features["features"]["batch_api"]
+    batch_supported = feature["supported"]
+    blockers: list[str] = []
+    reasons: list[str] = []
+    latency = str(task.get("latency_class") or "unknown")
+    deadline = int(task.get("deadline_seconds") or 0)
+    if latency == "interactive":
+        blockers.append("interactive_latency")
+    elif latency in {"async", "batch", "offline"}:
+        reasons.append(f"latency_class_{latency}")
+    elif deadline >= 3600:
+        reasons.append("deadline_allows_batch_window")
+    else:
+        reasons.append("latency_unknown")
+    if task.get("requires_interaction"):
+        blockers.append("requires_user_interaction")
+    if task.get("has_external_side_effects"):
+        blockers.append("external_side_effects_need_idempotency_review")
+    if task.get("order_sensitive"):
+        blockers.append("order_sensitive")
+    if task.get("risk") == "high":
+        blockers.append("high_risk_route")
+    if task.get("quality_gate") == "fail":
+        blockers.append("quality_gate_failed")
+    if batch_supported is False:
+        blockers.append("provider_batch_api_not_declared")
+    elif batch_supported is None:
+        reasons.append("provider_batch_api_unknown_recheck_required")
+    else:
+        reasons.append("provider_batch_api_declared")
+    if blockers:
+        level = "not_recommended"
+        eligible = False
+    elif batch_supported is True and (latency in {"async", "batch", "offline"} or deadline >= 3600):
+        level = "candidate"
+        eligible = True
+    else:
+        level = "conditional"
+        eligible = False
+    return {
+        "eligible": eligible,
+        "level": level,
+        "latency_class": latency,
+        "deadline_seconds": deadline,
+        "reasons": sorted(set(reasons)),
+        "blockers": sorted(set(blockers)),
+        "requires_current_provider_docs_check": batch_supported is None,
+    }
+
+
+def recommendation(
+    rec_id: str,
+    *,
+    decision: str,
+    priority: str,
+    rationale: str,
+    prerequisites: list[str],
+) -> dict[str, Any]:
+    return {
+        "id": rec_id,
+        "decision": decision,
+        "priority": priority,
+        "rationale": rationale,
+        "prerequisites": prerequisites,
+        "claim_boundary": "candidate routing advice only; validate on matched successful tasks before claiming token or cost savings",
+    }
+
+
+def route_recommendations(
+    *,
+    task: dict[str, Any],
+    provider_features: dict[str, Any],
+    request_profile: dict[str, Any],
+    batchability: dict[str, Any],
+    total_cost: dict[str, Any],
+) -> list[dict[str, Any]]:
+    recs: list[dict[str, Any]] = [
+        recommendation(
+            "measure-before-claim",
+            decision="required",
+            priority="P0",
+            rationale="Route changes can shift work into retries, subagents, batch queues, local servers, or provider cache writes; measure total cost with quality gates before claims.",
+            prerequisites=["matched_successful_tasks", "non_inferior_quality", "shifted_cost_accounting"],
+        )
+    ]
+    batch_decision = "candidate" if batchability.get("eligible") else str(batchability.get("level") or "conditional")
+    recs.append(
+        recommendation(
+            "use-batch-api-for-noninteractive-work",
+            decision=batch_decision,
+            priority="P1" if batch_decision == "candidate" else "P2",
+            rationale="Batch APIs can reduce cost for non-interactive work only when provider support, latency tolerance, idempotency, and quality gates are satisfied.",
+            prerequisites=["provider_batch_support_current", "async_or_offline_latency", "idempotency_review", "matched_replay"],
+        )
+    )
+
+    prompt_cache_feature = provider_features["features"]["prompt_cache"]["supported"]
+    cache_breakpoints = int(request_profile.get("cache_breakpoint_count") or 0)
+    cacheable_tokens = int(request_profile.get("cacheable_tokens_estimated") or 0)
+    if prompt_cache_feature is False:
+        cache_decision = "not_recommended"
+    elif cache_breakpoints or cacheable_tokens:
+        cache_decision = "candidate" if prompt_cache_feature is True else "conditional"
+    else:
+        cache_decision = "needs_request_evidence"
+    recs.append(
+        recommendation(
+            "preserve-prompt-cache-prefix",
+            decision=cache_decision,
+            priority="P1" if cache_decision == "candidate" else "P2",
+            rationale="Stable-prefix prompt caching is useful only when current provider support and repeated cacheable request prefixes are verified.",
+            prerequisites=["stable_prefix_first", "volatile_tail", "provider_usage_cache_telemetry"],
+        )
+    )
+
+    structured_feature = provider_features["features"]["structured_outputs"]["supported"]
+    task_kind = str(task.get("task_kind") or "unknown")
+    if structured_feature is False:
+        structured_decision = "not_recommended"
+    elif task_kind in ROUTE_STRUCTURED_TASK_KINDS:
+        structured_decision = "candidate" if structured_feature is True else "conditional"
+    else:
+        structured_decision = "needs_task_fit"
+    recs.append(
+        recommendation(
+            "use-structured-outputs-when-task-fits",
+            decision=structured_decision,
+            priority="P2",
+            rationale="Structured outputs can reduce retries and parsing repairs for extraction/classification style work, but they are not a token-savings proof.",
+            prerequisites=["schema_fit_review", "retry_rate_measurement", "quality_non_regression"],
+        )
+    )
+
+    lower_cost_feature = provider_features["features"]["lower_cost_models"]["supported"]
+    risk = str(task.get("risk") or "unknown")
+    quality_gate = str(task.get("quality_gate") or "unknown")
+    if lower_cost_feature is False or risk == "high" or quality_gate == "fail":
+        cheaper_decision = "not_recommended"
+    elif risk == "low" and quality_gate in {"pass", "unknown"}:
+        cheaper_decision = "candidate" if lower_cost_feature is True else "conditional"
+    else:
+        cheaper_decision = "conditional"
+    recs.append(
+        recommendation(
+            "evaluate-cheaper-model-route",
+            decision=cheaper_decision,
+            priority="P2",
+            rationale="Lower-cost model routing is acceptable only for low-risk or well-gated work and must include corrections, retries, and shifted cost.",
+            prerequisites=["risk_tier_low_or_reviewed", "matched_replay", "corrections_guardrail", "retry_cost_accounting"],
+        )
+    )
+
+    if total_cost["shifted_cost_accounting"].get("missing_shifted_cost_warning"):
+        recs.append(
+            recommendation(
+                "record-missing-shifted-costs",
+                decision="required",
+                priority="P1",
+                rationale="Telemetry indicates external tokens, retries, or subagents but no shifted external/local cost component was supplied.",
+                prerequisites=["external_cost_usd_or_local_cost_usd", "retry_or_subagent_cost_measurement"],
+            )
+        )
+    return recs
+
+
+def route_advisor_command(args: argparse.Namespace) -> int:
+    workload_raw, _truncated = load_json_input(args.workload, max_bytes=args.max_bytes)
+    workload = require_json_object(workload_raw.get("workload") if isinstance(workload_raw, dict) and isinstance(workload_raw.get("workload"), dict) else workload_raw, "workload")
+    profile = load_pricing_profile(args.pricing_profile, max_bytes=args.max_bytes)
+    if args.usd_to_krw is not None:
+        profile["usd_to_krw"] = usd_to_krw(profile, args.usd_to_krw)
+    exchange = usd_to_krw(profile, None)
+    request = workload.get("request") if isinstance(workload.get("request"), dict) else {}
+    provider = advisory_label(getattr(args, "provider", None) or workload.get("provider") or (request.get("provider") if isinstance(request, dict) else None))
+    model_raw = getattr(args, "model", None) or workload.get("model") or (request.get("model") if isinstance(request, dict) else None)
+    model = route_model_label(model_raw)
+    model_for_pricing = route_model_for_pricing(model_raw, model)
+    provider_features = provider_features_for_workload(workload, args)
+    task = route_task_metadata(workload, args)
+    request_profile = request_profile_for_route(workload)
+    total_cost = total_cost_accounting_for_route(workload, profile=profile, model=model_for_pricing, exchange=exchange)
+    batchability = batchability_for_route(task, provider_features)
+    recommendations = route_recommendations(
+        task=task,
+        provider_features=provider_features,
+        request_profile=request_profile,
+        batchability=batchability,
+        total_cost=total_cost,
+    )
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "tool": TOOL_NAME,
+        "mode": "route_advisor",
+        "provider": {
+            "name": provider,
+            "model": model,
+            "feature_matrix_authoritative": False,
+            "feature_recheck_required": True,
+        },
+        "provider_features": provider_features,
+        "task": task,
+        "request_profile": request_profile,
+        "total_cost_accounting": total_cost,
+        "batchability": batchability,
+        "route_recommendations": recommendations,
+        "routing_decision": {
+            "best_current_action": "measure_before_claim" if any(rec["decision"] == "required" for rec in recommendations) else "review_candidates",
+            "candidate_count": sum(1 for rec in recommendations if rec.get("decision") == "candidate"),
+            "conditional_count": sum(1 for rec in recommendations if rec.get("decision") == "conditional"),
+            "not_recommended_count": sum(1 for rec in recommendations if rec.get("decision") == "not_recommended"),
+        },
+        "claim_boundary": {
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+            "requires_matched_successful_tasks": True,
+            "requires_non_inferior_quality": True,
+            "requires_shifted_cost_accounting": True,
+            "provider_features_are_caller_supplied_or_unknown": True,
+        },
+        "privacy": {
+            "raw_prompt_emitted": False,
+            "raw_request_emitted": False,
+            "raw_paths_emitted": False,
+            "workload_stored": False,
+            "provider_call_performed": False,
+            "queue_started": False,
+        },
+    }
+    emit(report, json_mode=args.json)
+    return 0
+
+
 def usage_int(data: dict[str, Any], key: str) -> int:
     value = data.get(key, 0)
     try:
@@ -2282,6 +3030,15 @@ def emit(data: dict[str, Any], *, json_mode: bool) -> None:
     elif mode == "compile":
         findings = data.get("findings", []) if isinstance(data.get("findings"), list) else []
         print(f"{TOOL_NAME}: compile findings={len(findings)}")
+    elif mode == "route_advisor":
+        batchability = data.get("batchability", {}) if isinstance(data.get("batchability"), dict) else {}
+        routing = data.get("routing_decision", {}) if isinstance(data.get("routing_decision"), dict) else {}
+        total = data.get("total_cost_accounting", {}) if isinstance(data.get("total_cost_accounting"), dict) else {}
+        print(
+            f"{TOOL_NAME}: route-advisor batch={batchability.get('level', 'unknown')} "
+            f"candidates={routing.get('candidate_count', 0)} conditional={routing.get('conditional_count', 0)} "
+            f"total_with_shift=${total.get('total_cost_with_shift_usd', 0)}"
+        )
     else:
         summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
         print(f"{TOOL_NAME}: ledger entries={summary.get('entries', 0)}")
@@ -2334,6 +3091,22 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help=f"maximum manifest JSON bytes (default: {DEFAULT_MAX_BYTES})")
     compile_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     compile_parser.set_defaults(func=compile_command)
+
+    route = sub.add_parser(
+        "route-advisor",
+        help="advise on batchability, provider features, total cost, and route candidates",
+        description="advise on batchability, provider features, total cost, and route candidates without provider calls or queue runtime",
+    )
+    route.add_argument("--workload", default="-", help="workload JSON path, or '-' for stdin")
+    route.add_argument("--provider", help="provider label override; advisory only")
+    route.add_argument("--model", help="model label override for pricing lookup; advisory only")
+    route.add_argument("--feature", action="append", default=[], help="provider feature override such as batch_api=true or structured_outputs=false")
+    route.add_argument("--latency-class", choices=sorted(ROUTE_ALLOWED_LATENCY_CLASSES), help="latency class override")
+    route.add_argument("--risk", choices=sorted(ROUTE_ALLOWED_RISK_LEVELS), help="risk tier override")
+    route.add_argument("--quality-gate", choices=sorted(ROUTE_ALLOWED_QUALITY_GATES), help="quality gate override")
+    route.add_argument("--task-kind", help="task kind label such as extract, summarize, code_edit, or unknown")
+    add_common_cost_args(route)
+    route.set_defaults(func=route_advisor_command)
 
     return parser
 

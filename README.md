@@ -134,7 +134,7 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Output trimming and sanitizing | Keeps test, build, search, and diff output compact while redacting likely secrets before they enter agent context. |
 | Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
-| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
+| Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, `context-guard route-advisor` summarizes local total-cost/batchability route candidates, stores only keyed HMAC fingerprints where a ledger is used, and stays passive unless `--enforce` is explicit. |
 | Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` / `--symbol-memory` advisory metadata. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
 | Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies; `--mode readable` adds an opt-in readable prose preview with exact fallback guidance. |
@@ -313,6 +313,15 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 ```
 
 `context-guard-cache-score` is a local static lint for prompt/request layout. It estimates total and cacheable-prefix size with a tokenizer-free char/4 proxy, warns about dynamic-looking values near the prefix, and records provider caveats for OpenAI, Anthropic, Gemini, or a generic threshold. It does not call providers, store raw prompts, estimate prices, observe cache hits, or prove token/cost savings; verify real cache behavior with provider usage telemetry.
+
+### Advise on total cost, batchability, and routing
+
+```bash
+./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
+./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
+```
+
+`context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Recommendations are candidates only, and hosted token/cost savings claims still require matched successful tasks with non-inferior quality and shifted-cost evidence.
 
 ### Compress selected local text conservatively
 
