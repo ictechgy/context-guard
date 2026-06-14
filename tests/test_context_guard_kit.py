@@ -10321,7 +10321,19 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         prompt = stable + "\nrequest_id: 123e4567-e89b-12d3-a456-426614174000\nuser: fix CI"
         for script in CACHE_SCORE_SCRIPTS:
             with self.subTest(script=script):
-                proc = self._run_cache_score(script, "--provider", "openai", "--json", input_data=prompt)
+                proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "3",
+                    "--cache-write-multiplier",
+                    "1.25",
+                    "--cache-read-multiplier",
+                    "0.1",
+                    "--json",
+                    input_data=prompt,
+                )
                 data = json.loads(proc.stdout)
                 self.assertEqual(data["tool"], "context-guard-cache-score")
                 self.assertEqual(data["schema_version"], "contextguard.cache-score.v1")
@@ -10334,6 +10346,16 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertFalse(data["raw_prompt_stored"])
                 self.assertFalse(data["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
                 self.assertTrue(data["claim_boundary"]["requires_provider_usage_fields_for_claims"])
+                amortization = data["amortization"]
+                self.assertEqual(amortization["expected_reuses"], 3)
+                self.assertEqual(amortization["expected_reuses_semantics"], "future_cache_reads_after_initial_write")
+                self.assertEqual(amortization["cache_write_multiplier"], 1.25)
+                self.assertEqual(amortization["cache_read_multiplier"], 0.1)
+                self.assertEqual(amortization["break_even_reuses"], 1)
+                self.assertEqual(amortization["status"], "amortizes_with_expected_reuses")
+                self.assertEqual(amortization["risk"], "low")
+                self.assertTrue(amortization["user_supplied_multipliers"])
+                self.assertFalse(amortization["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
                 warning_codes = {item["code"] for item in data["warnings"]}
                 self.assertIn("dynamic_marker_in_prompt", warning_codes)
                 self.assertNotIn(stable[:80], proc.stdout)
@@ -10367,6 +10389,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("json_object_key_order_not_sorted", codes)
                 self.assertIn("tool_order_not_sorted", codes)
                 self.assertIn("anthropic_cache_control_not_detected", codes)
+                self.assertEqual(data["amortization"]["status"], "not_cacheable")
+                self.assertFalse(data["amortization"]["user_supplied_multipliers"])
                 warning_paths = {item.get("path") for item in data["warnings"]}
                 self.assertIn("$.[redacted-key]", warning_paths)
                 self.assertNotIn("$.timestamp", warning_paths)
@@ -10399,6 +10423,12 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     oversized = self._run_cache_score(script, "--max-input-bytes", "5", input_data="0123456789", check=False)
                     self.assertNotEqual(oversized.returncode, 0)
                     self.assertIn("max-input-bytes", oversized.stderr)
+                    bad_reuses = self._run_cache_score(script, "--expected-reuses", "-1", input_data="stable", check=False)
+                    self.assertNotEqual(bad_reuses.returncode, 0)
+                    self.assertIn("expected-reuses", bad_reuses.stderr)
+                    bad_multiplier = self._run_cache_score(script, "--cache-read-multiplier", "NaN", input_data="stable", check=False)
+                    self.assertNotEqual(bad_multiplier.returncode, 0)
+                    self.assertIn("cache-read-multiplier", bad_multiplier.stderr)
 
 
     def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -10514,6 +10544,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertFalse(data["native_provider_integration"])
                     self.assertFalse(data["claim_boundary"]["native_provider_integration"])
                     self.assertFalse(data["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                    self.assertTrue(data["claim_boundary"]["deferred_schema_retrieval_required_before_use"])
+                    self.assertTrue(data["deferred_schema_retrieval_required_before_use"])
                     self.assertEqual(len(data["core_tools"]), 1)
                     self.assertEqual(len(data["deferred_tools"]), 2)
                     self.assertFalse(data["core_tools"][0]["schema_included"])
@@ -10523,6 +10555,31 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(data["token_proxy"]["chars_per_token"], 4)
                     self.assertIn("tool_stub_report_bytes", data["token_proxy"])
                     self.assertNotIn("inline_report_bytes", data["token_proxy"])
+                    self.assertIn("inline_core_schema_bytes", data["token_proxy"])
+                    self.assertIn("listed_deferred_schema_bytes", data["token_proxy"])
+                    self.assertIn("total_deferred_schema_bytes", data["token_proxy"])
+                    self.assertIn("gross_listed_deferred_schema_tokens_avoided", data["token_proxy"])
+                    self.assertIn("gross_total_deferred_schema_tokens_avoided", data["token_proxy"])
+                    self.assertIn("net_initial_report_tokens_delta", data["token_proxy"])
+                    self.assertIn("estimated_initial_schema_tokens_avoided", data["token_proxy"])
+                    self.assertEqual(
+                        data["token_proxy"]["net_initial_report_tokens_delta"],
+                        data["token_proxy"]["tool_stub_report_tokens_estimated"]
+                        - data["token_proxy"]["all_schema_tokens_estimated"],
+                    )
+                    self.assertEqual(
+                        data["token_proxy"]["estimated_initial_schema_tokens_avoided"],
+                        max(
+                            0,
+                            data["token_proxy"]["all_schema_tokens_estimated"]
+                            - data["token_proxy"]["tool_stub_report_tokens_estimated"],
+                        ),
+                    )
+                    self.assertGreater(data["token_proxy"]["listed_deferred_schema_tokens_estimated"], 0)
+                    self.assertGreaterEqual(
+                        data["token_proxy"]["total_deferred_schema_tokens_estimated"],
+                        data["token_proxy"]["listed_deferred_schema_tokens_estimated"],
+                    )
                     self.assertIn("proxy_only_not_provider_billed_tokens", data["token_proxy"]["claim_boundary"])
                     self.assertEqual(data["listed_deferred_count"], 2)
                     self.assertEqual(data["total_deferred_count"], 2)
@@ -23757,6 +23814,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
                 self.assertIsNone(report["comparisons"][0]["cost_savings_pct_with_shift"])
+                baseline = report["measurement_baseline"]
+                self.assertEqual(baseline["schema_version"], "contextguard.bench.measurement-baseline.v1")
+                self.assertTrue(baseline["csv_schema_unchanged"])
+                self.assertIn("total_cost_with_shift_usd", baseline["csv_columns"])
+                self.assertIn("primary_token_buckets", baseline["captured_fields"])
+                self.assertIn("repo_revision", baseline["missing_future_run_identity_fields"])
+                self.assertFalse(baseline["claim_boundary"]["enables_savings_claims_by_itself"])
+                self.assertTrue(baseline["claim_boundary"]["requires_matched_successful_tasks"])
 
     def test_benchmark_report_treats_missing_external_cost_as_unmeasured(self):
         for index, script in enumerate(BENCH_SCRIPTS):

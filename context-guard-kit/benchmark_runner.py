@@ -184,6 +184,7 @@ MAX_USAGE_COST_USD = 10**9
 TOKEN_PROXY_BYTES_PER_TOKEN = 4
 BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
 MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
+MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v1"
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
 SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
 SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
@@ -1546,6 +1547,70 @@ def row_cost_shift_measured(row: dict[str, str]) -> bool:
     )
 
 
+def measurement_baseline_contract() -> dict[str, Any]:
+    """Describe the benchmark report's current measurement baseline contract.
+
+    This block is descriptive. It does not change the CSV schema and does not
+    grant token/cost savings claims by itself; those remain gated by matched
+    successful tasks, measured primary tokens/costs, shifted-cost accounting,
+    and quality gates.
+    """
+    return {
+        "schema_version": MEASUREMENT_BASELINE_SCHEMA_VERSION,
+        "csv_schema_unchanged": True,
+        "csv_columns": list(CSV_COLUMNS),
+        "captured_fields": {
+            "task_identity": ["task_id", "variant"],
+            "run_configuration": ["model", "effort", "claude_version"],
+            "primary_token_buckets": ["input_tokens", "output_tokens", "cache_read", "cache_creation", "total_tokens"],
+            "primary_cost": ["cost_usd", "cost_measured"],
+            "provider_cache_telemetry": ["provider_cached_tokens", "provider_cached_tokens_measured"],
+            "latency": ["wall_time_seconds"],
+            "quality_and_result": ["success", "corrections", "notes"],
+            "tooling_and_proxy_metrics": ["turns", "hook_triggers", "bytes_before", "bytes_after", "artifacts_used"],
+            "shifted_cost_accounting": [
+                "external_tokens",
+                "external_tokens_measured",
+                "external_cost_usd",
+                "external_cost_measured",
+                "total_cost_with_shift_usd",
+            ],
+        },
+        "claim_eligible_fields": {
+            "token_savings": [
+                "matched successful baseline and variant tasks",
+                "primary_tokens_measured=true on both sides",
+                "quality_gate=pass",
+            ],
+            "shifted_cost_savings": [
+                "matched successful baseline and variant tasks",
+                "cost_measured=true on both sides",
+                "external_cost_measured=true when external_tokens are present",
+                "quality_gate=pass",
+            ],
+        },
+        "proxy_only_fields": {
+            "byte_metrics": ["bytes_before", "bytes_after"],
+            "token_proxy": "chars_div_4_proxy_only",
+            "provider_cache": "diagnostic_telemetry_not_contextguard_token_reduction",
+        },
+        "missing_future_run_identity_fields": [
+            "repo_revision",
+            "agent_harness",
+            "feature_flags",
+            "provider_name",
+            "success_command_identity",
+        ],
+        "claim_boundary": {
+            "descriptive_contract_only": True,
+            "enables_savings_claims_by_itself": False,
+            "requires_matched_successful_tasks": True,
+            "requires_shifted_cost_accounting_for_cost_claims": True,
+            "raw_proxy_estimates_are_not_hosted_api_token_savings": True,
+        },
+    }
+
+
 def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) -> dict[str, Any]:
     by_variant: dict[str, dict[str, Any]] = {}
     successful_rows_by_variant_task: dict[str, dict[str, list[dict[str, str]]]] = {}
@@ -2191,6 +2256,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         "schema": "context-guard-bench-report-v1",
         "baseline_variant": baseline_variant,
         "row_count": len(rows),
+        "measurement_baseline": measurement_baseline_contract(),
         "summary_by_variant": by_variant,
         "comparisons": comparisons,
         "matched_pair_evidence": matched_pair_evidence,
