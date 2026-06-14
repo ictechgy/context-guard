@@ -1,0 +1,10 @@
+[
+  {
+    "name": "baseline_full_context_fixture",
+    "extra_args": []
+  },
+  {
+    "name": "fixture_only_contextguard_advisory_foundations",
+    "extra_args": []
+  }
+]

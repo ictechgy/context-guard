@@ -66,6 +66,7 @@ PACK_SCRIPTS = [KIT_DIR / "context_pack.py", PLUGIN_BIN / "context-guard-pack"]
 FILTER_SCRIPTS = [KIT_DIR / "context_filter.py", PLUGIN_BIN / "context-guard-filter"]
 TOOL_PRUNE_SCRIPTS = [KIT_DIR / "tool_schema_pruner.py", PLUGIN_BIN / "context-guard-tool-prune"]
 COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cost"]
+CACHE_SCORE_SCRIPTS = [KIT_DIR / "cache_score.py", PLUGIN_BIN / "context-guard-cache-score"]
 LOCAL_PROXY_NONCE_HEADER = "X-ContextGuard-Proxy-Nonce"
 LOCAL_PROXY_NONCES_BY_PORT: dict[int, str] = {}
 
@@ -9997,6 +9998,99 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(len(render_calls), 1)
                     self.assertLessEqual(data["pack_bytes"], data["budget_bytes"])
 
+    def _run_cache_score(self, script: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            input=input_data,
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+
+    def test_cache_score_reports_static_prefix_and_claim_boundary(self):
+        stable = "stable system rules " + ("x" * 4200)
+        prompt = stable + "\nrequest_id: 123e4567-e89b-12d3-a456-426614174000\nuser: fix CI"
+        for script in CACHE_SCORE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_cache_score(script, "--provider", "openai", "--json", input_data=prompt)
+                data = json.loads(proc.stdout)
+                self.assertEqual(data["tool"], "context-guard-cache-score")
+                self.assertEqual(data["schema_version"], "contextguard.cache-score.v1")
+                self.assertTrue(data["eligible"])
+                self.assertEqual(data["minimum_cacheable_tokens"], 1024)
+                self.assertGreaterEqual(data["cacheable_prefix_tokens"], 1024)
+                self.assertEqual(data["token_estimate"]["method"], "char4_proxy")
+                self.assertEqual(data["token_estimate"]["chars_per_token"], 4)
+                self.assertEqual(data["token_estimate"]["label"], "provider_tokenizer_free_proxy_not_billed_tokens")
+                self.assertFalse(data["raw_prompt_stored"])
+                self.assertFalse(data["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                self.assertTrue(data["claim_boundary"]["requires_provider_usage_fields_for_claims"])
+                warning_codes = {item["code"] for item in data["warnings"]}
+                self.assertIn("dynamic_marker_in_prompt", warning_codes)
+                self.assertNotIn(stable[:80], proc.stdout)
+
+    def test_cache_score_json_order_provider_thresholds_and_help(self):
+        request = {
+            "tools": [
+                {"name": "zeta_tool", "description": "last"},
+                {"name": "alpha_tool", "description": "first"},
+            ],
+            "messages": [{"role": "user", "content": "hello"}],
+            "system": "short stable prefix",
+            "timestamp": "2026-06-14T10:00:00Z",
+        }
+        for script in CACHE_SCORE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "anthropic",
+                    "--minimum-cacheable-tokens",
+                    "2000",
+                    "--json",
+                    input_data=json.dumps(request),
+                )
+                data = json.loads(proc.stdout)
+                self.assertEqual(data["provider"], "anthropic")
+                self.assertFalse(data["eligible"])
+                self.assertEqual(data["minimum_cacheable_tokens"], 2000)
+                codes = {item["code"] for item in data["warnings"]}
+                self.assertIn("json_object_key_order_not_sorted", codes)
+                self.assertIn("tool_order_not_sorted", codes)
+                self.assertIn("anthropic_cache_control_not_detected", codes)
+                warning_paths = {item.get("path") for item in data["warnings"]}
+                self.assertIn("$.[redacted-key]", warning_paths)
+                self.assertNotIn("$.timestamp", warning_paths)
+                help_proc = subprocess.run([sys.executable, str(script), "--help"], text=True, capture_output=True, check=True)
+                self.assertIn("Static prompt cacheability lint", help_proc.stdout)
+
+        for script, args in (
+            (KIT_DIR / "context_guard_cli.py", ["cache-score", "--help"]),
+            (PLUGIN_BIN / "context-guard", ["cache-score", "--help"]),
+        ):
+            with self.subTest(dispatcher=script):
+                proc = subprocess.run([sys.executable, str(script), *args], text=True, capture_output=True, check=True)
+                self.assertIn("Static prompt cacheability lint", proc.stdout)
+
+    def test_cache_score_rejects_symlink_and_oversized_input(self):
+        for script in CACHE_SCORE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    real = root / "prompt.txt"
+                    real.write_text("stable", encoding="utf-8")
+                    link = root / "prompt-link.txt"
+                    try:
+                        link.symlink_to(real)
+                    except (OSError, NotImplementedError):
+                        self.skipTest("symlink unavailable")
+                    proc = self._run_cache_score(script, "--input", str(link), "--json", check=False)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("symlink component", proc.stderr)
+                    oversized = self._run_cache_score(script, "--max-input-bytes", "5", input_data="0123456789", check=False)
+                    self.assertNotEqual(oversized.returncode, 0)
+                    self.assertIn("max-input-bytes", oversized.stderr)
+
 
     def _run_tool_prune(self, script: Path, cwd: Path, *args: str, input_data: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -10083,6 +10177,142 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     payload_text = payload_path.read_text(encoding="utf-8")
                     self.assertEqual(len(payload_text.encode("utf-8")), receipt["payload_bytes"])
                     self.assertEqual(hashlib.sha256(payload_text.rstrip("\n").encode("utf-8")).hexdigest(), receipt["payload_sha256"])
+
+    def test_tool_prune_defer_report_splits_core_deferred_and_preserves_receipt(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    proc = self._run_tool_prune(
+                        script,
+                        root,
+                        "defer-report",
+                        "--query",
+                        "read git diff file",
+                        "--core-top",
+                        "1",
+                        "--deferred-top",
+                        "2",
+                        "--budget-bytes",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["tool"], "context-guard-tool-prune")
+                    self.assertEqual(data["schema_version"], "contextguard.tool-prune.defer.v1")
+                    self.assertEqual(data["mode"], "defer-report")
+                    self.assertFalse(data["native_provider_integration"])
+                    self.assertFalse(data["claim_boundary"]["native_provider_integration"])
+                    self.assertFalse(data["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                    self.assertEqual(len(data["core_tools"]), 1)
+                    self.assertEqual(len(data["deferred_tools"]), 2)
+                    self.assertFalse(data["core_tools"][0]["schema_included"])
+                    self.assertEqual(data["core_tools"][0]["schema_omitted_reason"], "budget")
+                    self.assertTrue(data["deferred_namespaces"])
+                    self.assertEqual(data["token_proxy"]["method"], "char4_proxy")
+                    self.assertEqual(data["token_proxy"]["chars_per_token"], 4)
+                    self.assertIn("tool_stub_report_bytes", data["token_proxy"])
+                    self.assertNotIn("inline_report_bytes", data["token_proxy"])
+                    self.assertIn("proxy_only_not_provider_billed_tokens", data["token_proxy"]["claim_boundary"])
+                    self.assertEqual(data["listed_deferred_count"], 2)
+                    self.assertEqual(data["total_deferred_count"], 2)
+                    self.assertTrue(all(not item["native_provider_integration"] for item in data["provider_patterns"]))
+                    receipt = data["receipt"]
+                    self.assertEqual(receipt["schema_version"], "contextguard.tool-prune.v1")
+                    self.assertTrue((root / receipt["path"]).is_file())
+                    deferred_tool = data["deferred_tools"][0]["name"]
+                    self.assertIn("context-guard-tool-prune get", data["deferred_tools"][0]["retrieval"])
+                    get_proc = self._run_tool_prune(script, root, "get", receipt["receipt_id"], "--tool", deferred_tool, "--json")
+                    got = json.loads(get_proc.stdout)
+                    self.assertEqual(got["schema_version"], "contextguard.tool-prune.v1")
+                    self.assertEqual(got["tool_name"], deferred_tool)
+
+    def test_tool_prune_defer_report_help_and_standalone_json_smoke(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(help=script):
+                help_proc = self._run_tool_prune(script, ROOT, "defer-report", "--help")
+                self.assertIn("core inline tools", help_proc.stdout)
+            with self.subTest(json_smoke=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = self._run_tool_prune(
+                        script,
+                        Path(tmp),
+                        "defer-report",
+                        "--query",
+                        "read",
+                        "--core-top",
+                        "1",
+                        "--deferred-top",
+                        "1",
+                        "--json",
+                        input_data=json.dumps(self._tool_catalog()),
+                    )
+                    self.assertEqual(json.loads(proc.stdout)["schema_version"], "contextguard.tool-prune.defer.v1")
+
+    def test_tool_prune_defer_report_caps_namespace_summaries(self):
+        catalog = {
+            "servers": [
+                {
+                    "name": f"server_{index}",
+                    "tools": [
+                        {
+                            "name": f"tool_{index}",
+                            "description": f"Read data from namespace {index}",
+                            "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                        }
+                    ],
+                }
+                for index in range(5)
+            ]
+        }
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = self._run_tool_prune(
+                        script,
+                        Path(tmp),
+                        "defer-report",
+                        "--query",
+                        "read",
+                        "--core-top",
+                        "1",
+                        "--deferred-top",
+                        "3",
+                        "--namespace-top",
+                        "2",
+                        "--json",
+                        input_data=json.dumps(catalog),
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["namespace_top"], 2)
+                    self.assertEqual(len(data["deferred_namespaces"]), 2)
+                    self.assertEqual(data["deferred_namespaces_truncated_count"], 3)
+                    self.assertIn("listed_deferred_count", data["deferred_namespaces"][0])
+
+        for script, args in (
+            (KIT_DIR / "context_guard_cli.py", ["tool-prune", "defer-report", "--help"]),
+            (PLUGIN_BIN / "context-guard", ["tool-prune", "defer-report", "--help"]),
+        ):
+            with self.subTest(dispatcher=script):
+                proc = subprocess.run([sys.executable, str(script), *args], text=True, capture_output=True, check=True)
+                self.assertIn("core inline tools", proc.stdout)
+
+    def test_tool_prune_select_get_contracts_remain_v1(self):
+        for script in TOOL_PRUNE_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    select_proc = self._run_tool_prune(script, root, "select", "--query", "read", "--top", "1", "--json", input_data=json.dumps(self._tool_catalog()))
+                    selected = json.loads(select_proc.stdout)
+                    self.assertEqual(selected["schema_version"], "contextguard.tool-prune.v1")
+                    self.assertEqual(selected["mode"], "select")
+                    self.assertIn("selected_tools", selected)
+                    self.assertNotIn("core_tools", selected)
+                    get_proc = self._run_tool_prune(script, root, "get", selected["receipt"]["receipt_id"], "--tool", selected["selected_tools"][0]["name"], "--json")
+                    got = json.loads(get_proc.stdout)
+                    self.assertEqual(got["schema_version"], "contextguard.tool-prune.v1")
+                    self.assertEqual(got["mode"], "get")
 
     def test_tool_prune_custom_store_dir_retrieval_hints_are_copy_pasteable(self):
         for script in TOOL_PRUNE_SCRIPTS:
@@ -23974,6 +24204,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 fixture_dir / "output-transform.tasks.example.json",
                 fixture_dir / "output-transform.variants.example.json",
             ),
+            "token_savings": (
+                fixture_dir / "token-savings-12task.tasks.example.json",
+                fixture_dir / "token-savings-12task.variants.example.json",
+            ),
         }
         return fixture_dir, guide, fixture_pairs
 
@@ -23985,6 +24219,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "output-transform-digest-receipt.prompt.example.md",
             "visual-ocr-full-visual.prompt.example.md",
             "visual-ocr-cropped-ocr.prompt.example.md",
+            "token-savings-12task-baseline.prompt.example.md",
+            "token-savings-12task-contextguard.prompt.example.md",
         }
 
     def _experimental_benchmark_expected_prompt_fragments(self):
@@ -24000,6 +24236,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "output_transform": {
                 "baseline_raw_output_fixture": "Raw sanitized command output",
                 "fixture_only_digest_artifact_receipt": "Digest of sanitized command output",
+            },
+            "token_savings": {
+                "baseline_full_context_fixture": "unoptimized full-context",
+                "fixture_only_contextguard_advisory_foundations": "ContextGuard advisory-foundations",
             },
         }
 
@@ -24057,6 +24297,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "docs/benchmark-fixtures/visual-ocr.variants.example.json",
             "docs/benchmark-fixtures/visual-ocr-full-visual.prompt.example.md",
             "docs/benchmark-fixtures/visual-ocr-cropped-ocr.prompt.example.md",
+            "docs/benchmark-fixtures/token-savings-12task.tasks.example.json",
+            "docs/benchmark-fixtures/token-savings-12task.variants.example.json",
+            "docs/benchmark-fixtures/token-savings-12task-baseline.prompt.example.md",
+            "docs/benchmark-fixtures/token-savings-12task-contextguard.prompt.example.md",
             'ROOT / "docs" / "experimental-benchmark-fixtures.md"',
             'ROOT / "docs" / "benchmark-fixtures"',
         ):
@@ -24140,6 +24384,100 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         for variant in parsed_variants:
                             self.assertEqual(variant.extra_args, [])
 
+    def test_token_savings_12task_fixture_parses_and_generates_claim_safe_report(self):
+        fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        task_path, variant_path = fixture_pairs["token_savings"]
+        task_raw = json.loads(task_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(task_raw), 12)
+        expected_categories = {
+            "bugfix",
+            "exploration",
+            "code_review",
+            "long_log_analysis",
+            "migration",
+            "docs",
+            "refactor",
+            "performance",
+            "telemetry",
+            "cache_layout",
+            "tool_schema",
+            "artifact_receipt",
+        }
+        for category in expected_categories:
+            with self.subTest(category=category):
+                self.assertTrue(any(category in item["id"] for item in task_raw))
+        combined_fixture = (fixture_dir / "token-savings-12task-baseline.prompt.example.md").read_text(encoding="utf-8").lower()
+        combined_fixture += (fixture_dir / "token-savings-12task-contextguard.prompt.example.md").read_text(encoding="utf-8").lower()
+        for required in (
+            "tokens_per_successful_task",
+            "total_cost_with_shift_usd",
+            "external_cost_usd",
+            "matched successful tasks",
+            "10%p failure-rate guardrail",
+            "char/4 token proxies",
+        ):
+            self.assertIn(required, combined_fixture)
+
+        rows: list[dict[str, str]] = []
+        for task in task_raw:
+            task_id = task["id"]
+            rows.append({
+                "task_id": task_id,
+                "variant": "baseline_full_context_fixture",
+                "success": "true",
+                "total_tokens": "1200",
+                "primary_tokens_measured": "true",
+                "cost_usd": "0.120",
+                "cost_measured": "true",
+                "external_tokens": "0",
+                "external_tokens_measured": "true",
+                "external_cost_usd": "0",
+                "external_cost_measured": "true",
+                "total_cost_with_shift_usd": "0.120",
+                "bytes_before": "16000",
+                "bytes_after": "16000",
+                "corrections": "0",
+            })
+            rows.append({
+                "task_id": task_id,
+                "variant": "fixture_only_contextguard_advisory_foundations",
+                "success": "true",
+                "total_tokens": "900",
+                "primary_tokens_measured": "true",
+                "cost_usd": "0.080",
+                "cost_measured": "true",
+                "external_tokens": "40",
+                "external_tokens_measured": "true",
+                "external_cost_usd": "0.005",
+                "external_cost_measured": "true",
+                "total_cost_with_shift_usd": "0.085",
+                "bytes_before": "16000",
+                "bytes_after": "9000",
+                "corrections": "0",
+            })
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_token_savings_12task_{index}")
+                parsed_variants = module.parse_variants(variant_path)
+                parsed_tasks = module.parse_tasks(task_path, variants=parsed_variants)
+                self.assertEqual(len(parsed_tasks), 12)
+                self.assertTrue(all(module.is_placeholder_success_command(task.success_command) for task in parsed_tasks))
+                report = module.summarize_benchmark_rows(rows, "baseline_full_context_fixture")
+                self.assertEqual(report["schema"], "context-guard-bench-report-v1")
+                self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
+                self.assertEqual(len(report["matched_pair_evidence"]), 12)
+                comparison = report["comparisons"][0]
+                self.assertEqual(comparison["matched_successful_task_count"], 12)
+                self.assertEqual(comparison["quality_gate"], "pass")
+                self.assertIn("tokens_per_successful_task", report["summary_by_variant"]["baseline_full_context_fixture"])
+                self.assertGreater(report["summary_by_variant"]["fixture_only_contextguard_advisory_foundations"]["external_cost_successful_usd"], 0)
+                self.assertIn("Proxy byte reductions", report["caveat"])
+                pair = report["matched_pair_evidence"][0]
+                self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
+                self.assertTrue(pair["claim_boundary"]["token_savings_claim_allowed"])
+                self.assertTrue(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+
     def test_experimental_benchmark_fixtures_are_claim_safe(self):
         fixture_dir, guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
         combined_fixture_text = self._combined_experimental_benchmark_fixture_text(guide, fixture_dir, fixture_pairs)
@@ -24170,6 +24508,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "ocr confidence",
             "ocr error notes",
             "full visual fallback",
+            "cache layout",
+            "tool-schema deferral",
+            "char/4 token proxies",
+            "10%p failure-rate guardrail",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, combined_fixture_text)
@@ -24322,6 +24664,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             self.assertNotEqual(
                                 dry_runs["baseline_uncompressed_fixture"],
                                 dry_runs["fixture_only_learned_compression_candidate"],
+                            )
+                        elif lane == "token_savings":
+                            self.assertIn("unoptimized full-context", dry_runs["baseline_full_context_fixture"])
+                            self.assertIn("ContextGuard advisory-foundations", dry_runs["fixture_only_contextguard_advisory_foundations"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_full_context_fixture"],
+                                dry_runs["fixture_only_contextguard_advisory_foundations"],
                             )
                         else:
                             self.assertIn("Raw sanitized command output", dry_runs["baseline_raw_output_fixture"])

@@ -104,6 +104,7 @@ When you need a savings claim, measure it on your own tasks:
 - transcript hotspots reported by `context-guard-audit`, including `cache_friendliness` prompt-layout signals and `cache_layout_advice` experiment priorities
 - statusline `cache` / `reuse` as observed transcript/provider-cache signals, not savings caused by ContextGuard
 - `context-guard cost preflight` estimates for Anthropic request JSON, followed by `context-guard cost observe` using provider usage fields (`cache_creation_input_tokens`, `cache_read_input_tokens`) after the call
+- static prompt/request cache layout checks from `context-guard-cache-score`; its char/4 token estimates and warnings are advisory only until provider usage fields confirm real cache hits
 - matched successful baseline/variant runs from `context-guard-bench`
 - large tool/MCP catalogs versus `context-guard-tool-prune` top-k reports plus receipt retrieval
 - optional experimental lanes in [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md); fixture-only starters in [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md) use the same matched-task benchmark gates before any savings claim
@@ -292,10 +293,23 @@ The packer uses deterministic standard-library heuristics only: no network, mode
   --catalog tools.json \
   --query "review failing tests" \
   --top 5 --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-tool-prune defer-report \
+  --catalog tools.json \
+  --query "review failing tests" \
+  --core-top 3 --deferred-top 20 --json
 ./plugins/context-guard/bin/context-guard-tool-prune get <receipt_id> --tool read_file --json
 ```
 
-`context-guard-tool-prune` ranks a local tool or MCP catalog with deterministic lexical heuristics and emits a bounded top-k advisory report. Inline selected schemas respect an observed UTF-8 byte budget, and omitted or budget-skipped schemas remain recoverable from a compact local receipt plus a separate sanitized payload under `.context-guard/tool-prune`. This is advisory only: it does not mutate MCP configuration, and token counts remain estimated proxies rather than measured provider savings.
+`context-guard-tool-prune` ranks a local tool or MCP catalog with deterministic lexical heuristics and emits a bounded top-k advisory report. Inline selected schemas respect an observed UTF-8 byte budget, and omitted or budget-skipped schemas remain recoverable from a compact local receipt plus a separate sanitized payload under `.context-guard/tool-prune`. `defer-report` uses the same receipt path to split a catalog into core inline tools plus deferred tool stubs and namespace summaries. This is advisory only: it does not mutate MCP configuration, does not configure native provider tool search, and token counts remain estimated proxies rather than measured provider savings.
+
+### Score static prompt cacheability
+
+```bash
+./plugins/context-guard/bin/context-guard-cache-score --input prompt.json --provider openai --json
+./plugins/context-guard/bin/context-guard cache-score --input prompt.txt --provider anthropic --json
+```
+
+`context-guard-cache-score` is a local static lint for prompt/request layout. It estimates total and cacheable-prefix size with a tokenizer-free char/4 proxy, warns about dynamic-looking values near the prefix, and records provider caveats for OpenAI, Anthropic, Gemini, or a generic threshold. It does not call providers, store raw prompts, estimate prices, observe cache hits, or prove token/cost savings; verify real cache behavior with provider usage telemetry.
 
 ### Compress selected local text conservatively
 

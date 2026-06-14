@@ -44,6 +44,16 @@
 | 문서 작업 | README 갱신 | spec coverage |
 | UI/visual | screenshot 기준 수정 | visual diff/수동 승인 |
 
+Fixture-only starter: `docs/benchmark-fixtures/token-savings-12task.tasks.example.json` +
+`docs/benchmark-fixtures/token-savings-12task.variants.example.json` cover a 12-task
+roadmap spread for bugfix, exploration, code review, long log analysis, migration,
+docs, refactor, performance, telemetry, cache layout, tool-schema deferral, and
+artifact receipt checks. They intentionally use placeholder `success_command`
+values and must be treated as dry-run-only until replaced with real success checks.
+Reports generated from real replacements should preserve `matched_successful_task`
+evidence, `tokens_per_successful_task`, `total_cost_with_shift_usd`,
+`external_cost_usd`, the 10%p failure guardrail, and the proxy-byte caveat below.
+
 ## 3. 실험군
 
 A. Baseline

@@ -1,6 +1,6 @@
 # Experimental benchmark fixtures
 
-These fixtures are **fixture-only** starter scaffolds for future visual/OCR, learned-compression, and reversible output-transform experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not shipped benchmark results**, not OCR/compression implementations, and not hosted API savings claims.
+These fixtures are **fixture-only** starter scaffolds for future visual/OCR, learned-compression, reversible output-transform, and token-savings roadmap experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not shipped benchmark results**, not OCR/compression implementations, not cache/tool-deferral implementations, and not hosted API savings claims.
 
 Use them when designing an experiment that starts from ContextGuard's existing benchmark discipline:
 
@@ -25,6 +25,7 @@ This runner-native swap only proves command shape and prompt selection until the
 | Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized textual evidence, missed-context notes, crop/OCR telemetry, and provider telemetry. |
 | Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
 | Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
+| Token-savings 12-task roadmap | [`benchmark-fixtures/token-savings-12task.tasks.example.json`](benchmark-fixtures/token-savings-12task.tasks.example.json) | [`benchmark-fixtures/token-savings-12task.variants.example.json`](benchmark-fixtures/token-savings-12task.variants.example.json) | Exercise a canonical 12-task spread for bugfix, exploration, review, log analysis, migration, docs, refactor, performance, telemetry, cache layout, tool-schema deferral, and artifact receipt experiments after real success commands and provider telemetry are supplied. |
 
 ## Visual/OCR fixture notes
 
@@ -37,6 +38,12 @@ The learned-compression fixtures describe already-sanitized context-pack or arti
 ## Reversible output-transform fixture notes
 
 The output-transform fixtures describe already-sanitized command output comparisons and now demonstrate `variant_prompt_files` for raw sanitized output versus digest plus artifact receipt prompt evidence. They do not execute `context-guard-trim-output`, store artifacts, call `context-guard-artifact`, or invoke a provider. Future experiments should compare raw sanitized output against `--digest` output plus an `--artifact-receipt`, verify the receipt's exact re-expand command retrieves the omitted sanitized lines, and record bytes before/after, primary provider tokens, cost, success, corrections, artifact-store usage, and any external/local processing cost.
+
+## Token-savings 12-task roadmap fixture notes
+
+The token-savings 12-task fixtures are a canonical **fixture-only** spread for roadmap-level A/B design. They demonstrate `variant_prompt_files` for a baseline full-context prompt versus a ContextGuard advisory-foundations prompt that may later include cache layout lint, core-vs-deferred tool schemas, artifact receipts, and claim-safe telemetry. They do not execute `context-guard-cache-score`, `context-guard-tool-prune`, or any provider call.
+
+For real non-dry-run experiments, replace every placeholder `success_command`, keep task IDs matched across baseline and candidate variants, and require provider-measured primary token/cost data before interpreting `tokens_per_successful_task`, `total_cost_with_shift_usd`, or `external_cost_usd`. Cache predictions, char/4 token proxies, local latency, and byte reductions remain diagnostic proxy evidence unless the generated report contains matched successful task evidence and stays within the 10%p failure-rate guardrail.
 
 ## Safe wording
 

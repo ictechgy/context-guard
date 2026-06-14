@@ -1,0 +1,182 @@
+[
+  {
+    "id": "token_savings_01_bugfix",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (bugfix). Fix a null-check regression in a sanitized request parser while preserving exact stack-frame evidence. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_02_exploration",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (exploration). Explore a small sanitized repository and identify the next file to inspect without loading unrelated logs. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_03_code_review",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (code_review). Review a focused diff and identify one correctness risk plus one test gap. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_04_long_log_analysis",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (long_log_analysis). Analyze a long sanitized CI log and cite the failing command, preserving artifact receipt fallback. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_05_migration",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (migration). Plan a safe migration of a deprecated CLI flag to a new option while keeping backwards compatibility. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_06_docs",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (docs). Update user-facing docs to clarify provider-measured matched successful task requirements. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_07_refactor",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (refactor). Refactor duplicated helper parsing into a shared function without changing public output schema. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_08_performance",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (performance). Find a deterministic hot path in a local-only helper and propose a bounded optimization. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_09_telemetry",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (telemetry). Add claim-safe telemetry fields for shifted local work without hosted cost-savings claims. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_10_cache_layout",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (cache_layout). Inspect a prompt layout and identify stable prefix versus dynamic suffix placement. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_11_tool_schema",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (tool_schema). Select a small core tool set from a sanitized MCP catalog and defer the rest by receipt. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  },
+  {
+    "id": "token_savings_12_artifact_receipt",
+    "prompt": "Fixture-only synthetic token-savings roadmap task (artifact_receipt). Verify that a digest plus receipt can re-expand omitted sanitized output exactly when needed. This validates benchmark shape only; real claims require provider-measured tokens/costs for matched successful tasks, failure-rate guardrail, human corrections, and shifted-cost accounting.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_context_fixture": "token-savings-12task-baseline.prompt.example.md",
+      "fixture_only_contextguard_advisory_foundations": "token-savings-12task-contextguard.prompt.example.md"
+    }
+  }
+]

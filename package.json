@@ -32,7 +32,8 @@
     "context-guard-failed-nudge": "plugins/context-guard/bin/context-guard-failed-nudge",
     "context-guard-statusline": "plugins/context-guard/bin/context-guard-statusline",
     "context-guard-statusline-merged": "plugins/context-guard/bin/context-guard-statusline-merged",
-    "context-guard-cost": "plugins/context-guard/bin/context-guard-cost"
+    "context-guard-cost": "plugins/context-guard/bin/context-guard-cost",
+    "context-guard-cache-score": "plugins/context-guard/bin/context-guard-cache-score"
   },
   "files": [
     "CHANGELOG.md",

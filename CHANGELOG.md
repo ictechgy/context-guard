@@ -4,6 +4,9 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added `context-guard-cache-score`, a static local prompt cacheability lint with char/4 proxy labeling, provider caveats, dynamic-prefix warnings, and no provider calls, ledger writes, or savings claims.
+- Extended `context-guard-tool-prune` with `defer-report` for core-vs-deferred tool schema planning backed by the existing sanitized receipt/payload retrieval path.
+- Added a fixture-only token-savings 12-task benchmark starter and executable report-shape tests that preserve matched-task, shifted-cost, and proxy-byte claim boundaries.
 - Hardened release gates with isolated npm install smoke, CI Node setup, full unittest discovery, Homebrew template stale-version checks, and explicit CI/subprocess timeouts.
 - Hardened `context-guard experiments serve local-proxy` with a private ready-file nonce handoff that rejects missing, duplicate, or invalid nonce headers before forwarding and keeps the raw nonce out of public output and upstream requests.
 - Hardened `context-guard-filter` config loading with bounded no-follow regular-file reads, nonblocking FIFO/device rejection, and fail-closed unsupported-platform checks.
