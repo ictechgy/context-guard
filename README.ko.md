@@ -102,6 +102,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 - `context-guard-audit`가 보고한 대화 기록 사용량 집중 지점, `cache_friendliness` 프롬프트 배치 신호, `cache_layout_advice` 실험 우선순위
 - 상태표시줄의 `cache` / `reuse` 값: ContextGuard가 직접 만든 절감 효과가 아니라 관찰된 대화 기록·provider cache 신호입니다.
 - `context-guard cost preflight`로 Anthropic 요청 JSON의 추정 비용을 보고, 호출 뒤 `context-guard cost observe`로 provider usage 필드(`cache_creation_input_tokens`, `cache_read_input_tokens`)를 대조합니다.
+- `context-guard-cache-score`로 정적 cache layout과, 사용자가 직접 넣은 cache write/read multiplier 기반 amortization 위험을 안내받습니다. char/4 토큰 값은 provider 측정 절감이 아니라 추정 proxy입니다.
 - `context-guard-bench`로 성공한 기준/변형 실행을 쌍으로 맞춰 비교한 결과
 - 큰 tool/MCP catalog와 `context-guard-tool-prune` top-k 리포트 및 요약 기록 재조회 방식의 차이
 - [`research/experimental-token-reduction-radar.md`](research/experimental-token-reduction-radar.md)의 선택적 실험 lane과 마찬가지로, [`docs/experimental-benchmark-fixtures.md`](docs/experimental-benchmark-fixtures.md)의 fixture-only 시작 예시도 절감 주장을 하려면 같은 matched-task benchmark gate를 먼저 통과해야 합니다.
@@ -282,10 +283,14 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
   --catalog tools.json \
   --query "review failing tests" \
   --top 5 --budget-bytes 12000 --json
+./plugins/context-guard/bin/context-guard-tool-prune defer-report \
+  --catalog tools.json \
+  --query "review failing tests" \
+  --core-top 3 --deferred-top 20 --json
 ./plugins/context-guard/bin/context-guard-tool-prune get <receipt_id> --tool read_file --json
 ```
 
-`context-guard-tool-prune`은 로컬 tool 또는 MCP catalog를 결정적 lexical heuristic(어휘 기반 휴리스틱)으로 순위화해 제한된 top-k 자문 리포트를 만듭니다. inline schema는 관측된 UTF-8 바이트 예산을 지키고, 누락되거나 예산 때문에 생략된 schema는 `.context-guard/tool-prune`의 compact 요약 기록과 별도 가림 처리 payload로 다시 조회할 수 있습니다. 이 기능은 안내용이며 MCP 설정을 변경하지 않습니다. 토큰 값은 provider가 측정한 절감 수치가 아니라 추정 proxy입니다.
+`context-guard-tool-prune`은 로컬 tool 또는 MCP catalog를 결정적 lexical heuristic(어휘 기반 휴리스틱)으로 순위화해 제한된 top-k 자문 리포트를 만듭니다. inline schema는 관측된 UTF-8 바이트 예산을 지키고, 누락되거나 예산 때문에 생략된 schema는 `.context-guard/tool-prune`의 compact 요약 기록과 별도 가림 처리 payload로 다시 조회할 수 있습니다. `defer-report`는 core inline tool과 deferred tool stub/namespace 요약을 나누고, 첫 프롬프트에서 빠진 schema의 gross/net char/4 proxy 회계를 함께 보여줍니다. 이 기능은 안내용이며 MCP 설정이나 native provider tool search를 변경하지 않습니다. 토큰 값은 provider가 측정한 절감 수치가 아니라 추정 proxy입니다.
 
 ### 총비용, batchability, routing 후보 자문
 

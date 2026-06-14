@@ -4,6 +4,8 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Extended Batch 1 token-savings advisory reports with cache-score amortization risk fields, tool-prune deferred-schema proxy accounting, and a benchmark measurement-baseline contract while preserving local-only/no-savings-claim boundaries.
+
 ## [0.4.10] - 2026-06-14
 
 - Added `context-guard-artifact search`, a local sanitized artifact sandbox search that returns capped literal matches with exact `get --lines` rehydration commands and no hosted savings claims.

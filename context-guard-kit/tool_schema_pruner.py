@@ -844,7 +844,14 @@ def defer_report(args: argparse.Namespace) -> str:
         namespace_top=namespace_top,
     )
     all_schema_bytes = sum(byte_len_json(cand.schema) for cand in ranked)
+    listed_deferred_schema_bytes = sum(byte_len_json(cand.schema) for cand in deferred_candidates)
+    total_deferred_schema_bytes = sum(byte_len_json(cand.schema) for cand in ranked[core_top:])
     tool_stub_report_bytes = byte_len_json(core_tools) + byte_len_json(deferred_tools)
+    all_schema_tokens = proxy_tokens(all_schema_bytes)
+    inline_core_schema_tokens = proxy_tokens(core_schema_bytes)
+    listed_deferred_schema_tokens = proxy_tokens(listed_deferred_schema_bytes)
+    total_deferred_schema_tokens = proxy_tokens(total_deferred_schema_bytes)
+    tool_stub_report_tokens = proxy_tokens(tool_stub_report_bytes)
     result = {
         "tool": TOOL_NAME,
         "schema_version": DEFER_SCHEMA_VERSION,
@@ -862,6 +869,7 @@ def defer_report(args: argparse.Namespace) -> str:
         "deferred_tools_truncated_count": max(0, len(ranked) - core_top - len(deferred_tools)),
         "deferred_namespaces": deferred_namespaces,
         "deferred_namespaces_truncated_count": deferred_namespaces_truncated_count,
+        "deferred_schema_retrieval_required_before_use": True,
         "receipt": {
             **receipt,
             "bytes": receipt_size,
@@ -871,9 +879,21 @@ def defer_report(args: argparse.Namespace) -> str:
             "method": "char4_proxy",
             "chars_per_token": TOKEN_PROXY_CHARS_PER_TOKEN,
             "all_schema_bytes": all_schema_bytes,
+            "inline_core_schema_bytes": core_schema_bytes,
+            "listed_deferred_schema_bytes": listed_deferred_schema_bytes,
+            "total_deferred_schema_bytes": total_deferred_schema_bytes,
             "tool_stub_report_bytes": tool_stub_report_bytes,
-            "all_schema_tokens_estimated": proxy_tokens(all_schema_bytes),
-            "tool_stub_report_tokens_estimated": proxy_tokens(tool_stub_report_bytes),
+            "all_schema_tokens_estimated": all_schema_tokens,
+            "inline_core_schema_tokens_estimated": inline_core_schema_tokens,
+            "listed_deferred_schema_tokens_estimated": listed_deferred_schema_tokens,
+            "total_deferred_schema_tokens_estimated": total_deferred_schema_tokens,
+            "tool_stub_report_tokens_estimated": tool_stub_report_tokens,
+            "gross_listed_deferred_schema_tokens_avoided": listed_deferred_schema_tokens,
+            "gross_total_deferred_schema_tokens_avoided": total_deferred_schema_tokens,
+            "net_initial_report_tokens_delta": tool_stub_report_tokens - all_schema_tokens,
+            "net_initial_report_tokens_delta_semantics": "tool_stub_report_tokens_estimated_minus_all_schema_tokens_estimated",
+            "estimated_initial_schema_tokens_avoided": max(0, all_schema_tokens - tool_stub_report_tokens),
+            "estimated_initial_schema_tokens_avoided_semantics": "max(0, all_schema_tokens_estimated - tool_stub_report_tokens_estimated)",
             "claim_boundary": "proxy_only_not_provider_billed_tokens",
         },
         "provider_patterns": [
@@ -899,11 +919,13 @@ def defer_report(args: argparse.Namespace) -> str:
             "provider_tool_search_configured": False,
             "hosted_api_token_or_cost_savings_claim_allowed": False,
             "requires_provider_measured_matched_tasks_for_savings_claims": True,
+            "deferred_schema_retrieval_required_before_use": True,
         },
         "redaction": {"redacted_values": total_redactions},
         "caveats": [
             "Deferred loading is an application strategy report, not a native provider integration.",
             "Token proxy values are char/4 estimates over sanitized local JSON, not billed provider tokens.",
+            "Deferred schema token fields are initial-prompt proxy accounting; full schemas must be retrieved before deferred tool use.",
             "Use receipt get commands to retrieve full sanitized schemas before using deferred tools.",
         ],
     }

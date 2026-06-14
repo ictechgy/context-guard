@@ -79,7 +79,9 @@ context-guard-sanitize-output -- git diff
 context-guard-pack auto --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
+context-guard-cache-score --input prompt.json --provider openai --json
 context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
+context-guard-tool-prune defer-report --catalog tools.json --query "review failing tests" --core-top 3 --deferred-top 20 --json
 context-guard-tool-prune get <receipt_id> --tool read_file --json
 context-guard-statusline
 context-guard-statusline-merged
@@ -92,15 +94,15 @@ context-guard-statusline-merged
 - **대용량 읽기 가드와 심볼 리더**는 파일 전체 읽기 전에 검색, 심볼 구간, 작은 줄 범위 읽기 순서로 에이전트를 안내합니다. Python, JavaScript/TypeScript, Go, Rust 소스 구간 읽기를 지원합니다.
 - **로컬 로그 보관소**는 큰 명령 출력을 기본적으로 `.context-guard/artifacts`에 가림 처리해 저장하고, 줄 번호가 있는 top error, 중복 라인 그룹, 가림 처리된 bounded suggested query가 담긴 요약 기록이나 요청한 정확한 줄 범위만 반환합니다. `get`과 `list`는 리브랜딩 이전의 `.claude-token-optimizer/artifacts` 요약 기록도 읽을 수 있습니다.
 - **예산 기반 컨텍스트 패커**는 우선순위가 있는 로컬 파일 근거를 렌더링된 바이트 예산 안의 Markdown pack으로 조립하고, 포함·부분 포함·누락 source 메타데이터, bounded `.context-guard/packs` 요약 기록, 안전할 때만 정확한 가림 처리 `slice` 명령, 안전하지 않을 때의 `retrieval_omitted_reason`을 남깁니다. 추가된 `auto` 하위 명령은 추천과 pack build를 한 번에 실행하고, `auto --explain`은 manifest, pack 본문, receipt, byte budget을 바꾸지 않으면서 결정적 로컬 선택/build 이유를 짧게 추가합니다. JSON explain의 bounded repo-map은 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트를 제공하지만 pack 선택이나 provider savings claim은 아닙니다. `suggest`는 로컬 query, diff, 명시 파일, 가림 처리된 output/test-output 신호를 `build`와 호환되는 manifest로 순위화하며 네트워크·모델 호출·임베딩·provider 비용 추정은 하지 않습니다. 토큰 수는 측정된 provider token 절감이 아니라 추정 `chars_div_4` proxy입니다.
-- **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다.
+- **Tool/MCP schema pruner**는 로컬 tool catalog를 bounded top-k 자문 리포트로 순위화하고, compact 요약 기록과 payload integrity check로 전체 가림 처리된 schema 재조회를 보존합니다. `defer-report`는 core inline tool과 deferred stub/namespace 요약을 나누고 gross deferred-schema 및 net initial-report `chars_div_4` proxy 회계를 보여주지만, deferred tool을 쓰기 전에는 전체 schema를 다시 조회해야 합니다.
 - **보수적 압축기**는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류하고, 관측 바이트 근거와 추정 토큰 proxy를 함께 노출합니다.
-- **Anthropic 비용 가드와 route advisor**는 `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
+- **정적 cache-score lint와 Anthropic 비용 가드/route advisor**는 `context-guard-cache-score`로 로컬 prompt/request cache layout과 사용자 제공 cache write/read multiplier 기반 amortization 위험을 안내하고, `context-guard cost preflight/observe/ledger/compile`로 호출 전 비용 추정, provider usage 대조, keyed-HMAC cache 위험 기록, 안정적인 prefix 배치 안내를 제공합니다. `context-guard route-advisor`는 caller가 제공한 workload JSON, provider feature 선언, usage telemetry, 외부·로컬 shifted cost를 읽는 local-only passive advisor이며 queue를 시작하거나 provider를 호출하거나 pricing 문서를 새로 가져오거나 provider feature 지식을 authoritative하게 취급하지 않고 total-cost accounting, batchability blocker, route 후보를 출력합니다. 원문 프롬프트를 저장하지 않고 Anthropic/provider prompt cache를 대체하지 않으며, 추천은 matched successful task, 비열등 quality evidence, shifted-cost accounting 없이는 hosted token/cost 절감 주장이 아닙니다.
 - **출력 축약기**는 감싼 명령의 종료 코드를 보존하면서 긴 로그를 줄이고, `--digest markdown` 또는 `--digest json`으로 실행기 실패 정보, 가림 처리된 failure signature, 중복 라인 그룹, 다음 조회 제안이 담긴 요약을 만들 수 있습니다.
 - **민감정보 가림 도구**는 검색, diff, 로그 출력에서 자격 증명 패턴, 비공개 키 블록, 인증 헤더, 자격 증명이 포함된 URL, 민감해 보이는 경로를 가립니다.
 - **상태표시줄**은 모델, 컨텍스트, 비용 신호를 짧게 보여주고, 대화 기록 데이터가 있으면 캐시 읽기와 캐시 재사용 신호도 함께 표시합니다.
 - **대화 기록 감사**는 usage/cost/cache bucket을 집계하고, 토큰 집중 지점, `cache_friendliness` 프롬프트 배치 신호, `cache_layout_advice` 확인/실험 우선순위를 제한된 가림 처리된 segment hash로 보고합니다. 원문 프롬프트는 출력하지 않습니다.
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
-- **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리, 파일 기반 `variant_prompt_files`, 선택적 run별 `self_hosted_metrics` JSONL ledger sidecar를 기록합니다. 이 sidecar는 hosted API 절감 주장에 합치지 않습니다.
+- **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리, report-level measurement-baseline contract, 파일 기반 `variant_prompt_files`, 선택적 run별 `self_hosted_metrics` JSONL ledger sidecar를 기록합니다. 이 sidecar는 hosted API 절감 주장에 합치지 않습니다.
 
 비용 가드의 로컬 HMAC 키는 기본적으로 `.context-guard/cost-ledger/hmac.key`에 자동 생성됩니다. 관리자가 직접 주입하는 경우 파일에는 필수 padding을 포함한 canonical URL-safe base64 32바이트 키만 정확히 들어 있어야 하며, trailing newline이나 공백은 허용하지 않습니다. 리포트는 키와 원문 프롬프트를 출력하지 않고, 로컬 ledger는 Anthropic/provider prompt cache를 대체하지 않습니다.
 

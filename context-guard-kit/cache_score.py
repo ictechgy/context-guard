@@ -23,6 +23,9 @@ TOOL_NAME = "context-guard-cache-score"
 SCHEMA_VERSION = "contextguard.cache-score.v1"
 DEFAULT_MAX_INPUT_BYTES = 1_000_000
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
+DEFAULT_EXPECTED_REUSES = 1
+MAX_EXPECTED_REUSES = 1_000_000
+MAX_CACHE_MULTIPLIER = 1_000_000.0
 PROVIDER_MINIMUM_CACHEABLE_TOKENS = {
     # Provider and model minimums move over time.  These defaults are advisory
     # and can be overridden with --minimum-cacheable-tokens.
@@ -107,6 +110,30 @@ def bounded_int(value: object, *, default: int, minimum: int, maximum: int, name
         fail(f"{name} must be >= {minimum}")
     if number > maximum:
         fail(f"{name} must be <= {maximum}")
+    return number
+
+
+def bounded_float(
+    value: object,
+    *,
+    minimum: float,
+    maximum: float,
+    name: str,
+) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        fail(f"{name} must be a finite number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        fail(f"{name} must be a finite number")
+    if not math.isfinite(number):
+        fail(f"{name} must be finite")
+    if number < minimum:
+        fail(f"{name} must be >= {minimum:g}")
+    if number > maximum:
+        fail(f"{name} must be <= {maximum:g}")
     return number
 
 
@@ -252,7 +279,103 @@ def json_shape_warnings(text: str) -> tuple[str, list[dict[str, Any]]]:
     return "json", warnings
 
 
-def score_prompt(text: str, *, provider: str, minimum_cacheable_tokens: int) -> dict[str, Any]:
+def build_amortization_report(
+    *,
+    eligible: bool,
+    prefix_tokens: int,
+    expected_reuses: int,
+    cache_write_multiplier: float | None,
+    cache_read_multiplier: float | None,
+) -> dict[str, Any]:
+    """Return advisory cache amortization math using user-supplied multipliers.
+
+    ``expected_reuses`` means future cache reads after the initial cache write.
+    Multipliers are relative to uncached prefix input cost = 1.0.  Provider
+    pricing/cache policies change, so ContextGuard intentionally does not ship
+    provider-specific multiplier defaults.
+    """
+    supplied = cache_write_multiplier is not None and cache_read_multiplier is not None
+    break_even_reuses: int | None = None
+    expected_uncached_relative_cost: float | None = None
+    expected_cached_relative_cost: float | None = None
+    expected_relative_savings: float | None = None
+    status = "multipliers_not_supplied"
+    risk = "unknown"
+
+    if not eligible:
+        status = "not_cacheable"
+        risk = "high"
+    elif not supplied:
+        status = "multipliers_not_supplied"
+        risk = "unknown"
+    else:
+        expected_uncached_relative_cost = 1.0 + expected_reuses
+        expected_cached_relative_cost = cache_write_multiplier + (expected_reuses * cache_read_multiplier)
+        expected_relative_savings = expected_uncached_relative_cost - expected_cached_relative_cost
+        if cache_read_multiplier < 1.0:
+            if cache_write_multiplier <= 1.0:
+                break_even_reuses = 0
+            else:
+                break_even_reuses = int(math.ceil((cache_write_multiplier - 1.0) / (1.0 - cache_read_multiplier)))
+            if expected_reuses >= break_even_reuses:
+                status = "already_break_even_on_write" if break_even_reuses == 0 else "amortizes_with_expected_reuses"
+                risk = "low"
+            elif expected_reuses > 0:
+                status = "not_enough_expected_reuses"
+                risk = "medium"
+            else:
+                status = "not_enough_expected_reuses"
+                risk = "high"
+        elif cache_read_multiplier == 1.0 and cache_write_multiplier <= 1.0:
+            break_even_reuses = 0
+            status = "already_break_even_on_write"
+            risk = "low"
+        elif cache_read_multiplier > 1.0 and cache_write_multiplier <= 1.0 and expected_reuses == 0:
+            break_even_reuses = 0
+            status = "already_break_even_on_write"
+            risk = "low"
+        elif cache_read_multiplier > 1.0 and expected_relative_savings >= 0:
+            break_even_reuses = 0 if cache_write_multiplier <= 1.0 else None
+            status = "amortizes_with_expected_reuses"
+            risk = "medium"
+        else:
+            status = "no_read_discount"
+            risk = "high"
+
+    return {
+        "expected_reuses": expected_reuses,
+        "expected_reuses_semantics": "future_cache_reads_after_initial_write",
+        "cacheable_prefix_tokens": prefix_tokens,
+        "break_even_reuses": break_even_reuses,
+        "status": status,
+        "risk": risk,
+        "cache_write_multiplier": cache_write_multiplier,
+        "cache_read_multiplier": cache_read_multiplier,
+        "expected_uncached_relative_cost": expected_uncached_relative_cost,
+        "expected_cached_relative_cost": expected_cached_relative_cost,
+        "expected_relative_savings": expected_relative_savings,
+        "multiplier_baseline": "uncached_prefix_input_cost_equals_1.0",
+        "user_supplied_multipliers": supplied,
+        "formula": "expected_cached=write_multiplier + expected_reuses*read_multiplier; expected_uncached=1 + expected_reuses; break_even=ceil((write_multiplier - 1.0)/(1.0-read_multiplier)) only when read_multiplier<1",
+        "claim_boundary": {
+            "advisory_only": True,
+            "provider_pricing_defaults_included": False,
+            "provider_measured_cache_hit": False,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+            "requires_user_supplied_or_provider_documented_multipliers": True,
+        },
+    }
+
+
+def score_prompt(
+    text: str,
+    *,
+    provider: str,
+    minimum_cacheable_tokens: int,
+    expected_reuses: int = DEFAULT_EXPECTED_REUSES,
+    cache_write_multiplier: float | None = None,
+    cache_read_multiplier: float | None = None,
+) -> dict[str, Any]:
     prompt_kind, shape_warnings = json_shape_warnings(text)
     dynamic_offset, dynamic_marker = first_dynamic_marker(text)
     prefix_text = text if dynamic_offset is None else text[:dynamic_offset]
@@ -282,13 +405,14 @@ def score_prompt(text: str, *, provider: str, minimum_cacheable_tokens: int) -> 
             "message": "Anthropic caching usually requires cache_control around the reusable prefix.",
         })
 
+    eligible = prefix_estimated >= minimum_cacheable_tokens
     return {
         "tool": TOOL_NAME,
         "schema_version": SCHEMA_VERSION,
         "provider": provider,
         "prompt_kind": prompt_kind,
         "minimum_cacheable_tokens": minimum_cacheable_tokens,
-        "eligible": prefix_estimated >= minimum_cacheable_tokens,
+        "eligible": eligible,
         "estimated_tokens": estimated,
         "cacheable_prefix_tokens": prefix_estimated,
         "token_estimate": {
@@ -305,6 +429,13 @@ def score_prompt(text: str, *, provider: str, minimum_cacheable_tokens: int) -> 
         "static_prefix_ratio": round(static_ratio, 6),
         "warnings": warnings,
         "provider_caveat": PROVIDER_CAVEATS[provider],
+        "amortization": build_amortization_report(
+            eligible=eligible,
+            prefix_tokens=prefix_estimated,
+            expected_reuses=expected_reuses,
+            cache_write_multiplier=cache_write_multiplier,
+            cache_read_multiplier=cache_read_multiplier,
+        ),
         "raw_prompt_stored": False,
         "claim_boundary": {
             "advisory_only": True,
@@ -320,11 +451,15 @@ def render_text(report: dict[str, Any]) -> str:
     status = "eligible" if report.get("eligible") else "not eligible"
     warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
     warning_codes = ", ".join(str(item.get("code")) for item in warnings if isinstance(item, dict)) or "none"
+    amortization = report.get("amortization") if isinstance(report.get("amortization"), dict) else {}
     return (
         f"{TOOL_NAME}: {status} for {report['provider']} "
         f"(static_prefix≈{report['cacheable_prefix_tokens']} char/4 tokens, "
         f"minimum={report['minimum_cacheable_tokens']})\n"
         f"warnings: {warning_codes}\n"
+        f"amortization: {amortization.get('status', 'unknown')} "
+        f"(risk={amortization.get('risk', 'unknown')}, "
+        f"break_even_reuses={amortization.get('break_even_reuses')})\n"
         "claim boundary: advisory static lint only; not a measured provider cache hit or cost saving.\n"
     )
 
@@ -344,6 +479,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="override provider threshold for model/platform-specific cache minimums",
     )
     parser.add_argument("--max-input-bytes", default=DEFAULT_MAX_INPUT_BYTES, help=f"maximum input bytes (default: {DEFAULT_MAX_INPUT_BYTES})")
+    parser.add_argument(
+        "--expected-reuses",
+        default=DEFAULT_EXPECTED_REUSES,
+        help=(
+            "future cache reads expected after the initial write; advisory only "
+            f"(default: {DEFAULT_EXPECTED_REUSES})"
+        ),
+    )
+    parser.add_argument(
+        "--cache-write-multiplier",
+        default=None,
+        help="optional user-supplied cache write multiplier relative to uncached prefix input cost=1.0",
+    )
+    parser.add_argument(
+        "--cache-read-multiplier",
+        default=None,
+        help="optional user-supplied cache read multiplier relative to uncached prefix input cost=1.0",
+    )
     parser.add_argument("--json", action="store_true", help="emit stable JSON")
     return parser
 
@@ -362,8 +515,34 @@ def main(argv: list[str] | None = None) -> int:
             maximum=10_000_000,
             name="--minimum-cacheable-tokens",
         )
+        expected_reuses = bounded_int(
+            args.expected_reuses,
+            default=DEFAULT_EXPECTED_REUSES,
+            minimum=0,
+            maximum=MAX_EXPECTED_REUSES,
+            name="--expected-reuses",
+        )
+        cache_write_multiplier = bounded_float(
+            args.cache_write_multiplier,
+            minimum=0.0,
+            maximum=MAX_CACHE_MULTIPLIER,
+            name="--cache-write-multiplier",
+        )
+        cache_read_multiplier = bounded_float(
+            args.cache_read_multiplier,
+            minimum=0.0,
+            maximum=MAX_CACHE_MULTIPLIER,
+            name="--cache-read-multiplier",
+        )
         text = read_limited_path(Path(args.input), max_input_bytes) if args.input else read_limited_stdin(max_input_bytes)
-        report = score_prompt(text, provider=provider, minimum_cacheable_tokens=minimum)
+        report = score_prompt(
+            text,
+            provider=provider,
+            minimum_cacheable_tokens=minimum,
+            expected_reuses=expected_reuses,
+            cache_write_multiplier=cache_write_multiplier,
+            cache_read_multiplier=cache_read_multiplier,
+        )
         if args.json:
             sys.stdout.write(json_bytes(report, indent=2) + "\n")
         else:
