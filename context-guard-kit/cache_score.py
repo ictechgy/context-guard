@@ -296,6 +296,9 @@ def build_amortization_report(
     """
     supplied = cache_write_multiplier is not None and cache_read_multiplier is not None
     break_even_reuses: int | None = None
+    expected_uncached_relative_cost: float | None = None
+    expected_cached_relative_cost: float | None = None
+    expected_relative_savings: float | None = None
     status = "multipliers_not_supplied"
     risk = "unknown"
 
@@ -305,23 +308,38 @@ def build_amortization_report(
     elif not supplied:
         status = "multipliers_not_supplied"
         risk = "unknown"
-    elif cache_write_multiplier <= 1.0:
-        break_even_reuses = 0
-        status = "already_break_even_on_write"
-        risk = "low"
-    elif cache_read_multiplier >= 1.0:
-        status = "no_read_discount"
-        risk = "high"
     else:
-        break_even_reuses = int(math.ceil((cache_write_multiplier - 1.0) / (1.0 - cache_read_multiplier)))
-        if expected_reuses >= break_even_reuses:
-            status = "amortizes_with_expected_reuses"
+        expected_uncached_relative_cost = 1.0 + expected_reuses
+        expected_cached_relative_cost = cache_write_multiplier + (expected_reuses * cache_read_multiplier)
+        expected_relative_savings = expected_uncached_relative_cost - expected_cached_relative_cost
+        if cache_read_multiplier < 1.0:
+            if cache_write_multiplier <= 1.0:
+                break_even_reuses = 0
+            else:
+                break_even_reuses = int(math.ceil((cache_write_multiplier - 1.0) / (1.0 - cache_read_multiplier)))
+            if expected_reuses >= break_even_reuses:
+                status = "already_break_even_on_write" if break_even_reuses == 0 else "amortizes_with_expected_reuses"
+                risk = "low"
+            elif expected_reuses > 0:
+                status = "not_enough_expected_reuses"
+                risk = "medium"
+            else:
+                status = "not_enough_expected_reuses"
+                risk = "high"
+        elif cache_read_multiplier == 1.0 and cache_write_multiplier <= 1.0:
+            break_even_reuses = 0
+            status = "already_break_even_on_write"
             risk = "low"
-        elif expected_reuses > 0:
-            status = "not_enough_expected_reuses"
+        elif cache_read_multiplier > 1.0 and cache_write_multiplier <= 1.0 and expected_reuses == 0:
+            break_even_reuses = 0
+            status = "already_break_even_on_write"
+            risk = "low"
+        elif cache_read_multiplier > 1.0 and expected_relative_savings >= 0:
+            break_even_reuses = 0 if cache_write_multiplier <= 1.0 else None
+            status = "amortizes_with_expected_reuses"
             risk = "medium"
         else:
-            status = "not_enough_expected_reuses"
+            status = "no_read_discount"
             risk = "high"
 
     return {
@@ -333,9 +351,12 @@ def build_amortization_report(
         "risk": risk,
         "cache_write_multiplier": cache_write_multiplier,
         "cache_read_multiplier": cache_read_multiplier,
+        "expected_uncached_relative_cost": expected_uncached_relative_cost,
+        "expected_cached_relative_cost": expected_cached_relative_cost,
+        "expected_relative_savings": expected_relative_savings,
         "multiplier_baseline": "uncached_prefix_input_cost_equals_1.0",
         "user_supplied_multipliers": supplied,
-        "formula": "ceil((write_multiplier - 1.0) / (1.0 - read_multiplier)) when write>1 and read<1",
+        "formula": "expected_cached=write_multiplier + expected_reuses*read_multiplier; expected_uncached=1 + expected_reuses; break_even=ceil((write_multiplier - 1.0)/(1.0-read_multiplier)) only when read_multiplier<1",
         "claim_boundary": {
             "advisory_only": True,
             "provider_pricing_defaults_included": False,

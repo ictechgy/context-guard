@@ -10354,11 +10354,35 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(amortization["break_even_reuses"], 1)
                 self.assertEqual(amortization["status"], "amortizes_with_expected_reuses")
                 self.assertEqual(amortization["risk"], "low")
+                self.assertAlmostEqual(amortization["expected_uncached_relative_cost"], 4.0)
+                self.assertAlmostEqual(amortization["expected_cached_relative_cost"], 1.55)
+                self.assertAlmostEqual(amortization["expected_relative_savings"], 2.45)
                 self.assertTrue(amortization["user_supplied_multipliers"])
                 self.assertFalse(amortization["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
                 warning_codes = {item["code"] for item in data["warnings"]}
                 self.assertIn("dynamic_marker_in_prompt", warning_codes)
                 self.assertNotIn(stable[:80], proc.stdout)
+
+                premium_proc = self._run_cache_score(
+                    script,
+                    "--provider",
+                    "openai",
+                    "--expected-reuses",
+                    "1",
+                    "--cache-write-multiplier",
+                    "0.5",
+                    "--cache-read-multiplier",
+                    "2",
+                    "--json",
+                    input_data=prompt,
+                )
+                premium = json.loads(premium_proc.stdout)["amortization"]
+                self.assertEqual(premium["status"], "no_read_discount")
+                self.assertEqual(premium["risk"], "high")
+                self.assertIsNone(premium["break_even_reuses"])
+                self.assertAlmostEqual(premium["expected_uncached_relative_cost"], 2.0)
+                self.assertAlmostEqual(premium["expected_cached_relative_cost"], 2.5)
+                self.assertLess(premium["expected_relative_savings"], 0)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
@@ -23819,6 +23843,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertTrue(baseline["csv_schema_unchanged"])
                 self.assertIn("total_cost_with_shift_usd", baseline["csv_columns"])
                 self.assertIn("primary_token_buckets", baseline["captured_fields"])
+                self.assertIn("primary_tokens_measured", baseline["captured_fields"]["primary_token_buckets"])
                 self.assertIn("repo_revision", baseline["missing_future_run_identity_fields"])
                 self.assertFalse(baseline["claim_boundary"]["enables_savings_claims_by_itself"])
                 self.assertTrue(baseline["claim_boundary"]["requires_matched_successful_tasks"])

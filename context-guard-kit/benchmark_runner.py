@@ -1562,7 +1562,14 @@ def measurement_baseline_contract() -> dict[str, Any]:
         "captured_fields": {
             "task_identity": ["task_id", "variant"],
             "run_configuration": ["model", "effort", "claude_version"],
-            "primary_token_buckets": ["input_tokens", "output_tokens", "cache_read", "cache_creation", "total_tokens"],
+            "primary_token_buckets": [
+                "input_tokens",
+                "output_tokens",
+                "cache_read",
+                "cache_creation",
+                "total_tokens",
+                "primary_tokens_measured",
+            ],
             "primary_cost": ["cost_usd", "cost_measured"],
             "provider_cache_telemetry": ["provider_cached_tokens", "provider_cached_tokens_measured"],
             "latency": ["wall_time_seconds"],
