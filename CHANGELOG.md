@@ -4,6 +4,8 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-06-14
+
 - Added `context-guard-artifact search`, a local sanitized artifact sandbox search that returns capped literal matches with exact `get --lines` rehydration commands and no hosted savings claims.
 - Added `context-guard-pack suggest/auto --adaptive-k`, an opt-in local shrink/expand top-k advisory that reports score-distribution, byte-budget fit, and score-mass recall/precision proxies without changing manifests, packs, receipts, or claiming provider-token savings.
 - Added `context-guard-pack auto --symbol-memory`, an opt-in repo-map-derived symbol/graph advisory with exact source verification hints that does not change manifests, packs, receipts, or provider-savings claims.
@@ -16,6 +18,7 @@ All notable changes for the ContextGuard plugin are documented here.
 - Hardened `context-guard-filter` config loading with bounded no-follow regular-file reads, nonblocking FIFO/device rejection, and fail-closed unsupported-platform checks.
 - Hardened artifact escrow writes with parent-traversal rejection, dir-fd/no-follow private directories, 0600 temp files before atomic replace, and explicit pre/post-replace fsync failure semantics.
 - Disabled setup helper `PATH` fallback by default; trusted fallback now requires `--allow-path-helper-fallback`, canonical no-symlink executable paths, and a bounded helper identity probe.
+- Polished README, Korean README, and GitHub Pages copy after Claude review while preserving local-only/passive boundaries, install-vs-activation separation, and conservative token/cost claim wording.
 
 ## [0.4.9] - 2026-06-12
 
