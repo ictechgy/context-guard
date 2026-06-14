@@ -11338,6 +11338,140 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(data["estimated_pack_bytes"], 0)
                     self.assertEqual(data["token_proxy"]["estimated_pack"], 0)
 
+    def test_context_pack_suggest_adaptive_k_is_opt_in_and_claim_safe(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "alpha.py").write_text("def alpha_failure():\n    raise RuntimeError('alpha failure')\n", encoding="utf-8")
+                    (root / "src" / "beta.py").write_text("def beta_helper():\n    return 'beta'\n", encoding="utf-8")
+
+                    plain = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--budget-bytes",
+                            "4000",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertNotIn("adaptive_k", plain)
+
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--budget-bytes",
+                            "4000",
+                            "--adaptive-k",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(data["manifest"], plain["manifest"])
+                    adaptive = data["adaptive_k"]
+                    self.assertEqual(adaptive["schema_version"], "contextguard.pack-adaptive-k.v1")
+                    self.assertEqual(adaptive["mode"], "advisory")
+                    self.assertFalse(adaptive["recommendation"]["apply"])
+                    self.assertGreaterEqual(adaptive["score_distribution"]["candidate_count"], 2)
+                    self.assertGreaterEqual(
+                        adaptive["score_distribution"]["p90_score"],
+                        adaptive["score_distribution"]["p50_score"],
+                    )
+                    self.assertGreaterEqual(adaptive["recommended_k"], 1)
+                    self.assertLessEqual(adaptive["recommended_k"], adaptive["requested_top"])
+                    self.assertEqual(adaptive["recall_precision_proxy"]["measurement"], "local_score_mass_proxy")
+                    self.assertFalse(adaptive["claim_boundary"]["provider_token_or_cost_savings_claim_allowed"])
+                    self.assertTrue(adaptive["claim_boundary"]["advisory_does_not_change_manifest_or_pack"])
+
+                    empty = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--query",
+                            "no matching terms here",
+                            "--adaptive-k",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(empty["adaptive_k"]["recommended_k"], 0)
+                    self.assertEqual(empty["adaptive_k"]["score_distribution"]["candidate_count"], 0)
+                    self.assertEqual(empty["adaptive_k"]["recommendation"]["reason_codes"], ["no_candidates"])
+
+                    too_small_budget = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--budget-bytes",
+                            "0",
+                            "--adaptive-k",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(too_small_budget["sources"], [])
+                    self.assertEqual(too_small_budget["adaptive_k"]["recommended_k"], 0)
+                    self.assertIn("no_budget_fit", too_small_budget["adaptive_k"]["recommendation"]["reason_codes"])
+
+                    expand = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--top",
+                            "1",
+                            "--budget-bytes",
+                            "4000",
+                            "--adaptive-k",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(expand["adaptive_k"]["requested_top"], 1)
+                    self.assertGreater(expand["adaptive_k"]["recommended_k"], 1)
+                    self.assertIn("budget_headroom_expand", expand["adaptive_k"]["recommendation"]["reason_codes"])
+
+                    text = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--files",
+                        "src/alpha.py,src/beta.py",
+                        "--query",
+                        "alpha failure",
+                        "--adaptive-k",
+                    ).stdout
+                    self.assertIn("adaptive-k: recommended=", text)
+                    self.assertIn("apply=false", text)
+
     def test_context_pack_auto_builds_pack_and_manifest_from_explicit_files(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -11395,6 +11529,40 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertIn("src/app.py", built["pack"])
                     self.assertIn("README.md", built["pack"])
+
+    def test_context_pack_auto_adaptive_k_does_not_change_manifest_or_build(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "src").mkdir()
+                    (root / "src" / "app.py").write_text("def app():\n    return 'ok'\n", encoding="utf-8")
+                    (root / "README.md").write_text("pack adaptive overview\n", encoding="utf-8")
+                    common = [
+                        "auto",
+                        "--root",
+                        ".",
+                        "--files",
+                        "src/app.py,README.md",
+                        "--query",
+                        "adaptive pack app",
+                        "--budget-bytes",
+                        "4000",
+                        "--json",
+                        "--no-artifact",
+                    ]
+                    plain = json.loads(self._run_pack(script, root, *common).stdout)
+                    adaptive = json.loads(self._run_pack(script, root, *common, "--adaptive-k").stdout)
+                    self.assertNotIn("adaptive_k", plain)
+                    self.assertEqual(adaptive["manifest"], plain["manifest"])
+                    for key in ("pack", "pack_bytes", "pack_id", "token_proxy", "sources", "included_sources", "omitted_sources"):
+                        self.assertEqual(adaptive["build"][key], plain["build"][key], key)
+                    self.assertEqual(adaptive["adaptive_k"], adaptive["suggest"]["adaptive_k"])
+                    self.assertTrue(adaptive["adaptive_k"]["claim_boundary"]["advisory_does_not_change_manifest_or_pack"])
+
+                    text = self._run_pack(script, root, *common[:-2], "--adaptive-k").stdout
+                    self.assertIn("adaptive-k: recommended=", text)
+                    self.assertIn("apply=false", text)
 
     def test_context_pack_auto_uses_output_redacts_and_can_skip_artifact(self):
         secret = "ghp_" + ("A" * 36)
