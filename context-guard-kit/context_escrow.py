@@ -33,6 +33,7 @@ MAX_TOP_ERROR_RECEIPTS = 12
 MAX_DUPLICATE_GROUPS = 12
 MAX_SUGGESTED_QUERIES = 12
 SEARCH_SCHEMA_VERSION = "contextguard.artifact.search.v1"
+OUTPUT_SANDBOX_SCHEMA_VERSION = "contextguard.artifact.output-sandbox.v1"
 DEFAULT_SEARCH_MAX_ARTIFACTS = 100
 MAX_SEARCH_MAX_ARTIFACTS = 1_000
 DEFAULT_SEARCH_MAX_MATCHES = 40
@@ -574,6 +575,8 @@ def build_retrieval_hints(
     content_type: str,
     strategy: str,
     total_lines: int,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
 ) -> list[dict[str, object]]:
     """Build deterministic, machine-readable retrieval hints for bounded round-trip.
 
@@ -591,8 +594,8 @@ def build_retrieval_hints(
         lines_hint: dict[str, object] = {
             "type": "lines",
             "selector": {"start": 1, "end": end_line},
-            "cli": line_query_cli(artifact_id, 1, end_line),
-            "exact": total_lines <= MAX_QUERY_LINES,
+            "cli": line_query_cli(artifact_id, 1, end_line, raw_dir=raw_dir, show_paths=show_paths),
+            "exact": total_lines <= MAX_QUERY_LINES and artifact_dir_cli_is_exact(raw_dir, show_paths=show_paths),
         }
         if end_line > DEFAULT_MAX_LINES:
             lines_hint["max_lines"] = end_line
@@ -614,14 +617,14 @@ def build_retrieval_hints(
             {
                 "type": "pattern",
                 "selector": {"pattern": anchor},
-                "cli": f"context-guard-artifact get {artifact_id} --pattern '{anchor}'",
+                "cli": f"{artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)} get {artifact_id} --pattern {shlex.quote(anchor)}",
             }
         )
     hints.append(
         {
             "type": "head",
             "selector": {"max_lines": DEFAULT_MAX_LINES},
-            "cli": f"context-guard-artifact get {artifact_id} --max-lines {DEFAULT_MAX_LINES}",
+            "cli": f"{artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)} get {artifact_id} --max-lines {DEFAULT_MAX_LINES}",
         }
     )
     return hints
@@ -654,16 +657,29 @@ def line_query_cli(
     return cli
 
 
-def line_receipt(artifact_id: str, line_number: int, text: str) -> dict[str, object]:
+def line_receipt(
+    artifact_id: str,
+    line_number: int,
+    text: str,
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> dict[str, object]:
     return {
         "line": line_number,
         "text": cap_digest_text(text.strip()),
         "selector": {"type": "lines", "start": line_number, "end": line_number},
-        "cli": line_query_cli(artifact_id, line_number, line_number),
+        "cli": line_query_cli(artifact_id, line_number, line_number, raw_dir=raw_dir, show_paths=show_paths),
     }
 
 
-def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[str, object]]:
+def build_top_error_receipts(
+    artifact_id: str,
+    lines: list[str],
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> list[dict[str, object]]:
     receipts: list[dict[str, object]] = []
     seen: set[str] = set()
     for line_number, line in enumerate(lines, start=1):
@@ -672,7 +688,7 @@ def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[st
         text = cap_digest_text(line.strip())
         if not text or text in seen:
             continue
-        receipt = line_receipt(artifact_id, line_number, text)
+        receipt = line_receipt(artifact_id, line_number, text, raw_dir=raw_dir, show_paths=show_paths)
         receipts.append(receipt)
         seen.add(text)
         if len(receipts) >= MAX_TOP_ERROR_RECEIPTS:
@@ -680,7 +696,14 @@ def build_top_error_receipts(artifact_id: str, lines: list[str]) -> list[dict[st
     return receipts
 
 
-def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: int = MAX_DUPLICATE_GROUPS) -> list[dict[str, object]]:
+def build_duplicate_line_groups(
+    artifact_id: str,
+    lines: list[str],
+    *,
+    limit: int = MAX_DUPLICATE_GROUPS,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> list[dict[str, object]]:
     counts: dict[str, int] = {}
     first_line: dict[str, int] = {}
     for line_number, line in enumerate(lines, start=1):
@@ -703,13 +726,20 @@ def build_duplicate_line_groups(artifact_id: str, lines: list[str], *, limit: in
                 "first_line": line_number,
                 "text": text,
                 "selector": {"type": "lines", "start": line_number, "end": line_number},
-                "cli": line_query_cli(artifact_id, line_number, line_number),
+                "cli": line_query_cli(artifact_id, line_number, line_number, raw_dir=raw_dir, show_paths=show_paths),
             }
         )
     return groups
 
 
-def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) -> dict[str, object]:
+def build_digest(
+    sanitized_text: str,
+    *,
+    artifact_id: str,
+    redacted_lines: int,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> dict[str, object]:
     lines = sanitized_text.splitlines()
     top_errors = compact_items(
         (line for line in lines if ERROR_RE.search(line)),
@@ -725,8 +755,8 @@ def build_digest(sanitized_text: str, *, artifact_id: str, redacted_lines: int) 
             "markers": sanitized_text.count("[REDACTED]"),
         },
         "top_error_lines": top_errors,
-        "top_error_receipts": build_top_error_receipts(artifact_id, lines),
-        "duplicate_line_groups": build_duplicate_line_groups(artifact_id, lines),
+        "top_error_receipts": build_top_error_receipts(artifact_id, lines, raw_dir=raw_dir, show_paths=show_paths),
+        "duplicate_line_groups": build_duplicate_line_groups(artifact_id, lines, raw_dir=raw_dir, show_paths=show_paths),
         "representative_head": compact_items(
             lines,
             limit=8,
@@ -769,7 +799,198 @@ def suggested_queries_for(metadata: dict[str, object]) -> list[str]:
     return queries[:MAX_SUGGESTED_QUERIES]
 
 
-def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
+def artifact_handle(artifact_id: str) -> str:
+    return f"contextguard-artifact:{artifact_id}"
+
+
+def compact_stored_output(metadata: dict[str, object]) -> dict[str, object]:
+    stored = metadata.get("stored_output")
+    if not isinstance(stored, dict):
+        return {}
+    compact: dict[str, object] = {}
+    for key in ("scope", "bytes", "lines", "sha256", "content_file", "metadata_file"):
+        if key in stored:
+            compact[key] = stored[key]
+    content_type = metadata.get("content_type")
+    if isinstance(content_type, str):
+        compact["content_type"] = content_type
+    return compact
+
+
+def digest_count(digest: dict[str, object], key: str) -> int:
+    value = digest.get(key)
+    return len(value) if isinstance(value, list) else 0
+
+
+def build_output_sandbox_summary(metadata: dict[str, object]) -> dict[str, object]:
+    digest = metadata.get("digest")
+    if not isinstance(digest, dict):
+        return {"status": "stored"}
+    summary: dict[str, object] = {
+        "status": digest.get("status") or "stored",
+        "top_error_count": digest_count(digest, "top_error_lines"),
+        "top_error_receipt_count": digest_count(digest, "top_error_receipts"),
+        "duplicate_line_group_count": digest_count(digest, "duplicate_line_groups"),
+        "representative_head_count": digest_count(digest, "representative_head"),
+        "representative_tail_count": digest_count(digest, "representative_tail"),
+    }
+    redaction_counts = digest.get("redaction_counts")
+    if isinstance(redaction_counts, dict):
+        summary["redaction_counts"] = {
+            str(key): value
+            for key, value in redaction_counts.items()
+            if isinstance(value, (int, float, str, bool)) or value is None
+        }
+    elif "redacted_lines" in digest:
+        summary["redacted_lines"] = digest.get("redacted_lines")
+    capped = digest.get("capped_for_metadata")
+    if isinstance(capped, bool):
+        summary["capped_for_metadata"] = capped
+    return summary
+
+
+def rehydration_command_record(
+    *,
+    kind: str,
+    cli: str,
+    selector: dict[str, object],
+    exact: bool,
+    note: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "type": kind,
+        "selector": selector,
+        "cli": cli,
+        "exact": exact,
+    }
+    if note:
+        record["note"] = note
+    return record
+
+
+def build_output_sandbox_rehydration(
+    metadata: dict[str, object],
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> dict[str, object]:
+    artifact_id = str(metadata["artifact_id"])
+    cli_exact = artifact_dir_cli_is_exact(raw_dir, show_paths=show_paths)
+    prefix = artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)
+    note = (
+        None
+        if cli_exact
+        else "custom artifact directory is redacted; rerun with the same --dir value or pass --show-paths for a directly executable local command"
+    )
+    commands: list[dict[str, object]] = [
+        rehydration_command_record(
+            kind="metadata",
+            selector={"type": "receipt"},
+            cli=f"{prefix} receipt {artifact_id} --json",
+            exact=cli_exact,
+            note=note,
+        )
+    ]
+
+    retrieval = metadata.get("retrieval")
+    hints = retrieval.get("hints") if isinstance(retrieval, dict) else None
+    if isinstance(hints, list):
+        for hint in hints:
+            if not isinstance(hint, dict):
+                continue
+            hint_type = hint.get("type")
+            selector = hint.get("selector")
+            if not isinstance(selector, dict):
+                selector = {}
+            cli: str | None = None
+            exact = bool(hint.get("exact", True)) and cli_exact
+            if hint_type == "lines":
+                start = selector.get("start")
+                end = selector.get("end")
+                if isinstance(start, int) and isinstance(end, int):
+                    cli = line_query_cli(artifact_id, start, end, raw_dir=raw_dir, show_paths=show_paths)
+            elif hint_type == "pattern":
+                pattern = selector.get("pattern")
+                if isinstance(pattern, str) and pattern:
+                    cli = f"{prefix} get {artifact_id} --pattern {shlex.quote(pattern)}"
+            elif hint_type == "head":
+                max_lines = selector.get("max_lines")
+                if isinstance(max_lines, int) and max_lines > 0:
+                    cli = f"{prefix} get {artifact_id} --max-lines {max_lines}"
+            if cli is None:
+                raw_cli = hint.get("cli")
+                cli = raw_cli if isinstance(raw_cli, str) and raw_cli else None
+            if cli:
+                commands.append(
+                    rehydration_command_record(
+                        kind=str(hint_type or "query"),
+                        selector=selector,
+                        cli=cli,
+                        exact=exact,
+                        note=note if not cli_exact else str(hint.get("note") or "") or None,
+                    )
+                )
+            if len(commands) >= 5:
+                break
+
+    digest = metadata.get("digest")
+    top_error_lines = digest.get("top_error_lines") if isinstance(digest, dict) else None
+    if isinstance(top_error_lines, list):
+        anchor = first_error_anchor("\n".join(str(line) for line in top_error_lines))
+        if anchor and len(commands) < 5:
+            commands.append(
+                rehydration_command_record(
+                    kind="search",
+                    selector={"type": "literal", "pattern": anchor},
+                    cli=f"{prefix} search {shlex.quote(anchor)} --json",
+                    exact=cli_exact,
+                    note=note,
+                )
+            )
+
+    return {
+        "commands": commands,
+        "dir_argument": "default" if default_artifact_dir_requested(raw_dir or DEFAULT_ARTIFACT_DIR) else ("included" if show_paths else "redacted"),
+        "exact_commands": cli_exact,
+        "note": note,
+    }
+
+
+def build_output_sandbox_envelope(
+    metadata: dict[str, object],
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> dict[str, object]:
+    artifact_id = str(metadata["artifact_id"])
+    return {
+        "schema_version": OUTPUT_SANDBOX_SCHEMA_VERSION,
+        "mode": "local_artifact_receipt",
+        "handle": artifact_handle(artifact_id),
+        "artifact_id": artifact_id,
+        "stored_output": compact_stored_output(metadata),
+        "summary": build_output_sandbox_summary(metadata),
+        "rehydration": build_output_sandbox_rehydration(metadata, raw_dir=raw_dir, show_paths=show_paths),
+        "agent_guidance": [
+            "Keep this compact receipt in agent context instead of pasting the full output.",
+            "Before relying on omitted details, rehydrate the exact sanitized slice with one of rehydration.commands[].cli.",
+            "For repeated diagnostics, query narrower lines or literal matches instead of rerunning broad commands unchanged.",
+        ],
+        "claim_boundary": {
+            "local_only": True,
+            "stored_content_is_sanitized_copy": True,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+            "exact_rehydration_required_before_relying_on_omitted_detail": True,
+        },
+    }
+
+
+def receipt_for(
+    metadata: dict[str, object],
+    *,
+    raw_dir: str | None = None,
+    show_paths: bool = False,
+) -> dict[str, object]:
     artifact_id = str(metadata["artifact_id"])
     return {
         "artifact_id": artifact_id,
@@ -782,11 +1003,12 @@ def receipt_for(metadata: dict[str, object]) -> dict[str, object]:
         "digest": metadata.get("digest"),
         "retrieval": metadata.get("retrieval"),
         "available_queries": [
-            f"context-guard-artifact get {artifact_id} --lines 1:80",
-            f"context-guard-artifact get {artifact_id} --pattern ERROR --max-lines 40",
-            f"context-guard-artifact get {artifact_id} --json --lines 1:20",
+            line_query_cli(artifact_id, 1, 80, raw_dir=raw_dir, show_paths=show_paths),
+            f"{artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)} get {artifact_id} --pattern ERROR --max-lines 40",
+            f"{artifact_dir_cli_prefix(raw_dir, show_paths=show_paths)} get {artifact_id} --json --lines 1:20",
         ],
         "suggested_queries": suggested_queries_for(metadata),
+        "output_sandbox": build_output_sandbox_envelope(metadata, raw_dir=raw_dir, show_paths=show_paths),
     }
 
 
@@ -896,7 +1118,13 @@ def store_command(args: argparse.Namespace) -> int:
             "content_file": content_path.name,
             "metadata_file": meta_path.name,
         },
-        "digest": build_digest(sanitized_text, artifact_id=artifact_id, redacted_lines=redacted_lines),
+        "digest": build_digest(
+            sanitized_text,
+            artifact_id=artifact_id,
+            redacted_lines=redacted_lines,
+            raw_dir=args.dir,
+            show_paths=args.show_paths,
+        ),
         "retrieval": {
             "strategy": strategy,
             "deterministic": True,
@@ -906,17 +1134,22 @@ def store_command(args: argparse.Namespace) -> int:
                 content_type=content_type,
                 strategy=strategy,
                 total_lines=total_lines,
+                raw_dir=args.dir,
+                show_paths=args.show_paths,
             ),
         },
     }
     shrink_digest_for_metadata_cap(metadata)
     write_private_text(content_path, sanitized_text)
     write_private_text(meta_path, metadata_json_text(metadata))
-    receipt = receipt_for(metadata)
+    receipt = receipt_for(metadata, raw_dir=args.dir, show_paths=args.show_paths)
     if args.json:
         print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(f"artifact_id={artifact_id}")
+        sandbox = receipt.get("output_sandbox")
+        handle = sandbox.get("handle") if isinstance(sandbox, dict) else artifact_handle(artifact_id)
+        print(f"handle={handle}")
         stored = receipt["stored_output"]
         if isinstance(stored, dict):
             print(f"stored_output={stored.get('lines')} lines/{stored.get('bytes')} bytes")
@@ -925,7 +1158,16 @@ def store_command(args: argparse.Namespace) -> int:
             print("top_error_lines:")
             for line in digest["top_error_lines"]:  # type: ignore[index]
                 print(f"- {line}")
-        print(f"query=context-guard-artifact get {artifact_id} --lines 1:80")
+        available_queries = receipt.get("available_queries")
+        if isinstance(available_queries, list) and available_queries:
+            print(f"query={available_queries[0]}")
+        rehydration = sandbox.get("rehydration") if isinstance(sandbox, dict) else None
+        commands = rehydration.get("commands") if isinstance(rehydration, dict) else None
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, dict) and command.get("type") != "metadata" and isinstance(command.get("cli"), str):
+                    print(f"rehydrate={command['cli']}")
+                    break
     return 0
 
 
@@ -1205,6 +1447,44 @@ def get_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def receipt_command(args: argparse.Namespace) -> int:
+    artifact_id = args.artifact_id
+    try:
+        last_missing: FileNotFoundError | None = None
+        for directory in artifact_read_directories(args.dir):
+            try:
+                metadata, _content_path, _content = load_verified_artifact(directory, artifact_id)
+                break
+            except FileNotFoundError as exc:
+                last_missing = exc
+        else:
+            if last_missing is not None:
+                raise last_missing
+            raise FileNotFoundError(f"artifact not found: {artifact_id}")
+        receipt = receipt_for(metadata, raw_dir=args.dir, show_paths=bool(getattr(args, "show_paths", False)))
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"context-guard-artifact: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        sandbox = receipt.get("output_sandbox")
+        handle = sandbox.get("handle") if isinstance(sandbox, dict) else artifact_handle(artifact_id)
+        print(f"artifact_id={artifact_id}")
+        print(f"handle={handle}")
+        stored = receipt.get("stored_output")
+        if isinstance(stored, dict):
+            print(f"stored_output={stored.get('lines')} lines/{stored.get('bytes')} bytes")
+        rehydration = sandbox.get("rehydration") if isinstance(sandbox, dict) else None
+        commands = rehydration.get("commands") if isinstance(rehydration, dict) else None
+        if isinstance(commands, list):
+            for command in commands[:4]:
+                if isinstance(command, dict) and command.get("cli"):
+                    print(f"rehydrate={command.get('cli')}")
+        print("claim_boundary=local sanitized artifact; no hosted token/cost savings claim")
+    return 0
+
+
 def search_command(args: argparse.Namespace) -> int:
     try:
         literal = search_literal(args.pattern)
@@ -1355,7 +1635,7 @@ def list_command(args: argparse.Namespace) -> int:
                 continue
             artifact_id = str(data.get("artifact_id", "")) if isinstance(data, dict) else ""
             if isinstance(data, dict) and ARTIFACT_ID_RE.fullmatch(artifact_id) and artifact_id not in seen:
-                items.append(receipt_for(data))
+                items.append(receipt_for(data, raw_dir=args.dir, show_paths=False))
                 seen.add(artifact_id)
     items.sort(key=lambda item: str(item.get("artifact_id", "")))
     if args.json:
@@ -1395,6 +1675,16 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--max-chars", type=int, default=None)
     get.add_argument("--json", action="store_true", help="emit query JSON with content")
     get.set_defaults(func=get_command)
+
+    receipt = subparsers.add_parser("receipt", help="print metadata-only receipt and rehydration handle for a stored artifact")
+    receipt.add_argument("artifact_id")
+    receipt.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="show raw custom --dir values in rehydration commands; local debugging only because private paths may be exposed",
+    )
+    receipt.add_argument("--json", action="store_true", help="emit receipt JSON without artifact content")
+    receipt.set_defaults(func=receipt_command)
 
     list_parser = subparsers.add_parser("list", help="list stored artifacts")
     list_parser.add_argument("--json", action="store_true", help="emit list JSON")
