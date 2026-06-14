@@ -248,10 +248,11 @@ The optional Read guard uses a progressive path for oversized files: search firs
 
 ```bash
 long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --command "long-command" --json
+./plugins/context-guard/bin/context-guard-artifact search "ERROR" --json
 ./plugins/context-guard/bin/context-guard-artifact get <artifact_id> --lines 1:80
 ```
 
-Artifact mode is for capture and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. When `--max-lines` accompanies a `--lines START:END` selector, it caps lines returned within that range; it does not expand the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
+Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized output under `.context-guard/artifacts` by default and can still read legacy `.claude-token-optimizer/artifacts` receipts from before the rebrand. JSON receipts include line-numbered top-error receipts, duplicate-line groups, and sanitized bounded `suggested_queries` so an agent can fetch the smallest useful exact slice instead of replaying the full log. `search` scans the local sanitized artifact sandbox by literal substring, returns capped match/context records, and includes `context-guard-artifact get ... --lines START:END` rehydration commands for omitted detail. For custom `--dir` values, raw private paths stay redacted by default; rerun with the same `--dir`, or pass `search --show-paths` when you explicitly want a directly executable local command. The search report is local-only and does not make hosted token/cost savings claims. When `--max-lines` accompanies a `--lines START:END` selector, it caps lines returned within that range; it does not expand the selector. Preserve the producer command's exit code yourself when using shell pipelines in release checks, or use `context-guard-trim-output -- ...` when exit-code preservation is the primary requirement.
 
 ### Build a budgeted context pack
 

@@ -13016,6 +13016,242 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertEqual(json.loads(listing.stdout)["artifacts"][0]["artifact_id"], artifact_id)
 
+    def test_artifact_search_finds_literal_and_rehydrates_exact_slice(self):
+        raw_secret = "token=ghp_" + ("A" * 36)
+        raw = f"setup ok\n{raw_secret}\nERROR boom\ncleanup ok\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / "artifacts"
+                    store = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "store",
+                            "--command",
+                            "pytest tests",
+                            "--json",
+                        ],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    artifact_id = json.loads(store.stdout)["artifact_id"]
+                    search = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "search",
+                            "ERROR",
+                            "--context-lines",
+                            "1",
+                            "--show-paths",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(search.stdout)
+                    self.assertEqual(payload["schema_version"], "contextguard.artifact.search.v1")
+                    self.assertEqual(payload["mode"], "search")
+                    self.assertEqual(payload["query"]["label"], "ERROR")
+                    self.assertFalse(payload["query"]["raw_pattern_stored"])
+                    self.assertTrue(payload["query"]["literal"])
+                    self.assertTrue(payload["claim_boundary"]["local_only"])
+                    self.assertFalse(payload["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                    self.assertEqual(payload["sandbox"]["workflow"], ["store", "search", "get"])
+                    self.assertEqual(payload["matched_artifacts"], 1)
+                    self.assertEqual(payload["matched_lines"], 1)
+                    self.assertNotIn("ghp_", search.stdout)
+                    [match] = payload["matches"]
+                    self.assertEqual(match["artifact_id"], artifact_id)
+                    self.assertEqual(match["line"], 3)
+                    self.assertEqual(match["text"], "ERROR boom")
+                    self.assertIn("[REDACTED]", json.dumps(match["context_before"], ensure_ascii=False))
+                    retrieval = match["retrieval"]
+                    self.assertTrue(retrieval["exact"])
+                    self.assertEqual(retrieval["selector"], {"type": "lines", "start": 2, "end": 4})
+                    self.assertIn(
+                        f"context-guard-artifact --dir {shlex.quote(str(artifact_dir))} get {artifact_id} --lines 2:4",
+                        retrieval["cli"],
+                    )
+
+                    rehydrated = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            f"{retrieval['selector']['start']}:{retrieval['selector']['end']}",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    rehydrated_payload = json.loads(rehydrated.stdout)
+                    self.assertIn("ERROR boom", rehydrated_payload["content"])
+                    self.assertIn("token=[REDACTED]", rehydrated_payload["content"])
+                    self.assertNotIn("ghp_", rehydrated.stdout)
+
+    def test_artifact_search_caps_matches_and_redacts_query_and_dir_labels(self):
+        secret_dir = "token=ghp_" + ("B" * 36)
+        secret_query = "api_token=ghp_" + ("C" * 36)
+        raw = "\n".join(["ERROR one", "ERROR two", "ERROR three", secret_query, "done"]) + "\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / secret_dir / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    artifact_id = json.loads(store.stdout)["artifact_id"]
+                    metadata_path = artifact_dir / f"{artifact_id}.json"
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    metadata["command_preview"] = "api_token=ghp_" + ("D" * 36) + " " + ("x" * 3000)
+                    metadata["content_type"] = {"hostile": "shape"}
+                    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                    os.chmod(metadata_path, 0o600)
+                    capped = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "search",
+                            "ERROR",
+                            "--max-matches",
+                            "1",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(capped.stdout)
+                    self.assertEqual(payload["matched_artifacts"], 1)
+                    self.assertEqual(payload["matched_lines"], 3)
+                    self.assertEqual(len(payload["matches"]), 1)
+                    self.assertEqual(payload["matches"][0]["artifact_id"], artifact_id)
+                    self.assertEqual(payload["matches"][0]["content_type"], "text")
+                    self.assertIn("[REDACTED]", payload["matches"][0]["command_preview"])
+                    self.assertLessEqual(len(payload["matches"][0]["command_preview"].encode("utf-8")), 2048)
+                    self.assertFalse(payload["matches"][0]["retrieval"]["exact"])
+                    self.assertIn("--dir <artifact_dir>", payload["matches"][0]["retrieval"]["cli"])
+                    self.assertEqual(payload["matches_truncated_count"], 2)
+                    self.assertEqual(payload["metadata_candidates_scanned"], 1)
+                    self.assertNotIn("ghp_", capped.stdout)
+                    self.assertIn("[REDACTED]", payload["artifact_dir"])
+
+                    redacted_query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "search",
+                            secret_query,
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    redacted_payload = json.loads(redacted_query.stdout)
+                    self.assertEqual(redacted_payload["query"]["label"], "api_token=[REDACTED]")
+                    self.assertEqual(redacted_payload["matched_lines"], 0)
+                    self.assertNotIn("ghp_", redacted_query.stdout)
+
+                    subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input="ERROR later artifact\n",
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    truncated_scan = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "search",
+                            "ERROR",
+                            "--max-artifacts",
+                            "1",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    truncated_payload = json.loads(truncated_scan.stdout)
+                    self.assertEqual(truncated_payload["metadata_candidates_scanned"], 1)
+                    self.assertTrue(truncated_payload["artifact_scan_truncated"])
+                    self.assertEqual(truncated_payload["artifact_scan_truncated_count_mode"], "lower_bound")
+
+    def test_artifact_search_help_dispatcher_and_legacy_default_read(self):
+        for command in [
+            [sys.executable, str(KIT_DIR / "context_escrow.py"), "search", "--help"],
+            [sys.executable, str(PLUGIN_BIN / "context-guard-artifact"), "search", "--help"],
+            [sys.executable, str(KIT_DIR / "context_guard_cli.py"), "artifact", "search", "--help"],
+            [sys.executable, str(PLUGIN_BIN / "context-guard"), "artifact", "search", "--help"],
+        ]:
+            with self.subTest(command=command):
+                proc = subprocess.run(command, text=True, capture_output=True, check=True)
+                output = proc.stdout + proc.stderr
+                self.assertIn("literal", output)
+                self.assertIn("--max-matches", output)
+
+        raw = "first\nlegacy ERROR hit\nthird\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    legacy_dir = root / ".claude-token-optimizer" / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(legacy_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    artifact_id = json.loads(store.stdout)["artifact_id"]
+                    search = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            ".context-guard/artifacts/",
+                            "search",
+                            "ERROR",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=root,
+                        check=True,
+                    )
+                    payload = json.loads(search.stdout)
+                    self.assertEqual(payload["artifact_dir"], "default")
+                    self.assertEqual(payload["matches"][0]["artifact_id"], artifact_id)
+                    self.assertEqual(payload["matches"][0]["text"], "legacy ERROR hit")
+                    self.assertNotIn(" --dir ", payload["matches"][0]["retrieval"]["cli"])
+
     def test_artifact_escrow_default_reads_legacy_artifact_directory(self):
         raw = "first\nlegacy hit\nthird\n"
         for script in ARTIFACT_SCRIPTS:
