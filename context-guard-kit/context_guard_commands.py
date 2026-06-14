@@ -82,6 +82,8 @@ DISPATCHER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
     "tool-prune": ("context-guard-tool-prune",),
     "compress": ("context-guard-compress",),
     "cost": ("context-guard-cost",),
+    "route-advisor": ("context-guard-cost", "route-advisor"),
+    "route": ("context-guard-cost", "route-advisor"),
     "cache-score": ("context-guard-cache-score",),
     "bench": ("context-guard-bench",),
     "read-symbol": ("context-guard-read-symbol",),
@@ -186,6 +188,7 @@ PLUGIN_ENTRYPOINTS: tuple[str, ...] = (
 DISPATCHER_SMOKE_CASES: tuple[dict[str, Any], ...] = (
     {"entrypoint": "context-guard", "args": ["experiments", "list", "--json"], "mode": "json"},
     {"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"},
+    {"entrypoint": "context-guard", "args": ["route-advisor", "--help"], "mode": "text"},
     {"entrypoint": "context-guard", "args": ["cache-score", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"},
     {"entrypoint": "context-guard-pack", "args": ["auto", "--help"], "mode": "text"},

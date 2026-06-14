@@ -6394,6 +6394,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 data = {"sections": [{"id": "stable", "ttl": "1h", "bytes": 10}]}
             elif target == "pricing":
                 data = cost_guard_pricing()
+            elif target == "workload":
+                data = {"provider": "generic", "task": {"latency_class": "async"}, "provider_features": {"batch_api": True}}
             else:  # pragma: no cover - defensive test helper guard.
                 raise AssertionError(target)
             path.write_text(json.dumps(data), encoding="utf-8")
@@ -6411,10 +6413,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     ["preflight", "--pricing-profile", str(path), "--store-dir", str(tmp / "ledger"), "--json"],
                     {"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "hi"}]},
                 )
+            if target == "workload":
+                return run_cost_guard(script, ["route-advisor", "--workload", str(path), "--json"])
             raise AssertionError(target)  # pragma: no cover
 
         for script in COST_GUARD_SCRIPTS:
-            for target in ("request", "usage", "manifest", "pricing"):
+            for target in ("request", "usage", "manifest", "pricing", "workload"):
                 with self.subTest(script=script, target=target, shape="final-symlink"):
                     with tempfile.TemporaryDirectory() as tmp_raw:
                         tmp = Path(tmp_raw)
@@ -6469,6 +6473,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "usage": {"model": "claude-sonnet-4-5", "usage": {"input_tokens": 10, "output_tokens": 1}},
             "manifest": {"sections": [{"id": "stable", "ttl": "1h", "bytes": 10}]},
             "pricing": cost_guard_pricing(),
+            "workload": {"provider": "generic", "task": {"latency_class": "async"}, "provider_features": {"batch_api": True}},
         }
 
         def run_regular(script: Path, target: str, path: Path, tmp: Path, extra: list[str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -6485,6 +6490,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     ["preflight", "--pricing-profile", str(path), "--store-dir", str(tmp / "ledger"), "--json", *extra],
                     {"model": "x"},
                 )
+            if target == "workload":
+                return run_cost_guard(script, ["route-advisor", "--workload", str(path), "--json", *extra])
             raise AssertionError(target)  # pragma: no cover
 
         for script in COST_GUARD_SCRIPTS:
@@ -6900,6 +6907,258 @@ class ClaudeTokenKitTests(unittest.TestCase):
             preflight_payload = json.loads(preflight.stdout)
             self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_miss"], 1)
             self.assertEqual(preflight_payload["cache_risk"]["summary"]["predicted_hit"], 0)
+
+    def test_cost_guard_route_advisor_accounts_for_shifted_costs_and_batch_candidates(self):
+        sentinel = "UNIQUE_ROUTE_RAW_PROMPT_SENTINEL"
+        private_path = "/Users/example/private/route-secret.txt"
+        workload = {
+            "provider": "openai",
+            "model": "claude-sonnet-4-5",
+            "provider_features": {
+                "batch_api": True,
+                "prompt_cache": True,
+                "structured_outputs": True,
+                "lower_cost_models": True,
+            },
+            "task": {
+                "latency_class": "async",
+                "risk": "low",
+                "quality_gate": "pass",
+                "task_kind": "extract",
+                "requires_interaction": False,
+            },
+            "request": cost_guard_request(cacheable_text=f"stable prefix {sentinel} {private_path} " + ("x" * 1000)),
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_creation_input_tokens": 300,
+                "cache_read_input_tokens": 700,
+            },
+            "telemetry": {
+                "external_cost_usd": 0.25,
+                "local_cost_usd": 0.05,
+                "external_tokens": 500,
+                "retry_count": 1,
+                "subagent_count": 2,
+            },
+        }
+        for script in COST_GUARD_SCRIPTS:
+            with self.subTest(script=script):
+                proc = run_cost_guard(
+                    script,
+                    ["route-advisor", "--pricing-profile", json.dumps(cost_guard_pricing()), "--json"],
+                    workload,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                for forbidden in (sentinel, private_path):
+                    self.assertNotIn(forbidden, proc.stdout)
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["mode"], "route_advisor")
+                self.assertEqual(payload["provider"]["name"], "openai")
+                self.assertFalse(payload["provider"]["feature_matrix_authoritative"])
+                self.assertTrue(payload["provider"]["feature_recheck_required"])
+                self.assertTrue(payload["provider_features"]["features"]["batch_api"]["supported"])
+                self.assertEqual(payload["batchability"]["level"], "candidate")
+                self.assertTrue(payload["batchability"]["eligible"])
+                total = payload["total_cost_accounting"]
+                self.assertEqual(total["external_cost_usd"], 0.25)
+                self.assertEqual(total["local_cost_usd"], 0.05)
+                self.assertTrue(total["measurement_availability"]["shifted_cost"])
+                self.assertTrue(total["shifted_cost_accounting"]["required"])
+                self.assertTrue(total["pricing"]["release_recheck_required"])
+                self.assertEqual(total["pricing"]["profile"], "unit-test-pricing")
+                self.assertGreater(total["total_cost_with_shift_usd"], 0.30)
+                recs = {item["id"]: item for item in payload["route_recommendations"]}
+                self.assertEqual(recs["use-batch-api-for-noninteractive-work"]["decision"], "candidate")
+                self.assertEqual(recs["preserve-prompt-cache-prefix"]["decision"], "candidate")
+                self.assertEqual(recs["use-structured-outputs-when-task-fits"]["decision"], "candidate")
+                self.assertEqual(recs["evaluate-cheaper-model-route"]["decision"], "candidate")
+                self.assertFalse(payload["claim_boundary"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(payload["privacy"]["provider_call_performed"])
+                self.assertFalse(payload["privacy"]["queue_started"])
+
+    def test_cost_guard_route_advisor_is_conservative_for_interactive_unknown_features(self):
+        workload = {
+            "provider": "generic",
+            "task": {
+                "latency_class": "interactive",
+                "risk": "high",
+                "quality_gate": "fail",
+                "task_kind": "code_edit",
+                "requires_interaction": True,
+                "has_external_side_effects": True,
+            },
+            "telemetry": {
+                "external_tokens": 2000,
+                "retry_count": 1,
+                "subagent_count": 1,
+            },
+        }
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["route-advisor", "--json"], workload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["batchability"]["level"], "not_recommended")
+        self.assertIn("interactive_latency", payload["batchability"]["blockers"])
+        self.assertIn("requires_user_interaction", payload["batchability"]["blockers"])
+        self.assertTrue(payload["provider_features"]["recheck_required"])
+        self.assertEqual(payload["provider_features"]["features"]["batch_api"]["supported"], None)
+        total = payload["total_cost_accounting"]
+        self.assertTrue(total["shifted_cost_accounting"]["missing_shifted_cost_warning"])
+        recs = {item["id"]: item for item in payload["route_recommendations"]}
+        self.assertEqual(recs["evaluate-cheaper-model-route"]["decision"], "not_recommended")
+        self.assertEqual(recs["record-missing-shifted-costs"]["decision"], "required")
+        self.assertNotIn("guaranteed", proc.stdout.lower())
+        self.assertNotIn("ContextGuard-caused savings", proc.stdout)
+
+    def test_cost_guard_route_advisor_does_not_double_count_aggregate_shifted_costs(self):
+        workload = {
+            "provider": "generic",
+            "task": {"latency_class": "async", "risk": "low", "quality_gate": "pass"},
+            "provider_features": {"batch_api": True},
+            "telemetry": {
+                "primary_cost_usd": 1.0,
+                "external_cost_usd": 2.0,
+                "subagent_cost_usd": 0.75,
+                "embedding_cost_usd": 0.25,
+                "local_cost_usd": 3.0,
+                "local_server_cost_usd": 0.5,
+                "local_energy_cost_usd": 0.25,
+            },
+        }
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["route-advisor", "--json"], workload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        total = json.loads(proc.stdout)["total_cost_accounting"]
+        self.assertEqual(total["primary_cost_usd"], 1.0)
+        self.assertEqual(total["external_cost_usd"], 2.0)
+        self.assertEqual(total["external_component_breakdown_usd"], 1.0)
+        self.assertEqual(total["local_cost_usd"], 3.0)
+        self.assertEqual(total["local_component_breakdown_usd"], 0.75)
+        self.assertEqual(total["computed_total_cost_with_shift_usd"], 6.0)
+        self.assertEqual(total["total_cost_with_shift_usd"], 6.0)
+
+    def test_cost_guard_route_advisor_falls_back_past_invalid_cost_fields_and_tracks_zero(self):
+        workload = {
+            "provider": "generic",
+            "task": {"latency_class": "async", "risk": "low"},
+            "telemetry": {
+                "external_cost_usd": None,
+                "local_cost_usd": 0,
+                "external_tokens": 500,
+                "subagent_count": 1,
+                "subagent_cost_usd": "not-a-number",
+            },
+            "shifted_costs": {
+                "external_cost_usd": 0.25,
+                "subagent_cost_usd": 0.10,
+                "local_server_cost_usd": 0.20,
+            },
+        }
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["route-advisor", "--json"], workload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        total = json.loads(proc.stdout)["total_cost_accounting"]
+        self.assertEqual(total["external_cost_usd"], 0.25)
+        self.assertEqual(total["external_component_breakdown_usd"], 0.10)
+        self.assertEqual(total["local_cost_usd"], 0)
+        self.assertEqual(total["local_component_breakdown_usd"], 0.20)
+        self.assertTrue(total["external_cost_supplied"])
+        self.assertTrue(total["local_cost_supplied"])
+        self.assertTrue(total["measurement_availability"]["external_cost"])
+        self.assertTrue(total["measurement_availability"]["local_cost"])
+        self.assertTrue(total["measurement_availability"]["shifted_cost"])
+        self.assertFalse(total["shifted_cost_accounting"]["missing_shifted_cost_warning"])
+
+    def test_cost_guard_route_advisor_flags_tool_calls_without_shifted_costs(self):
+        workload = {
+            "provider": "generic",
+            "task": {"latency_class": "async", "risk": "low"},
+            "telemetry": {
+                "primary_cost_usd": 0.01,
+                "tool_call_count": 3,
+            },
+        }
+        proc = run_cost_guard(KIT_DIR / "cost_guard.py", ["route-advisor", "--json"], workload)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        total = payload["total_cost_accounting"]
+        self.assertEqual(total["run_counters"]["tool_call_count"], 3)
+        self.assertTrue(total["shifted_cost_accounting"]["missing_shifted_cost_warning"])
+        self.assertIn("record-missing-shifted-costs", [rec["id"] for rec in payload["route_recommendations"]])
+
+    def test_cost_guard_route_advisor_invalid_feature_error_redacts_raw_key(self):
+        private_feature = "/Users/example/private/sk-ant-route-feature-secret"
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["route-advisor", "--feature", f"{private_feature}=true", "--json"],
+            {"provider": "generic"},
+        )
+        self.assertEqual(proc.returncode, 2)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("unknown route feature", combined)
+        self.assertIn("redacted", combined)
+        self.assertNotIn(private_feature, combined)
+        self.assertNotIn("sk-ant-route-feature-secret", combined)
+
+    def test_cost_guard_route_advisor_preserves_provider_qualified_model_for_pricing(self):
+        pricing = {
+            "name": "slash-model-pricing",
+            "default_input_usd_per_mtok": 99,
+            "default_output_usd_per_mtok": 99,
+            "models": {
+                "openai/gpt-4o": {"input_usd_per_mtok": 2, "output_usd_per_mtok": 10},
+            },
+        }
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["route-advisor", "--pricing-profile", json.dumps(pricing), "--usd-to-krw", "2", "--json"],
+            {"model": "openai/gpt-4o", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["provider"]["model"], "openai/gpt-4o")
+        estimate = payload["total_cost_accounting"]["usage_cost_estimate"]
+        self.assertEqual(estimate["model_rate_key"], "openai/gpt-4o")
+        self.assertEqual(estimate["cost_usd"], 2.0)
+        self.assertEqual(payload["total_cost_accounting"]["pricing"]["usd_to_krw"], 2.0)
+        self.assertEqual(payload["total_cost_accounting"]["total_cost_with_shift_krw"], 4.0)
+
+    def test_cost_guard_route_advisor_redacts_path_like_model_label(self):
+        private_model_path = "/Users/example/private/model-name"
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["route-advisor", "--json"],
+            {"model": private_model_path, "usage": {"input_tokens": 1}},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn(private_model_path, combined)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["provider"]["model"], "path-redacted")
+
+    def test_cost_guard_route_advisor_redacts_relative_model_file_path(self):
+        private_model_path = "weights/customer-model.gguf"
+        proc = run_cost_guard(
+            KIT_DIR / "cost_guard.py",
+            ["route-advisor", "--json"],
+            {"model": private_model_path, "usage": {"input_tokens": 1}},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn(private_model_path, combined)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["provider"]["model"], "path-redacted")
+
+    def test_context_guard_route_advisor_dispatcher_help_routes_to_cost_helper(self):
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
+                proc = subprocess.run(
+                    [sys.executable, str(dispatcher), "route-advisor", "--help"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    cwd=ROOT,
+                )
+                self.assertIn("advise on batchability", proc.stdout)
+                self.assertIn("--workload", proc.stdout)
 
     def test_cost_guard_model_pricing_prefers_specific_matches(self):
         module = load_module_from_path(KIT_DIR / "cost_guard.py", "cost_guard_rate_resolution_test")
@@ -7953,6 +8212,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_cost_test")
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS["context-guard-cost"]["args"], ["--help"])
         self.assertIn({"entrypoint": "context-guard", "args": ["cost", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
+        self.assertIn({"entrypoint": "context-guard", "args": ["route-advisor", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
         self.assertIn({"entrypoint": "context-guard-pack", "args": ["suggest", "--help"], "mode": "text"}, smoke.DISPATCHER_SMOKE_COMMANDS)
         self.assertEqual(smoke.npm_dispatcher_smoke_plan(), smoke.DISPATCHER_SMOKE_COMMANDS)
 
