@@ -321,7 +321,7 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 ./plugins/context-guard/bin/context-guard-cost route-advisor --feature batch_api=true --feature structured_outputs=true --json < workload.json
 ```
 
-`context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only: hosted token or cost savings claims still require matched successful tasks, non-inferior quality, and shifted-cost evidence.
+`context-guard route-advisor` is a local, passive advisor. It reads caller-supplied workload JSON, provider feature declarations, usage telemetry, and shifted external/local costs, then emits total-cost accounting, batchability blockers, and candidate routes such as batch API, prompt-cache prefix preservation, structured outputs, or cheaper-model evaluation. It does not start a queue, call providers, refresh pricing docs, or treat bundled provider feature knowledge as authoritative; unknown or caller-supplied features are marked recheck-required. Treat recommendations as candidates only. Hosted token or cost savings claims require matched successful tasks, non-inferior quality, and shifted-cost evidence.
 
 ### Compress selected local text conservatively
 
