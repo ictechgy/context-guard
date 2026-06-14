@@ -28,6 +28,9 @@ MAX_MAX_BYTES = 100_000_000
 # 메타데이터에 measurement="estimated" 로 명시해 관측 토큰 수와 혼동되지 않게 한다.
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
 CONTENT_TYPES = ("json", "diff", "log", "search", "code", "prose")
+COMPRESSION_MODES = ("conservative", "readable")
+READABLE_COMPRESSION_SCHEMA_VERSION = "contextguard.compress-readable.v1"
+READABLE_SENTENCE_LIMIT = 5
 
 # diff 구조 라인(파일 헤더/헝크/변경)을 식별한다. 나머지 context 라인은 접어서 줄인다.
 DIFF_FILE_HEADER_RE = re.compile(r"^(diff --git |index [0-9a-f]|--- |\+\+\+ |rename |similarity |new file|deleted file)")
@@ -92,6 +95,20 @@ PROTECTED_DENIED_TRANSFORMS = (
     "hash_rewrite",
     "path_rewrite",
     "quoted_literal_rewrite",
+)
+READABLE_BLOCKING_PROTECTED_KEYS = (
+    "code_fence",
+    "diff",
+    "hash",
+    "path",
+    "stack_frame",
+    "numeric_constant",
+    "quoted_string",
+    "json_key",
+)
+PROMPT_LIKE_INSTRUCTION_RE = re.compile(
+    r"(?i)\b(ignore (?:all )?(?:previous|above) instructions|system prompt|developer message|"
+    r"you are chatgpt|act as (?:a|an)|do not follow|BEGIN (?:SYSTEM|DEVELOPER)|END (?:SYSTEM|DEVELOPER))\b"
 )
 
 
@@ -301,6 +318,43 @@ def build_transform_policy(protected_policy: dict[str, object]) -> dict[str, obj
     }
 
 
+def build_readable_compression_metadata(
+    *,
+    content_type: str,
+    strategy_detail: dict[str, object],
+    lossy: bool,
+) -> dict[str, object]:
+    blocking = strategy_detail.get("readable_blocking_signals", {})
+    if not isinstance(blocking, dict):
+        blocking = {}
+    applied = bool(strategy_detail.get("readable_applied"))
+    exact_fallback_required = bool(lossy or applied)
+    return {
+        "schema_version": READABLE_COMPRESSION_SCHEMA_VERSION,
+        "mode": "readable",
+        "preview_only": True,
+        "applied": applied,
+        "content_type": content_type,
+        "strategy": strategy_detail.get("strategy"),
+        "readable_strategy": strategy_detail.get("readable_strategy", "structural-preview"),
+        "omitted_reason": strategy_detail.get("readable_omitted_reason"),
+        "blocking_signal_counts": blocking,
+        "protected_spans_stored": False,
+        "source_verification": {
+            "exact_fallback_required": exact_fallback_required,
+            "recommended_command": "context-guard-artifact store --command 'readable-mode exact fallback' --json < sanitized-prose.txt",
+            "verify_before_edit_or_claim": True,
+        },
+        "claim_boundary": {
+            "deterministic_local_only": True,
+            "no_network_model_embedding_or_reranker": True,
+            "no_generated_semantic_rewrite": True,
+            "byte_and_token_counts_are_local_proxies": True,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+        },
+    }
+
+
 def _looks_like_json(stripped: str) -> bool:
     if stripped[0] not in "{[":
         return False
@@ -434,6 +488,64 @@ def compress_prose(text: str) -> tuple[str, dict[str, object]]:
     return _whitespace_normalize(text, strategy="prose-whitespace", max_consecutive_blank=1)
 
 
+def readable_blocking_signal_counts(text: str, content_type: str) -> dict[str, int]:
+    counts = protected_zone_counts(text)
+    blocking = {
+        key: int(counts.get(key, 0) or 0)
+        for key in READABLE_BLOCKING_PROTECTED_KEYS
+        if int(counts.get(key, 0) or 0) > 0
+    }
+    prompt_like = len(PROMPT_LIKE_INSTRUCTION_RE.findall(text))
+    if prompt_like:
+        blocking["prompt_like_instruction"] = prompt_like
+    if content_type != "prose":
+        blocking["non_prose_content"] = 1
+    return blocking
+
+
+def split_prose_sentences(text: str) -> list[str]:
+    compact = " ".join(text.split())
+    if not compact:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+", compact)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def compress_prose_readable(text: str) -> tuple[str, dict[str, object]]:
+    """Readable opt-in sentence window for sanitized unprotected prose only."""
+    normalized, base_detail = compress_prose(text)
+    blocking = readable_blocking_signal_counts(normalized, "prose")
+    detail = dict(base_detail)
+    detail.update({
+        "readable_mode": True,
+        "readable_strategy": "sentence-window-preview",
+        "readable_blocking_signals": blocking,
+    })
+    if blocking:
+        detail["readable_applied"] = False
+        detail["readable_omitted_reason"] = "protected_or_prompt_like_signal"
+        return normalized, detail
+    sentences = split_prose_sentences(normalized)
+    if len(sentences) <= READABLE_SENTENCE_LIMIT:
+        detail["readable_applied"] = False
+        detail["readable_omitted_reason"] = "short_prose"
+        return normalized, detail
+    included_sentences = sentences[:3] + sentences[-1:]
+    kept = sentences[:3] + [f"[context-guard-readable] {len(sentences) - len(included_sentences)} sentence(s) omitted; retrieve exact source before relying on omitted detail."] + sentences[-1:]
+    preview = " ".join(kept)
+    if text.endswith("\n"):
+        preview += "\n"
+    detail.update({
+        "strategy": "prose-readable-window",
+        "lossy": True,
+        "readable_applied": True,
+        "sentences_original": len(sentences),
+        "sentences_included": len(included_sentences),
+        "sentences_omitted": len(sentences) - len(included_sentences),
+    })
+    return preview, detail
+
+
 def _whitespace_normalize(text: str, *, strategy: str, max_consecutive_blank: int) -> tuple[str, dict[str, object]]:
     out: list[str] = []
     blank_run = 0
@@ -482,6 +594,7 @@ def build_metadata(
     input_bytes: int,
     max_bytes: int,
     protected_policy_enabled: bool = False,
+    compression_mode: str = "conservative",
 ) -> dict[str, object]:
     """Assemble the compress receipt: observed byte/line counts plus an estimated token proxy.
 
@@ -550,6 +663,12 @@ def build_metadata(
                 "Protected lossy structural transform: store the full sanitized text with "
                 "`context-guard-artifact store` and retrieve exact slices before relying on omitted content."
             )
+    if compression_mode == "readable":
+        metadata["readable_compression"] = build_readable_compression_metadata(
+            content_type=content_type,
+            strategy_detail=strategy_detail,
+            lossy=lossy,
+        )
     return metadata
 
 
@@ -562,6 +681,7 @@ def compress_text(
     input_bytes: int,
     max_bytes: int,
     protected_policy_enabled: bool = False,
+    compression_mode: str = "conservative",
 ) -> tuple[str, dict[str, object]]:
     """Sanitize first, then classify and compress, then build the receipt.
 
@@ -573,11 +693,24 @@ def compress_text(
         content_type, type_source = forced_type, "override"
     else:
         content_type, type_source = classify_content(sanitized), "detected"
-    compressed, strategy_detail = STRATEGIES[content_type](sanitized)
+    if compression_mode == "readable" and content_type == "prose":
+        compressed, strategy_detail = compress_prose_readable(sanitized)
+    else:
+        compressed, strategy_detail = STRATEGIES[content_type](sanitized)
+        if compression_mode == "readable":
+            strategy_detail["readable_mode"] = True
+            strategy_detail["readable_strategy"] = "sentence-window-preview"
+            strategy_detail["readable_applied"] = False
+            strategy_detail["readable_omitted_reason"] = "non_prose_content"
+            strategy_detail["readable_blocking_signals"] = {"non_prose_content": 1}
     # 보수성 보장: 어떤 전략도 입력보다 큰 결과를 내보내지 않는다. 작은 입력에서
     # 접기 마커가 원본보다 길어지는 경우 살균된 원본을 그대로 유지한다.
     if byte_length(compressed) >= byte_length(sanitized):
         compressed = sanitized
+        if compression_mode == "readable" and strategy_detail.get("readable_applied"):
+            strategy_detail["lossy"] = False
+            strategy_detail["readable_applied"] = False
+            strategy_detail["readable_omitted_reason"] = "not_smaller_than_input"
         strategy_detail["reduced"] = False
     else:
         strategy_detail["reduced"] = True
@@ -592,6 +725,7 @@ def compress_text(
         input_bytes=input_bytes,
         max_bytes=max_bytes,
         protected_policy_enabled=protected_policy_enabled,
+        compression_mode=compression_mode,
     )
     return compressed, metadata
 
@@ -623,6 +757,10 @@ def render_text_receipt(metadata: dict[str, object]) -> str:
 def run_compress(args: argparse.Namespace) -> int:
     """Read stdin, compress, then emit JSON or (compressed text + stderr receipt)."""
     max_bytes = bounded_int(args.max_bytes, DEFAULT_MAX_BYTES, 1, MAX_MAX_BYTES)
+    compression_mode = args.mode
+    if compression_mode not in COMPRESSION_MODES:
+        print(f"context-guard-compress: unknown --mode: {compression_mode}", file=sys.stderr)
+        return 2
     raw_text, input_truncated, input_bytes = read_bounded_stdin(max_bytes)
     forced_type = args.type
     if forced_type is not None and forced_type not in STRATEGIES:
@@ -636,6 +774,7 @@ def run_compress(args: argparse.Namespace) -> int:
         input_bytes=input_bytes,
         max_bytes=max_bytes,
         protected_policy_enabled=bool(args.protected_policy),
+        compression_mode=compression_mode,
     )
     if args.json:
         payload = {"metadata": metadata, "content": compressed}
@@ -658,6 +797,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=CONTENT_TYPES,
         default=None,
         help="force a content type instead of auto-detecting (json/diff/log/search/code/prose)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=COMPRESSION_MODES,
+        default="conservative",
+        help="compression policy: conservative keeps existing deterministic strategies; readable adds opt-in readable preview/source-verification metadata",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON with metadata and compressed content")
     parser.add_argument(

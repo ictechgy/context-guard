@@ -44,6 +44,7 @@ AUTO_SCHEMA_VERSION = "contextguard.pack-auto.v1"
 AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
 REPO_MAP_SCHEMA_VERSION = "contextguard.pack-repo-map.v1"
 ADAPTIVE_K_SCHEMA_VERSION = "contextguard.pack-adaptive-k.v1"
+SYMBOL_MEMORY_SCHEMA_VERSION = "contextguard.pack-symbol-memory.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -61,6 +62,8 @@ MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
 MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
 MAX_ADAPTIVE_K_SCORE_SAMPLES = 200
+MAX_SYMBOL_MEMORY_ITEMS = 12
+MAX_SYMBOL_MEMORY_GRAPH_ITEMS = 12
 PACK_DIR = ".context-guard/packs"
 REDACTED_PATH_COMPONENT = "[REDACTED-PATH-COMPONENT]"
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
@@ -2716,6 +2719,90 @@ def build_repo_map_payload(
     }
 
 
+def line_identity_from_dict(value: object) -> str:
+    if not isinstance(value, dict):
+        return "all"
+    return f"{value.get('start')}:{value.get('end')}"
+
+
+def build_symbol_memory_payload(repo_map: dict[str, Any]) -> dict[str, Any]:
+    retrieval_by_path_lines: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in repo_map.get("retrieval", []):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path", ""))
+        retrieval_by_path_lines[(path, line_identity_from_dict(item.get("lines")))] = item
+
+    symbols: list[dict[str, Any]] = []
+    for signature in repo_map.get("signature_index", []):
+        if not isinstance(signature, dict):
+            continue
+        path = str(signature.get("path", ""))
+        lines = copy.deepcopy(signature.get("lines"))
+        retrieval = retrieval_by_path_lines.get((path, line_identity_from_dict(lines)))
+        symbol: dict[str, Any] = {
+            "path": path,
+            "kind": signature.get("kind"),
+            "name": signature.get("name"),
+            "signature": signature.get("signature"),
+            "line": signature.get("line"),
+            "lines": lines,
+            "source": "repo_map.signature_index",
+            "exact_source_verification_required": True,
+        }
+        if isinstance(retrieval, dict):
+            for key in ("slice_cli", "symbol_cli", "retrieval_omitted_reason"):
+                if retrieval.get(key):
+                    symbol[key] = retrieval[key]
+        symbols.append({key: value for key, value in symbol.items() if value is not None})
+        if len(symbols) >= MAX_SYMBOL_MEMORY_ITEMS:
+            break
+
+    graph_context: list[dict[str, Any]] = []
+    for item in repo_map.get("graph_rank", []):
+        if not isinstance(item, dict):
+            continue
+        graph_context.append({
+            "path": item.get("path"),
+            "score": item.get("score"),
+            "components": copy.deepcopy(item.get("components", {})),
+            "line_count": item.get("line_count"),
+            "exact_source_verification_required": True,
+        })
+        if len(graph_context) >= MAX_SYMBOL_MEMORY_GRAPH_ITEMS:
+            break
+
+    summary = repo_map.get("summary", {}) if isinstance(repo_map.get("summary"), dict) else {}
+    retrieval = repo_map.get("retrieval", []) if isinstance(repo_map.get("retrieval"), list) else []
+    return {
+        "schema_version": SYMBOL_MEMORY_SCHEMA_VERSION,
+        "mode": "advisory",
+        "source": "contextguard.pack-repo-map.v1",
+        "summary": {
+            "symbols": len(symbols),
+            "graph_context": len(graph_context),
+            "files_scanned": int(summary.get("files_scanned", 0) or 0),
+            "graph_edges": int(summary.get("graph_edges", 0) or 0),
+            "retrieval_hints": len(retrieval),
+        },
+        "symbols": symbols,
+        "graph_context": graph_context,
+        "source_verification": {
+            "requires_exact_source_before_edits": True,
+            "verified_by": ["slice_cli", "symbol_cli"],
+            "retrieval_hint_count": len(retrieval),
+            "missing_retrieval_hint_count": max(0, len(symbols) - sum(1 for item in symbols if item.get("slice_cli") or item.get("symbol_cli"))),
+        },
+        "claim_boundary": {
+            "deterministic_local_only": True,
+            "no_network_model_embedding_lsp_or_tree_sitter_dependency": True,
+            "advisory_does_not_change_manifest_pack_or_receipt": True,
+            "graph_rank_is_explain_only": True,
+            "provider_token_or_cost_savings_claim_allowed": False,
+        },
+    }
+
+
 def build_auto_explain_payload(
     args: argparse.Namespace,
     suggest_payload: dict[str, Any],
@@ -2724,6 +2811,7 @@ def build_auto_explain_payload(
     *,
     root: Path | None = None,
     root_arg: str = ".",
+    repo_map_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     build_sources = [
         item
@@ -2851,7 +2939,9 @@ def build_auto_explain_payload(
             "raw_test_output_embedded": False,
         },
     }
-    if root is not None:
+    if repo_map_payload is not None:
+        explain["repo_map"] = copy.deepcopy(repo_map_payload)
+    elif root is not None:
         explain["repo_map"] = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
     return explain
 
@@ -2940,9 +3030,23 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
         payload["build_hint_omitted_reason"] = build_hint_omitted_reason
     if getattr(args, "adaptive_k", False) and isinstance(suggest_payload.get("adaptive_k"), dict):
         payload["adaptive_k"] = copy.deepcopy(suggest_payload["adaptive_k"])
+    repo_map_payload: dict[str, Any] | None = None
+    if getattr(args, "symbol_memory", False) or args.explain:
+        repo_map_payload = build_repo_map_payload(root, args, suggest_payload, build_payload, root_arg=root_arg)
+    if getattr(args, "symbol_memory", False) and isinstance(repo_map_payload, dict):
+        payload["symbol_memory"] = build_symbol_memory_payload(repo_map_payload)
     if args.explain:
-        payload["explain"] = build_auto_explain_payload(args, suggest_payload, build_payload, payload, root=root, root_arg=root_arg)
+        payload["explain"] = build_auto_explain_payload(
+            args,
+            suggest_payload,
+            build_payload,
+            payload,
+            root=root,
+            root_arg=root_arg,
+            repo_map_payload=repo_map_payload,
+        )
     return payload, rc
+
 
 def print_adaptive_k_text(payload: dict[str, Any]) -> None:
     adaptive = payload.get("adaptive_k")
@@ -2970,6 +3074,21 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
         f"candidates={score_distribution.get('candidate_count', 0)} "
         f"budget_limited={budget_fit.get('budget_limited', False)} "
         f"apply=false reasons={reason_text or 'none'}"
+    )
+
+
+def print_symbol_memory_text(payload: dict[str, Any]) -> None:
+    symbol_memory = payload.get("symbol_memory")
+    if not isinstance(symbol_memory, dict):
+        return
+    summary = symbol_memory.get("summary", {}) if isinstance(symbol_memory.get("summary"), dict) else {}
+    verification = symbol_memory.get("source_verification", {}) if isinstance(symbol_memory.get("source_verification"), dict) else {}
+    print(
+        "symbol-memory: "
+        f"symbols={summary.get('symbols', 0)} "
+        f"graph_context={summary.get('graph_context', 0)} "
+        f"retrieval_hints={summary.get('retrieval_hints', 0)} "
+        f"verify_before_edits={str(verification.get('requires_exact_source_before_edits', True)).lower()}"
     )
 
 
@@ -3034,6 +3153,7 @@ def print_auto_text(payload: dict[str, Any]) -> None:
             reason_text = ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
             print(f"omitted reasons: {reason_text}")
     print_adaptive_k_text(payload)
+    print_symbol_memory_text(payload)
     if payload.get("manifest_path"):
         print(f"manifest: {payload['manifest_path']}")
     if payload.get("pack_path"):
@@ -3087,6 +3207,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
+    auto.add_argument("--symbol-memory", action="store_true", help="include repo-map derived symbol/graph advisory metadata with exact source verification hints")
     return parser
 
 

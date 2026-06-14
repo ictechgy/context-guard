@@ -135,9 +135,9 @@ Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-
 | Declarative output filter | Opt-in JSON DSL for user-owned command filters with protected failure passthrough and validation before use. |
 | Local artifact store | Saves large sanitized logs outside the conversation and returns compact receipts or exact requested slices. |
 | Anthropic cost guard | `context-guard cost preflight/observe/ledger/compile` estimates cache-risk and cost ranges, stores only keyed HMAC fingerprints, and stays passive unless `--enforce` is explicit. |
-| Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` local top-k advisory metadata. |
+| Budgeted context packer | Assembles prioritized local file evidence into a byte-budgeted Markdown pack, can suggest a build-compatible manifest from local signals, adds `--explain` for compact local selection reasons plus bounded repo-map metadata, and adds opt-in `--adaptive-k` / `--symbol-memory` advisory metadata. |
 | Tool/MCP schema pruner | Emits bounded top-k tool/schema advisory reports from local catalogs with compact receipts and full sanitized payload retrieval. |
-| Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies. |
+| Conservative stdin compressor | Shrinks selected JSON, diffs, logs, search output, code, and prose with observed byte evidence and estimated token proxies; `--mode readable` adds an opt-in readable prose preview with exact fallback guidance. |
 | Protected-zone policy receipts | Opt-in `context-guard-compress --protected-policy` and `context-guard cost compile` metadata mark code/diff/path/hash/JSON/literal zones as structural-only with exact retrieval guidance. |
 | Repeated-failure nudge | Warns after repeated Bash failures so the agent changes strategy before stale logs fill the context. |
 | Statusline, audit, and benchmarks | Shows context/cache/cost signals, finds usage and cache-friendliness hotspots, and records conservative before/after evidence. |
@@ -263,7 +263,7 @@ Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized
   --diff HEAD \
   --manifest-out suggested-pack.json \
   --pack-out context-pack.md \
-  --budget-bytes 12000 --json --explain --adaptive-k
+  --budget-bytes 12000 --json --explain --adaptive-k --symbol-memory
 # Or run the two explicit steps:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "review failing tests" --diff HEAD \
@@ -281,6 +281,7 @@ A few boundaries are intentional:
 - `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
 - Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
 - Add `--adaptive-k` to `suggest` or `auto` for advisory-only shrink/expand top-k metadata derived from local score distribution, byte-budget fit, and score-mass recall/precision proxies. It never applies the recommendation automatically and does not change the manifest, pack body, receipt, or byte budget.
+- Add `--symbol-memory` to `auto` for repo-map-derived symbol/graph advisory metadata with exact `slice` / `read-symbol` verification hints. It is source-verification guidance only and does not change the manifest, pack body, receipt, or byte budget.
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.
@@ -319,11 +320,14 @@ The packer uses deterministic standard-library heuristics only: no network, mode
 git diff | ./plugins/context-guard/bin/context-guard-compress --json
 pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 cat evidence.txt | ./plugins/context-guard/bin/context-guard-compress --json --protected-policy
+cat sanitized-prose.txt | ./plugins/context-guard/bin/context-guard-compress --json --type prose --mode readable
 ```
 
 `context-guard-compress` classifies sanitized stdin as JSON, diff, log, search output, code, or prose, then applies deterministic reductions such as JSON compaction, diff context folding, duplicate log/search line collapse, and whitespace normalization. It never claims observed model-token savings; byte counts are observed, token counts are labeled as estimates, and lossy receipts point you back to `context-guard-artifact store` for exact retrieval.
 
 Add `--protected-policy` when the input may contain semantic-sensitive zones such as code fences, diffs, identifiers, numeric constants, hashes, paths, stack frames, quoted strings, or JSON keys. The flag does not change default compressor behavior; it adds `protected_zone_policy` and `transform_policy` metadata that denies semantic/paraphrase rewrites, allows only structural transforms plus artifact retrieval, and stores only class/count policy metadata rather than raw protected spans.
+
+Add `--mode readable` only for sanitized prose previews. It uses a deterministic sentence window, blocks prompt-like or high-risk protected signals, stores no raw protected spans, and marks exact fallback retrieval as required before edits or claims. It does not run learned compressors, models, embeddings, or rerankers.
 
 ### Trim or summarize command output
 

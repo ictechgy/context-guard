@@ -132,9 +132,9 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 | 선언형 출력 필터 | 사용자 정의 JSON DSL로 성공 출력만 명시적으로 줄이고, 보호해야 하는 실패 출력은 원문 stdout/stderr와 종료 코드를 보존합니다. |
 | 로컬 로그 보관소 | 큰 로그를 대화 밖 로컬 저장소에 보관하고, 요약 정보나 요청한 줄 범위만 다시 가져옵니다. |
 | Anthropic 비용 가드 | `context-guard cost preflight/observe/ledger/compile`이 cache 위험과 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 저장하며, `--enforce`를 명시하지 않으면 경고만 합니다. |
-| 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`으로 짧은 로컬 선택 이유를 덧붙일 수 있습니다. |
+| 예산 기반 컨텍스트 패커 | 우선순위가 있는 로컬 파일 근거를 바이트 예산 안의 Markdown 팩으로 조립하고, 로컬 신호에서 `build`용 manifest를 추천하며, `--explain`, `--adaptive-k`, `--symbol-memory`로 로컬 자문 메타데이터를 덧붙일 수 있습니다. |
 | Tool/MCP schema pruner | 로컬 catalog에서 bounded top-k tool/schema 자문 리포트를 만들고, compact 요약 기록과 전체 가림 처리된 payload 재조회 경로를 남깁니다. |
-| 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. |
+| 보수적 stdin 압축기 | 선택한 JSON, diff, 로그, 검색 출력, 코드, 산문을 줄이고, 관측 바이트 근거와 추정 토큰 proxy를 함께 표시합니다. `--mode readable`은 exact fallback 안내가 있는 opt-in 산문 preview를 추가합니다. |
 | 보호 영역 정책 기록 | `context-guard-compress --protected-policy`와 `context-guard cost compile`이 코드·diff·path·hash·JSON/literal zone을 structural-only 변환 대상으로 표시하고 정확한 재조회 경계를 남깁니다. |
 | 반복 실패 알림 | Bash 실패가 반복되면 실패 로그가 컨텍스트를 채우기 전에 전략을 바꾸도록 안내합니다. |
 | 상태표시줄, 감사, 벤치마크 | 컨텍스트·캐시·비용 신호를 보여주고, 사용량과 캐시 친화성 집중 지점을 찾고, 보수적인 전후 비교 증거를 남깁니다. |
@@ -249,7 +249,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
   --diff HEAD \
   --manifest-out suggested-pack.json \
   --pack-out context-pack.md \
-  --budget-bytes 12000 --json --explain --adaptive-k
+  --budget-bytes 12000 --json --explain --adaptive-k --symbol-memory
 # 또는 명시적인 두 단계로 실행:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "failing tests review" --diff HEAD \
@@ -267,6 +267,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 - JSON explain에는 bounded `repo_map`이 포함될 수 있습니다. 예시는 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트입니다.
 - repo-map은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 네트워크·모델 호출·임베딩을 쓰지 않습니다. 토큰 값은 provider-token이나 savings claim이 아닌 추정 `chars_div_4` proxy입니다.
 - `suggest` 또는 `auto`에 `--adaptive-k`를 추가하면 로컬 score distribution, byte-budget fit, score-mass 기반 recall/precision proxy에서 나온 advisory-only top-k shrink/expand metadata를 포함합니다. 추천값은 자동 적용되지 않으며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
+- `auto`에 `--symbol-memory`를 추가하면 repo-map 기반 symbol/graph advisory metadata와 정확한 `slice` / `read-symbol` 검증 힌트를 포함합니다. 이는 source verification 안내일 뿐이며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
 - `--manifest-out`은 `build`가 읽을 수 있는 manifest를 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다.
 - `context-guard-pack suggest`는 더 낮은 수준의 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다.
 - `context-guard-pack build`는 우선순위가 있는 로컬 파일 근거를 렌더링된 UTF-8 바이트 기준 `--budget-bytes` 안의 Markdown 팩으로 조립합니다. JSON 출력은 포함·부분 포함·중복·unsafe·missing·예산 초과로 누락된 source를 기록합니다.
@@ -292,11 +293,14 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 git diff | ./plugins/context-guard/bin/context-guard-compress --json
 pytest -q 2>&1 | ./plugins/context-guard/bin/context-guard-compress --type log
 cat evidence.txt | ./plugins/context-guard/bin/context-guard-compress --json --protected-policy
+cat sanitized-prose.txt | ./plugins/context-guard/bin/context-guard-compress --json --type prose --mode readable
 ```
 
 `context-guard-compress`는 가림 처리된 stdin을 JSON, diff, 로그, 검색 출력, 코드, 산문으로 분류한 뒤 JSON compact, diff 컨텍스트 접기, 중복 로그·검색 라인 제거, 공백 정규화 같은 결정적 축소를 적용합니다. 모델 토큰 절감을 관측했다고 주장하지 않으며, 바이트 수는 관측값으로, 토큰 수는 추정치로만 표시합니다. 손실형 요약 기록은 정확한 재조회를 위해 `context-guard-artifact store` 사용을 안내합니다.
 
 입력에 코드 펜스, diff, 식별자, 숫자 상수, 해시, 경로, 스택 프레임, 따옴표 문자열, JSON 키처럼 의미 보존이 중요한 구역이 있을 때는 `--protected-policy`를 추가하세요. 이 플래그는 기본 압축 동작을 바꾸지 않고, 의미·표현 변환을 거부하며 구조적 변환과 보관본 재조회만 허용하는 `protected_zone_policy`와 `transform_policy` 메타데이터를 추가합니다. 원문 보호 구간 대신 class/count 정책 메타데이터만 저장합니다.
+
+`--mode readable`은 가림 처리된 산문 preview에만 사용하세요. 결정적 sentence window를 쓰고, prompt-like 또는 high-risk protected signal이 있으면 차단하며, raw protected span을 저장하지 않고 edit/claim 전에 exact fallback retrieval이 필요하다고 표시합니다. learned compressor, model, embedding, reranker는 실행하지 않습니다.
 
 ### 명령 출력을 줄이거나 요약하기
 
