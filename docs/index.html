@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="ContextGuard는 파일·로그·명령 출력을 AI 코딩 에이전트 컨텍스트에 들어가기 전에 줄이는 로컬 우선 가드레일입니다.">
+  <meta name="description" content="ContextGuard는 파일·로그·명령 출력을 AI 코딩 에이전트 컨텍스트로 보내기 전에 줄이는 로컬 우선 가드레일입니다.">
   <title>ContextGuard — AI 코딩 에이전트 컨텍스트 관리</title>
   <style>
     :root {
@@ -300,10 +300,10 @@
         <div>
           <span class="eyebrow">Claude Code 플러그인 · 로컬 가드레일 · 에이전트 간 규칙</span>
           <h1>ContextGuard</h1>
-          <p class="tagline">파일·로그·출력을 AI 컨텍스트에 들어가기 전에 줄입니다.</p>
+          <p class="tagline">파일·로그·출력을 AI 컨텍스트로 보내기 전에 줄입니다.</p>
           <p class="subtitle">
-            ContextGuard는 불필요한 파일·로그·출력을 AI 에이전트 컨텍스트에 들어가기 전에 줄이는 로컬 가드레일입니다.
-            Claude Code 플러그인으로 바로 시작하고, 적용 전에는 읽기 전용 점검으로 현재 상태를 확인하며, 다른 AI 코딩·도구 에이전트에도 같은 규칙을 적용할 수 있습니다.
+            ContextGuard는 불필요한 파일·로그·명령 출력을 AI 에이전트 컨텍스트로 보내기 전에 줄이는 로컬 가드레일입니다.
+            Claude Code 플러그인으로 바로 시작하고, 적용 전에는 읽기 전용 점검으로 현재 상태를 확인합니다. 같은 규칙은 다른 AI 코딩·도구 에이전트에도 적용할 수 있습니다.
           </p>
           <div class="cta-row">
             <a class="button primary" href="#setup">빠른 시작</a>
@@ -341,7 +341,7 @@
     <section id="features" class="shell">
       <div class="section-head">
         <h2>ContextGuard가 하는 일</h2>
-        <p>설치는 간단하지만 적용은 명시적입니다. 전역 설정을 건드리지 않고 프로젝트 안에서만 작동합니다.</p>
+        <p>설치는 간단하지만 적용은 명시적입니다. 패키지 설치만으로는 전역 설정을 바꾸지 않고, 프로젝트 안에서 사용자가 승인한 변경만 적용합니다.</p>
       </div>
       <div class="feature-grid">
         <article class="card"><span class="icon">↧</span><h3>출력 축약</h3><p>긴 로그를 head/tail 또는 의미 요약으로 줄이고 원래 명령의 종료 코드는 보존합니다.</p></article>
@@ -352,7 +352,7 @@
         <article class="card"><span class="icon">◎</span><h3>설치 전 상태 점검</h3><p><code>doctor</code>와 <code>setup --verify</code>로 변경 없이 누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 확인합니다.</p></article>
         <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량, 캐시 신호, claim boundary를 확인합니다.</p></article>
         <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>대화 기록의 프롬프트 배치를 점검해 캐시에 불리한 구성과 안정적인 prefix 후보를 알려줍니다.</p></article>
-        <article class="card"><span class="icon">₩</span><h3>Anthropic 비용 가드</h3><p>호출 전 cache breakpoint별 위험과 낮음/중간/높음 비용 범위를 추정하고, 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
+        <article class="card"><span class="icon">₩</span><h3>비용 가드와 route advisor</h3><p>호출 전 cache breakpoint별 위험과 비용 범위를 추정하고, 로컬 총비용·batchability route 후보를 shifted-cost 경계와 함께 요약합니다. 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>안전한 텍스트 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
         <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 가림 처리된 schema는 로컬 요약 기록으로 다시 조회합니다.</p></article>
@@ -362,7 +362,7 @@
     <section id="positioning" class="shell">
       <div class="section-head">
         <h2>캐시 도구를 대체하지 않고, 그 앞단의 낭비를 줄입니다.</h2>
-        <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 그보다 앞단에서 불필요한 입력을 줄이는 로컬 가드레일입니다.</p>
+        <p>Provider 캐시는 안정적인 프롬프트 앞부분을 재사용하고, semantic cache는 같거나 비슷한 요청의 이전 답변을 재사용합니다. 프롬프트 압축은 이미 선택된 텍스트를 줄입니다. ContextGuard는 그보다 앞단에서 불필요한 입력이 컨텍스트에 들어가지 않도록 돕는 로컬 가드레일입니다.</p>
       </div>
       <div class="comparison-grid">
         <article class="card"><span class="icon" title="Provider prompt cache">P</span><h3>Provider prompt cache</h3><p>안정적인 프롬프트 앞부분을 재사용합니다. ContextGuard는 자주 바뀌는 컨텍스트 뒷부분을 더 작고 깨끗하게 유지하도록 돕고, 감사와 cost preflight로 cache write 가능성을 알려줍니다.</p></article>
@@ -405,7 +405,7 @@
       <div class="feature-grid">
         <article class="card"><span class="icon">B</span><h3>기준/변형 쌍 비교 벤치마크</h3><p><code>context-guard-bench --ledger-jsonl ... --report-json ...</code>는 성공한 baseline/variant task를 맞춰 비교합니다. <a href="https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md">workflow examples</a>의 claim boundary를 먼저 확인하세요.</p></article>
         <article class="card"><span class="icon">S</span><h3>self-hosted sidecar</h3><p><code>self_hosted_metrics</code>는 run별 JSONL ledger sidecar입니다. <code>context-guard experiments plan self-hosted-metrics-ledger</code>는 dry-run preview만 만들며, CSV/report 요약이나 hosted API token/cost savings claim의 근거로 쓰지 않습니다.</p></article>
-        <article class="card"><span class="icon">V</span><h3>측정 결과 binding 계약</h3><p><code>--feasibility-json</code>은 <a href="https://github.com/ictechgy/context-guard/blob/main/docs/mac-visibility-feasibility-schema.md"><code>mac_visibility</code> 스키마</a> 같은 stable top-level binding 계약을 제공합니다. historical transcript scan은 live headroom이나 billing hit rate를 증명하지 않습니다.</p></article>
+        <article class="card"><span class="icon">V</span><h3>측정 결과 binding 계약</h3><p><code>--feasibility-json</code>은 <a href="https://github.com/ictechgy/context-guard/blob/main/docs/mac-visibility-feasibility-schema.md"><code>mac_visibility</code> 스키마</a> 같은 stable top-level binding 계약을 제공합니다. 과거 transcript scan은 live headroom이나 billing hit rate를 증명하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">R</span><h3>실험 fixture는 출발점입니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md">fixture-only starter</a>와 <a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">experimental-token-reduction-radar</a>는 matched successful task, provider-measured evidence, later-roadmap gate가 없으면 제공 기능이 아닙니다.</p></article>
       </div>
     </section>
@@ -413,14 +413,14 @@
     <section id="experiments" class="shell">
       <div class="section-head">
         <h2>실험 기능은 명시적 명령 없이는 런타임 동작이 켜지지 않습니다.</h2>
-        <p><code>context-guard experiments</code>는 프로젝트 로컬 의도와 검토용 메타데이터를 기록합니다. 대부분의 lane은 dry-run checker/planner이고, context-diff는 명시적 <code>emit ... --receipt-id ...</code> 로컬 replacement payload, visual crop/OCR은 명시적 <code>emit visual-crop-ocr</code> evidence pack, learned compression은 명시적 <code>emit learned-compression</code> caller-supplied candidate, self-hosted metrics는 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록, local proxy는 localhost-only plan, design-only <code>plan local-proxy-external-forwarding</code> gate, 명시적 <code>record local-proxy-runtime-gate</code> gate row, private ready-file nonce가 필요한 one-shot <code>serve local-proxy</code> loopback forwarding MVP와 successful forwarded request용 optional shifted-cost diagnostic JSONL row만 제공합니다. hosted API 절감이나 더 넓은 런타임 기능으로 주장하려면 별도 evidence gate와 future PR gate가 필요합니다.</p>
+        <p><code>context-guard experiments</code>는 프로젝트 로컬 의도와 검토용 메타데이터를 기록합니다. 대부분의 lane은 dry-run checker/planner입니다. context-diff, visual crop/OCR, learned compression, self-hosted metrics, local proxy도 각각 명시적 로컬 명령과 gate를 통과한 좁은 evidence surface만 제공합니다. hosted API 절감이나 더 넓은 런타임 기능으로 주장하려면 별도 evidence gate와 future PR gate가 필요합니다.</p>
       </div>
       <div class="feature-grid">
         <article class="card"><span class="icon">Δ</span><h3>context-diff compaction</h3><p><code>context-diff-compaction</code>은 dry-run plan으로 diff를 검토하고, 명시적 <code>emit ... --receipt-id ...</code> 명령에서만 caller-supplied compact replacement를 출력합니다. reviewable hunk, input diff와 일치하는 exact local artifact content/re-expand metadata와 더 작은 replacement가 모두 필요하며 semantic compression을 생성하지 않습니다.</p></article>
         <article class="card"><span class="icon">☷</span><h3>visual crop/OCR</h3><p><code>visual-crop-ocr</code>은 dry-run plan과 명시적 <code>emit visual-crop-ocr</code> evidence pack으로 caller-supplied crop/OCR evidence를 검토합니다. full evidence receipt와 missed-context note가 필요하며 screenshot 캡처·image crop·OCR 실행·외부 service·file write·hosted savings claim은 하지 않습니다.</p></article>
         <article class="card"><span class="icon">λ</span><h3>learned compression</h3><p><code>learned-compression</code>은 deny-by-default plan과 명시적 <code>emit learned-compression</code>으로 caller-supplied compact prose candidate를 검토합니다. verified exact fallback content가 필요하며 compressor 실행·embedding·reranker·model call·subprocess·external service·생성형 replacement·hosted savings claim은 하지 않습니다.</p></article>
         <article class="card"><span class="icon">S</span><h3>self-hosted metrics</h3><p><code>self-hosted-metrics-ledger</code>는 dry-run preview와 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록을 제공합니다. dry-run preview는 ledger 파일을 쓰지 않으며, record 결과도 hosted API 절감 근거로 쓰지 않습니다.</p></article>
-        <article class="card"><span class="icon">⌂</span><h3>local proxy</h3><p><code>local-proxy</code>는 localhost-only advisory plan, design-only <code>plan local-proxy-external-forwarding</code> gate, 명시적 <code>record local-proxy-runtime-gate</code> gate row, 명시적 one-shot <code>serve local-proxy</code> loopback forwarding MVP로 검토합니다. record는 listener 시작과 traffic forwarding을 하지 않습니다. serve는 <code>--forwarding-gate-ack --once</code>, private ready-file nonce, literal loopback bind/target IP, nonzero port, byte/time limit, credential-free request와 no hostname DNS target이 필요하며 external service, API key persistence, CONNECT/TLS proxying, hosted savings claim을 차단합니다. <code>--diagnostic-ledger-jsonl</code>은 successful forwarded request 뒤에만 shifted-cost 진단 row를 쓰며 raw header/body나 hosted-savings evidence를 저장하지 않습니다. <code>plan local-proxy-external-forwarding</code>은 threat model, HTTPS allowlist, credential redaction, provider-evidence boundary를 점검하는 dry-run design gate이며 listener, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime, hosted savings claim을 제공하지 않습니다.</p></article>
+        <article class="card"><span class="icon">⌂</span><h3>local proxy</h3><p><code>local-proxy</code>는 localhost-only advisory plan, design-only external-forwarding gate, 명시적 gate row, one-shot loopback forwarding MVP로만 검토합니다. record는 listener나 traffic forwarding을 시작하지 않습니다. serve는 private ready-file nonce, literal loopback bind/target IP, 1회 요청, byte/time limit, credential-free request를 요구하며 external service, API key persistence, CONNECT/TLS proxying, hosted savings claim을 차단합니다.</p></article>
         <article class="card warning-card"><span class="icon">!</span><h3>공통 안전 경계</h3><p><code>experiments enable</code>은 의도 기록일 뿐입니다. helper별 명시 flag, claim boundary, 별도 runtime gate를 통과하기 전까지 안정 동작이나 절감 주장으로 승격하지 않습니다.</p></article>
       </div>
     </section>
@@ -466,6 +466,9 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
 <span class="comment"># Anthropic API 호출 전 비용·cache 위험 확인</span>
 ./plugins/context-guard/bin/context-guard cost preflight --request request.json --budget-krw 3000 --json
 
+<span class="comment"># 로컬 총비용·batchability route 후보 확인</span>
+./plugins/context-guard/bin/context-guard route-advisor --workload workload.json --json
+
 <span class="comment"># tool/MCP catalog top-k 자문</span>
 ./plugins/context-guard/bin/context-guard-tool-prune select --catalog tools.json --query "review failing tests" --json</code></pre>
         </div>
@@ -481,7 +484,7 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
         <article class="card"><span class="icon">✓</span><h3>측정 근거를 직접 남깁니다</h3><p>벤치마크·감사·상태표시줄 신호로 실제 전후 변화를 측정하고, 절감 효과가 없으면 그대로 보고합니다.</p></article>
         <article class="card warning-card"><span class="icon">!</span><h3>고정 절감률을 보장하지 않습니다</h3><p>저장소와 작업 방식에 따라 효과가 달라집니다. 벤치마크 도구로 직접 측정하세요.</p></article>
         <article class="card warning-card"><span class="icon">↯</span><h3>외부 AI로 작업을 보내지 않습니다</h3><p>토큰을 줄이기 위해 작업을 다른 AI 서비스로 보내거나 대신 실행하지 않습니다. 헬퍼는 로컬에서 동작합니다.</p></article>
-        <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 검증할 후보와 later-roadmap gate를 기록합니다. 현재 제공되는 것은 대부분 dry-run checker/planner이며 예외는 context-diff emit, visual evidence-pack emit, learned candidate emit, self-hosted metrics JSONL sidecar record, local proxy gate record, one-shot literal-loopback local proxy serve 같은 좁은 명시적 로컬 runtime뿐입니다. learned compressor runtime·생성형 replacement·screenshot capture·image crop·OCR execution·self-hosted KV/latent runtime·external/daemon/hostname-DNS/credential-bearing proxy forwarding runtime은 provider-measured matched-task 근거와 별도 future PR gate 없이는 제공 기능이나 hosted API 절감으로 주장하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 검증할 후보와 later-roadmap gate를 기록합니다. 현재 제공되는 것은 대부분 dry-run checker/planner이며, 예외도 context-diff emit, visual evidence-pack emit, learned candidate emit, self-hosted metrics JSONL sidecar record, local proxy gate record, one-shot literal-loopback local proxy serve 같은 좁은 명시적 로컬 runtime뿐입니다. learned compressor runtime, 생성형 replacement, screenshot capture, image crop, OCR execution, self-hosted KV/latent runtime, external/daemon/hostname-DNS/credential-bearing proxy forwarding runtime은 provider-measured matched-task 근거와 별도 future PR gate 없이는 제공 기능이나 hosted API 절감으로 주장하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">⌂</span><h3>전역 설정을 자동 변경하지 않습니다</h3><p>설정은 프로젝트 단위로, 사용자가 명시적으로 적용할 때만 반영됩니다.</p></article>
         <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼는 계속 제공합니다.</p></article>
       </div>
