@@ -1,6 +1,6 @@
 # ContextGuard Mac Prototype
 
-Developer-only macOS status-item prototype for dogfooding ContextGuard visibility.
+Developer-only macOS status-item prototype for dogfooding ContextGuard's visibility surfaces.
 
 ## Scope
 

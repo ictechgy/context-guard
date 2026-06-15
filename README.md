@@ -1,22 +1,22 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships first as a Claude Code plugin: install it once, enable it per project, and roll it back when needed.
+ContextGuard is a local-first context management toolkit for AI coding and tool-using agents. It ships as a Claude Code plugin first: install it once, enable it per project, and roll it back when needed.
 
-It trims noisy output, steers agents toward symbol-level reads, nudges repeated failures, redacts secret-like patterns, and measures usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
+It helps trim noisy output, steer agents toward symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
-Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available. Configuration changes happen only when you run an explicit setup command.
+Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available; configuration changes happen only when you run an explicit setup command.
 
 | If you use... | Install | Activate |
 | --- | --- | --- |
 | Claude Code | `/plugin marketplace add ictechgy/context-guard` then `/plugin install context-guard@context-guard` | Run `/context-guard:setup` inside the project. |
 | Codex CLI or any terminal-first agent | `npm install -g @ictechgy/context-guard` or one-shot `npx @ictechgy/context-guard ...` | `context-guard setup --agent codex --scope project --with-init --with-skill --plan`, then rerun with `--yes`. |
 | Other rule-file agents | Use the npm/npx install path above. | `context-guard setup --agent gemini,cursor,windsurf,cline,copilot --scope project --with-init --plan`, then apply only the agents you want. |
-| macOS/Homebrew users | release path: `brew install ictechgy/tap/context-guard` | Same `context-guard setup ...` commands after install. |
+| macOS/Homebrew users | Release path: `brew install ictechgy/tap/context-guard` | Same `context-guard setup ...` commands after install. |
 
 Common commands:
 
@@ -29,13 +29,13 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup resolves bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup looks for bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
-ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before/after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
+ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before-and-after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
 ## Claude Code first, other agents too
 
-ContextGuard ships first as a Claude Code plugin, which is still the fastest path to value for Claude users. After installation, the same local-first guardrails can be reused by other AI coding and tool agents through:
+ContextGuard ships as a Claude Code plugin first, which is still the fastest path to value for Claude users. After installation, the same local-first guardrails can be reused by other AI coding and tool-using agents through:
 
 - **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
 - **Advisory brief-mode rule snippets** that you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
@@ -56,7 +56,7 @@ Current setup surfaces:
 
 ## How ContextGuard reduces token waste
 
-ContextGuard does not make the model cheaper by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
+ContextGuard does not lower model prices by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
 
 | Waste path | ContextGuard guardrail |
 | --- | --- |
@@ -75,7 +75,7 @@ ContextGuard complements provider and semantic caches, and sits next to prompt c
 
 | Tool category | Saves by | ContextGuard relationship |
 | --- | --- | --- |
-| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to create/cache-write instead of read. |
+| Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to cache-write instead of cache-read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
 | Experimental planners and local runtimes | Default-off and explicit-command-only; covers local-proxy plans and gate records plus narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request; `--response-sandbox` can replace a safe UTF-8 upstream body with a compact local artifact rehydration envelope. Compressor/model execution, OCR/crop services, external forwarding, credential persistence, and hosted-savings claims stay out of scope until a separate evidence gate and future PR allow them. |
@@ -97,7 +97,7 @@ Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/c
 
 ## What to measure
 
-When you need a savings claim, measure it on your own tasks:
+If you need a savings claim, measure it on your own tasks:
 
 - full-file reads versus symbol or line-range reads
 - raw logs versus digest output or artifact receipts
@@ -115,7 +115,7 @@ When you need a savings claim, measure it on your own tasks:
 - It does not send work to external AI providers to save model tokens.
 - It does not mutate global Claude settings during install.
 - It does not replace real before/after measurement when you need a savings claim.
-- Local RAM/disk receipts can reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
+- Local RAM/disk receipts can help reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
 - Experimental helpers are mostly dry-run checker/planner surfaces, including a design-only external-forwarding opt-in gate. Explicit local runtimes exist only for caller-supplied context-diff replacement payloads, caller-supplied visual crop/OCR evidence packs, caller-supplied learned-compression prose candidates, self-hosted metrics JSONL sidecar records, local-proxy runtime-gate JSONL records, and one-shot `serve local-proxy` loopback forwarding with a private ready-file nonce, optional `--response-sandbox` compact artifact envelopes for safe UTF-8 responses, plus optional shifted-cost diagnostic JSONL rows for successful forwarded requests.
 - ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
