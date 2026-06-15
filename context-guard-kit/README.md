@@ -1,6 +1,6 @@
 # ContextGuard Kit
 
-Claude Code CLI 컨텍스트 낭비를 줄이기 위한 도구 모음입니다. 모두 Python/Bash 표준 기능만 사용합니다.
+Claude Code CLI에서 생기는 컨텍스트 낭비를 줄이기 위한 도구 모음입니다. 모든 헬퍼는 Python/Bash 표준 기능만 사용합니다.
 
 ## 구성
 

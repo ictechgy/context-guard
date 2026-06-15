@@ -1,12 +1,12 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool agents. It ships as a Claude Code plugin first, then extends the same project-local guardrails to other agents through plain local helper commands and advisory brief-mode rule snippets.
+ContextGuard is a local-first context management toolkit for AI coding and tool-using agents. It starts as a Claude Code plugin, then extends the same project-local guardrails to other agents through plain local helper commands and advisory brief-mode rule snippets.
 
-Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context management scan, does not mutate global Claude settings, and does not configure external AI offload.
+Start with `/context-guard:setup`. Setup is explicit, project-local, and reversible: it merges recommended project settings, prints a read-only context management scan, does not mutate global Claude settings, and does not configure offloading to external AI services.
 
 ## Token-waste paths it targets
 
-ContextGuard is a local context management layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted best-effort, repeated Bash failures trigger a strategy nudge, cache-friendly prompt layout can be audited from bounded redacted segment hashes, and audit/benchmark evidence stays tied to your own tasks.
+ContextGuard is a local context management layer, not a provider prompt cache or semantic answer cache. Its helpers reduce avoidable context bloat before it enters an agent conversation: large file reads are steered toward search/symbol/line-range slices, long command output can be trimmed or digested, large logs can be stored as local artifact receipts, secret-like values are redacted on a best-effort basis, repeated Bash failures trigger a strategy nudge, cache-friendly prompt layout can be audited from bounded redacted segment hashes, and audit/benchmark evidence stays tied to your own tasks.
 
 ## Rebrand note
 

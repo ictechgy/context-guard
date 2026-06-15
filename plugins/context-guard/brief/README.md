@@ -1,13 +1,13 @@
 # ContextGuard brief mode (advisory)
 
-Brief mode is a set of **agent-neutral, advisory** rule snippets that ask a coding/tool
-agent to cut filler from its responses while preserving the technical evidence a reviewer
-needs. It is guidance text, not an enforcement mechanism.
+Brief mode is a set of **agent-neutral, advisory** rule snippets that ask a coding or
+tool-using agent to cut filler from its responses while preserving the technical evidence a
+reviewer needs. It is guidance text, not an enforcement mechanism.
 
 - **Advisory / best-effort.** Compatible agents may follow these rules fully, partially, or
   ignore them. Brief mode does not intercept, rewrite, or block model output.
 - **No guaranteed savings.** Brief mode does **not** promise any token or cost reduction.
-  Verbosity behavior varies by agent and model. Measure real before/after results for your
+  Verbosity behavior varies by agent and model. Measure real before-and-after results for your
   own tasks with `context-guard-bench` before making any savings claim.
 - **Evidence first.** Every level keeps the same mandatory evidence floor (see below). Brief
   mode trims wording, never correctness-critical content.
@@ -56,7 +56,7 @@ context-guard setup --agent codex --scope project --brief-mode standard --yes
 context-guard setup --agent codex --scope project --brief-mode off --yes
 ```
 
-Per the project safety rules it stays dry-run first, writes only local files, backs up
+Per the project safety rules, it stays dry-run first, writes only local files, backs up
 existing rule files before changing anything, and applies only with explicit approval.
 
 Each block is wrapped in stable markers:
