@@ -62,6 +62,11 @@ MAX_REPO_MAP_GRAPH_RANK_ENTRIES = 30
 MAX_REPO_MAP_RETRIEVAL_HINTS = 30
 MAX_REPO_MAP_SECRET_RISK_FILES = 20
 MAX_ADAPTIVE_K_SCORE_SAMPLES = 200
+MAX_ADAPTIVE_K_SELECTED_EVIDENCE = 12
+MAX_ADAPTIVE_K_OMITTED_EVIDENCE = 12
+MAX_ADAPTIVE_K_REASON_COUNTS = 12
+MAX_ADAPTIVE_K_VERIFICATION_HINTS = 12
+ADAPTIVE_K_POLICIES = ("balanced", "recall", "precision")
 MAX_SYMBOL_MEMORY_ITEMS = 12
 MAX_SYMBOL_MEMORY_GRAPH_ITEMS = 12
 PACK_DIR = ".context-guard/packs"
@@ -362,6 +367,16 @@ def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError, OverflowError):
         return default
     return min(max(number, minimum), maximum)
+
+
+def adaptive_k_threshold(value: object) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError("adaptive-k threshold must be a number between 0.0 and 1.0") from exc
+    if not 0.0 <= number <= 1.0:
+        raise argparse.ArgumentTypeError("adaptive-k threshold must be between 0.0 and 1.0")
+    return number
 
 
 def cap_label(value: object, default: str | None = None, limit: int = MAX_LABEL_CHARS) -> str | None:
@@ -1884,6 +1899,155 @@ def score_gap_advice(scores: list[int], requested_top: int) -> tuple[int, dict[s
     return max(1, elbow_k), {"after_rank": gap_index + 1, "delta": max_gap, "ratio": ratio}, reasons
 
 
+def clamp_proxy(value: float) -> float:
+    return min(1.0, max(0.0, round(value, 4)))
+
+
+def adaptive_policy_recommended_k(
+    *,
+    policy: str,
+    requested_top: int,
+    score_elbow_k: int,
+    budget_fit_k: int,
+    candidate_count: int,
+) -> int:
+    candidate_limit = min(max(0, candidate_count), MAX_SUGGEST_TOP)
+    if candidate_limit == 0 or budget_fit_k <= 0:
+        return 0
+    if policy == "recall":
+        policy_k = max(requested_top, score_elbow_k)
+    elif policy == "precision":
+        policy_k = min(score_elbow_k, requested_top)
+    else:
+        policy_k = score_elbow_k
+    return min(max(0, policy_k), max(0, budget_fit_k), candidate_limit)
+
+
+def adaptive_path_label(value: object) -> str:
+    raw = "" if value is None else str(value)
+    if CONTROL_CHAR_RE.search(raw) or SECRET_CONTENT_RE.search(raw) or SECRET_PATH_COMPONENT_RE.search(raw):
+        return f"redacted-path#path:{sha256_text(raw)[:12]}"
+    rel, _reason = lexical_rel(raw)
+    if rel is None:
+        return safe_raw_path_label(raw)
+    display, _redacted = display_rel_path(rel.as_posix())
+    return display
+
+
+def actionable_adaptive_path(value: object) -> tuple[str | None, str | None]:
+    raw = "" if value is None else str(value)
+    if not raw:
+        return None, "missing_path"
+    if REDACTED_PATH_COMPONENT in raw or "[REDACTED" in raw:
+        return None, "redacted_path"
+    if CONTROL_CHAR_RE.search(raw) or SECRET_CONTENT_RE.search(raw) or SECRET_PATH_COMPONENT_RE.search(raw):
+        return None, "unsafe_path"
+    rel, reason = lexical_rel(raw)
+    if rel is None:
+        return None, reason or "unsafe_path"
+    return rel.as_posix(), None
+
+
+def adaptive_lines(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        start = int(value.get("start"))
+        end = int(value.get("end"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if start < 1 or end < start:
+        return None
+    return {"start": start, "end": end}
+
+
+def adaptive_retrieval_hint(item: dict[str, Any]) -> dict[str, Any]:
+    path, path_reason = actionable_adaptive_path(item.get("path"))
+    lines = adaptive_lines(item.get("lines") or item.get("included_lines") or item.get("requested_lines"))
+    omitted_reason = item.get("retrieval_omitted_reason")
+    if path_reason:
+        return {"type": "slice", "available": False, "reason": str(omitted_reason or path_reason)}
+    if lines is None:
+        return {"type": "slice", "available": False, "reason": "missing_lines"}
+    if not item.get("retrieval_cli"):
+        return {"type": "slice", "available": False, "reason": str(omitted_reason or "missing_retrieval_hint")}
+    return {"type": "slice", "available": True, "path": path, "lines": lines}
+
+
+def adaptive_selected_evidence(selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for rank, item in enumerate(selected[:MAX_ADAPTIVE_K_SELECTED_EVIDENCE], start=1):
+        entry: dict[str, Any] = {
+            "rank": rank,
+            "path": adaptive_path_label(item.get("path")),
+            "score": max(0, int(item.get("score", item.get("priority", 0)) or 0)),
+            "reason": cap_label(item.get("reason"), default="local heuristic", limit=MAX_REASON_CHARS),
+            "retrieval_hint": adaptive_retrieval_hint(item),
+        }
+        lines = adaptive_lines(item.get("lines"))
+        if lines is not None:
+            entry["lines"] = lines
+        evidence.append(entry)
+    return evidence
+
+
+def adaptive_omitted_evidence(omitted: list[dict[str, Any]]) -> dict[str, Any]:
+    reason_counts: dict[str, int] = {}
+    sources: list[dict[str, Any]] = []
+    for item in omitted:
+        reason = cap_label(item.get("reason"), default="unknown", limit=MAX_REASON_CHARS) or "unknown"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        if len(sources) >= MAX_ADAPTIVE_K_OMITTED_EVIDENCE:
+            continue
+        source: dict[str, Any] = {
+            "path": adaptive_path_label(item.get("path")),
+            "reason": reason,
+            "priority": max(0, int(item.get("priority", 0) or 0)),
+        }
+        lines = adaptive_lines(item.get("requested_lines") or item.get("lines"))
+        if lines is not None:
+            source["lines"] = lines
+        hint = adaptive_retrieval_hint(item)
+        if hint.get("available") or hint.get("reason") in {"redacted_path", "unsafe_root_path", "unsafe_path"}:
+            source["retrieval_hint"] = hint
+        sources.append(source)
+    counts = [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(reason_counts.items(), key=lambda pair: (-pair[1], pair[0]))[:MAX_ADAPTIVE_K_REASON_COUNTS]
+    ]
+    return {
+        "omitted_count": len(omitted),
+        "sources_capped": len(omitted) > len(sources),
+        "sources": sources,
+        "reason_counts": counts,
+    }
+
+
+def adaptive_source_verification(selected: list[dict[str, Any]]) -> dict[str, Any]:
+    hints: list[dict[str, Any]] = []
+    available = 0
+    for rank, item in enumerate(selected[:MAX_ADAPTIVE_K_VERIFICATION_HINTS], start=1):
+        hint = adaptive_retrieval_hint(item)
+        if hint.get("available"):
+            available += 1
+        record: dict[str, Any] = {
+            "rank": rank,
+            "path": adaptive_path_label(item.get("path")),
+            "retrieval_hint": hint,
+        }
+        hints.append(record)
+    return {
+        "requires_exact_source_before_edits": True,
+        "format": "structured_relative_slice_hints",
+        "selected_count": len(selected),
+        "hint_count": len(hints),
+        "hints_capped": len(selected) > len(hints),
+        "available_hint_count": available,
+        "omitted_hint_count": len(hints) - available,
+        "hints": hints,
+    }
+
+
 def build_adaptive_k_advisory(
     *,
     candidates: list[SuggestCandidate],
@@ -1892,7 +2056,12 @@ def build_adaptive_k_advisory(
     requested_top: int,
     budget_bytes: int,
     estimated_pack_bytes: int,
+    policy: str = "balanced",
+    min_recall_proxy: float = 0.0,
+    min_precision_proxy: float = 0.0,
 ) -> dict[str, Any]:
+    if policy not in ADAPTIVE_K_POLICIES:
+        policy = "balanced"
     sampled_candidates = candidates[:MAX_ADAPTIVE_K_SCORE_SAMPLES]
     scores = [max(0, int(candidate.score)) for candidate in sampled_candidates]
     score_elbow_k, max_gap_details, reason_codes = score_gap_advice(scores, requested_top)
@@ -1924,19 +2093,36 @@ def build_adaptive_k_advisory(
     if not candidates:
         recommended_k = 0
     else:
-        recommended_k = min(
-            max(0, score_elbow_k),
-            max(0, budget_fit_k),
-            len(candidates),
-            MAX_SUGGEST_TOP,
+        recommended_k = adaptive_policy_recommended_k(
+            policy=policy,
+            requested_top=requested_top,
+            score_elbow_k=score_elbow_k,
+            budget_fit_k=budget_fit_k,
+            candidate_count=len(candidates),
         )
     score_values_asc = sorted(scores)
     top_score = score_values_asc[-1] if score_values_asc else 0
+    recall_proxy = clamp_proxy(selected_score_mass / analyzed_score_mass) if analyzed_score_mass else 0.0
+    precision_proxy = (
+        clamp_proxy((selected_score_mass / max(1, selected_count)) / max(1, top_score))
+        if selected_count
+        else 0.0
+    )
+    recall_gate_passed = recall_proxy >= min_recall_proxy
+    precision_gate_passed = precision_proxy >= min_precision_proxy
+    gate_status = "pass" if recall_gate_passed and precision_gate_passed else "failed"
     return {
         "schema_version": ADAPTIVE_K_SCHEMA_VERSION,
         "mode": "advisory",
         "requested_top": requested_top,
         "recommended_k": recommended_k,
+        "policy": {
+            "name": policy,
+            "available_policies": list(ADAPTIVE_K_POLICIES),
+            "changes_manifest_or_pack": False,
+            "measurement_basis": "current_selected_sources_not_policy_applied_rebuild",
+            "status": "evaluated",
+        },
         "recommendation": {
             "apply": False,
             "reason_codes": sorted(set(reason_codes)),
@@ -1963,25 +2149,46 @@ def build_adaptive_k_advisory(
             "average_selected_bytes": average_selected_bytes,
             "budget_fit_k": budget_fit_k,
         },
+        "regression_gates": {
+            "status": gate_status,
+            "measurement_basis": "current_selected_sources_not_policy_applied_rebuild",
+            "comparison": "observed_greater_than_or_equal_threshold",
+            "recall_proxy": {
+                "observed": recall_proxy,
+                "minimum": min_recall_proxy,
+                "passed": recall_gate_passed,
+            },
+            "precision_proxy": {
+                "observed": precision_proxy,
+                "minimum": min_precision_proxy,
+                "passed": precision_gate_passed,
+            },
+        },
         "recall_precision_proxy": {
             "measurement": "local_score_mass_proxy",
+            "range": "clamped_0_1",
+            "measurement_basis": "current_selected_sources_not_policy_applied_rebuild",
             "selected_score_mass": selected_score_mass,
             "analyzed_score_mass": analyzed_score_mass,
-            "recall_proxy": round(selected_score_mass / analyzed_score_mass, 4) if analyzed_score_mass else 0.0,
-            "precision_proxy": (
-                round((selected_score_mass / max(1, selected_count)) / max(1, top_score), 4)
-                if selected_count
-                else 0.0
-            ),
+            "recall_proxy": recall_proxy,
+            "precision_proxy": precision_proxy,
             "selected_count": selected_count,
             "candidate_count": len(candidates),
         },
+        "selected_evidence": {
+            "selected_count": selected_count,
+            "items_capped": selected_count > MAX_ADAPTIVE_K_SELECTED_EVIDENCE,
+            "items": adaptive_selected_evidence(selected),
+        },
+        "omitted_evidence": adaptive_omitted_evidence(omitted),
+        "source_verification": adaptive_source_verification(selected),
         "claim_boundary": {
             "deterministic_local_only": True,
             "no_model_network_or_embedding": True,
             "token_counts_are_estimated_proxies": True,
             "provider_token_or_cost_savings_claim_allowed": False,
             "advisory_does_not_change_manifest_or_pack": True,
+            "selectable_policy_changes_manifest_or_pack": False,
         },
     }
 
@@ -2152,6 +2359,9 @@ def suggest_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tupl
             requested_top=top,
             budget_bytes=budget,
             estimated_pack_bytes=estimated_pack_bytes,
+            policy=getattr(args, "adaptive_k_policy", "balanced"),
+            min_recall_proxy=float(getattr(args, "adaptive_k_min_recall_proxy", 0.0) or 0.0),
+            min_precision_proxy=float(getattr(args, "adaptive_k_min_precision_proxy", 0.0) or 0.0),
         )
     return payload, 0
 
@@ -3063,6 +3273,8 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
         else {}
     )
     budget_fit = adaptive.get("budget_fit", {}) if isinstance(adaptive.get("budget_fit"), dict) else {}
+    policy = adaptive.get("policy", {}) if isinstance(adaptive.get("policy"), dict) else {}
+    regression_gates = adaptive.get("regression_gates", {}) if isinstance(adaptive.get("regression_gates"), dict) else {}
     reason_codes = recommendation.get("reason_codes", [])
     if isinstance(reason_codes, list):
         reason_text = ",".join(str(item) for item in reason_codes[:5])
@@ -3071,6 +3283,8 @@ def print_adaptive_k_text(payload: dict[str, Any]) -> None:
     print(
         "adaptive-k: "
         f"recommended={adaptive.get('recommended_k', 0)}/{adaptive.get('requested_top', 0)} "
+        f"policy={policy.get('name', 'balanced')} "
+        f"gates={regression_gates.get('status', 'pass')} "
         f"candidates={score_distribution.get('candidate_count', 0)} "
         f"budget_limited={budget_fit.get('budget_limited', False)} "
         f"apply=false reasons={reason_text or 'none'}"
@@ -3190,6 +3404,9 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--context-lines", type=int, default=DEFAULT_SUGGEST_CONTEXT_LINES, help="line context around diff/output hits")
     suggest.add_argument("--manifest-out", help="write the suggested build manifest to this relative path under root")
     suggest.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest")
+    suggest.add_argument("--adaptive-k-policy", choices=ADAPTIVE_K_POLICIES, default="balanced", help="local adaptive-k recommendation policy used when --adaptive-k is set")
+    suggest.add_argument("--adaptive-k-min-recall-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum recall proxy gate for --adaptive-k")
+    suggest.add_argument("--adaptive-k-min-precision-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum precision proxy gate for --adaptive-k")
     suggest.add_argument("--json", action="store_true", help="emit JSON payload")
     auto = sub.add_parser("auto", help="suggest a context pack manifest and build the budgeted pack in one local step")
     auto.add_argument("--root", default=".", help="project root; must not be a symlink")
@@ -3207,6 +3424,9 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
+    auto.add_argument("--adaptive-k-policy", choices=ADAPTIVE_K_POLICIES, default="balanced", help="local adaptive-k recommendation policy used when --adaptive-k is set")
+    auto.add_argument("--adaptive-k-min-recall-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum recall proxy gate for --adaptive-k")
+    auto.add_argument("--adaptive-k-min-precision-proxy", type=adaptive_k_threshold, default=0.0, help="metadata-only minimum precision proxy gate for --adaptive-k")
     auto.add_argument("--symbol-memory", action="store_true", help="include repo-map derived symbol/graph advisory metadata with exact source verification hints")
     return parser
 

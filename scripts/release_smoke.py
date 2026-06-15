@@ -570,6 +570,16 @@ def check_auto_explain_smoke(proc: subprocess.CompletedProcess[str], command: st
         fail(f"{command} should not store an artifact in release smoke")
     if data.get("manifest", {}).get("version") != 1:
         fail(f"{command} JSON missing build-compatible manifest")
+    adaptive = data.get("adaptive_k")
+    if not isinstance(adaptive, dict):
+        fail(f"{command} JSON missing adaptive_k object")
+    check_json_field(adaptive, "schema_version", "contextguard.pack-adaptive-k.v1", command)
+    if adaptive.get("policy", {}).get("name") != "recall":
+        fail(f"{command} adaptive_k policy should be recall")
+    if adaptive.get("regression_gates", {}).get("status") not in {"pass", "failed"}:
+        fail(f"{command} adaptive_k missing gate status")
+    if adaptive.get("source_verification", {}).get("requires_exact_source_before_edits") is not True:
+        fail(f"{command} adaptive_k missing source verification safeguard")
 
 
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
@@ -675,6 +685,11 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 "smoke-pack.txt",
                 "--json",
                 "--explain",
+                "--adaptive-k",
+                "--adaptive-k-policy",
+                "recall",
+                "--adaptive-k-min-recall-proxy",
+                "0.0",
                 "--no-artifact",
             ],
             cwd=project,

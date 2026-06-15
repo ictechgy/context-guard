@@ -268,7 +268,7 @@ Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized
 # Or run the two explicit steps:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "review failing tests" --diff HEAD \
-  --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k
+  --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k --adaptive-k-policy recall
 ./plugins/context-guard/bin/context-guard-pack build \
   --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
@@ -281,7 +281,7 @@ A few boundaries are intentional:
 - Add `--explain` for compact deterministic local selection/build reasons in JSON or text output.
 - `--explain` may include bounded `repo_map` metadata: sampled byte/token-proxy tree entries, category-only secret-risk counts, signature-first file hints, explain-only graph ranks, and exact `slice`/symbol retrieval hints.
 - Explain metadata does not change the manifest, pack body, receipt, or byte budget. It does not use network/model/embedding calls, and token values remain local `chars_div_4` proxies rather than provider-token or savings claims.
-- Add `--adaptive-k` to `suggest` or `auto` for advisory-only shrink/expand top-k metadata derived from local score distribution, byte-budget fit, and score-mass recall/precision proxies. It never applies the recommendation automatically and does not change the manifest, pack body, receipt, or byte budget.
+- Add `--adaptive-k` to `suggest` or `auto` for advisory-only shrink/expand top-k metadata derived from local score distribution, byte-budget fit, and clamped score-mass recall/precision proxies. Use `--adaptive-k-policy balanced|recall|precision` plus optional `--adaptive-k-min-recall-proxy` / `--adaptive-k-min-precision-proxy` gates to choose a local recommendation policy; gate failures are metadata-only (`pass|failed`). The adaptive block includes capped selected/omitted evidence and structured source-verification hints, never applies the recommendation automatically, and does not change the manifest, pack body, receipt, or byte budget.
 - Add `--symbol-memory` to `auto` for repo-map-derived symbol/graph advisory metadata with exact `slice` / `read-symbol` verification hints. It is source-verification guidance only and does not change the manifest, pack body, receipt, or byte budget.
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.

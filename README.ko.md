@@ -255,7 +255,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 # 또는 명시적인 두 단계로 실행:
 ./plugins/context-guard/bin/context-guard-pack suggest \
   --root . --query "failing tests review" --diff HEAD \
-  --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k
+  --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k --adaptive-k-policy recall
 ./plugins/context-guard/bin/context-guard-pack build \
   --root . --manifest suggested-pack.json --budget-bytes 12000 --json
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
@@ -268,7 +268,7 @@ long-command 2>&1 | ./plugins/context-guard/bin/context-guard-artifact store --c
 - `--explain`을 추가하면 JSON 또는 텍스트 출력에 결정적 로컬 선택/build 이유를 짧게 포함합니다.
 - JSON explain에는 bounded `repo_map`이 포함될 수 있습니다. 예시는 sampled byte/token-proxy tree, category-only secret risk count, signature-first hint, explain-only graph rank, 기존 `slice`/symbol 재조회 힌트입니다.
 - repo-map은 manifest, pack 본문, receipt, byte budget을 바꾸지 않고 네트워크·모델 호출·임베딩을 쓰지 않습니다. 토큰 값은 provider-token이나 savings claim이 아닌 추정 `chars_div_4` proxy입니다.
-- `suggest` 또는 `auto`에 `--adaptive-k`를 추가하면 로컬 score distribution, byte-budget fit, score-mass 기반 recall/precision proxy에서 나온 advisory-only top-k shrink/expand metadata를 포함합니다. 추천값은 자동 적용되지 않으며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
+- `suggest` 또는 `auto`에 `--adaptive-k`를 추가하면 로컬 score distribution, byte-budget fit, clamped score-mass 기반 recall/precision proxy에서 나온 advisory-only top-k shrink/expand metadata를 포함합니다. `--adaptive-k-policy balanced|recall|precision`과 선택적 `--adaptive-k-min-recall-proxy` / `--adaptive-k-min-precision-proxy` gate로 로컬 추천 정책을 고를 수 있고, gate 실패는 metadata-only(`pass|failed`)입니다. adaptive block은 capped selected/omitted evidence와 구조화된 source-verification hint를 포함하지만 추천값을 자동 적용하지 않으며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
 - `auto`에 `--symbol-memory`를 추가하면 repo-map 기반 symbol/graph advisory metadata와 정확한 `slice` / `read-symbol` 검증 힌트를 포함합니다. 이는 source verification 안내일 뿐이며 manifest, pack 본문, receipt, byte budget을 바꾸지 않습니다.
 - `--manifest-out`은 `build`가 읽을 수 있는 manifest를 저장하고, `--pack-out`은 렌더링된 팩 본문을 저장합니다.
 - `context-guard-pack suggest`는 더 낮은 수준의 로컬 전용 준비 단계입니다. `--query`, `--diff`, 반복 `--files`, 그리고 `--root` 아래의 선택적 `--output` / `--test-output` 텍스트 파일을 가림 처리한 신호에서 후보 파일과 줄 범위를 순위화한 뒤 `build --manifest`가 바로 읽을 수 있는 manifest를 씁니다.
