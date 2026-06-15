@@ -168,6 +168,36 @@ def communicate_process_or_kill(proc: subprocess.Popen, *, timeout: float = 10):
         raise AssertionError(f"process did not exit within {timeout}s") from exc
 
 
+@contextlib.contextmanager
+def local_proxy_safe_temp_directory(label: str):
+    """Create a local-proxy test temp dir with a stable, non-secret-looking path.
+
+    macOS runners place default temp dirs under randomized /var/folders leaves. A
+    random parent can contain substrings such as "key", "sig", or "token",
+    which intentionally trigger the local proxy's diagnostic-ledger secret-path
+    guard before the test reaches the behavior it is asserting.
+    """
+
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-.") or "local-proxy"
+    base_candidates = [Path("/tmp"), Path(tempfile.gettempdir())]
+    last_error: Exception | None = None
+    for base in dict.fromkeys(base_candidates):
+        try:
+            if not base.is_dir():
+                continue
+            root = base / f"contextguard-{safe_label}-{os.getpid()}-{time.time_ns()}"
+            root.mkdir(mode=0o700)
+        except OSError as exc:
+            last_error = exc
+            continue
+        try:
+            yield root
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        return
+    raise AssertionError(f"could not create stable local proxy temp dir: {last_error}")
+
+
 def wait_for_local_proxy_ready(proc: subprocess.Popen, ready_file: Path, *, timeout: float = 20.0) -> dict[str, object]:
     deadline = time.time() + timeout
     last_error: Exception | None = None
@@ -5485,8 +5515,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("ready_file", help_proc.stdout)
 
             ready_cases = []
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
+            with local_proxy_safe_temp_directory("ready-file-diagnostic") as root:
 
                 preexisting = root / "preexisting-ready.json"
                 preexisting.write_text("{}", encoding="utf-8")
@@ -5923,6 +5952,267 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(payload["status"], "blocked_request")
                     self.assertEqual(payload["forward_result"]["blocked_reason"], "timeout_waiting_for_request")
                     self.assertFalse(payload["network_actions"]["outbound_forwarding_attempted"])
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
+    def test_experimental_local_proxy_serve_response_sandbox_artifacts_safe_text_only(self):
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002 - BaseHTTPRequestHandler API.
+                return
+
+            def do_GET(self):
+                if self.path == "/sandbox-ok":
+                    body = b"alpha line\nbeta hidden detail\n"
+                    status = 200
+                    content_type = "text/plain; charset=utf-8"
+                elif self.path == "/sandbox-404":
+                    body = b"not found safe text\n"
+                    status = 404
+                    content_type = "text/plain"
+                elif self.path == "/sandbox-binary":
+                    body = b"\xff\x00binary"
+                    status = 200
+                    content_type = "application/octet-stream"
+                else:
+                    body = b"unknown"
+                    status = 200
+                    content_type = "text/plain"
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        upstream = HTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        try:
+            for script, artifact_script in zip(EXPERIMENT_SCRIPTS, ARTIFACT_SCRIPTS):
+                with local_proxy_safe_temp_directory("response-sandbox") as root:
+                    artifact_dir = root / ("artifact-token=ghp_" + ("S" * 36)) / "artifacts"
+
+                    with self.subTest(script=script, case="default_forwarding_unchanged"):
+                        proxy_port = reserve_loopback_port()
+                        proc = popen_local_proxy_with_ready(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, headers = request_loopback_with_retries(proxy_port, "/sandbox-ok")
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 0, stdout + stderr)
+                        self.assertEqual(status, 200)
+                        self.assertEqual(body, b"alpha line\nbeta hidden detail\n")
+                        self.assertNotEqual(headers.get("Content-Type"), "application/json")
+
+                    with self.subTest(script=script, case="response_sandbox_success"):
+                        proxy_port = reserve_loopback_port()
+                        ledger = root / "response-sandbox-diagnostics.jsonl"
+                        proc = popen_local_proxy_with_ready(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--response-sandbox",
+                                "--response-artifact-dir",
+                                str(artifact_dir),
+                                "--diagnostic-ledger-jsonl",
+                                str(ledger),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, headers = request_loopback_with_retries(proxy_port, "/sandbox-ok")
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 0, stdout + stderr)
+                        self.assertEqual(status, 200)
+                        self.assertEqual(headers.get("Content-Type"), "application/json")
+                        envelope = json.loads(body.decode("utf-8"))
+                        payload = json.loads(stdout)
+                        artifact_id = envelope["artifact_id"]
+                        self.assertEqual(envelope["schema_version"], "contextguard.experiments.local-proxy-response-sandbox.v1")
+                        self.assertEqual(envelope["status"], "response_sandboxed")
+                        self.assertEqual(envelope["artifact_handle"], f"contextguard-artifact:{artifact_id}")
+                        self.assertEqual(envelope["stored_output"]["scope"], "local_proxy_sanitized_response_body")
+                        self.assertRegex(envelope["stored_output"]["sanitized_text_sha256"], r"^[a-f0-9]{64}$")
+                        self.assertFalse(envelope["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                        self.assertFalse(envelope["claim_boundary"]["original_http_bytes_rehydration_available"])
+                        self.assertEqual(payload["status"], "served_once")
+                        self.assertTrue(payload["response_sandbox"]["performed"])
+                        self.assertEqual(payload["response_sandbox"]["artifact_id"], artifact_id)
+                        self.assertTrue(payload["diagnostic_ledger"]["write_performed"])
+                        serialized = body.decode("utf-8") + stdout + stderr
+                        self.assertNotIn("beta hidden detail", serialized)
+                        self.assertNotIn(str(artifact_dir), serialized)
+                        self.assertIn("--dir <artifact_dir>", json.dumps(envelope, ensure_ascii=False))
+                        self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), serialized)
+
+                        get = subprocess.run(
+                            [
+                                sys.executable,
+                                str(artifact_script),
+                                "--dir",
+                                str(artifact_dir),
+                                "get",
+                                artifact_id,
+                                "--full",
+                            ],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        self.assertEqual(get.stdout, "alpha line\nbeta hidden detail\n")
+                        rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+                        self.assertEqual(len(rows), 1)
+                        row = rows[0]
+                        self.assertTrue(row["response"]["response_sandboxed"])
+                        self.assertEqual(row["response"]["artifact_id"], artifact_id)
+                        self.assertEqual(row["response"]["artifact_handle"], f"contextguard-artifact:{artifact_id}")
+                        self.assertRegex(row["response"]["sanitized_text_sha256"], r"^[a-f0-9]{64}$")
+                        row_text = json.dumps(row, sort_keys=True)
+                        self.assertNotIn("beta hidden detail", row_text)
+                        self.assertNotIn(str(artifact_dir), row_text)
+                        self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), row_text)
+
+                    with self.subTest(script=script, case="response_sandbox_404_text"):
+                        proxy_port = reserve_loopback_port()
+                        proc = popen_local_proxy_with_ready(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--response-sandbox",
+                                "--response-artifact-dir",
+                                str(artifact_dir),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, _headers = request_loopback_with_retries(proxy_port, "/sandbox-404")
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 0, stdout + stderr)
+                        self.assertEqual(status, 404)
+                        envelope = json.loads(body.decode("utf-8"))
+                        self.assertEqual(envelope["status"], "response_sandboxed")
+                        self.assertEqual(envelope["upstream"]["status"], 404)
+                        self.assertNotIn("not found safe text", body.decode("utf-8") + stdout + stderr)
+                        get = subprocess.run(
+                            [
+                                sys.executable,
+                                str(artifact_script),
+                                "--dir",
+                                str(artifact_dir),
+                                "get",
+                                envelope["artifact_id"],
+                                "--full",
+                            ],
+                            text=True,
+                            capture_output=True,
+                            check=True,
+                        )
+                        self.assertEqual(get.stdout, "not found safe text\n")
+
+                    with self.subTest(script=script, case="response_sandbox_binary_blocked"):
+                        before = sorted(artifact_dir.glob("*.json")) if artifact_dir.exists() else []
+                        proxy_port = reserve_loopback_port()
+                        proc = popen_local_proxy_with_ready(
+                            [
+                                sys.executable,
+                                str(script),
+                                "serve",
+                                "local-proxy",
+                                "--bind-host",
+                                "127.0.0.1",
+                                "--bind-port",
+                                str(proxy_port),
+                                "--target-host",
+                                "127.0.0.1",
+                                "--target-port",
+                                str(upstream.server_port),
+                                "--runtime-gate-ack",
+                                "--forwarding-gate-ack",
+                                "--once",
+                                "--response-sandbox",
+                                "--response-artifact-dir",
+                                str(artifact_dir),
+                                "--json",
+                            ],
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        try:
+                            status, body, _headers = request_loopback_with_retries(proxy_port, "/sandbox-binary")
+                            stdout, stderr = communicate_process_or_kill(proc)
+                        finally:
+                            kill_process_if_running(proc)
+                        self.assertEqual(proc.returncode, 1)
+                        self.assertEqual(status, 502)
+                        self.assertIn(b"response_sandbox_text_required", body)
+                        payload = json.loads(stdout)
+                        self.assertEqual(payload["status"], "blocked_request")
+                        self.assertFalse(payload["response_sandbox"]["performed"])
+                        self.assertIsNone(payload["response_sandbox"]["artifact_id"])
+                        after = sorted(artifact_dir.glob("*.json")) if artifact_dir.exists() else []
+                        self.assertEqual(before, after)
+                        self.assertNotIn("binary", stdout + stderr)
         finally:
             upstream.shutdown()
             upstream.server_close()
