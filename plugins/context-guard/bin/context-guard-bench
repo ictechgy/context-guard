@@ -188,6 +188,7 @@ BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
 MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
 MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v1"
 DEFAULT_MATRIX_SCHEMA_VERSION = "contextguard.bench.default-matrix.v1"
+PUBLIC_CLAIM_READINESS_SCHEMA_VERSION = "contextguard.bench.public-claim-readiness.v1"
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
 SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
 SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
@@ -273,6 +274,33 @@ DEFAULT_MATRIX_CLAIM_BOUNDARY = {
     "reason": (
         "The default matrix classifies local benchmark lanes for review only; it does not "
         "turn features on by default and does not authorize hosted API savings claims."
+    ),
+}
+PUBLIC_CLAIM_READINESS_GATE_IDS = (
+    "matched_successful_tasks",
+    "provider_measured_token_cost",
+    "quality_non_inferiority",
+    "shifted_cost_accounting",
+    "confidence_failure_notes",
+    "provider_export_provenance",
+)
+PUBLIC_CLAIM_READINESS_CLAIM_BOUNDARY = {
+    "id": "public_claim_readiness_authoritative_release_gate",
+    "reporting_only": True,
+    "claim_allowed_field": "public_claim_readiness.claim_allowed",
+    "unsupported_claims_forbidden": True,
+    "hosted_api_token_savings_claim_without_claim_allowed_forbidden": True,
+    "hosted_api_cost_savings_claim_without_claim_allowed_forbidden": True,
+    "fixed_percent_savings_claim_without_matched_provider_report_forbidden": True,
+    "requires_matched_successful_tasks": True,
+    "requires_provider_measured_tokens_and_cost": True,
+    "requires_quality_non_inferiority": True,
+    "requires_shifted_cost_accounting": True,
+    "requires_confidence_and_failure_notes": True,
+    "requires_provider_export_provenance": True,
+    "reason": (
+        "Public hosted token/cost savings claims are forbidden unless every readiness gate passes "
+        "and public_claim_readiness.claim_allowed is true."
     ),
 }
 MAX_SELF_HOSTED_LABEL_CHARS = 120
@@ -497,6 +525,7 @@ class EvidenceReplayRow:
     claim_scope: str
     provider_export_provenance_complete: bool
     public_claim_eligible: bool
+    explicit_notes: bool
     line_number: int
 
     @property
@@ -513,6 +542,7 @@ class EvidenceReplayRow:
             "claim_scope": self.claim_scope,
             "provider_export_provenance_complete": self.provider_export_provenance_complete,
             "public_claim_eligible": self.public_claim_eligible,
+            "explicit_notes": self.explicit_notes,
             "line_number": self.line_number,
             "claim_boundary": REPLAY_CLAIM_BOUNDARY,
         }
@@ -1817,6 +1847,7 @@ def parse_evidence_row(raw_value: Any, *, owner: str, line_number: int) -> Evide
         raise SystemExit(f"{owner} success must be a boolean")
     success = evidence_bool(raw.get("success"), field="success", owner=owner)
     notes = evidence_non_empty_string(raw.get("notes"), field="notes", owner=owner, required=False)
+    explicit_notes = notes is not None
     model = evidence_non_empty_string(raw.get("model"), field="model", owner=owner, required=False) or "evidence-replay"
     effort = evidence_non_empty_string(raw.get("effort"), field="effort", owner=owner, required=False) or ""
     self_hosted_metrics = None
@@ -1887,6 +1918,7 @@ def parse_evidence_row(raw_value: Any, *, owner: str, line_number: int) -> Evide
         claim_scope=str(provenance["claim_scope"]),
         provider_export_provenance_complete=provider_authority,
         public_claim_eligible=False,
+        explicit_notes=explicit_notes,
         line_number=line_number,
     )
 
@@ -2748,9 +2780,11 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             "shifted cost savings require measured primary cost and measured external cost when "
             "external tokens are present. Wall time and provider cached-token fields are diagnostic "
             "telemetry, not proof of ContextGuard-caused token or cost savings; provider-cache "
-            "discounts must stay separate from token-reduction claims."
+            "discounts must stay separate from token-reduction claims. Public hosted savings "
+            "claims must use public_claim_readiness.claim_allowed; unsupported claims are forbidden."
         ),
     }
+    report["public_claim_readiness"] = build_public_claim_readiness(report)
     report["default_matrix"] = build_default_matrix(report)
     return report
 
@@ -2817,6 +2851,11 @@ def annotate_replay_report(
         "target_keys": [f"{row.result.task_id}/{row.result.variant}" for row in replay_rows],
         "claim_boundary": REPLAY_CLAIM_BOUNDARY,
     }
+    report["public_claim_readiness"] = build_public_claim_readiness(
+        report,
+        replay_rows=replay_rows,
+        mixed_csv=mixed_csv,
+    )
     report["default_matrix"] = build_default_matrix(report)
     return report
 
@@ -2828,6 +2867,280 @@ def report_public_claim_status(report: dict[str, Any]) -> tuple[str, bool | None
         "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger",
         None,
     )
+
+
+
+def public_claim_readiness_gate(
+    gate_id: str,
+    label: str,
+    passed: bool,
+    reason: str,
+    evidence: dict[str, Any] | None = None,
+    *,
+    unknown: bool = False,
+) -> dict[str, Any]:
+    status = "unknown" if unknown else ("pass" if passed else "fail")
+    return {
+        "id": gate_id,
+        "label": label,
+        "required": True,
+        "status": status,
+        "passed": passed and not unknown,
+        "reason": reason,
+        "evidence": evidence or {},
+    }
+
+
+def public_claim_pair_side_measured(pair: dict[str, Any], side: str, metric: str) -> bool:
+    measurements = pair.get("measurements") if isinstance(pair.get("measurements"), dict) else {}
+    side_block = measurements.get(side) if isinstance(measurements.get(side), dict) else {}
+    metric_block = side_block.get(metric) if isinstance(side_block.get(metric), dict) else {}
+    return bool(metric_block.get("measured"))
+
+
+def public_claim_numeric_values(items: list[Any]) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            continue
+        numeric = float(item)
+        if math.isfinite(numeric):
+            values.append(numeric)
+    return values
+
+
+def public_claim_readiness_evidence_text(evidence: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, value in evidence.items():
+        if isinstance(value, list):
+            display = ",".join(str(item) for item in value[:5])
+            if len(value) > 5:
+                display += ",…"
+        elif isinstance(value, dict):
+            display = ",".join(f"{k}={v}" for k, v in list(value.items())[:5])
+            if len(value) > 5:
+                display += ",…"
+        else:
+            display = str(value)
+        parts.append(f"{key}={display}")
+    return "; ".join(parts)
+
+
+def build_public_claim_readiness(
+    report: dict[str, Any],
+    *,
+    replay_rows: list[EvidenceReplayRow] | None = None,
+    mixed_csv: bool = False,
+) -> dict[str, Any]:
+    comparisons = report.get("comparisons") if isinstance(report.get("comparisons"), list) else []
+    comparisons = [item for item in comparisons if isinstance(item, dict)]
+    pairs = report.get("matched_pair_evidence") if isinstance(report.get("matched_pair_evidence"), list) else []
+    pairs = [item for item in pairs if isinstance(item, dict)]
+    row_count = int(report.get("row_count") or 0)
+    replay_evidence = report.get("replay_evidence") if isinstance(report.get("replay_evidence"), dict) else {}
+    replay_count = len(replay_rows or [])
+    public_claim_status, public_claim_eligible = report_public_claim_status(report)
+    raw_metric_claim_status = report.get("raw_metric_claim_status", report.get("claim_status"))
+
+    comparison_variants = [str(item.get("variant")) for item in comparisons if item.get("variant")]
+    matched_counts = public_claim_numeric_values([
+        item.get("matched_successful_task_count") for item in comparisons
+    ])
+    missing_baseline_successes = [
+        task
+        for item in comparisons
+        for task in (item.get("missing_baseline_success_tasks") or [])
+    ]
+    baseline_success_counts = public_claim_numeric_values([
+        item.get("baseline_successful_task_count") for item in comparisons
+    ])
+    matched_tasks_pass = (
+        bool(comparisons)
+        and bool(pairs)
+        and len(matched_counts) == len(comparisons)
+        and all(value > 0 for value in matched_counts)
+        and len(baseline_success_counts) == len(comparisons)
+        and all(value > 0 for value in baseline_success_counts)
+        and not missing_baseline_successes
+    )
+    gates = [
+        public_claim_readiness_gate(
+            "matched_successful_tasks",
+            "Matched successful tasks",
+            matched_tasks_pass,
+            "matched_successful_tasks_present" if matched_tasks_pass else "missing_or_regressed_matched_successful_tasks",
+            {
+                "comparison_count": len(comparisons),
+                "matched_pair_count": len(pairs),
+                "variants": comparison_variants[:MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS],
+                "min_matched_successful_task_count": min(matched_counts) if matched_counts else None,
+                "missing_baseline_success_task_count": len(missing_baseline_successes),
+            },
+        )
+    ]
+
+    provider_measured_token_cost_pass = bool(pairs) and all(
+        public_claim_pair_side_measured(pair, "baseline", "primary_tokens")
+        and public_claim_pair_side_measured(pair, "variant", "primary_tokens")
+        and public_claim_pair_side_measured(pair, "baseline", "primary_cost_usd")
+        and public_claim_pair_side_measured(pair, "variant", "primary_cost_usd")
+        for pair in pairs
+    )
+    gates.append(public_claim_readiness_gate(
+        "provider_measured_token_cost",
+        "Provider-measured token and primary cost",
+        provider_measured_token_cost_pass,
+        "provider_measured_primary_tokens_and_cost" if provider_measured_token_cost_pass else "missing_provider_measured_primary_tokens_or_cost",
+        {
+            "matched_pair_count": len(pairs),
+            "required_fields": [
+                "matched_pair_evidence[*].measurements.baseline.primary_tokens.measured",
+                "matched_pair_evidence[*].measurements.variant.primary_tokens.measured",
+                "matched_pair_evidence[*].measurements.baseline.primary_cost_usd.measured",
+                "matched_pair_evidence[*].measurements.variant.primary_cost_usd.measured",
+            ],
+        },
+    ))
+
+    quality_gates = sorted({str(item.get("quality_gate") or "unknown") for item in comparisons})
+    failure_deltas = public_claim_numeric_values([
+        item.get("failure_rate_delta_pp") for item in comparisons
+    ])
+    correction_deltas = public_claim_numeric_values([
+        item.get("corrections_delta_per_successful_task") for item in comparisons
+    ])
+    quality_pass = bool(comparisons) and all(item.get("quality_gate") == "pass" for item in comparisons)
+    gates.append(public_claim_readiness_gate(
+        "quality_non_inferiority",
+        "Quality non-inferiority",
+        quality_pass,
+        "all_quality_gates_pass" if quality_pass else "quality_gate_not_pass",
+        {
+            "quality_gates": quality_gates,
+            "max_failure_rate_delta_pp": max(failure_deltas) if failure_deltas else None,
+            "max_corrections_delta_per_successful_task": max(correction_deltas) if correction_deltas else None,
+        },
+    ))
+
+    shifted_cost_pass = bool(pairs) and all(
+        isinstance(pair.get("claim_boundary"), dict)
+        and bool((pair.get("claim_boundary") or {}).get("shifted_cost_claim_allowed"))
+        and public_claim_pair_side_measured(pair, "baseline", "total_cost_with_shift_usd")
+        and public_claim_pair_side_measured(pair, "variant", "total_cost_with_shift_usd")
+        for pair in pairs
+    )
+    gates.append(public_claim_readiness_gate(
+        "shifted_cost_accounting",
+        "Shifted-cost accounting",
+        shifted_cost_pass,
+        "shifted_cost_claim_gates_pass" if shifted_cost_pass else "missing_shifted_cost_claim_accounting",
+        {
+            "matched_pair_count": len(pairs),
+            "required_fields": [
+                "matched_pair_evidence[*].claim_boundary.shifted_cost_claim_allowed",
+                "matched_pair_evidence[*].measurements.baseline.total_cost_with_shift_usd.measured",
+                "matched_pair_evidence[*].measurements.variant.total_cost_with_shift_usd.measured",
+            ],
+        },
+    ))
+
+    has_replay = replay_rows is not None and bool(replay_rows)
+    explicit_note_count = sum(1 for row in (replay_rows or []) if row.explicit_notes)
+    failed_rows = [row for row in (replay_rows or []) if not row.result.success]
+    failed_rows_with_notes = sum(1 for row in failed_rows if row.explicit_notes)
+    comparison_failure_fields_present = bool(comparisons) and all(
+        "baseline_failure_rate" in item
+        and "variant_failure_rate" in item
+        and "failure_rate_delta_pp" in item
+        and "paired_corrections_task_count" in item
+        for item in comparisons
+    )
+    confidence_notes_pass = (
+        has_replay
+        and explicit_note_count == replay_count
+        and failed_rows_with_notes == len(failed_rows)
+        and comparison_failure_fields_present
+    )
+    gates.append(public_claim_readiness_gate(
+        "confidence_failure_notes",
+        "Confidence and failure notes",
+        confidence_notes_pass,
+        "explicit_replay_notes_and_failure_rate_evidence_present" if confidence_notes_pass else "missing_explicit_replay_notes_or_failure_evidence",
+        {
+            "replay_row_count": replay_count,
+            "explicit_note_count": explicit_note_count,
+            "failed_row_count": len(failed_rows),
+            "failed_rows_with_notes": failed_rows_with_notes,
+            "comparison_failure_fields_present": comparison_failure_fields_present,
+        },
+        unknown=not has_replay,
+    ))
+
+    same_run_complete = bool(replay_evidence.get("same_run_complete")) if replay_evidence else (
+        has_replay and not mixed_csv and replay_count == row_count
+    )
+    source_types = sorted({row.source_type for row in (replay_rows or [])})
+    provider_names = sorted({row.provider_name for row in (replay_rows or []) if row.provider_name})
+    provider_export_pass = (
+        has_replay
+        and not mixed_csv
+        and same_run_complete
+        and replay_count == row_count
+        and all(row.provider_export_provenance_complete for row in (replay_rows or []))
+    )
+    gates.append(public_claim_readiness_gate(
+        "provider_export_provenance",
+        "Provider-export provenance",
+        provider_export_pass,
+        "complete_provider_export_same_run_provenance" if provider_export_pass else "missing_or_mixed_provider_export_provenance",
+        {
+            "replay_row_count": replay_count,
+            "report_row_count": row_count,
+            "mixed_csv": mixed_csv,
+            "same_run_complete": same_run_complete,
+            "source_types": source_types,
+            "provider_names": provider_names[:MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS],
+        },
+        unknown=not has_replay,
+    ))
+
+    passed_required_gate_count = sum(1 for gate in gates if gate["passed"])
+    blocking_gate_ids = [str(gate["id"]) for gate in gates if not gate["passed"]]
+    required_gates_pass = passed_required_gate_count == len(gates)
+    claim_allowed = (
+        required_gates_pass
+        and public_claim_status == REPLAY_PUBLIC_CLAIM_CANDIDATE_STATUS
+        and bool(public_claim_eligible)
+    )
+    if claim_allowed:
+        readiness_status = REPLAY_PUBLIC_CLAIM_CANDIDATE_STATUS
+        reason = "all_required_public_claim_gates_pass"
+    elif not has_replay:
+        readiness_status = "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger"
+        reason = "replay_evidence_required_for_public_claim"
+    elif provider_export_pass:
+        readiness_status = REPLAY_PROVIDER_CLAIM_GATES_NOT_MET_STATUS
+        reason = "provider_export_present_but_readiness_gates_failed"
+    else:
+        readiness_status = "public_claim_blocked"
+        reason = "unsupported_public_savings_claim_forbidden"
+
+    return {
+        "schema_version": PUBLIC_CLAIM_READINESS_SCHEMA_VERSION,
+        "generated_from": "matched_pair_evidence_and_replay_provenance",
+        "status": readiness_status,
+        "reason": reason,
+        "claim_allowed": claim_allowed,
+        "public_claim_status_observed": public_claim_status,
+        "public_claim_eligible_observed": public_claim_eligible,
+        "raw_metric_claim_status_observed": raw_metric_claim_status,
+        "required_gate_ids": list(PUBLIC_CLAIM_READINESS_GATE_IDS),
+        "required_gate_count": len(gates),
+        "passed_required_gate_count": passed_required_gate_count,
+        "blocking_gate_ids": blocking_gate_ids,
+        "gates": gates,
+        "claim_boundary": PUBLIC_CLAIM_READINESS_CLAIM_BOUNDARY,
+    }
 
 
 def default_matrix_normalized_key(value: Any) -> str:
@@ -3186,6 +3499,39 @@ def render_dashboard_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("| n/a | n/a | 0 | 0 | n/a | n/a |")
+    readiness = report.get("public_claim_readiness") if isinstance(report.get("public_claim_readiness"), dict) else None
+    if readiness is not None:
+        lines.extend([
+            "",
+            "## Public claim readiness",
+            "",
+            f"- Status: `{markdown_value(readiness.get('status'))}`",
+            f"- Claim allowed: `{markdown_value(readiness.get('claim_allowed'))}`",
+            "",
+            "| Gate | Status | Reason | Evidence |",
+            "| --- | --- | --- | --- |",
+        ])
+        gates = readiness.get("gates") if isinstance(readiness.get("gates"), list) else []
+        for gate in gates:
+            if not isinstance(gate, dict):
+                continue
+            evidence = gate.get("evidence") if isinstance(gate.get("evidence"), dict) else {}
+            lines.append(
+                "| "
+                + " | ".join([
+                    markdown_value(gate.get("id")),
+                    markdown_value(gate.get("status")),
+                    markdown_value(gate.get("reason")),
+                    markdown_value(public_claim_readiness_evidence_text(evidence)),
+                ])
+                + " |"
+            )
+        boundary = readiness.get("claim_boundary")
+        if isinstance(boundary, dict):
+            lines.extend([
+                "",
+                f"- Public claim boundary: {markdown_value(boundary.get('reason'))}",
+            ])
     default_matrix = report.get("default_matrix") if isinstance(report.get("default_matrix"), dict) else None
     if default_matrix is not None:
         lines.extend([

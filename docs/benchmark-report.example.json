@@ -1,6 +1,6 @@
 {
   "baseline_variant": "baseline",
-  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings; provider-cache discounts must stay separate from token-reduction claims. Inspect default_matrix.claim_boundary and default_matrix.lanes[*].claim_boundary before treating a classification as a rollout decision; the matrix is reporting-only and does not change runtime defaults. This example documents report shape only; make real savings claims only from your own matched successful task runs. byte_proxy_only applies only to byte/token-proxy deltas; inspect matched_pair_evidence[*].claim_boundary and default_matrix.lanes[*].claim_boundary before making any rollout or savings statement.",
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings; provider-cache discounts must stay separate from token-reduction claims. Inspect default_matrix.claim_boundary and default_matrix.lanes[*].claim_boundary before treating a classification as a rollout decision; the matrix is reporting-only and does not change runtime defaults. This example documents report shape only; make real savings claims only from your own matched successful task runs. byte_proxy_only applies only to byte/token-proxy deltas; inspect matched_pair_evidence[*].claim_boundary and default_matrix.lanes[*].claim_boundary before making any rollout or savings statement. Public hosted savings claims must use public_claim_readiness.claim_allowed; unsupported claims are forbidden.",
   "claim_status": "token_and_shifted_cost_savings_observed",
   "comparisons": [
     {
@@ -489,6 +489,144 @@
       "token_proxy": "chars_div_4_proxy_only"
     },
     "schema_version": "contextguard.bench.measurement-baseline.v1"
+  },
+  "public_claim_readiness": {
+    "blocking_gate_ids": [
+      "confidence_failure_notes",
+      "provider_export_provenance"
+    ],
+    "claim_allowed": false,
+    "claim_boundary": {
+      "claim_allowed_field": "public_claim_readiness.claim_allowed",
+      "fixed_percent_savings_claim_without_matched_provider_report_forbidden": true,
+      "hosted_api_cost_savings_claim_without_claim_allowed_forbidden": true,
+      "hosted_api_token_savings_claim_without_claim_allowed_forbidden": true,
+      "id": "public_claim_readiness_authoritative_release_gate",
+      "reason": "Public hosted token/cost savings claims are forbidden unless every readiness gate passes and public_claim_readiness.claim_allowed is true.",
+      "reporting_only": true,
+      "requires_confidence_and_failure_notes": true,
+      "requires_matched_successful_tasks": true,
+      "requires_provider_export_provenance": true,
+      "requires_provider_measured_tokens_and_cost": true,
+      "requires_quality_non_inferiority": true,
+      "requires_shifted_cost_accounting": true,
+      "unsupported_claims_forbidden": true
+    },
+    "gates": [
+      {
+        "evidence": {
+          "comparison_count": 1,
+          "matched_pair_count": 1,
+          "min_matched_successful_task_count": 1.0,
+          "missing_baseline_success_task_count": 0,
+          "variants": [
+            "context_hygiene"
+          ]
+        },
+        "id": "matched_successful_tasks",
+        "label": "Matched successful tasks",
+        "passed": true,
+        "reason": "matched_successful_tasks_present",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "evidence": {
+          "matched_pair_count": 1,
+          "required_fields": [
+            "matched_pair_evidence[*].measurements.baseline.primary_tokens.measured",
+            "matched_pair_evidence[*].measurements.variant.primary_tokens.measured",
+            "matched_pair_evidence[*].measurements.baseline.primary_cost_usd.measured",
+            "matched_pair_evidence[*].measurements.variant.primary_cost_usd.measured"
+          ]
+        },
+        "id": "provider_measured_token_cost",
+        "label": "Provider-measured token and primary cost",
+        "passed": true,
+        "reason": "provider_measured_primary_tokens_and_cost",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "evidence": {
+          "max_corrections_delta_per_successful_task": 0.0,
+          "max_failure_rate_delta_pp": 0.0,
+          "quality_gates": [
+            "pass"
+          ]
+        },
+        "id": "quality_non_inferiority",
+        "label": "Quality non-inferiority",
+        "passed": true,
+        "reason": "all_quality_gates_pass",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "evidence": {
+          "matched_pair_count": 1,
+          "required_fields": [
+            "matched_pair_evidence[*].claim_boundary.shifted_cost_claim_allowed",
+            "matched_pair_evidence[*].measurements.baseline.total_cost_with_shift_usd.measured",
+            "matched_pair_evidence[*].measurements.variant.total_cost_with_shift_usd.measured"
+          ]
+        },
+        "id": "shifted_cost_accounting",
+        "label": "Shifted-cost accounting",
+        "passed": true,
+        "reason": "shifted_cost_claim_gates_pass",
+        "required": true,
+        "status": "pass"
+      },
+      {
+        "evidence": {
+          "comparison_failure_fields_present": true,
+          "explicit_note_count": 0,
+          "failed_row_count": 0,
+          "failed_rows_with_notes": 0,
+          "replay_row_count": 0
+        },
+        "id": "confidence_failure_notes",
+        "label": "Confidence and failure notes",
+        "passed": false,
+        "reason": "missing_explicit_replay_notes_or_failure_evidence",
+        "required": true,
+        "status": "unknown"
+      },
+      {
+        "evidence": {
+          "mixed_csv": false,
+          "provider_names": [],
+          "replay_row_count": 0,
+          "report_row_count": 2,
+          "same_run_complete": false,
+          "source_types": []
+        },
+        "id": "provider_export_provenance",
+        "label": "Provider-export provenance",
+        "passed": false,
+        "reason": "missing_or_mixed_provider_export_provenance",
+        "required": true,
+        "status": "unknown"
+      }
+    ],
+    "generated_from": "matched_pair_evidence_and_replay_provenance",
+    "passed_required_gate_count": 4,
+    "public_claim_eligible_observed": null,
+    "public_claim_status_observed": "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger",
+    "raw_metric_claim_status_observed": "token_and_shifted_cost_savings_observed",
+    "reason": "replay_evidence_required_for_public_claim",
+    "required_gate_count": 6,
+    "required_gate_ids": [
+      "matched_successful_tasks",
+      "provider_measured_token_cost",
+      "quality_non_inferiority",
+      "shifted_cost_accounting",
+      "confidence_failure_notes",
+      "provider_export_provenance"
+    ],
+    "schema_version": "contextguard.bench.public-claim-readiness.v1",
+    "status": "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger"
   },
   "row_count": 2,
   "schema": "context-guard-bench-report-v1",

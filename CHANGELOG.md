@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added `context-guard-bench` public claim readiness gates in report JSON and dashboards so release/public savings claims require matched successful tasks, provider-measured token/cost, quality non-inferiority, shifted-cost accounting, explicit confidence/failure notes, and complete provider-export provenance; unsupported hosted savings claims remain forbidden unless `public_claim_readiness.claim_allowed` is true.
 - Added a `context-guard-bench` default matrix in report JSON and dashboards that classifies trimming, artifact escrow, tool pruning, cache advice, adaptive-k, and optional compression from matched-pair evidence while remaining report-only and claim-safe.
 - Added explicit `context-guard experiments serve local-proxy --response-sandbox` mode that stores safe UTF-8 loopback upstream responses as sanitized local artifact receipts and returns a compact JSON rehydration envelope instead of the raw body; binary/sensitive/oversized/blocked responses are not artifacted, and the mode remains local-only with no hosted token/cost savings claim.
 - Added an agent-facing `context-guard-artifact receipt` / `output_sandbox` envelope so large sanitized command outputs carry a stable `contextguard-artifact:<id>` handle, compact local-only summary, and exact rehydration commands without exposing custom artifact paths by default.
