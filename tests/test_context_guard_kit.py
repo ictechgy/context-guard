@@ -25022,9 +25022,15 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(report["public_claim_status"], "replay_only_not_public_claim")
                     self.assertFalse(report["public_claim_eligible"])
                     self.assertEqual(report["replay_evidence"]["source_types"], ["synthetic_fixture"])
+                    readiness = report["public_claim_readiness"]
+                    self.assertEqual(readiness["schema_version"], "contextguard.bench.public-claim-readiness.v1")
+                    self.assertFalse(readiness["claim_allowed"])
+                    self.assertTrue(readiness["claim_boundary"]["unsupported_claims_forbidden"])
+                    self.assertIn("provider_export_provenance", readiness["blocking_gate_ids"])
 
                     dashboard = dashboard_path.read_text(encoding="utf-8")
                     self.assertIn("Claim boundary", dashboard)
+                    self.assertIn("## Public claim readiness", dashboard)
                     self.assertIn("Quality gate", dashboard)
                     self.assertIn("context-guard-bench --tasks", dashboard)
                     self.assertIn("--evidence-jsonl", dashboard)
@@ -25133,8 +25139,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertFalse(parsed.public_claim_eligible)
 
                     def provider_row(variant, *, input_tokens, output_tokens, cost_usd, corrections=0,
-                                     measured=True):
-                        return {
+                                     measured=True, notes="provider measured matched-task quality/failure notes"):
+                        row = {
                             "schema_version": "contextguard.bench.run-evidence.v1",
                             "task_id": "t01",
                             "variant": variant,
@@ -25157,6 +25163,9 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 "claim_scope": "provider_measured_matched_task_public_claim",
                             },
                         }
+                        if notes is not None:
+                            row["notes"] = notes
+                        return row
 
                     def csv_rows_from_replay(replay_rows):
                         csv_rows = []
@@ -25204,6 +25213,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(incomplete_report["raw_metric_claim_status"], "insufficient_paired_data")
                     self.assertEqual(incomplete_report["claim_status"], "provider_export_claim_gates_not_met")
                     self.assertFalse(incomplete_report["public_claim_eligible"])
+                    incomplete_readiness = incomplete_report["public_claim_readiness"]
+                    self.assertFalse(incomplete_readiness["claim_allowed"])
+                    self.assertIn("provider_measured_token_cost", incomplete_readiness["blocking_gate_ids"])
+                    self.assertIn("shifted_cost_accounting", incomplete_readiness["blocking_gate_ids"])
 
                     evidence_path.write_text(
                         "\n".join([
@@ -25221,6 +25234,28 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(quality_report["raw_metric_claim_status"], "quality_gate_watch")
                     self.assertEqual(quality_report["claim_status"], "provider_export_claim_gates_not_met")
                     self.assertFalse(quality_report["public_claim_eligible"])
+                    quality_readiness = quality_report["public_claim_readiness"]
+                    self.assertFalse(quality_readiness["claim_allowed"])
+                    self.assertIn("quality_non_inferiority", quality_readiness["blocking_gate_ids"])
+
+                    evidence_path.write_text(
+                        "\n".join([
+                            json.dumps(provider_row("baseline", input_tokens=100, output_tokens=20, cost_usd=0.12, notes=None)),
+                            json.dumps(provider_row("optimized", input_tokens=50, output_tokens=10, cost_usd=0.06, notes=None)),
+                        ]) + "\n",
+                        encoding="utf-8",
+                    )
+                    provider_missing_notes = module.read_evidence_jsonl(evidence_path)
+                    missing_notes_report = module.annotate_replay_report(
+                        module.summarize_benchmark_rows(csv_rows_from_replay(provider_missing_notes), "baseline"),
+                        provider_missing_notes,
+                        mixed_csv=False,
+                    )
+                    self.assertEqual(missing_notes_report["public_claim_status"], "provider_export_public_claim_candidate")
+                    missing_notes_readiness = missing_notes_report["public_claim_readiness"]
+                    self.assertFalse(missing_notes_readiness["claim_allowed"])
+                    self.assertEqual(missing_notes_readiness["status"], "provider_export_claim_gates_not_met")
+                    self.assertIn("confidence_failure_notes", missing_notes_readiness["blocking_gate_ids"])
 
                     evidence_path.write_text(
                         "\n".join([
@@ -25242,6 +25277,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(complete_report["claim_status"], "token_and_shifted_cost_savings_observed")
                     self.assertEqual(complete_report["public_claim_status"], "provider_export_public_claim_candidate")
                     self.assertTrue(complete_report["public_claim_eligible"])
+                    complete_readiness = complete_report["public_claim_readiness"]
+                    self.assertTrue(complete_readiness["claim_allowed"])
+                    self.assertEqual(complete_readiness["status"], "provider_export_public_claim_candidate")
+                    self.assertEqual(complete_readiness["blocking_gate_ids"], [])
+                    self.assertTrue(all(gate["status"] == "pass" for gate in complete_readiness["gates"]))
 
                     duplicate = "\n".join([json.dumps(good_row()), json.dumps(good_row())]) + "\n"
                     evidence_path.write_text(duplicate, encoding="utf-8")
@@ -26121,6 +26161,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
         self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
         self.assertEqual(pair["delta"]["proxy_measurement"], "chars_div_4_proxy_only")
+        readiness = sample["public_claim_readiness"]
+        self.assertEqual(readiness["schema_version"], "contextguard.bench.public-claim-readiness.v1")
+        self.assertFalse(readiness["claim_allowed"])
+        self.assertTrue(readiness["claim_boundary"]["unsupported_claims_forbidden"])
+        self.assertIn("confidence_failure_notes", readiness["required_gate_ids"])
         matrix = sample["default_matrix"]
         self.assertEqual(matrix["schema_version"], "contextguard.bench.default-matrix.v1")
         self.assertEqual(
@@ -26153,8 +26198,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
         for name, sample in examples.items():
             with self.subTest(example=name):
                 self.assertEqual(sample["schema"], "context-guard-bench-report-v1")
-                for key in ("baseline_variant", "row_count", "summary_by_variant", "comparisons", "claim_status", "caveat"):
+                for key in ("baseline_variant", "row_count", "summary_by_variant", "comparisons", "claim_status", "caveat", "public_claim_readiness"):
                     self.assertIn(key, sample)
+                self.assertFalse(sample["public_claim_readiness"]["claim_allowed"])
+                self.assertTrue(sample["public_claim_readiness"]["claim_boundary"]["unsupported_claims_forbidden"])
                 self.assertTrue(sample["comparisons"], name)
                 for comparison in sample["comparisons"]:
                     self.assertIn("quality_gate", comparison)
@@ -26611,12 +26658,21 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertEqual(replay_matrix["schema_version"], "contextguard.bench.default-matrix.v1")
                 self.assertEqual(replay_matrix["claim_status_observed"], "replay_only_not_public_claim")
                 self.assertFalse(replay_matrix["public_claim_allowed"])
+                replay_readiness = replay_report["public_claim_readiness"]
+                self.assertFalse(replay_readiness["claim_allowed"])
+                self.assertIn("provider_export_provenance", replay_readiness["blocking_gate_ids"])
                 self.assertTrue(replay_matrix["claim_boundary"]["reporting_only"])
                 self.assertTrue(all(not lane["public_claim_allowed"] for lane in replay_matrix["lanes"]))
                 report = module.summarize_benchmark_rows(rows, "baseline_full_context_fixture")
                 self.assertEqual(report["schema"], "context-guard-bench-report-v1")
                 self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
                 self.assertEqual(len(report["matched_pair_evidence"]), 12)
+                measured_readiness = report["public_claim_readiness"]
+                self.assertFalse(measured_readiness["claim_allowed"])
+                self.assertEqual(
+                    measured_readiness["status"],
+                    "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger",
+                )
                 matrix = report["default_matrix"]
                 self.assertEqual(matrix["schema_version"], "contextguard.bench.default-matrix.v1")
                 self.assertEqual(

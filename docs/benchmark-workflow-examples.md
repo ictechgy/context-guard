@@ -26,7 +26,7 @@ Use them to decide what evidence a workflow has and what it does **not** prove:
 3. Treat `comparisons[].quality_gate != "pass"` as a warning to inspect failures, correction burden, and unmatched tasks before discussing savings.
 4. Keep byte-proxy, provider-cache, wall-time, and shifted-cost evidence in separate language from provider-measured token/cost claims. Provider-cache telemetry is not independent savings proof.
 5. Keep self-hosted local/model-server latency, memory, and quality metrics in the run-evidence ledger sidecar; do not fold them into hosted API token/cost savings claims unless provider-measured matched-task evidence separately supports that claim.
-6. For deterministic local replay, add `--evidence-jsonl ... --dashboard-md ...`. Synthetic/manual replay evidence regenerates CSV/report/dashboard artifacts, but the report is marked `replay_only_not_public_claim` or `unknown_mixed_csv` unless every report row has complete provider-export provenance.
+6. For deterministic local replay, add `--evidence-jsonl ... --dashboard-md ...`. Synthetic/manual replay evidence regenerates CSV/report/dashboard artifacts, but the report is marked `replay_only_not_public_claim` or `unknown_mixed_csv` unless every report row has complete provider-export provenance. Public hosted savings claims must additionally have `public_claim_readiness.claim_allowed=true`, which requires matched successful tasks, provider-measured token/cost, quality non-inferiority, shifted-cost accounting, explicit confidence/failure notes, and complete provider-export provenance.
 
 ## Safe wording
 
