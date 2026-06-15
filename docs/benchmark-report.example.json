@@ -1,125 +1,633 @@
 {
-  "schema": "context-guard-bench-report-v1",
   "baseline_variant": "baseline",
-  "claim_status": "token_savings_observed_cost_unmeasured",
-  "summary_by_variant": {
-    "baseline": {
-      "successful_runs": 1,
-      "tokens_per_successful_task": 1000,
-      "primary_tokens_measured_successful": 1,
-      "wall_time_seconds_per_successful_task": 12.4,
-      "wall_time_seconds_measured_successful": 1,
-      "provider_cached_tokens_successful": 0,
-      "provider_cached_tokens_measured_successful": 1,
-      "observed_telemetry": {
-        "tokens": "observed",
-        "primary_cost": "unavailable",
-        "external_tokens": "observed",
-        "byte_savings": "observed",
-        "token_proxy": "inferred",
-        "wall_time": "observed",
-        "provider_cache": "observed"
-      }
-    },
-    "context_hygiene": {
-      "successful_runs": 1,
-      "tokens_per_successful_task": 650,
-      "primary_tokens_measured_successful": 1,
-      "wall_time_seconds_per_successful_task": 10.8,
-      "wall_time_seconds_measured_successful": 1,
-      "provider_cached_tokens_successful": 120,
-      "provider_cached_tokens_measured_successful": 1,
-      "observed_telemetry": {
-        "tokens": "observed",
-        "primary_cost": "unavailable",
-        "external_tokens": "observed",
-        "byte_savings": "observed",
-        "token_proxy": "inferred",
-        "wall_time": "observed",
-        "provider_cache": "observed"
-      }
-    }
-  },
+  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings; provider-cache discounts must stay separate from token-reduction claims. Inspect default_matrix.claim_boundary and default_matrix.lanes[*].claim_boundary before treating a classification as a rollout decision; the matrix is reporting-only and does not change runtime defaults. This example documents report shape only; make real savings claims only from your own matched successful task runs. byte_proxy_only applies only to byte/token-proxy deltas; inspect matched_pair_evidence[*].claim_boundary and default_matrix.lanes[*].claim_boundary before making any rollout or savings statement.",
+  "claim_status": "token_and_shifted_cost_savings_observed",
   "comparisons": [
     {
-      "variant": "context_hygiene",
+      "baseline_corrections_per_successful_task": 0.0,
+      "baseline_failure_rate": 0.0,
+      "baseline_successful_task_count": 1,
       "baseline_variant": "baseline",
-      "quality_gate": "pass",
+      "corrections_delta_per_successful_task": 0.0,
+      "cost_savings_pct_with_shift": 35.0,
+      "failure_rate_delta_pp": 0.0,
       "matched_successful_task_count": 1,
+      "missing_baseline_success_tasks": [],
+      "paired_corrections_task_count": 1,
+      "paired_cost_task_count": 1,
       "paired_token_task_count": 1,
       "paired_wall_time_task_count": 1,
+      "quality_gate": "pass",
+      "token_delta_per_successful_task": -350.0,
       "token_savings_pct": 35.0,
-      "cost_savings_pct_with_shift": null,
-      "wall_time_change_pct": -12.9
+      "total_cost_with_shift_delta_usd": -0.0035000000000000005,
+      "variant": "context_hygiene",
+      "variant_corrections_per_successful_task": 0.0,
+      "variant_failure_rate": 0.0,
+      "wall_time_change_pct": -12.90322580645161,
+      "wall_time_delta_seconds_per_successful_task": -1.5999999999999996
     }
   ],
+  "default_matrix": {
+    "claim_boundary": {
+      "changes_runtime_defaults": false,
+      "hosted_api_cost_savings_claim_allowed": false,
+      "hosted_api_token_savings_claim_allowed": false,
+      "id": "default_matrix_reporting_only_not_runtime_default_or_savings_claim",
+      "public_claims_must_use_report_claim_status_and_matched_pair_evidence": true,
+      "reason": "The default matrix classifies local benchmark lanes for review only; it does not turn features on by default and does not authorize hosted API savings claims.",
+      "reporting_only": true
+    },
+    "claim_status_observed": "token_and_shifted_cost_savings_observed",
+    "classification_set": [
+      "default-on",
+      "advisory",
+      "experimental",
+      "reject/rework"
+    ],
+    "generated_from": "matched_pair_evidence",
+    "lanes": [
+      {
+        "byte_proxy_evidence": "observed_positive",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "default-on",
+        "label": "Trimming / digest output",
+        "lane": "trimming",
+        "lane_match_method": "exact_key",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": true,
+          "token_savings_claim_allowed": true
+        },
+        "matched_task_count": 1,
+        "matched_tasks": [
+          "token_savings_04_long_log_analysis"
+        ],
+        "matched_variants": [
+          "context_hygiene"
+        ],
+        "policy_ceiling": "default-on",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "pass",
+        "quality_gates": [
+          "pass"
+        ],
+        "reason_codes": [
+          "quality_pass_measured_token_and_shifted_cost_non_regression"
+        ],
+        "shifted_cost_evidence": "measured_non_regression",
+        "token_evidence": "measured_positive"
+      },
+      {
+        "byte_proxy_evidence": "unavailable",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "experimental",
+        "label": "Artifact escrow / receipt handles",
+        "lane": "artifact_escrow",
+        "lane_match_method": "absent",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": false,
+          "token_savings_claim_allowed": false
+        },
+        "matched_task_count": 0,
+        "matched_tasks": [],
+        "matched_variants": [],
+        "policy_ceiling": "default-on",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "insufficient_evidence",
+        "quality_gates": [],
+        "reason_codes": [
+          "no_matched_lane_evidence"
+        ],
+        "shifted_cost_evidence": "unavailable",
+        "token_evidence": "unavailable"
+      },
+      {
+        "byte_proxy_evidence": "unavailable",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "experimental",
+        "label": "Tool/MCP schema pruning",
+        "lane": "tool_pruning",
+        "lane_match_method": "absent",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": false,
+          "token_savings_claim_allowed": false
+        },
+        "matched_task_count": 0,
+        "matched_tasks": [],
+        "matched_variants": [],
+        "policy_ceiling": "default-on",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "insufficient_evidence",
+        "quality_gates": [],
+        "reason_codes": [
+          "no_matched_lane_evidence"
+        ],
+        "shifted_cost_evidence": "unavailable",
+        "token_evidence": "unavailable"
+      },
+      {
+        "byte_proxy_evidence": "unavailable",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "experimental",
+        "label": "Cache layout advice",
+        "lane": "cache_advice",
+        "lane_match_method": "absent",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": false,
+          "token_savings_claim_allowed": false
+        },
+        "matched_task_count": 0,
+        "matched_tasks": [],
+        "matched_variants": [],
+        "policy_ceiling": "advisory",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "insufficient_evidence",
+        "quality_gates": [],
+        "reason_codes": [
+          "no_matched_lane_evidence"
+        ],
+        "shifted_cost_evidence": "unavailable",
+        "token_evidence": "unavailable"
+      },
+      {
+        "byte_proxy_evidence": "unavailable",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "experimental",
+        "label": "Adaptive-k context packing",
+        "lane": "adaptive_k",
+        "lane_match_method": "absent",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": false,
+          "token_savings_claim_allowed": false
+        },
+        "matched_task_count": 0,
+        "matched_tasks": [],
+        "matched_variants": [],
+        "policy_ceiling": "advisory",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "insufficient_evidence",
+        "quality_gates": [],
+        "reason_codes": [
+          "no_matched_lane_evidence"
+        ],
+        "shifted_cost_evidence": "unavailable",
+        "token_evidence": "unavailable"
+      },
+      {
+        "byte_proxy_evidence": "unavailable",
+        "claim_boundary": {
+          "classification_is_reporting_only": true,
+          "hosted_api_savings_claim_allowed": false,
+          "requires_report_claim_status_and_matched_pair_evidence": true
+        },
+        "classification": "experimental",
+        "label": "Optional compression",
+        "lane": "optional_compression",
+        "lane_match_method": "absent",
+        "matched_pair_claim_gates": {
+          "shifted_cost_claim_allowed": false,
+          "token_savings_claim_allowed": false
+        },
+        "matched_task_count": 0,
+        "matched_tasks": [],
+        "matched_variants": [],
+        "policy_ceiling": "advisory",
+        "policy_clamped": false,
+        "public_claim_allowed": false,
+        "quality_gate": "insufficient_evidence",
+        "quality_gates": [],
+        "reason_codes": [
+          "no_matched_lane_evidence"
+        ],
+        "shifted_cost_evidence": "unavailable",
+        "token_evidence": "unavailable"
+      }
+    ],
+    "public_claim_allowed": false,
+    "reporting_only": true,
+    "schema_version": "contextguard.bench.default-matrix.v1",
+    "summary": {
+      "classification_counts": {
+        "advisory": 0,
+        "default-on": 1,
+        "experimental": 5,
+        "reject/rework": 0
+      },
+      "lane_count": 6,
+      "unmatched_variants": []
+    }
+  },
   "matched_pair_evidence": [
     {
-      "schema_version": "contextguard.bench.matched-pair.v1",
-      "task_id": "t01",
       "baseline_variant": "baseline",
-      "variant": "context_hygiene",
-      "transform_id": "context_hygiene",
-      "quality_gate": "pass",
+      "claim_boundary": {
+        "byte_proxy_only": true,
+        "quality_gate": "pass",
+        "raw_estimate_only_claim_allowed": false,
+        "requires_matched_successful_tasks": true,
+        "shifted_cost_claim_allowed": true,
+        "token_savings_claim_allowed": true
+      },
+      "delta": {
+        "bytes_after_total": -3400,
+        "cost_savings_pct_with_shift": 35.0,
+        "primary_tokens_average": -350.0,
+        "proxy_measurement": "chars_div_4_proxy_only",
+        "token_proxy_after_total": -850,
+        "token_savings_pct": 35.0,
+        "total_cost_with_shift_usd_average": -0.0035000000000000005
+      },
       "evidence_kind": "matched_successful_task_bucket",
       "measurements": {
         "baseline": {
-          "run_count": 1,
+          "bytes": {
+            "after_total": 12000,
+            "before_total": 12000,
+            "delta_total": 0,
+            "measurement": "observed",
+            "token_proxy": "chars_div_4_proxy_only",
+            "token_proxy_delta": 0
+          },
+          "corrections": {
+            "average": 0.0,
+            "measured": true
+          },
+          "external_cost_usd": {
+            "measured": true,
+            "total": 0.0
+          },
+          "external_tokens": {
+            "measured": true,
+            "total": 0
+          },
+          "primary_cost_usd": {
+            "average": 0.01,
+            "measured": true
+          },
+          "primary_tokens": {
+            "average": 1000.0,
+            "measured": true,
+            "total": 1000
+          },
+          "provider_cached_tokens": {
+            "average": 0.0,
+            "measured": true
+          },
           "row_indices": [
             1
           ],
-          "primary_tokens": {
-            "measured": true,
-            "average": 1000,
-            "total": 1000
+          "run_count": 1,
+          "task_id": "token_savings_04_long_log_analysis",
+          "total_cost_with_shift_usd": {
+            "average": 0.01,
+            "measured": true
           },
-          "bytes": {
-            "measurement": "observed",
-            "before_total": 12000,
-            "after_total": 12000,
-            "delta_total": 0,
-            "token_proxy_delta": 0,
-            "token_proxy": "chars_div_4_proxy_only"
+          "variant": "baseline",
+          "wall_time_seconds": {
+            "average": 12.4,
+            "measured": true
           }
         },
         "variant": {
-          "run_count": 1,
+          "bytes": {
+            "after_total": 8600,
+            "before_total": 12000,
+            "delta_total": -3400,
+            "measurement": "observed",
+            "token_proxy": "chars_div_4_proxy_only",
+            "token_proxy_delta": -850
+          },
+          "corrections": {
+            "average": 0.0,
+            "measured": true
+          },
+          "external_cost_usd": {
+            "measured": true,
+            "total": 0.0
+          },
+          "external_tokens": {
+            "measured": true,
+            "total": 0
+          },
+          "primary_cost_usd": {
+            "average": 0.0065,
+            "measured": true
+          },
+          "primary_tokens": {
+            "average": 650.0,
+            "measured": true,
+            "total": 650
+          },
+          "provider_cached_tokens": {
+            "average": 120.0,
+            "measured": true
+          },
           "row_indices": [
             2
           ],
-          "primary_tokens": {
-            "measured": true,
-            "average": 650,
-            "total": 650
+          "run_count": 1,
+          "task_id": "token_savings_04_long_log_analysis",
+          "total_cost_with_shift_usd": {
+            "average": 0.0065,
+            "measured": true
           },
-          "bytes": {
-            "measurement": "observed",
-            "before_total": 12000,
-            "after_total": 8600,
-            "delta_total": -3400,
-            "token_proxy_delta": -850,
-            "token_proxy": "chars_div_4_proxy_only"
+          "variant": "context_hygiene",
+          "wall_time_seconds": {
+            "average": 10.8,
+            "measured": true
           }
         }
       },
-      "delta": {
-        "primary_tokens_average": -350,
-        "token_savings_pct": 35.0,
-        "total_cost_with_shift_usd_average": null,
-        "cost_savings_pct_with_shift": null,
-        "bytes_after_total": -3400,
-        "token_proxy_after_total": -850,
-        "proxy_measurement": "chars_div_4_proxy_only"
-      },
-      "claim_boundary": {
-        "quality_gate": "pass",
-        "token_savings_claim_allowed": true,
-        "shifted_cost_claim_allowed": false,
-        "byte_proxy_only": true,
-        "requires_matched_successful_tasks": true,
-        "raw_estimate_only_claim_allowed": false
-      }
+      "quality_gate": "pass",
+      "schema_version": "contextguard.bench.matched-pair.v1",
+      "task_id": "token_savings_04_long_log_analysis",
+      "transform_id": "context_hygiene",
+      "variant": "context_hygiene"
     }
   ],
-  "caveat": "Proxy byte reductions are reported separately from matched-task token/cost metrics; byte_proxy_only applies only to byte/token-proxy deltas, while token_savings_claim_allowed is driven by measured primary tokens on both matched sides and a passing quality gate. Shifted cost savings require measured primary cost and measured external cost when external tokens are present. Wall time and provider cached-token fields are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings. Provider-cache discounts must stay separate from token-reduction claims. Inspect matched_pair_evidence[*].claim_boundary before making any savings statement; it links each task bucket to the quality gate and measurement flags that gate each claim. This example documents report shape only; make real savings claims only from your own matched successful task runs."
+  "measurement_baseline": {
+    "captured_fields": {
+      "latency": [
+        "wall_time_seconds"
+      ],
+      "primary_cost": [
+        "cost_usd",
+        "cost_measured"
+      ],
+      "primary_token_buckets": [
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_creation",
+        "total_tokens",
+        "primary_tokens_measured"
+      ],
+      "provider_cache_telemetry": [
+        "provider_cached_tokens",
+        "provider_cached_tokens_measured"
+      ],
+      "quality_and_result": [
+        "success",
+        "corrections",
+        "notes"
+      ],
+      "run_configuration": [
+        "model",
+        "effort",
+        "claude_version"
+      ],
+      "shifted_cost_accounting": [
+        "external_tokens",
+        "external_tokens_measured",
+        "external_cost_usd",
+        "external_cost_measured",
+        "total_cost_with_shift_usd"
+      ],
+      "task_identity": [
+        "task_id",
+        "variant"
+      ],
+      "tooling_and_proxy_metrics": [
+        "turns",
+        "hook_triggers",
+        "bytes_before",
+        "bytes_after",
+        "artifacts_used"
+      ]
+    },
+    "claim_boundary": {
+      "descriptive_contract_only": true,
+      "enables_savings_claims_by_itself": false,
+      "raw_proxy_estimates_are_not_hosted_api_token_savings": true,
+      "requires_matched_successful_tasks": true,
+      "requires_shifted_cost_accounting_for_cost_claims": true
+    },
+    "claim_eligible_fields": {
+      "shifted_cost_savings": [
+        "matched successful baseline and variant tasks",
+        "cost_measured=true on both sides",
+        "external_cost_measured=true when external_tokens are present",
+        "quality_gate=pass"
+      ],
+      "token_savings": [
+        "matched successful baseline and variant tasks",
+        "primary_tokens_measured=true on both sides",
+        "quality_gate=pass"
+      ]
+    },
+    "csv_columns": [
+      "date",
+      "claude_version",
+      "task_id",
+      "variant",
+      "model",
+      "effort",
+      "total_tokens",
+      "input_tokens",
+      "output_tokens",
+      "cache_read",
+      "cache_creation",
+      "provider_cached_tokens",
+      "provider_cached_tokens_measured",
+      "cost_usd",
+      "cost_measured",
+      "wall_time_seconds",
+      "turns",
+      "hook_triggers",
+      "bytes_before",
+      "bytes_after",
+      "artifacts_used",
+      "external_tokens",
+      "external_tokens_measured",
+      "external_cost_usd",
+      "external_cost_measured",
+      "total_cost_with_shift_usd",
+      "success",
+      "corrections",
+      "notes",
+      "primary_tokens_measured"
+    ],
+    "csv_schema_unchanged": true,
+    "missing_future_run_identity_fields": [
+      "repo_revision",
+      "agent_harness",
+      "feature_flags",
+      "provider_name",
+      "success_command_identity"
+    ],
+    "proxy_only_fields": {
+      "byte_metrics": [
+        "bytes_before",
+        "bytes_after"
+      ],
+      "provider_cache": "diagnostic_telemetry_not_contextguard_token_reduction",
+      "token_proxy": "chars_div_4_proxy_only"
+    },
+    "schema_version": "contextguard.bench.measurement-baseline.v1"
+  },
+  "row_count": 2,
+  "schema": "context-guard-bench-report-v1",
+  "summary_by_variant": {
+    "baseline": {
+      "artifacts_used_per_successful_task": 0.0,
+      "artifacts_used_successful": 0,
+      "byte_reduction_ratio": 1.0,
+      "byte_savings_pct": 0.0,
+      "bytes_after_successful": 12000,
+      "bytes_before_successful": 12000,
+      "bytes_saved_per_successful_task": 0.0,
+      "bytes_saved_successful": 0,
+      "compression_strategy": "baseline",
+      "corrections_per_successful_task": 0.0,
+      "corrections_successful": 0,
+      "external_cost_successful_usd": 0.0,
+      "external_cost_unknown_successful": 0,
+      "external_tokens_measured_successful": 1,
+      "external_tokens_per_successful_task": 0.0,
+      "external_tokens_successful": 0,
+      "failed_runs": 0,
+      "failure_rate": 0.0,
+      "hook_triggers_successful": 0,
+      "is_baseline_strategy": true,
+      "observed_telemetry": {
+        "byte_savings": "observed",
+        "external_tokens": "observed",
+        "primary_cost": "observed",
+        "provider_cache": "observed",
+        "token_proxy": "inferred",
+        "tokens": "observed",
+        "wall_time": "observed"
+      },
+      "primary_cost_all_runs_usd": 0.01,
+      "primary_cost_measured_runs": 1,
+      "primary_cost_measured_successful": 1,
+      "primary_cost_per_successful_task_usd": 0.01,
+      "primary_cost_per_task_including_failures_usd": 0.01,
+      "primary_cost_successful_usd": 0.01,
+      "primary_tokens_measured_runs": 1,
+      "primary_tokens_measured_successful": 1,
+      "provider_cached_tokens_all_runs": 0,
+      "provider_cached_tokens_measured_runs": 1,
+      "provider_cached_tokens_measured_successful": 1,
+      "provider_cached_tokens_per_successful_task": 0.0,
+      "provider_cached_tokens_per_task_including_failures": 0.0,
+      "provider_cached_tokens_successful": 0,
+      "runs": 1,
+      "successful_runs": 1,
+      "successful_task_count": 1,
+      "task_count": 1,
+      "token_proxy_saved_per_successful_task": 0.0,
+      "token_proxy_saved_successful": 0,
+      "tokens_per_successful_task": 1000.0,
+      "tokens_per_task_including_failures": 1000.0,
+      "total_cost_with_shift_all_runs_usd": 0.01,
+      "total_cost_with_shift_measured_runs": 1,
+      "total_cost_with_shift_measured_successful": 1,
+      "total_cost_with_shift_per_successful_task_usd": 0.01,
+      "total_cost_with_shift_per_task_including_failures_usd": 0.01,
+      "total_cost_with_shift_successful_usd": 0.01,
+      "total_tokens_all_runs": 1000,
+      "total_tokens_successful": 1000,
+      "turns_successful": 0,
+      "wall_time_seconds_all_runs": 12.4,
+      "wall_time_seconds_measured_runs": 1,
+      "wall_time_seconds_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 12.4,
+      "wall_time_seconds_per_task_including_failures": 12.4,
+      "wall_time_seconds_successful": 12.4
+    },
+    "context_hygiene": {
+      "artifacts_used_per_successful_task": 0.0,
+      "artifacts_used_successful": 0,
+      "byte_reduction_ratio": 0.7166666666666667,
+      "byte_savings_pct": 28.333333333333332,
+      "bytes_after_successful": 8600,
+      "bytes_before_successful": 12000,
+      "bytes_saved_per_successful_task": 3400.0,
+      "bytes_saved_successful": 3400,
+      "compression_strategy": "context_hygiene",
+      "corrections_per_successful_task": 0.0,
+      "corrections_successful": 0,
+      "external_cost_successful_usd": 0.0,
+      "external_cost_unknown_successful": 0,
+      "external_tokens_measured_successful": 1,
+      "external_tokens_per_successful_task": 0.0,
+      "external_tokens_successful": 0,
+      "failed_runs": 0,
+      "failure_rate": 0.0,
+      "hook_triggers_successful": 0,
+      "is_baseline_strategy": false,
+      "observed_telemetry": {
+        "byte_savings": "observed",
+        "external_tokens": "observed",
+        "primary_cost": "observed",
+        "provider_cache": "observed",
+        "token_proxy": "inferred",
+        "tokens": "observed",
+        "wall_time": "observed"
+      },
+      "primary_cost_all_runs_usd": 0.0065,
+      "primary_cost_measured_runs": 1,
+      "primary_cost_measured_successful": 1,
+      "primary_cost_per_successful_task_usd": 0.0065,
+      "primary_cost_per_task_including_failures_usd": 0.0065,
+      "primary_cost_successful_usd": 0.0065,
+      "primary_tokens_measured_runs": 1,
+      "primary_tokens_measured_successful": 1,
+      "provider_cached_tokens_all_runs": 120,
+      "provider_cached_tokens_measured_runs": 1,
+      "provider_cached_tokens_measured_successful": 1,
+      "provider_cached_tokens_per_successful_task": 120.0,
+      "provider_cached_tokens_per_task_including_failures": 120.0,
+      "provider_cached_tokens_successful": 120,
+      "runs": 1,
+      "successful_runs": 1,
+      "successful_task_count": 1,
+      "task_count": 1,
+      "token_proxy_saved_per_successful_task": 850.0,
+      "token_proxy_saved_successful": 850,
+      "tokens_per_successful_task": 650.0,
+      "tokens_per_task_including_failures": 650.0,
+      "total_cost_with_shift_all_runs_usd": 0.0065,
+      "total_cost_with_shift_measured_runs": 1,
+      "total_cost_with_shift_measured_successful": 1,
+      "total_cost_with_shift_per_successful_task_usd": 0.0065,
+      "total_cost_with_shift_per_task_including_failures_usd": 0.0065,
+      "total_cost_with_shift_successful_usd": 0.0065,
+      "total_tokens_all_runs": 650,
+      "total_tokens_successful": 650,
+      "turns_successful": 0,
+      "wall_time_seconds_all_runs": 10.8,
+      "wall_time_seconds_measured_runs": 1,
+      "wall_time_seconds_measured_successful": 1,
+      "wall_time_seconds_per_successful_task": 10.8,
+      "wall_time_seconds_per_task_including_failures": 10.8,
+      "wall_time_seconds_successful": 10.8
+    }
+  }
 }

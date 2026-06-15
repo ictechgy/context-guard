@@ -187,6 +187,7 @@ TOKEN_PROXY_BYTES_PER_TOKEN = 4
 BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
 MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
 MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v1"
+DEFAULT_MATRIX_SCHEMA_VERSION = "contextguard.bench.default-matrix.v1"
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
 SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
 SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
@@ -209,6 +210,71 @@ REPLAY_CLAIM_BOUNDARY = (
     "provenance for every report row plus the normal matched-task quality, token, cost, and "
     "shifted-cost gates."
 )
+DEFAULT_MATRIX_CLASSIFICATIONS = ("default-on", "advisory", "experimental", "reject/rework")
+DEFAULT_MATRIX_CLASSIFICATION_STRENGTH = {
+    "experimental": 0,
+    "advisory": 1,
+    "default-on": 2,
+}
+DEFAULT_MATRIX_LANES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "trimming",
+        "label": "Trimming / digest output",
+        "policy_ceiling": "default-on",
+        "task_keywords": ("long_log_analysis", "output_transform", "trim", "trimming", "sanitize_output", "digest"),
+        "variant_keywords": ("trim", "trimming", "sanitize", "digest", "brief"),
+    },
+    {
+        "id": "artifact_escrow",
+        "label": "Artifact escrow / receipt handles",
+        "policy_ceiling": "default-on",
+        "task_keywords": ("artifact_receipt", "artifact", "receipt", "escrow", "output_sandbox", "response_sandbox"),
+        "variant_keywords": ("artifact", "receipt", "escrow", "output_sandbox", "response_sandbox"),
+    },
+    {
+        "id": "tool_pruning",
+        "label": "Tool/MCP schema pruning",
+        "policy_ceiling": "default-on",
+        "task_keywords": ("tool_schema", "tool_prune", "tool_pruning", "mcp_schema", "defer_report"),
+        "variant_keywords": ("tool_prune", "tool_pruning", "tool_schema", "mcp", "defer"),
+    },
+    {
+        "id": "cache_advice",
+        "label": "Cache layout advice",
+        "policy_ceiling": "advisory",
+        "task_keywords": ("cache_layout", "cache_advice", "cache_score", "provider_cache"),
+        "variant_keywords": ("cache_layout", "cache_advice", "cache_score", "provider_cache", "cache"),
+    },
+    {
+        "id": "adaptive_k",
+        "label": "Adaptive-k context packing",
+        "policy_ceiling": "advisory",
+        "task_keywords": ("adaptive_k", "adaptive", "top_k", "context_pack"),
+        "variant_keywords": ("adaptive_k", "adaptive", "top_k", "pack_adaptive"),
+    },
+    {
+        "id": "optional_compression",
+        "label": "Optional compression",
+        "policy_ceiling": "advisory",
+        "task_keywords": ("learned_compression", "compression", "compress", "context_diff"),
+        "variant_keywords": ("learned_compression", "compression", "compress", "context_diff"),
+    },
+)
+DEFAULT_MATRIX_LANE_IDS = tuple(str(item["id"]) for item in DEFAULT_MATRIX_LANES)
+DEFAULT_MATRIX_LANE_BY_ID = {str(item["id"]): item for item in DEFAULT_MATRIX_LANES}
+MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS = 20
+DEFAULT_MATRIX_CLAIM_BOUNDARY = {
+    "id": "default_matrix_reporting_only_not_runtime_default_or_savings_claim",
+    "reporting_only": True,
+    "changes_runtime_defaults": False,
+    "hosted_api_token_savings_claim_allowed": False,
+    "hosted_api_cost_savings_claim_allowed": False,
+    "public_claims_must_use_report_claim_status_and_matched_pair_evidence": True,
+    "reason": (
+        "The default matrix classifies local benchmark lanes for review only; it does not "
+        "turn features on by default and does not authorize hosted API savings claims."
+    ),
+}
 MAX_SELF_HOSTED_LABEL_CHARS = 120
 MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
 MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
@@ -2668,7 +2734,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
                 claim_status = "token_savings_observed_cost_unmeasured"
             elif token_savings_observed:
                 claim_status = "token_savings_observed_cost_shift_watch"
-    return {
+    report = {
         "schema": "context-guard-bench-report-v1",
         "baseline_variant": baseline_variant,
         "row_count": len(rows),
@@ -2685,6 +2751,8 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
             "discounts must stay separate from token-reduction claims."
         ),
     }
+    report["default_matrix"] = build_default_matrix(report)
+    return report
 
 def annotate_replay_report(
     report: dict[str, Any],
@@ -2749,6 +2817,7 @@ def annotate_replay_report(
         "target_keys": [f"{row.result.task_id}/{row.result.variant}" for row in replay_rows],
         "claim_boundary": REPLAY_CLAIM_BOUNDARY,
     }
+    report["default_matrix"] = build_default_matrix(report)
     return report
 
 
@@ -2759,6 +2828,276 @@ def report_public_claim_status(report: dict[str, Any]) -> tuple[str, bool | None
         "csv_provenance_unknown_requires_original_evidence_or_trusted_ledger",
         None,
     )
+
+
+def default_matrix_normalized_key(value: Any) -> str:
+    text = str(value or "").lower()
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def default_matrix_contains_key(haystack: str, needle: str) -> bool:
+    needle = default_matrix_normalized_key(needle)
+    if not needle:
+        return False
+    return needle in haystack
+
+
+def infer_default_matrix_lanes(pair: dict[str, Any]) -> list[tuple[str, str]]:
+    task_id = default_matrix_normalized_key(pair.get("task_id"))
+    variant = default_matrix_normalized_key(pair.get("variant"))
+    matches: list[tuple[str, str]] = []
+    for lane in DEFAULT_MATRIX_LANES:
+        lane_id = str(lane["id"])
+        task_keywords = tuple(str(item) for item in lane.get("task_keywords", ()))
+        variant_keywords = tuple(str(item) for item in lane.get("variant_keywords", ()))
+        if any(default_matrix_contains_key(task_id, item) for item in task_keywords):
+            matches.append((lane_id, "exact_key"))
+        elif any(default_matrix_contains_key(variant, item) for item in variant_keywords):
+            matches.append((lane_id, "name_heuristic"))
+    return matches
+
+
+def default_matrix_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def default_matrix_unique(values: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for value in values:
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def default_matrix_cap(values: list[Any]) -> list[Any]:
+    return default_matrix_unique(values)[:MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS]
+
+
+def default_matrix_lane_match_method(methods: set[str]) -> str:
+    if "exact_key" in methods:
+        return "exact_key"
+    if "name_heuristic" in methods:
+        return "name_heuristic"
+    return "absent"
+
+
+def default_matrix_clamp_classification(classification: str, ceiling: str) -> tuple[str, bool]:
+    if classification == "reject/rework":
+        return classification, False
+    if ceiling not in DEFAULT_MATRIX_CLASSIFICATION_STRENGTH:
+        return classification, False
+    current_strength = DEFAULT_MATRIX_CLASSIFICATION_STRENGTH.get(classification, 0)
+    ceiling_strength = DEFAULT_MATRIX_CLASSIFICATION_STRENGTH[ceiling]
+    if current_strength > ceiling_strength:
+        return ceiling, True
+    return classification, False
+
+
+def default_matrix_token_evidence(token_values: list[float], pair_count: int, byte_proxy_positive: bool) -> str:
+    if pair_count and len(token_values) == pair_count and all(value > 0 for value in token_values):
+        return "measured_positive"
+    if token_values:
+        if any(value < 0 for value in token_values):
+            return "measured_regression"
+        return "measured_incomplete_or_mixed"
+    if byte_proxy_positive:
+        return "byte_proxy_only"
+    return "unavailable"
+
+
+def classify_default_matrix_lane(
+    lane_id: str,
+    pairs: list[dict[str, Any]],
+    methods: set[str],
+) -> dict[str, Any]:
+    lane = DEFAULT_MATRIX_LANE_BY_ID[lane_id]
+    policy_ceiling = str(lane["policy_ceiling"])
+    if not pairs:
+        classification = "experimental"
+        reason_codes = ["no_matched_lane_evidence"]
+        return {
+            "lane": lane_id,
+            "label": lane["label"],
+            "classification": classification,
+            "policy_ceiling": policy_ceiling,
+            "policy_clamped": False,
+            "lane_match_method": "absent",
+            "matched_task_count": 0,
+            "matched_tasks": [],
+            "matched_variants": [],
+            "quality_gate": "insufficient_evidence",
+            "quality_gates": [],
+            "token_evidence": "unavailable",
+            "shifted_cost_evidence": "unavailable",
+            "byte_proxy_evidence": "unavailable",
+            "matched_pair_claim_gates": {
+                "token_savings_claim_allowed": False,
+                "shifted_cost_claim_allowed": False,
+            },
+            "public_claim_allowed": False,
+            "reason_codes": reason_codes,
+            "claim_boundary": {
+                "classification_is_reporting_only": True,
+                "hosted_api_savings_claim_allowed": False,
+                "requires_report_claim_status_and_matched_pair_evidence": True,
+            },
+        }
+
+    quality_gates = sorted({str(pair.get("quality_gate") or "unknown") for pair in pairs})
+    quality_gate = quality_gates[0] if len(quality_gates) == 1 else "mixed"
+    token_values = [
+        value for value in (
+            default_matrix_number((pair.get("delta") or {}).get("token_savings_pct"))
+            for pair in pairs
+            if isinstance(pair.get("delta"), dict)
+        )
+        if value is not None
+    ]
+    cost_values = [
+        value for value in (
+            default_matrix_number((pair.get("delta") or {}).get("cost_savings_pct_with_shift"))
+            for pair in pairs
+            if isinstance(pair.get("delta"), dict)
+        )
+        if value is not None
+    ]
+    byte_after_deltas = [
+        value for value in (
+            default_matrix_number((pair.get("delta") or {}).get("bytes_after_total"))
+            for pair in pairs
+            if isinstance(pair.get("delta"), dict)
+        )
+        if value is not None
+    ]
+    byte_proxy_positive = bool(byte_after_deltas) and any(value < 0 for value in byte_after_deltas)
+    token_claim_gate = bool(pairs) and all(
+        isinstance(pair.get("claim_boundary"), dict)
+        and bool((pair.get("claim_boundary") or {}).get("token_savings_claim_allowed"))
+        for pair in pairs
+    )
+    shifted_cost_claim_gate = bool(pairs) and all(
+        isinstance(pair.get("claim_boundary"), dict)
+        and bool((pair.get("claim_boundary") or {}).get("shifted_cost_claim_allowed"))
+        for pair in pairs
+    )
+    reason_codes: list[str] = []
+    if any(gate != "pass" for gate in quality_gates):
+        classification = "reject/rework"
+        reason_codes.extend(f"quality_gate_{gate}" for gate in quality_gates if gate != "pass")
+    elif any(value < 0 for value in token_values):
+        classification = "reject/rework"
+        reason_codes.append("measured_token_regression")
+    elif any(value < 0 for value in cost_values):
+        classification = "reject/rework"
+        reason_codes.append("measured_shifted_cost_regression")
+    elif (
+        len(token_values) == len(pairs)
+        and all(value > 0 for value in token_values)
+        and len(cost_values) == len(pairs)
+        and all(value >= 0 for value in cost_values)
+        and token_claim_gate
+        and shifted_cost_claim_gate
+    ):
+        classification = "default-on"
+        reason_codes.append("quality_pass_measured_token_and_shifted_cost_non_regression")
+    elif len(token_values) == len(pairs) and all(value > 0 for value in token_values) and token_claim_gate:
+        classification = "advisory"
+        reason_codes.append("quality_pass_measured_token_savings_shifted_cost_unproven")
+    elif byte_proxy_positive:
+        classification = "advisory"
+        reason_codes.append("quality_pass_byte_proxy_only")
+    else:
+        classification = "experimental"
+        reason_codes.append("quality_pass_but_no_positive_measured_or_proxy_savings")
+
+    if lane_id == "optional_compression" and classification == "advisory" and not token_values:
+        classification = "experimental"
+        reason_codes.append("optional_compression_requires_provider_token_evidence_for_advisory")
+
+    classification, policy_clamped = default_matrix_clamp_classification(classification, policy_ceiling)
+    if policy_clamped:
+        reason_codes.append(f"policy_ceiling_{policy_ceiling}")
+
+    return {
+        "lane": lane_id,
+        "label": lane["label"],
+        "classification": classification,
+        "policy_ceiling": policy_ceiling,
+        "policy_clamped": policy_clamped,
+        "lane_match_method": default_matrix_lane_match_method(methods),
+        "matched_task_count": len({str(pair.get("task_id")) for pair in pairs}),
+        "matched_tasks": default_matrix_cap([pair.get("task_id") for pair in pairs if pair.get("task_id")]),
+        "matched_variants": default_matrix_cap([pair.get("variant") for pair in pairs if pair.get("variant")]),
+        "quality_gate": quality_gate,
+        "quality_gates": quality_gates,
+        "token_evidence": default_matrix_token_evidence(token_values, len(pairs), byte_proxy_positive),
+        "shifted_cost_evidence": (
+            "measured_non_regression"
+            if cost_values and len(cost_values) == len(pairs) and all(value >= 0 for value in cost_values)
+            else ("measured_regression" if any(value < 0 for value in cost_values) else "unavailable")
+        ),
+        "byte_proxy_evidence": (
+            "observed_positive" if byte_proxy_positive
+            else ("observed_non_positive" if byte_after_deltas else "unavailable")
+        ),
+        "matched_pair_claim_gates": {
+            "token_savings_claim_allowed": token_claim_gate,
+            "shifted_cost_claim_allowed": shifted_cost_claim_gate,
+        },
+        "public_claim_allowed": False,
+        "reason_codes": default_matrix_unique(reason_codes),
+        "claim_boundary": {
+            "classification_is_reporting_only": True,
+            "hosted_api_savings_claim_allowed": False,
+            "requires_report_claim_status_and_matched_pair_evidence": True,
+        },
+    }
+
+
+def build_default_matrix(report: dict[str, Any]) -> dict[str, Any]:
+    buckets: dict[str, list[dict[str, Any]]] = {lane_id: [] for lane_id in DEFAULT_MATRIX_LANE_IDS}
+    methods: dict[str, set[str]] = {lane_id: set() for lane_id in DEFAULT_MATRIX_LANE_IDS}
+    unmatched_variants: set[str] = set()
+    pairs = report.get("matched_pair_evidence") if isinstance(report.get("matched_pair_evidence"), list) else []
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        lane_matches = infer_default_matrix_lanes(pair)
+        if not lane_matches:
+            if pair.get("variant"):
+                unmatched_variants.add(str(pair.get("variant")))
+            continue
+        for lane_id, method in lane_matches:
+            buckets[lane_id].append(pair)
+            methods[lane_id].add(method)
+    lanes = [
+        classify_default_matrix_lane(lane_id, buckets[lane_id], methods[lane_id])
+        for lane_id in DEFAULT_MATRIX_LANE_IDS
+    ]
+    classification_counts = {
+        classification: sum(1 for lane in lanes if lane.get("classification") == classification)
+        for classification in DEFAULT_MATRIX_CLASSIFICATIONS
+    }
+    return {
+        "schema_version": DEFAULT_MATRIX_SCHEMA_VERSION,
+        "classification_set": list(DEFAULT_MATRIX_CLASSIFICATIONS),
+        "generated_from": "matched_pair_evidence",
+        "reporting_only": True,
+        "claim_status_observed": report.get("claim_status"),
+        "public_claim_allowed": False,
+        "claim_boundary": DEFAULT_MATRIX_CLAIM_BOUNDARY,
+        "lanes": lanes,
+        "summary": {
+            "lane_count": len(lanes),
+            "classification_counts": classification_counts,
+            "unmatched_variants": sorted(unmatched_variants)[:MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS],
+        },
+    }
 
 
 def markdown_value(value: Any) -> str:
@@ -2847,6 +3186,39 @@ def render_dashboard_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("| n/a | n/a | 0 | 0 | n/a | n/a |")
+    default_matrix = report.get("default_matrix") if isinstance(report.get("default_matrix"), dict) else None
+    if default_matrix is not None:
+        lines.extend([
+            "",
+            "## Default matrix",
+            "",
+            "| Lane | Classification | Matched Tasks | Quality Gate | Token Evidence | Public Claim | Reason |",
+            "| --- | --- | ---: | --- | --- | --- | --- |",
+        ])
+        lanes = default_matrix.get("lanes") if isinstance(default_matrix.get("lanes"), list) else []
+        for lane in lanes:
+            if not isinstance(lane, dict):
+                continue
+            reasons = lane.get("reason_codes") if isinstance(lane.get("reason_codes"), list) else []
+            lines.append(
+                "| "
+                + " | ".join([
+                    markdown_value(lane.get("lane")),
+                    markdown_value(lane.get("classification")),
+                    markdown_value(lane.get("matched_task_count")),
+                    markdown_value(lane.get("quality_gate")),
+                    markdown_value(lane.get("token_evidence")),
+                    markdown_value(lane.get("public_claim_allowed")),
+                    markdown_value(", ".join(str(item) for item in reasons[:3])),
+                ])
+                + " |"
+            )
+        boundary = default_matrix.get("claim_boundary")
+        if isinstance(boundary, dict):
+            lines.extend([
+                "",
+                f"- Matrix boundary: {markdown_value(boundary.get('reason'))}",
+            ])
     replay = report.get("replay_evidence") if isinstance(report.get("replay_evidence"), dict) else None
     if replay is not None:
         lines.extend([

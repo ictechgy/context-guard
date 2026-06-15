@@ -418,6 +418,7 @@ Read the report through its claim boundaries before writing any savings statemen
 - Successful baseline/variant runs are compared by real tokens and `cost_usd + external_cost_usd`; byte reductions stay proxy evidence.
 - Token-savings claims require `primary_tokens_measured` on both sides of a matched task.
 - `matched_pair_evidence` links each successful task bucket to the transform, measurement availability, quality gate, and claim boundary.
+- `default_matrix` classifies trimming, artifact escrow, tool pruning, cache advice, adaptive-k, and optional compression as `default-on`, `advisory`, `experimental`, or `reject/rework` from the same matched evidence. The matrix is report-only: it does not change runtime defaults or authorize hosted token/cost savings claims.
 - `wall_time_seconds`, `provider_cached_tokens`, and `provider_cached_tokens_measured` are diagnostic telemetry, not proof of ContextGuard-caused token or cost savings.
 - Optional `self_hosted_metrics` from provider payloads are stored as per-row JSONL ledger sidecars, kept out of CSV/report summaries, and must not be folded into hosted API token/cost savings claims.
 - If cost fields are zero or unavailable, the report can still mark token savings but will not claim shifted-cost savings.

@@ -26006,6 +26006,101 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertIsNone(pair["delta"]["token_savings_pct"])
                 self.assertEqual(pair["measurements"]["variant"]["primary_tokens"]["average"], 55.0)
 
+    def test_benchmark_default_matrix_rejects_regressions_and_clamps_advisory_lanes(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_default_matrix_{index}")
+                regression_report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "token_savings_04_long_log_analysis",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.10",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.10",
+                            "bytes_before": "1000",
+                            "bytes_after": "1000",
+                            "corrections": "0",
+                        },
+                        {
+                            "task_id": "token_savings_04_long_log_analysis",
+                            "variant": "trimmed",
+                            "success": "true",
+                            "total_tokens": "80",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.08",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.08",
+                            "bytes_before": "1000",
+                            "bytes_after": "600",
+                            "corrections": "1",
+                        },
+                    ],
+                    "baseline",
+                )
+                by_lane = {lane["lane"]: lane for lane in regression_report["default_matrix"]["lanes"]}
+                self.assertEqual(by_lane["trimming"]["classification"], "reject/rework")
+                self.assertIn("quality_gate_corrections_regression", by_lane["trimming"]["reason_codes"])
+                self.assertFalse(by_lane["trimming"]["public_claim_allowed"])
+
+                advisory_report = module.summarize_benchmark_rows(
+                    [
+                        {
+                            "task_id": "token_savings_10_cache_layout",
+                            "variant": "baseline",
+                            "success": "true",
+                            "total_tokens": "100",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.10",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.10",
+                            "bytes_before": "1000",
+                            "bytes_after": "1000",
+                            "corrections": "0",
+                        },
+                        {
+                            "task_id": "token_savings_10_cache_layout",
+                            "variant": "cache_advice_measured",
+                            "success": "true",
+                            "total_tokens": "70",
+                            "primary_tokens_measured": "true",
+                            "cost_usd": "0.07",
+                            "cost_measured": "true",
+                            "external_tokens": "0",
+                            "external_tokens_measured": "true",
+                            "external_cost_usd": "0",
+                            "external_cost_measured": "true",
+                            "total_cost_with_shift_usd": "0.07",
+                            "bytes_before": "1000",
+                            "bytes_after": "650",
+                            "corrections": "0",
+                        },
+                    ],
+                    "baseline",
+                )
+                by_lane = {lane["lane"]: lane for lane in advisory_report["default_matrix"]["lanes"]}
+                self.assertEqual(by_lane["cache_advice"]["classification"], "advisory")
+                self.assertEqual(by_lane["cache_advice"]["policy_ceiling"], "advisory")
+                self.assertTrue(by_lane["cache_advice"]["policy_clamped"])
+                self.assertEqual(by_lane["cache_advice"]["lane_match_method"], "exact_key")
+                self.assertEqual(by_lane["cache_advice"]["token_evidence"], "measured_positive")
+                self.assertFalse(advisory_report["default_matrix"]["public_claim_allowed"])
+
     def test_benchmark_report_example_documents_diagnostic_shape(self):
         sample = json.loads((ROOT / "docs" / "benchmark-report.example.json").read_text(encoding="utf-8"))
         self.assertEqual(sample["schema"], "context-guard-bench-report-v1")
@@ -26026,8 +26121,19 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
         self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
         self.assertEqual(pair["delta"]["proxy_measurement"], "chars_div_4_proxy_only")
+        matrix = sample["default_matrix"]
+        self.assertEqual(matrix["schema_version"], "contextguard.bench.default-matrix.v1")
+        self.assertEqual(
+            [lane["lane"] for lane in matrix["lanes"]],
+            ["trimming", "artifact_escrow", "tool_pruning", "cache_advice", "adaptive_k", "optional_compression"],
+        )
+        self.assertFalse(matrix["public_claim_allowed"])
+        self.assertTrue(matrix["claim_boundary"]["reporting_only"])
+        self.assertEqual(matrix["lanes"][0]["classification"], "default-on")
+        self.assertTrue(all(lane["classification"] in {"default-on", "advisory", "experimental", "reject/rework"} for lane in matrix["lanes"]))
         self.assertIn("byte_proxy_only applies only", sample["caveat"])
         self.assertIn("matched_pair_evidence[*].claim_boundary", sample["caveat"])
+        self.assertIn("default_matrix.lanes[*].claim_boundary", sample["caveat"])
         self.assertIn("diagnostic telemetry", sample["caveat"])
         self.assertIn("provider-cache discounts", sample["caveat"].lower())
         self.assertIn("report shape only", sample["caveat"].lower())
@@ -26501,10 +26607,43 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 )
                 self.assertEqual(replay_report["claim_status"], "replay_only_not_public_claim")
                 self.assertEqual(replay_report["public_claim_status"], "replay_only_not_public_claim")
+                replay_matrix = replay_report["default_matrix"]
+                self.assertEqual(replay_matrix["schema_version"], "contextguard.bench.default-matrix.v1")
+                self.assertEqual(replay_matrix["claim_status_observed"], "replay_only_not_public_claim")
+                self.assertFalse(replay_matrix["public_claim_allowed"])
+                self.assertTrue(replay_matrix["claim_boundary"]["reporting_only"])
+                self.assertTrue(all(not lane["public_claim_allowed"] for lane in replay_matrix["lanes"]))
                 report = module.summarize_benchmark_rows(rows, "baseline_full_context_fixture")
                 self.assertEqual(report["schema"], "context-guard-bench-report-v1")
                 self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
                 self.assertEqual(len(report["matched_pair_evidence"]), 12)
+                matrix = report["default_matrix"]
+                self.assertEqual(matrix["schema_version"], "contextguard.bench.default-matrix.v1")
+                self.assertEqual(
+                    [lane["lane"] for lane in matrix["lanes"]],
+                    [
+                        "trimming",
+                        "artifact_escrow",
+                        "tool_pruning",
+                        "cache_advice",
+                        "adaptive_k",
+                        "optional_compression",
+                    ],
+                )
+                by_lane = {lane["lane"]: lane for lane in matrix["lanes"]}
+                self.assertEqual(by_lane["trimming"]["classification"], "default-on")
+                self.assertEqual(by_lane["artifact_escrow"]["classification"], "default-on")
+                self.assertEqual(by_lane["tool_pruning"]["classification"], "default-on")
+                self.assertEqual(by_lane["cache_advice"]["classification"], "advisory")
+                self.assertTrue(by_lane["cache_advice"]["policy_clamped"])
+                self.assertEqual(by_lane["adaptive_k"]["classification"], "experimental")
+                self.assertEqual(by_lane["adaptive_k"]["lane_match_method"], "absent")
+                self.assertEqual(by_lane["optional_compression"]["classification"], "experimental")
+                self.assertEqual(set(matrix["classification_set"]), {"default-on", "advisory", "experimental", "reject/rework"})
+                self.assertFalse(matrix["public_claim_allowed"])
+                dashboard = module.render_dashboard_markdown(report)
+                self.assertIn("## Default matrix", dashboard)
+                self.assertIn("| Lane | Classification | Matched Tasks | Quality Gate | Token Evidence | Public Claim | Reason |", dashboard)
                 comparison = report["comparisons"][0]
                 self.assertEqual(comparison["matched_successful_task_count"], 12)
                 self.assertEqual(comparison["quality_gate"], "pass")
