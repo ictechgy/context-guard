@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import hashlib
+import importlib.machinery
+import importlib.util
 import ipaddress
 import json
 import math
@@ -64,6 +66,7 @@ LOCAL_PROXY_FORWARD_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forwa
 LOCAL_PROXY_DIAGNOSTIC_SCHEMA_VERSION = "contextguard.experiments.local-proxy-forward-diagnostic.v1"
 LOCAL_PROXY_READY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-ready.v1"
 LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION = "contextguard.experiments.local-proxy-external-forwarding-design.v1"
+LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION = "contextguard.experiments.local-proxy-response-sandbox.v1"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
 LOCAL_PROXY_DEFAULT_TARGET_HOST = "127.0.0.1"
@@ -76,6 +79,7 @@ LOCAL_PROXY_DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
 LOCAL_PROXY_MAX_FORWARD_BYTES = 2 * 1024 * 1024
 LOCAL_PROXY_DEFAULT_TIMEOUT_SECONDS = 5.0
 LOCAL_PROXY_MAX_TIMEOUT_SECONDS = 30.0
+LOCAL_PROXY_RESPONSE_SANDBOX_SCOPE = "local_proxy_sanitized_response_body"
 LOCAL_PROXY_EXTERNAL_ALLOWED_SCHEMES = {"https"}
 LOCAL_PROXY_EXTERNAL_CREDENTIAL_REDACTION_POLICY = "strip-sensitive-headers"
 LOCAL_PROXY_EXTERNAL_PROVIDER_EVIDENCE_BOUNDARY = "diagnostic-only-provider-measured-required"
@@ -2646,6 +2650,9 @@ def read_local_proxy_payload(args: argparse.Namespace) -> tuple[dict[str, Any], 
         "max_response_bytes",
         "timeout_seconds",
         "diagnostic_ledger_jsonl",
+        "response_sandbox",
+        "response_artifact_dir",
+        "show_artifact_paths",
     }
     ignored.extend(sanitize_self_hosted_ignored_key(key) for key in envelope if key not in allowed)
     return dict(envelope), {
@@ -3038,8 +3045,28 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "diagnostic_ledger_jsonl",
         "diagnostic_ledger_jsonl",
     )
+    response_sandbox, response_sandbox_valid = coalesce_local_proxy_bool(
+        args,
+        input_payload,
+        "response_sandbox",
+        "response_sandbox",
+    )
+    show_artifact_paths, show_artifact_paths_valid = coalesce_local_proxy_bool(
+        args,
+        input_payload,
+        "show_artifact_paths",
+        "show_artifact_paths",
+    )
+    response_artifact_dir_raw = coalesce_local_proxy_value(
+        args,
+        input_payload,
+        "response_artifact_dir",
+        "response_artifact_dir",
+    ) or str(DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR)
     diagnostic_ledger_path = sanitize_local_proxy_value(diagnostic_ledger_raw) if diagnostic_ledger_raw else None
     diagnostic_ledger_write_path = str(diagnostic_ledger_raw) if diagnostic_ledger_raw else None
+    response_artifact_dir = sanitize_local_proxy_value(response_artifact_dir_raw)
+    response_artifact_write_dir = str(response_artifact_dir_raw)
     bind_host = payload["bind"]["host"]
     target_host = payload["target"]["host"]
     bind_ip_literal = is_loopback_ip_literal(bind_host)
@@ -3070,6 +3097,7 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "listener_started": False,
         "traffic_forwarded": False,
         "stable_runtime_behavior_changed": False,
+        "response_sandbox_enabled": response_sandbox,
     })
     payload["forwarding"] = dict(payload["forwarding"])
     payload["forwarding"].update({
@@ -3094,6 +3122,30 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "bytes_written": 0,
         "reason": None if diagnostic_ledger_raw else "not_requested",
     }
+    payload["response_sandbox"] = {
+        "schema_version": LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION,
+        "enabled": response_sandbox,
+        "artifact_dir": response_artifact_dir,
+        "artifact_dir_sha256": hashlib.sha256(response_artifact_write_dir.encode("utf-8", errors="replace")).hexdigest(),
+        "show_artifact_paths": show_artifact_paths,
+        "exact_rehydration_commands": (
+            Path(response_artifact_write_dir).expanduser() == Path(DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR)
+            or show_artifact_paths
+        ),
+        "text_policy": "utf8_text_only",
+        "stored_scope": LOCAL_PROXY_RESPONSE_SANDBOX_SCOPE,
+        "downstream_envelope_only": True,
+        "performed": False,
+        "artifact_id": None,
+        "artifact_handle": None,
+        "sanitized_text_sha256": None,
+        "envelope_bytes": 0,
+        "claim_boundary": {
+            "local_only": True,
+            "stored_content_is_sanitized_utf8_text": True,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+        },
+    }
     payload["client_auth"] = {
         "required": True,
         "type": "nonce_header",
@@ -3104,6 +3156,8 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         "nonce_forwarded_upstream": False,
     }
     payload["_diagnostic_ledger_write_path"] = diagnostic_ledger_write_path
+    payload["_response_artifact_dir_write_path"] = response_artifact_write_dir
+    payload["_response_artifact_show_paths"] = show_artifact_paths
     payload["forward_result"] = None
 
     blockers = list(payload["review_plan"]["readiness_blockers"])
@@ -3135,6 +3189,10 @@ def local_proxy_forward_payload(args: argparse.Namespace) -> dict[str, Any]:
         blockers.append("invalid_max_response_bytes")
     if not timeout_valid:
         blockers.append("invalid_timeout_seconds")
+    if not response_sandbox_valid:
+        blockers.append("invalid_response_sandbox")
+    if not show_artifact_paths_valid:
+        blockers.append("invalid_show_artifact_paths")
     blockers = list(dict.fromkeys(blockers))
     payload["review_plan"]["readiness_blockers"] = blockers
     payload["review_plan"]["next_steps"] = [
@@ -3173,6 +3231,10 @@ def local_proxy_forward_diagnostic_row(payload: dict[str, Any]) -> dict[str, Any
             "upstream_status": result.get("upstream_status"),
             "upstream_response_bytes": result.get("upstream_response_bytes", 0),
             "body_persisted": False,
+            "response_sandboxed": bool(result.get("response_sandboxed")),
+            "artifact_id": result.get("response_artifact_id"),
+            "artifact_handle": result.get("response_artifact_handle"),
+            "sanitized_text_sha256": result.get("sanitized_text_sha256"),
         },
         "runtime_limits": payload["runtime_limits"],
         "network_actions": payload["network_actions"],
@@ -3186,6 +3248,7 @@ def local_proxy_forward_diagnostic_row(payload: dict[str, Any]) -> dict[str, Any
             "dns_lookup_attempted": False,
             "connect_tunneling_allowed": False,
             "https_mitm_allowed": False,
+            "response_sandboxed": bool(result.get("response_sandboxed")),
             "hosted_api_token_savings_claim_allowed": False,
             "hosted_api_cost_savings_claim_allowed": False,
         },
@@ -3264,6 +3327,222 @@ def local_proxy_response_headers(headers: Any) -> list[tuple[str, str]]:
     return result
 
 
+_LOCAL_PROXY_ARTIFACT_MODULE: Any | None = None
+
+
+def load_local_proxy_artifact_module() -> Any:
+    """Load the artifact escrow helper from kit source or packaged plugin bin.
+
+    The source tree exposes ``context_escrow.py`` while the packaged plugin ships
+    the same implementation as an extensionless executable named
+    ``context-guard-artifact``.  Load either without adding non-stdlib runtime
+    dependencies to the experimental registry.
+    """
+    global _LOCAL_PROXY_ARTIFACT_MODULE
+    if _LOCAL_PROXY_ARTIFACT_MODULE is not None:
+        return _LOCAL_PROXY_ARTIFACT_MODULE
+    try:
+        import context_escrow as artifact_module  # type: ignore[import-not-found]
+    except ImportError:
+        current_dir = Path(__file__).resolve().parent
+        candidates = [
+            current_dir / "context_escrow.py",
+            current_dir / "context-guard-artifact",
+        ]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            loader = importlib.machinery.SourceFileLoader("_context_guard_local_proxy_artifact", str(candidate))
+            spec = importlib.util.spec_from_loader("_context_guard_local_proxy_artifact", loader)
+            if spec is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            _LOCAL_PROXY_ARTIFACT_MODULE = module
+            return module
+        raise RegistryError("could not load local artifact helper for response sandbox")
+    _LOCAL_PROXY_ARTIFACT_MODULE = artifact_module
+    return artifact_module
+
+
+def local_proxy_response_text_policy(body: bytes, content_type: str) -> tuple[str | None, str | None, str]:
+    """Return decoded UTF-8 text for response sandbox or a block reason.
+
+    G003 intentionally defines exact rehydration as exact sanitized UTF-8 text
+    retrieval, not original arbitrary HTTP bytes.
+    """
+    base_content_type = content_type.split(";", 1)[0].strip().lower()
+    text_like = (
+        not base_content_type
+        or base_content_type.startswith("text/")
+        or base_content_type in {
+            "application/json",
+            "application/javascript",
+            "application/xml",
+            "application/x-ndjson",
+            "application/problem+json",
+        }
+        or base_content_type.endswith("+json")
+        or base_content_type.endswith("+xml")
+    )
+    binary_like = (
+        base_content_type.startswith("image/")
+        or base_content_type.startswith("audio/")
+        or base_content_type.startswith("video/")
+        or base_content_type in {
+            "application/octet-stream",
+            "application/pdf",
+            "application/zip",
+            "application/gzip",
+        }
+    )
+    if binary_like or not text_like:
+        return None, "response_sandbox_text_required", base_content_type or "unknown"
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, "response_sandbox_text_required", base_content_type or "unknown"
+    if any((ord(ch) < 32 and ch not in "\n\r\t") or ord(ch) == 127 for ch in text):
+        return None, "response_sandbox_text_required", base_content_type or "unknown"
+    return text, None, base_content_type or "none"
+
+
+def local_proxy_store_response_artifact(
+    response_text: str,
+    *,
+    artifact_dir: str,
+    show_artifact_paths: bool,
+    upstream_status: int,
+) -> dict[str, Any]:
+    artifact = load_local_proxy_artifact_module()
+    directory = artifact.normalize_allowed_first_absolute_symlink(Path(artifact_dir).expanduser())
+    sanitized_text, redacted_lines = artifact.sanitize_text(response_text, show_paths=show_artifact_paths)
+    content_bytes = len(sanitized_text.encode("utf-8", errors="replace"))
+    content_sha = hashlib.sha256(sanitized_text.encode("utf-8", errors="replace")).hexdigest()
+    command_preview = f"local-proxy response sandbox upstream_status={upstream_status}"
+    id_basis = json.dumps(
+        {
+            "content_sha256": content_sha,
+            "command_preview": command_preview,
+            "scope": LOCAL_PROXY_RESPONSE_SANDBOX_SCOPE,
+        },
+        sort_keys=True,
+    )
+    artifact_id = hashlib.sha256(id_basis.encode("utf-8")).hexdigest()[:20]
+    content_path, meta_path = artifact.artifact_paths(directory, artifact_id)
+    total_lines = sanitized_text.count("\n") + (1 if sanitized_text and not sanitized_text.endswith("\n") else 0)
+    content_type = artifact.classify_content_type(sanitized_text)
+    strategy = artifact.recommended_strategy(content_type)
+    metadata: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "created_at": int(time.time()),
+        "command_preview": command_preview,
+        "content_type": content_type,
+        "input": {
+            "bytes_read": len(response_text.encode("utf-8", errors="replace")),
+            "truncated": False,
+            "max_bytes": LOCAL_PROXY_MAX_FORWARD_BYTES,
+        },
+        "stored_output": {
+            "bytes": content_bytes,
+            "lines": total_lines,
+            "sha256": content_sha,
+            "sanitized_text_sha256": content_sha,
+            "content_file": content_path.name,
+            "metadata_file": meta_path.name,
+            "scope": LOCAL_PROXY_RESPONSE_SANDBOX_SCOPE,
+        },
+        "digest": artifact.build_digest(
+            sanitized_text,
+            artifact_id=artifact_id,
+            redacted_lines=redacted_lines,
+            raw_dir=artifact_dir,
+            show_paths=show_artifact_paths,
+        ),
+        "retrieval": {
+            "strategy": strategy,
+            "deterministic": True,
+            "hints": artifact.build_retrieval_hints(
+                artifact_id,
+                sanitized_text,
+                content_type=content_type,
+                strategy=strategy,
+                total_lines=total_lines,
+                raw_dir=artifact_dir,
+                show_paths=show_artifact_paths,
+            ),
+        },
+    }
+    artifact.shrink_digest_for_metadata_cap(metadata)
+    artifact.write_private_text(content_path, sanitized_text)
+    artifact.write_private_text(meta_path, artifact.metadata_json_text(metadata))
+    return artifact.receipt_for(metadata, raw_dir=artifact_dir, show_paths=show_artifact_paths)
+
+
+def minimized_local_proxy_rehydration(receipt: dict[str, Any]) -> dict[str, Any]:
+    sandbox = receipt.get("output_sandbox")
+    rehydration = sandbox.get("rehydration") if isinstance(sandbox, dict) else None
+    commands = rehydration.get("commands") if isinstance(rehydration, dict) else None
+    kept_commands: list[dict[str, Any]] = []
+    if isinstance(commands, list):
+        for command in commands[:5]:
+            if not isinstance(command, dict) or not isinstance(command.get("cli"), str):
+                continue
+            kept_commands.append({
+                key: command[key]
+                for key in ("type", "selector", "cli", "exact", "note")
+                if key in command
+            })
+    return {
+        "commands": kept_commands,
+        "dir_argument": rehydration.get("dir_argument") if isinstance(rehydration, dict) else None,
+        "exact_commands": rehydration.get("exact_commands") if isinstance(rehydration, dict) else None,
+    }
+
+
+def local_proxy_response_sandbox_envelope(
+    *,
+    receipt: dict[str, Any],
+    upstream_status: int,
+    upstream_response_bytes: int,
+    content_type: str,
+) -> dict[str, Any]:
+    sandbox = receipt.get("output_sandbox")
+    handle = sandbox.get("handle") if isinstance(sandbox, dict) else f"contextguard-artifact:{receipt.get('artifact_id')}"
+    stored = receipt.get("stored_output")
+    stored_output = stored if isinstance(stored, dict) else {}
+    return {
+        "schema_version": LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION,
+        "status": "response_sandboxed",
+        "mode": "local_proxy_response_sandbox",
+        "artifact_id": receipt.get("artifact_id"),
+        "artifact_handle": handle,
+        "upstream": {
+            "status": upstream_status,
+            "response_bytes": upstream_response_bytes,
+            "content_type": content_type,
+        },
+        "stored_output": {
+            "scope": LOCAL_PROXY_RESPONSE_SANDBOX_SCOPE,
+            "bytes": stored_output.get("bytes"),
+            "lines": stored_output.get("lines"),
+            "sanitized_text_sha256": stored_output.get("sanitized_text_sha256") or stored_output.get("sha256"),
+        },
+        "rehydration": minimized_local_proxy_rehydration(receipt),
+        "agent_guidance": [
+            "Keep this compact local proxy response envelope in context instead of the full response body.",
+            "Use rehydration.commands to retrieve exact sanitized UTF-8 response slices before relying on omitted details.",
+        ],
+        "claim_boundary": {
+            "local_only": True,
+            "stored_content_is_sanitized_utf8_text": True,
+            "original_http_bytes_rehydration_available": False,
+            "hosted_api_token_or_cost_savings_claim_allowed": False,
+            "provider_measured_matched_tasks_required_for_hosted_claims": True,
+        },
+    }
+
+
 def write_local_proxy_ready_file(path: str | None, *, bind_host: str, bind_port: int, auth_nonce: str) -> None:
     if not path:
         return
@@ -3300,6 +3579,10 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
     max_request_bytes = int(limits["max_request_bytes"])
     max_response_bytes = int(limits["max_response_bytes"])
     timeout_seconds = float(limits["timeout_seconds"])
+    response_sandbox = payload.get("response_sandbox")
+    response_sandbox_enabled = bool(response_sandbox.get("enabled")) if isinstance(response_sandbox, dict) else False
+    response_artifact_dir = str(payload.get("_response_artifact_dir_write_path") or DEFAULT_CONTEXT_DIFF_ARTIFACT_DIR)
+    response_show_artifact_paths = bool(payload.get("_response_artifact_show_paths"))
     auth_nonce = secrets.token_urlsafe(32)
     server_result: dict[str, Any] = {
         "served_once": False,
@@ -3321,6 +3604,13 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
         "client_auth_delivered": False,
         "client_auth_nonce_forwarded": False,
         "auth_failures": 0,
+        "response_sandbox_requested": response_sandbox_enabled,
+        "response_sandboxed": False,
+        "response_artifact_id": None,
+        "response_artifact_handle": None,
+        "response_envelope_bytes": 0,
+        "sanitized_text_sha256": None,
+        "response_text_policy": "utf8_text_only" if response_sandbox_enabled else None,
     }
 
     def finish_blocked(
@@ -3416,6 +3706,9 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
             server_result.update(local_proxy_request_target_meta(self.path))
             if not self.authorize_request():
                 return
+            if response_sandbox_enabled and self.command != "GET":
+                finish_blocked(self, 405, "response_sandbox_get_only")
+                return
             if local_proxy_secret_like(self.path):
                 finish_blocked(self, 400, "secret_like_request_target")
                 return
@@ -3462,14 +3755,54 @@ def serve_local_proxy_once(payload: dict[str, Any], *, ready_file: str | None = 
                 if local_proxy_bytes_secret_like(response_body):
                     finish_blocked(self, 502, "upstream_response_sensitive_content_blocked")
                     return
-                self.send_response(response.status, response.reason)
-                for header_name, header_value in local_proxy_response_headers(response.headers):
-                    self.send_header(header_name, header_value)
-                self.send_header("Content-Length", str(len(response_body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(response_body)
+                if response_sandbox_enabled:
+                    content_type = str(response.headers.get("Content-Type", ""))
+                    response_text, blocked_reason, normalized_content_type = local_proxy_response_text_policy(response_body, content_type)
+                    if response_text is None:
+                        finish_blocked(self, 502, blocked_reason or "response_sandbox_text_required")
+                        return
+                    try:
+                        receipt = local_proxy_store_response_artifact(
+                            response_text,
+                            artifact_dir=response_artifact_dir,
+                            show_artifact_paths=response_show_artifact_paths,
+                            upstream_status=int(response.status),
+                        )
+                        envelope = local_proxy_response_sandbox_envelope(
+                            receipt=receipt,
+                            upstream_status=int(response.status),
+                            upstream_response_bytes=len(response_body),
+                            content_type=normalized_content_type,
+                        )
+                        envelope_body = json.dumps(envelope, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+                    except (OSError, RuntimeError, ValueError, RegistryError, json.JSONDecodeError) as exc:
+                        finish_blocked(self, 502, "response_sandbox_artifact_store_failed")
+                        server_result["error"] = sanitize_local_proxy_value(str(exc))
+                        return
+                    self.send_response(response.status, response.reason)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(envelope_body)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(envelope_body)
+                    stored = receipt.get("stored_output") if isinstance(receipt, dict) else {}
+                    sandbox = receipt.get("output_sandbox") if isinstance(receipt, dict) else {}
+                    server_result.update({
+                        "response_sandboxed": True,
+                        "response_artifact_id": receipt.get("artifact_id"),
+                        "response_artifact_handle": sandbox.get("handle") if isinstance(sandbox, dict) else None,
+                        "response_envelope_bytes": len(envelope_body),
+                        "sanitized_text_sha256": stored.get("sanitized_text_sha256") or stored.get("sha256") if isinstance(stored, dict) else None,
+                    })
+                else:
+                    self.send_response(response.status, response.reason)
+                    for header_name, header_value in local_proxy_response_headers(response.headers):
+                        self.send_header(header_name, header_value)
+                    self.send_header("Content-Length", str(len(response_body)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        self.wfile.write(response_body)
                 server_result.update({
                     "served_once": True,
                     "forwarded": True,
@@ -3562,6 +3895,12 @@ def command_serve_local_proxy(args: argparse.Namespace) -> int:
         payload["network_actions"]["external_services_called"] = False
         payload["policy"]["listener_started"] = bool(result.get("listener_started"))
         payload["policy"]["traffic_forwarded"] = bool(result["forwarded"])
+        if isinstance(payload.get("response_sandbox"), dict):
+            payload["response_sandbox"]["performed"] = bool(result.get("response_sandboxed"))
+            payload["response_sandbox"]["artifact_id"] = result.get("response_artifact_id")
+            payload["response_sandbox"]["artifact_handle"] = result.get("response_artifact_handle")
+            payload["response_sandbox"]["sanitized_text_sha256"] = result.get("sanitized_text_sha256")
+            payload["response_sandbox"]["envelope_bytes"] = result.get("response_envelope_bytes", 0)
         if result["forwarded"]:
             payload["status"] = "served_once"
         elif result.get("blocked_reason") == "ready_file_write_failed":
@@ -3571,6 +3910,8 @@ def command_serve_local_proxy(args: argparse.Namespace) -> int:
             payload["status"] = "blocked_request"
     maybe_write_local_proxy_forward_diagnostic(payload)
     payload.pop("_diagnostic_ledger_write_path", None)
+    payload.pop("_response_artifact_dir_write_path", None)
+    payload.pop("_response_artifact_show_paths", None)
     if args.json:
         emit_json(payload)
     else:
@@ -4347,6 +4688,21 @@ def build_parser() -> argparse.ArgumentParser:
     serve_local_proxy.add_argument(
         "--diagnostic-ledger-jsonl",
         help="Append one shifted-cost diagnostic JSONL row only after a successful loopback forwarded request.",
+    )
+    serve_local_proxy.add_argument(
+        "--response-sandbox",
+        action="store_true",
+        help="Return a compact JSON response envelope and store the sanitized upstream response body as a local artifact receipt.",
+    )
+    serve_local_proxy.add_argument(
+        "--response-artifact-dir",
+        default=None,
+        help="Artifact directory for --response-sandbox receipts; defaults to .context-guard/artifacts.",
+    )
+    serve_local_proxy.add_argument(
+        "--show-artifact-paths",
+        action="store_true",
+        help="Include exact local artifact paths in response-sandbox rehydration commands; otherwise custom dirs are redacted.",
     )
     serve_local_proxy.add_argument("--api-key", help="Blocked/redacted API key material; never persisted or emitted raw.")
     serve_local_proxy.add_argument("--authorization-header", help="Blocked/redacted Authorization header; never persisted or emitted raw.")

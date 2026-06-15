@@ -4,6 +4,7 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added explicit `context-guard experiments serve local-proxy --response-sandbox` mode that stores safe UTF-8 loopback upstream responses as sanitized local artifact receipts and returns a compact JSON rehydration envelope instead of the raw body; binary/sensitive/oversized/blocked responses are not artifacted, and the mode remains local-only with no hosted token/cost savings claim.
 - Added an agent-facing `context-guard-artifact receipt` / `output_sandbox` envelope so large sanitized command outputs carry a stable `contextguard-artifact:<id>` handle, compact local-only summary, and exact rehydration commands without exposing custom artifact paths by default.
 - Added `context-guard-bench --evidence-jsonl` replay and `--dashboard-md` rendering so synthetic/local benchmark evidence can regenerate CSV/report/dashboard artifacts while remaining non-public-claim-eligible unless provider-export provenance is complete.
 - Extended Batch 1 token-savings advisory reports with cache-score amortization risk fields, tool-prune deferred-schema proxy accounting, and a benchmark measurement-baseline contract while preserving local-only/no-savings-claim boundaries.
