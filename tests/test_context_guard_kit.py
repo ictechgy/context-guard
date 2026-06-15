@@ -13420,7 +13420,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn(top_receipt["cli"], receipt["suggested_queries"])
                     self.assertEqual(receipt["suggested_queries"][0], top_receipt["cli"])
                     self.assertGreaterEqual(receipt["digest"]["redacted_lines"], 1)
-                    self.assertIn("context-guard-artifact get", "\n".join(receipt["available_queries"]))
+                    self.assertIn("context-guard-artifact", "\n".join(receipt["available_queries"]))
+                    self.assertIn(" get ", "\n".join(receipt["available_queries"]))
                     self.assertNotIn("ghp_A", proc.stdout)
                     self.assertNotIn("ghp_B", proc.stdout)
                     self.assertNotIn(generic_openai_key, proc.stdout)
@@ -13536,6 +13537,98 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     )
                     self.assertNotEqual(tampered.returncode, 0)
                     self.assertIn("checksum mismatch", tampered.stderr)
+
+    def test_artifact_output_sandbox_receipt_rehydrates_without_raw_custom_dir_by_default(self):
+        secret_dir = "token=ghp_" + ("D" * 36)
+        raw_lines = [f"line {index}" for index in range(1, 31)]
+        raw_lines[14] = "MIDDLE_ONLY exact detail"
+        raw = "\n".join(raw_lines) + "\n"
+        for script in ARTIFACT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    artifact_dir = Path(tmp) / secret_dir / "artifacts"
+                    store = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store", "--json"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt = json.loads(store.stdout)
+                    artifact_id = receipt["artifact_id"]
+                    sandbox = receipt["output_sandbox"]
+                    self.assertEqual(sandbox["schema_version"], "contextguard.artifact.output-sandbox.v1")
+                    self.assertEqual(sandbox["mode"], "local_artifact_receipt")
+                    self.assertEqual(sandbox["handle"], f"contextguard-artifact:{artifact_id}")
+                    self.assertEqual(sandbox["artifact_id"], artifact_id)
+                    self.assertTrue(sandbox["claim_boundary"]["local_only"])
+                    self.assertFalse(sandbox["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
+                    self.assertEqual(sandbox["rehydration"]["dir_argument"], "redacted")
+                    self.assertFalse(sandbox["rehydration"]["exact_commands"])
+                    self.assertIn("--dir <artifact_dir>", json.dumps(sandbox, ensure_ascii=False))
+                    self.assertNotIn(secret_dir, store.stdout)
+                    self.assertNotIn("MIDDLE_ONLY exact detail", store.stdout)
+
+                    store_text = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "store"],
+                        input=raw,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn(f"handle=contextguard-artifact:{artifact_id}", store_text.stdout)
+                    self.assertIn("query=context-guard-artifact --dir <artifact_dir> get", store_text.stdout)
+                    self.assertIn("rehydrate=context-guard-artifact --dir <artifact_dir> get", store_text.stdout)
+                    self.assertNotIn(secret_dir, store_text.stdout)
+                    self.assertNotIn("MIDDLE_ONLY exact detail", store_text.stdout)
+
+                    receipt_view = subprocess.run(
+                        [sys.executable, str(script), "--dir", str(artifact_dir), "receipt", artifact_id, "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_payload = json.loads(receipt_view.stdout)
+                    self.assertEqual(receipt_payload["output_sandbox"]["handle"], f"contextguard-artifact:{artifact_id}")
+                    self.assertNotIn(secret_dir, receipt_view.stdout)
+                    self.assertNotIn("MIDDLE_ONLY exact detail", receipt_view.stdout)
+
+                    shown = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "receipt",
+                            artifact_id,
+                            "--show-paths",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    shown_payload = json.loads(shown.stdout)
+                    self.assertEqual(shown_payload["output_sandbox"]["rehydration"]["dir_argument"], "included")
+                    self.assertTrue(shown_payload["output_sandbox"]["rehydration"]["exact_commands"])
+                    self.assertIn(str(artifact_dir), shown.stdout)
+
+                    get = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            artifact_id,
+                            "--lines",
+                            "15:15",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(get.stdout, "MIDDLE_ONLY exact detail\n")
 
     def test_artifact_escrow_receipt_metadata_stays_under_read_cap(self):
         raw = "".join(f"ERROR unique {i} {'😀' * 1900}\n" for i in range(12))
@@ -13916,12 +14009,20 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             [sys.executable, str(PLUGIN_BIN / "context-guard-artifact"), "search", "--help"],
             [sys.executable, str(KIT_DIR / "context_guard_cli.py"), "artifact", "search", "--help"],
             [sys.executable, str(PLUGIN_BIN / "context-guard"), "artifact", "search", "--help"],
+            [sys.executable, str(KIT_DIR / "context_escrow.py"), "receipt", "--help"],
+            [sys.executable, str(PLUGIN_BIN / "context-guard-artifact"), "receipt", "--help"],
+            [sys.executable, str(KIT_DIR / "context_guard_cli.py"), "artifact", "receipt", "--help"],
+            [sys.executable, str(PLUGIN_BIN / "context-guard"), "artifact", "receipt", "--help"],
         ]:
             with self.subTest(command=command):
                 proc = subprocess.run(command, text=True, capture_output=True, check=True)
                 output = proc.stdout + proc.stderr
-                self.assertIn("literal", output)
-                self.assertIn("--max-matches", output)
+                if "search" in command:
+                    self.assertIn("literal", output)
+                    self.assertIn("--max-matches", output)
+                else:
+                    self.assertIn("receipt", output)
+                    self.assertIn("--json", output)
 
         raw = "first\nlegacy ERROR hit\nthird\n"
         for script in ARTIFACT_SCRIPTS:
@@ -14491,9 +14592,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(stored["scope"], "sanitized_full_output")
                     self.assertEqual(stored["bytes"], len(expected_sanitized.encode("utf-8")))
                     self.assertEqual(stored["sha256"], hashlib.sha256(expected_sanitized.encode("utf-8")).hexdigest())
+                    sandbox = receipt["output_sandbox"]
+                    self.assertEqual(sandbox["schema_version"], "contextguard.artifact.output-sandbox.v1")
+                    self.assertEqual(sandbox["handle"], f"contextguard-artifact:{artifact_id}")
+                    self.assertFalse(sandbox["claim_boundary"]["hosted_api_token_or_cost_savings_claim_allowed"])
                     self.assertTrue(receipt["exact_reexpand"]["cli"].startswith("context-guard-artifact "))
-                    self.assertIn("--dir", receipt["exact_reexpand"]["cli"])
-                    self.assertIn(str(artifact_dir), receipt["exact_reexpand"]["cli"])
+                    self.assertIn("--dir <artifact_dir>", receipt["exact_reexpand"]["cli"])
+                    self.assertNotIn(str(artifact_dir), receipt["exact_reexpand"]["cli"])
+                    self.assertFalse(receipt["exact_reexpand"]["exact"])
                     self.assertIn("--lines 1:3", receipt["exact_reexpand"]["cli"])
                     self.assertIn("--max-lines 3", receipt["exact_reexpand"]["cli"])
 
@@ -14528,7 +14634,26 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertNotIn(secret, query.stdout)
                     self.assertNotIn(raw_path, query.stdout)
 
-                    emitted_parts = shlex.split(receipt["exact_reexpand"]["cli"])
+                    receipt_view = subprocess.run(
+                        [
+                            sys.executable,
+                            str(artifact_script),
+                            "--dir",
+                            str(artifact_dir),
+                            "receipt",
+                            artifact_id,
+                            "--show-paths",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    receipt_view_data = json.loads(receipt_view.stdout)
+                    commands = receipt_view_data["output_sandbox"]["rehydration"]["commands"]
+                    line_cli = next(item["cli"] for item in commands if item["type"] == "lines")
+                    self.assertIn(str(artifact_dir), line_cli)
+                    emitted_parts = shlex.split(line_cli)
                     emitted_query = subprocess.run(
                         [sys.executable, str(artifact_script), *emitted_parts[1:]],
                         text=True,
@@ -14624,15 +14749,26 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     receipt = data["artifact_receipt"]
                     self.assertTrue(receipt["stored"])
                     self.assertRegex(receipt["artifact_id"], r"^[a-f0-9]{20}$")
-                    self.assertTrue(receipt["exact_reexpand"]["available"])
-                    emitted_parts = shlex.split(receipt["exact_reexpand"]["cli"])
-                    emitted_query = subprocess.run(
-                        [sys.executable, str(artifact_script), *emitted_parts[1:]],
+                    self.assertIn("output_sandbox", receipt)
+                    self.assertRegex(receipt["output_sandbox"]["handle"], r"^contextguard-artifact:[a-f0-9]{20}$")
+                    self.assertIn("rehydration", receipt["output_sandbox"])
+                    self.assertIn("--dir <artifact_dir>", json.dumps(receipt, ensure_ascii=False))
+                    direct_query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(artifact_script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            receipt["artifact_id"],
+                            "--lines",
+                            "100:100",
+                        ],
                         text=True,
                         capture_output=True,
                         check=True,
                     )
-                    self.assertIn("ERROR noisy line 99", emitted_query.stdout)
+                    self.assertIn("ERROR noisy line 99", direct_query.stdout)
 
     def test_trim_artifact_receipt_survives_tight_markdown_budget(self):
         code = "for i in range(50): print('ERROR noisy line ' + str(i) + ' ' + ('x' * 100))\n"
@@ -14664,16 +14800,25 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertLessEqual(len(proc.stdout), 500)
                     self.assertIn("digest capped", proc.stdout)
                     self.assertRegex(proc.stdout, r"artifact_receipt: stored=true id=[a-f0-9]{20}")
-                    match = re.search(r"- exact_reexpand: `(.*?)`", proc.stdout)
+                    self.assertIn("handle=contextguard-artifact:", proc.stdout)
+                    match = re.search(r"artifact_receipt: stored=true id=([a-f0-9]{20})", proc.stdout)
                     self.assertIsNotNone(match)
-                    emitted_parts = shlex.split(match.group(1))
-                    emitted_query = subprocess.run(
-                        [sys.executable, str(artifact_script), *emitted_parts[1:]],
+                    direct_query = subprocess.run(
+                        [
+                            sys.executable,
+                            str(artifact_script),
+                            "--dir",
+                            str(artifact_dir),
+                            "get",
+                            match.group(1),
+                            "--lines",
+                            "50:50",
+                        ],
                         text=True,
                         capture_output=True,
                         check=True,
                     )
-                    self.assertIn("ERROR noisy line 49", emitted_query.stdout)
+                    self.assertIn("ERROR noisy line 49", direct_query.stdout)
 
     def test_trim_missing_command_returns_clean_127(self):
         proc = subprocess.run(
@@ -17218,6 +17363,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     hook_out = data["hookSpecificOutput"]
                     self.assertEqual(hook_out["hookEventName"], "PostToolUse")
                     self.assertIn("/clear", hook_out["additionalContext"])
+                    self.assertIn("contextguard-artifact:<id>", hook_out["additionalContext"])
+                    self.assertIn("context-guard-artifact receipt/get/search", hook_out["additionalContext"])
                     state_files = list((cwd / ".context-guard").glob("failures-*.json"))
                     self.assertEqual(len(state_files), 1)
                     mode = state_files[0].stat().st_mode & 0o777

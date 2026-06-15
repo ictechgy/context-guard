@@ -92,12 +92,16 @@ NUDGE_TEXT = (
     "prompt cache 도 매 retry 마다 재워밍됨을 의미합니다. "
     "재시도 전에 사용자에게 `/clear` 또는 `/compact focus on …` 으로 세션을 정리한 뒤 "
     "재현 명령·기대 결과·금지 사항을 더 좁혀 다시 prompt 하도록 안내하거나, "
-    "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 더 작은 재현)을 제안하세요."
+    "근본적으로 다른 방향(다른 모듈 / 검증 명령 / 더 작은 재현)을 제안하세요. "
+    "직전 출력에 artifact_receipt 또는 contextguard-artifact:<id> 핸들이 있으면, 전체 로그를 다시 붙여넣거나 "
+    "동일한 broad 명령을 재실행하기 전에 context-guard-artifact receipt/get/search 로 필요한 줄·패턴만 "
+    "정확히 rehydrate 하도록 우선 제안하세요."
 )
 STRATEGY_SWITCH_TEXT = (
     " Strategy-switch signal: the same failure direction has now repeated at least three times. "
     "Stop retrying the identical command path; summarize the invariant failure, choose a different hypothesis "
-    "or smaller reproducer, and only rerun after changing code, inputs, or diagnostic scope."
+    "or smaller reproducer, rehydrate exact artifact receipt slices when available, "
+    "and only rerun after changing code, inputs, or diagnostic scope."
 )
 
 

@@ -272,7 +272,13 @@ def store_sanitized_artifact_receipt(
             "metadata_file": meta_path.name,
             "scope": "sanitized_full_output",
         },
-        "digest": artifact.build_digest(sanitized_text, artifact_id=artifact_id, redacted_lines=redacted_lines),
+        "digest": artifact.build_digest(
+            sanitized_text,
+            artifact_id=artifact_id,
+            redacted_lines=redacted_lines,
+            raw_dir=str(getattr(args, "artifact_dir", ".context-guard/artifacts")),
+            show_paths=bool(getattr(args, "show_paths", False)),
+        ),
         "retrieval": {
             "strategy": strategy,
             "deterministic": True,
@@ -282,13 +288,17 @@ def store_sanitized_artifact_receipt(
                 content_type=content_type,
                 strategy=strategy,
                 total_lines=total_lines,
+                raw_dir=str(getattr(args, "artifact_dir", ".context-guard/artifacts")),
+                show_paths=bool(getattr(args, "show_paths", False)),
             ),
         },
     }
     artifact.shrink_digest_for_metadata_cap(metadata)
     artifact.write_private_text(content_path, sanitized_text)
     artifact.write_private_text(meta_path, artifact.metadata_json_text(metadata))
-    receipt = artifact.receipt_for(metadata)
+    raw_artifact_dir = str(getattr(args, "artifact_dir", ".context-guard/artifacts"))
+    show_artifact_paths = bool(getattr(args, "show_paths", False))
+    receipt = artifact.receipt_for(metadata, raw_dir=raw_artifact_dir, show_paths=show_artifact_paths)
     query_line_cap = int(getattr(artifact, "MAX_QUERY_LINES", 5_000))
     query_char_cap = 1_000_000
     content_chars = len(sanitized_text)
@@ -301,21 +311,19 @@ def store_sanitized_artifact_receipt(
         "reason": "artifact query cap exceeded; use retrieval hints for exact slices",
     }
     if total_lines <= query_line_cap and content_chars <= query_char_cap:
-        raw_artifact_dir = str(getattr(args, "artifact_dir", ".context-guard/artifacts"))
-        dir_flags = ""
-        if raw_artifact_dir != ".context-guard/artifacts":
-            dir_flags = f" --dir {shlex.quote(raw_artifact_dir)}"
         line_flags = ""
         if total_lines > 0:
             line_flags = f" --lines 1:{total_lines} --max-lines {max(1, total_lines)}"
+        prefix = artifact.artifact_dir_cli_prefix(raw_artifact_dir, show_paths=show_artifact_paths)
         exact_reexpand = {
             "available": True,
             "scope": "sanitized_full_output",
             "sha256": content_sha,
             "bytes": content_bytes,
             "lines": total_lines,
+            "exact": artifact.artifact_dir_cli_is_exact(raw_artifact_dir, show_paths=show_artifact_paths),
             "cli": (
-                f"context-guard-artifact{dir_flags} get {artifact_id}{line_flags} "
+                f"{prefix} get {artifact_id}{line_flags} "
                 f"--max-chars {max(1, content_chars)}"
             ),
         }
@@ -720,11 +728,33 @@ def build_digest_payload(
 
 
 def markdown_artifact_receipt_lines(artifact_receipt: dict[str, object]) -> list[str]:
+    sandbox = artifact_receipt.get("output_sandbox")
+    handle = None
+    rehydrate = None
+    if isinstance(sandbox, dict):
+        raw_handle = sandbox.get("handle")
+        if isinstance(raw_handle, str):
+            handle = raw_handle
+        rehydration = sandbox.get("rehydration")
+        commands = rehydration.get("commands") if isinstance(rehydration, dict) else None
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, dict) and command.get("type") != "metadata" and isinstance(command.get("cli"), str):
+                    rehydrate = command["cli"]
+                    break
+            if rehydrate is None:
+                for command in commands:
+                    if isinstance(command, dict) and isinstance(command.get("cli"), str):
+                        rehydrate = command["cli"]
+                        break
     lines = [
         "- artifact_receipt: "
         f"stored={str(artifact_receipt.get('stored')).lower()} "
-        f"id={artifact_receipt.get('artifact_id') or artifact_receipt.get('error')}\n"
+        f"id={artifact_receipt.get('artifact_id') or artifact_receipt.get('error')}"
+        f"{(' handle=' + handle) if handle else ''}\n"
     ]
+    if rehydrate:
+        lines.append(f"- rehydrate: `{rehydrate}`\n")
     exact = artifact_receipt.get("exact_reexpand")
     if isinstance(exact, dict) and exact.get("cli"):
         lines.append(f"- exact_reexpand: `{exact.get('cli')}`\n")
@@ -742,12 +772,16 @@ def compact_markdown_artifact_receipt(payload: dict[str, object], max_chars: int
 
     artifact_id = artifact_receipt.get("artifact_id") or artifact_receipt.get("error")
     stored = str(artifact_receipt.get("stored")).lower()
+    sandbox = artifact_receipt.get("output_sandbox")
+    handle = sandbox.get("handle") if isinstance(sandbox, dict) and isinstance(sandbox.get("handle"), str) else None
     exact = artifact_receipt.get("exact_reexpand")
     exact_available = ""
     if isinstance(exact, dict) and "available" in exact:
         exact_available = f" exact_available={str(exact.get('available')).lower()}"
 
     candidates = [
+        f"- artifact_receipt: stored={stored} id={artifact_id}{(' handle=' + handle) if handle else ''}{exact_available}; use output_sandbox.rehydration for exact slices\n",
+        f"- artifact_receipt: stored={stored} id={artifact_id}{(' handle=' + handle) if handle else ''}{exact_available}\n",
         f"- artifact_receipt: stored={stored} id={artifact_id}{exact_available}; raise --max-chars for full exact_reexpand\n",
         f"- artifact_receipt: stored={stored} id={artifact_id}{exact_available}\n",
         f"- artifact_receipt: id={artifact_id}\n",
@@ -905,13 +939,65 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
                 for key in ("scope", "bytes", "lines", "sha256")
                 if key in stored_output
             }
+        sandbox = artifact_receipt.get("output_sandbox")
+        if isinstance(sandbox, dict):
+            compact_sandbox: dict[str, object] = {
+                key: sandbox[key]
+                for key in ("schema_version", "mode", "handle", "artifact_id")
+                if key in sandbox
+            }
+            rehydration = sandbox.get("rehydration")
+            if isinstance(rehydration, dict):
+                commands = rehydration.get("commands")
+                if isinstance(commands, list):
+                    kept_commands = [
+                        command
+                        for command in commands
+                        if isinstance(command, dict) and isinstance(command.get("cli"), str)
+                    ][:2]
+                    compact_sandbox["rehydration"] = {
+                        "commands": kept_commands,
+                        "exact_commands": rehydration.get("exact_commands"),
+                        "dir_argument": rehydration.get("dir_argument"),
+                    }
+            compact["output_sandbox"] = compact_sandbox
         exact = artifact_receipt.get("exact_reexpand")
         if include_exact_reexpand and isinstance(exact, dict):
             compact["exact_reexpand"] = {
                 key: exact[key]
-                for key in ("available", "scope", "sha256", "bytes", "lines", "cli", "reason")
+                for key in ("available", "scope", "sha256", "bytes", "lines", "exact", "cli", "reason")
                 if key in exact
             }
+        return compact
+
+    def tiny_artifact_receipt() -> dict[str, object] | None:
+        artifact_receipt = payload.get("artifact_receipt")
+        if not isinstance(artifact_receipt, dict):
+            return None
+        compact: dict[str, object] = {}
+        for key in ("stored", "artifact_id", "error"):
+            if key in artifact_receipt:
+                compact[key] = artifact_receipt[key]
+        sandbox = artifact_receipt.get("output_sandbox")
+        if isinstance(sandbox, dict):
+            tiny_sandbox: dict[str, object] = {}
+            handle = sandbox.get("handle")
+            if isinstance(handle, str):
+                tiny_sandbox["handle"] = handle
+            rehydration = sandbox.get("rehydration")
+            commands = rehydration.get("commands") if isinstance(rehydration, dict) else None
+            if isinstance(commands, list):
+                for command in commands:
+                    if isinstance(command, dict) and isinstance(command.get("cli"), str):
+                        tiny_sandbox["rehydration"] = {
+                            "commands": [{
+                                "type": command.get("type"),
+                                "cli": command.get("cli"),
+                            }]
+                        }
+                        break
+            if tiny_sandbox:
+                compact["output_sandbox"] = tiny_sandbox
         return compact
 
     def attach_artifact_receipt(candidate: dict[str, object], artifact_receipt: dict[str, object] | None) -> dict[str, object]:
@@ -955,6 +1041,7 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
         }
     compact_receipt = compact_artifact_receipt(include_exact_reexpand=True)
     minimal_receipt = compact_artifact_receipt(include_exact_reexpand=False)
+    tiny_receipt = tiny_artifact_receipt()
 
     return first_fitting(
         [
@@ -1003,6 +1090,15 @@ def render_digest_json(payload: dict[str, object], max_chars: int) -> str:
                     "timed_out": payload.get("timed_out"),
                 },
                 minimal_receipt,
+            ),
+            attach_artifact_receipt(
+                {
+                    "digest_capped": True,
+                    "status": payload.get("status"),
+                    "exit_code": payload.get("exit_code"),
+                    "timed_out": payload.get("timed_out"),
+                },
+                tiny_receipt,
             ),
             {"digest_capped": True},
         ]
@@ -1391,6 +1487,16 @@ def main() -> int:
                         "reason": f"{exc.__class__.__name__}: {exc}",
                         "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
                     }
+            artifact_receipt = payload.get("artifact_receipt")
+            if isinstance(artifact_receipt, dict) and artifact_receipt.get("stored"):
+                next_queries = payload.setdefault("next_queries", [])
+                if isinstance(next_queries, list):
+                    guidance = (
+                        "Use artifact_receipt.output_sandbox.rehydration commands for exact sanitized slices "
+                        "before rerunning the broad command or requesting full raw output."
+                    )
+                    if guidance not in next_queries:
+                        next_queries.insert(0, guidance)
         if args.digest == "json":
             sys.stdout.write(render_digest_json(payload, args.max_chars))
         else:
