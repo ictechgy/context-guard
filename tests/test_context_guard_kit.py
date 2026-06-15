@@ -12158,6 +12158,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     adaptive = data["adaptive_k"]
                     self.assertEqual(adaptive["schema_version"], "contextguard.pack-adaptive-k.v1")
                     self.assertEqual(adaptive["mode"], "advisory")
+                    self.assertEqual(adaptive["policy"]["name"], "balanced")
+                    self.assertFalse(adaptive["policy"]["changes_manifest_or_pack"])
                     self.assertFalse(adaptive["recommendation"]["apply"])
                     self.assertGreaterEqual(adaptive["score_distribution"]["candidate_count"], 2)
                     self.assertGreaterEqual(
@@ -12167,8 +12169,46 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertGreaterEqual(adaptive["recommended_k"], 1)
                     self.assertLessEqual(adaptive["recommended_k"], adaptive["requested_top"])
                     self.assertEqual(adaptive["recall_precision_proxy"]["measurement"], "local_score_mass_proxy")
+                    self.assertEqual(adaptive["recall_precision_proxy"]["range"], "clamped_0_1")
+                    self.assertEqual(adaptive["regression_gates"]["status"], "pass")
+                    self.assertTrue(adaptive["regression_gates"]["recall_proxy"]["passed"])
+                    self.assertTrue(adaptive["regression_gates"]["precision_proxy"]["passed"])
+                    self.assertLessEqual(adaptive["recall_precision_proxy"]["recall_proxy"], 1.0)
+                    self.assertLessEqual(adaptive["recall_precision_proxy"]["precision_proxy"], 1.0)
+                    self.assertGreaterEqual(adaptive["selected_evidence"]["selected_count"], 1)
+                    self.assertLessEqual(len(adaptive["selected_evidence"]["items"]), 12)
+                    first_hint = adaptive["selected_evidence"]["items"][0]["retrieval_hint"]
+                    self.assertEqual(first_hint["type"], "slice")
+                    self.assertTrue(first_hint["available"])
+                    self.assertFalse(Path(first_hint["path"]).is_absolute())
+                    self.assertNotIn("context-guard-pack", json.dumps(first_hint, sort_keys=True))
+                    verification = adaptive["source_verification"]
+                    self.assertTrue(verification["requires_exact_source_before_edits"])
+                    self.assertGreaterEqual(verification["available_hint_count"], 1)
                     self.assertFalse(adaptive["claim_boundary"]["provider_token_or_cost_savings_claim_allowed"])
                     self.assertTrue(adaptive["claim_boundary"]["advisory_does_not_change_manifest_or_pack"])
+                    self.assertFalse(adaptive["claim_boundary"]["selectable_policy_changes_manifest_or_pack"])
+
+                    inert_policy = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--adaptive-k-policy",
+                            "precision",
+                            "--adaptive-k-min-recall-proxy",
+                            "0.5",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertNotIn("adaptive_k", inert_policy)
+                    self.assertEqual(inert_policy["manifest"], plain["manifest"])
 
                     empty = json.loads(
                         self._run_pack(
@@ -12228,6 +12268,91 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(expand["adaptive_k"]["requested_top"], 1)
                     self.assertGreater(expand["adaptive_k"]["recommended_k"], 1)
                     self.assertIn("budget_headroom_expand", expand["adaptive_k"]["recommendation"]["reason_codes"])
+                    precision = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--top",
+                            "1",
+                            "--budget-bytes",
+                            "4000",
+                            "--adaptive-k",
+                            "--adaptive-k-policy",
+                            "precision",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(precision["adaptive_k"]["policy"]["name"], "precision")
+                    self.assertEqual(precision["adaptive_k"]["recommended_k"], 1)
+
+                    strict_gate = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--files",
+                            "src/alpha.py,src/beta.py",
+                            "--query",
+                            "alpha failure",
+                            "--top",
+                            "1",
+                            "--budget-bytes",
+                            "4000",
+                            "--adaptive-k",
+                            "--adaptive-k-min-recall-proxy",
+                            "1.0",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertEqual(strict_gate["adaptive_k"]["regression_gates"]["status"], "failed")
+                    self.assertFalse(strict_gate["adaptive_k"]["regression_gates"]["recall_proxy"]["passed"])
+
+                    for flag, value in (
+                        ("--adaptive-k-min-recall-proxy", "-0.1"),
+                        ("--adaptive-k-min-precision-proxy", "1.1"),
+                        ("--adaptive-k-min-recall-proxy", "not-a-number"),
+                    ):
+                        proc = self._run_pack(
+                            script,
+                            root,
+                            "suggest",
+                            "--root",
+                            ".",
+                            "--query",
+                            "alpha failure",
+                            "--adaptive-k",
+                            flag,
+                            value,
+                            "--json",
+                            check=False,
+                        )
+                        self.assertEqual(proc.returncode, 2)
+                        self.assertIn("adaptive-k threshold", proc.stderr)
+
+                    invalid_policy = self._run_pack(
+                        script,
+                        root,
+                        "suggest",
+                        "--root",
+                        ".",
+                        "--query",
+                        "alpha failure",
+                        "--adaptive-k",
+                        "--adaptive-k-policy",
+                        "fastest",
+                        "--json",
+                        check=False,
+                    )
+                    self.assertEqual(invalid_policy.returncode, 2)
 
                     text = self._run_pack(
                         script,
@@ -12242,6 +12367,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         "--adaptive-k",
                     ).stdout
                     self.assertIn("adaptive-k: recommended=", text)
+                    self.assertIn("policy=balanced", text)
+                    self.assertIn("gates=pass", text)
                     self.assertIn("apply=false", text)
 
     def test_context_pack_auto_builds_pack_and_manifest_from_explicit_files(self):
@@ -12334,7 +12461,84 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
 
                     text = self._run_pack(script, root, *common[:-2], "--adaptive-k").stdout
                     self.assertIn("adaptive-k: recommended=", text)
+                    self.assertIn("policy=balanced", text)
+                    self.assertIn("gates=pass", text)
                     self.assertIn("apply=false", text)
+
+    def test_context_pack_adaptive_k_policy_gate_and_verification_edges(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"context_pack_adaptive_edges_{index}")
+                candidates = [
+                    module.SuggestCandidate(path=f"src/item{idx}.py", score=100 - idx, reason="candidate")
+                    for idx in range(3)
+                ]
+                selected = [
+                    {
+                        "path": "src/item0.py",
+                        "score": 10_000,
+                        "reason": "selected",
+                        "lines": {"start": 1, "end": 2},
+                        "retrieval_cli": "context-guard-pack slice --root . --path src/item0.py --lines 1:2 --json",
+                    },
+                    {
+                        "path": "[REDACTED-PATH-COMPONENT]/hidden.py",
+                        "priority": 10_000,
+                        "reason": "redacted selected",
+                        "lines": {"start": 3, "end": 4},
+                        "retrieval_cli": "context-guard-pack slice --root . --path hidden --lines 3:4 --json",
+                    },
+                ]
+                secret = "ghp_" + ("A" * 36)
+                omitted = [
+                    {
+                        "path": f"src/{secret}.py",
+                        "reason": "redacted_path",
+                        "priority": 5,
+                        "retrieval_omitted_reason": "redacted_path",
+                    }
+                ]
+
+                payload = module.build_adaptive_k_advisory(
+                    candidates=candidates,
+                    selected=selected,
+                    omitted=omitted,
+                    requested_top=2,
+                    budget_bytes=4000,
+                    estimated_pack_bytes=200,
+                    policy="recall",
+                    min_recall_proxy=1.0,
+                    min_precision_proxy=1.0,
+                )
+                self.assertEqual(payload["policy"]["name"], "recall")
+                self.assertEqual(payload["regression_gates"]["status"], "pass")
+                self.assertLessEqual(payload["recall_precision_proxy"]["recall_proxy"], 1.0)
+                self.assertLessEqual(payload["recall_precision_proxy"]["precision_proxy"], 1.0)
+                self.assertTrue(payload["regression_gates"]["recall_proxy"]["passed"])
+                self.assertTrue(payload["regression_gates"]["precision_proxy"]["passed"])
+                self.assertEqual(payload["source_verification"]["hints"][0]["retrieval_hint"]["available"], True)
+                redacted_hint = payload["source_verification"]["hints"][1]["retrieval_hint"]
+                self.assertFalse(redacted_hint["available"])
+                self.assertEqual(redacted_hint["reason"], "redacted_path")
+                serialized = json.dumps(payload, sort_keys=True)
+                self.assertNotIn(secret, serialized)
+                self.assertNotIn("context-guard-pack slice", serialized)
+
+                failed = module.build_adaptive_k_advisory(
+                    candidates=candidates,
+                    selected=[],
+                    omitted=[],
+                    requested_top=2,
+                    budget_bytes=0,
+                    estimated_pack_bytes=0,
+                    policy="precision",
+                    min_recall_proxy=0.1,
+                    min_precision_proxy=0.1,
+                )
+                self.assertEqual(failed["regression_gates"]["status"], "failed")
+                self.assertEqual(failed["recall_precision_proxy"]["recall_proxy"], 0.0)
+                self.assertEqual(failed["recall_precision_proxy"]["precision_proxy"], 0.0)
+                self.assertFalse(failed["regression_gates"]["recall_proxy"]["passed"])
 
     def test_context_pack_auto_symbol_memory_is_advisory_and_source_verified(self):
         for script in PACK_SCRIPTS:
@@ -13327,6 +13531,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(script=script):
                 help_proc = self._run_pack(script, ROOT, "auto", "--help")
                 self.assertIn("--explain", help_proc.stdout)
+                self.assertIn("--adaptive-k-policy", help_proc.stdout)
+                self.assertIn("--adaptive-k-min-recall-proxy", help_proc.stdout)
+                suggest_help = self._run_pack(script, ROOT, "suggest", "--help")
+                self.assertIn("--adaptive-k-policy", suggest_help.stdout)
         docs = [
             ROOT / "README.md",
             ROOT / "README.ko.md",
@@ -13338,6 +13546,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8")
                 self.assertIn("--explain", text)
+                self.assertIn("--adaptive-k-policy", text)
                 self.assertTrue(
                     "deterministic local" in text
                     or "no model" in text
@@ -13347,7 +13556,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 )
         smoke = (ROOT / "scripts" / "release_smoke.py").read_text(encoding="utf-8")
         self.assertIn("--explain", smoke)
+        self.assertIn("--adaptive-k-policy", smoke)
         self.assertIn("contextguard.pack-auto-explain.v1", smoke)
+        self.assertIn("contextguard.pack-adaptive-k.v1", smoke)
         self.assertIn("contextguard.pack-repo-map.v1", smoke)
 
     def test_context_pack_auto_query_with_no_matches_returns_empty_pack(self):
