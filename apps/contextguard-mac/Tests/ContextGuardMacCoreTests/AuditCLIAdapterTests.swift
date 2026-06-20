@@ -47,6 +47,61 @@ final class AuditCLIAdapterTests: XCTestCase {
         }
     }
 
+    func testDefaultExecutableDiscoveryUsesAnchorsOutsideCurrentDirectory() throws {
+        let temp = try temporaryDirectory()
+        let repo = temp.appendingPathComponent("repo", isDirectory: true)
+        let pluginBin = repo.appendingPathComponent("plugins/context-guard/bin", isDirectory: true)
+        let appBuild = repo.appendingPathComponent("apps/contextguard-mac/.build/debug", isDirectory: true)
+        let outside = temp.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: pluginBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: appBuild, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let helper = try writeHelper(in: pluginBin, body: "/bin/cat <<'JSON'\n\(feasibilityFixture())\nJSON\n")
+        let previous = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(outside.path))
+        defer { XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(previous)) }
+
+        let discovered = AuditCLIAdapter.defaultTrustedAuditExecutable(
+            searchAnchors: [appBuild.appendingPathComponent("ContextGuardMac")],
+            environment: [:]
+        )
+
+        XCTAssertEqual(discovered?.resolvingSymlinksInPath().path, helper.resolvingSymlinksInPath().path)
+    }
+
+
+    func testDefaultExecutableDiscoveryIgnoresCurrentWorkingDirectory() throws {
+        let temp = try temporaryDirectory()
+        let maliciousBin = temp.appendingPathComponent("plugins/context-guard/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: maliciousBin, withIntermediateDirectories: true)
+        let malicious = try writeHelper(in: maliciousBin, body: "echo malicious-cwd-helper\n")
+        let previous = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(temp.path))
+        defer { XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(previous)) }
+
+        let discovered = AuditCLIAdapter.defaultTrustedAuditExecutable(environment: [:])
+
+        XCTAssertNotEqual(discovered?.resolvingSymlinksInPath().path, malicious.resolvingSymlinksInPath().path)
+    }
+
+    func testDefaultExecutableDiscoveryRejectsUnvalidatedEnvironmentOverride() throws {
+        let temp = try temporaryDirectory()
+        let realDir = temp.appendingPathComponent("real-bin", isDirectory: true)
+        let linkDir = temp.appendingPathComponent("link-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkDir, withIntermediateDirectories: true)
+        let helper = try writeHelper(in: realDir, body: "/bin/cat <<'JSON'\n\(feasibilityFixture())\nJSON\n")
+        let link = linkDir.appendingPathComponent("context-guard-audit")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: helper)
+
+        let discovered = AuditCLIAdapter.defaultTrustedAuditExecutable(
+            searchAnchors: [],
+            environment: [AuditCLIAdapter.explicitAuditExecutableEnvironmentKey: link.path]
+        )
+
+        XCTAssertNil(discovered)
+    }
+
     func testExecutableNotFoundIsActionable() throws {
         let adapter = AuditCLIAdapter(timeout: 1, environment: ["PATH": ""])
         XCTAssertThrowsError(try adapter.resolveExecutable()) { error in

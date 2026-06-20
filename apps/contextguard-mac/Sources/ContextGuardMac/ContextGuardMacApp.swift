@@ -172,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var cancellable: AnyCancellable?
-    private lazy var appState = AppState(fallbackExecutableURL: Self.defaultRepoLocalAuditExecutable())
+    private lazy var appState = AppState(fallbackExecutableURL: AuditCLIAdapter.defaultTrustedAuditExecutable())
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -200,15 +200,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func defaultRepoLocalAuditExecutable() -> URL? {
-        let fileManager = FileManager.default
-        let current = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        let candidates = [
-            current.appendingPathComponent("plugins/context-guard/bin/context-guard-audit"),
-            current.appendingPathComponent("../../plugins/context-guard/bin/context-guard-audit").standardizedFileURL
-        ]
-        return candidates.first { fileManager.isExecutableFile(atPath: $0.path) }
-    }
 }
 
 @main

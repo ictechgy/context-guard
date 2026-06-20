@@ -120,7 +120,7 @@ If you need a savings claim, measure it on your own tasks:
 - ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
-Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship in `bin/` so existing automation can migrate gradually.
+Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship as package files under `plugins/context-guard/bin/` so existing plugin-path automation can migrate gradually. npm global/`npx` bin links intentionally expose only the canonical `context-guard-*` commands; call the legacy wrappers by package/plugin path if you still need them.
 
 ## Features
 

@@ -37,6 +37,7 @@ public enum AuditCLIAdapterError: Error, Equatable, LocalizedError {
 
 public struct AuditCLIAdapter {
     public static let trustedExecutablePATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+    public static let explicitAuditExecutableEnvironmentKey = "CONTEXT_GUARD_MAC_AUDIT_EXECUTABLE"
 
     public var fallbackExecutableURL: URL?
     public var timeout: TimeInterval
@@ -56,6 +57,60 @@ public struct AuditCLIAdapter {
         self.maxOutputBytes = max(1, maxOutputBytes)
         self.environment = environment
         self.fileManager = fileManager
+    }
+
+    public static func defaultTrustedAuditExecutable(
+        searchAnchors: [URL]? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        if let explicit = environment[explicitAuditExecutableEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicit.isEmpty {
+            return validatedFallback(URL(fileURLWithPath: explicit), fileManager: fileManager)
+        }
+
+        let anchors = searchAnchors ?? defaultSearchAnchors(fileManager: fileManager)
+        var seen = Set<String>()
+        for anchor in anchors {
+            for candidate in auditExecutableCandidates(near: anchor) {
+                let key = candidate.standardizedFileURL.path
+                guard seen.insert(key).inserted else { continue }
+                if let executable = validatedFallback(candidate, fileManager: fileManager) {
+                    return executable
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func defaultSearchAnchors(fileManager: FileManager) -> [URL] {
+        var anchors: [URL] = []
+        if let executableURL = Bundle.main.executableURL {
+            anchors.append(executableURL)
+        }
+        if let resourceURL = Bundle.main.resourceURL {
+            anchors.append(resourceURL)
+        }
+        return anchors
+    }
+
+    private static func auditExecutableCandidates(near anchor: URL) -> [URL] {
+        var candidates: [URL] = []
+        var current = (anchor.hasDirectoryPath ? anchor : anchor.deletingLastPathComponent()).standardizedFileURL
+        for _ in 0..<12 {
+            candidates.append(current.appendingPathComponent("plugins/context-guard/bin/context-guard-audit"))
+            candidates.append(current.appendingPathComponent("../../plugins/context-guard/bin/context-guard-audit").standardizedFileURL)
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path {
+                break
+            }
+            current = parent
+        }
+        return candidates
+    }
+
+    private static func validatedFallback(_ url: URL, fileManager: FileManager) -> URL? {
+        AuditCLIAdapter(fallbackExecutableURL: url, fileManager: fileManager).validatedExecutable(url)
     }
 
     public func resolveExecutable() throws -> URL {

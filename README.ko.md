@@ -118,7 +118,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 - ContextGuard는 learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, screenshot 캡처·image crop·OCR 실행·image parsing·외부 OCR/image service, 명시적 local metrics 기록을 넘어선 self-hosted KV/latent inference optimization runtime, literal-loopback 1회 HTTP forwarding과 credential 차단을 넘어선 proxy forwarding은 제공하지 않습니다.
 - 예전 `/claude-token-optimizer:*` Claude Code 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 
-기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 `bin/`에서 계속 제공합니다.
+기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 패키지 파일 `plugins/context-guard/bin/` 아래에 계속 포함합니다. npm global/`npx` bin 링크는 의도적으로 canonical `context-guard-*` 명령만 노출하므로, legacy 래퍼가 필요하면 패키지/플러그인 경로로 호출하세요.
 
 ## 제공 기능
 

@@ -7,6 +7,7 @@ from a maintainer shell before publishing the marketplace/plugin package.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import py_compile
@@ -73,6 +74,18 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
+COMMAND_MANIFEST_LITERAL_NAMES = {
+    "IMPLEMENTATION_PAIRS",
+    "HELPER_PAIRS",
+    "NPM_BINS",
+    "NPM_BIN_PATHS",
+    "DISPATCHER_SUBCOMMANDS",
+    "LEGACY_WRAPPERS",
+    "ENTRYPOINT_SMOKE_CASES",
+    "PLUGIN_ENTRYPOINTS",
+    "DISPATCHER_SMOKE_CASES",
+    "EXPECTED_COMMAND_PACK_FILES",
+}
 
 def manifest_open_flags() -> int | None:
     if not hasattr(os, "O_NOFOLLOW"):
@@ -118,17 +131,48 @@ def read_manifest_source(path: Path) -> str | None:
                 pass
 
 
+def literal_command_manifest_from_source(source: str) -> dict[str, object]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError(f"invalid Python manifest syntax: line {exc.lineno}: {exc.msg}") from exc
+    values: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        target: str | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+            value = node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target = node.targets[0].id
+            value = node.value
+        if target is None:
+            raise ValueError(f"unsupported executable manifest statement: {type(node).__name__}")
+        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
+            raise ValueError(f"unsupported manifest assignment: {target}")
+        try:
+            values[target] = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"manifest assignment must be a literal: {target}") from exc
+    return values
+
+
 def load_command_manifest():
     manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
     source = read_manifest_source(manifest_path)
     if source is None:
         raise SystemExit(f"could not load trusted command manifest source: {manifest_path}")
-    namespace: dict[str, object] = {}
     try:
-        exec(compile(source, str(manifest_path), "exec"), namespace)
-    except Exception as exc:
-        raise SystemExit(f"could not execute trusted command manifest source: {manifest_path}: {exc}") from exc
-    return type("CommandManifest", (), namespace)
+        values = literal_command_manifest_from_source(source)
+    except ValueError as exc:
+        raise SystemExit(f"could not parse trusted command manifest literals: {manifest_path}: {exc}") from exc
+    required = {"IMPLEMENTATION_PAIRS", "HELPER_PAIRS", "NPM_BINS", "LEGACY_WRAPPERS", "EXPECTED_COMMAND_PACK_FILES"}
+    missing = sorted(required - values.keys())
+    if missing:
+        raise SystemExit(f"trusted command manifest missing required literals: {', '.join(missing)}")
+    return type("CommandManifest", (), values)
 
 
 COMMAND_MANIFEST = load_command_manifest()
@@ -245,7 +289,7 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "plugins/context-guard/skills/optimize/SKILL.md",
     "plugins/context-guard/skills/setup/SKILL.md",
 }
-EXPECTED_NPM_PACK_FILES = BASE_EXPECTED_NPM_PACK_FILES | set(COMMAND_MANIFEST.expected_command_pack_files())
+EXPECTED_NPM_PACK_FILES = BASE_EXPECTED_NPM_PACK_FILES | set(COMMAND_MANIFEST.EXPECTED_COMMAND_PACK_FILES)
 
 def remove_generated_plugin_bin_python_caches() -> None:
     # Tests and reviewer diagnostics may import/compile suffix-less Python bin
