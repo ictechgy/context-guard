@@ -10175,6 +10175,33 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertLess(len(proc.stdout), 1200)
         self.assertIn("line trimmed", proc.stdout)
 
+    def test_trim_and_sanitize_bound_unterminated_huge_lines(self):
+        command = "import sys; sys.stdout.write('A' * 200000); sys.stdout.flush()"
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "1000",
+                        "--max-line-chars",
+                        "120",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertLess(len(proc.stdout), 2000)
+                self.assertIn("line trimmed", proc.stdout)
+
     def test_trim_clamps_extreme_budget_arguments(self):
         proc = subprocess.run(
             [
@@ -10529,6 +10556,25 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             timeout=timeout,
         )
 
+    def test_context_pack_git_ls_files_uses_bounded_streaming_output(self):
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git unavailable")
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_pack_git_stream_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    subprocess.run([git, "init"], cwd=root, text=True, capture_output=True, check=True)
+                    for number in range(20):
+                        (root / f"tracked-{number:02d}.txt").write_text("x\n", encoding="utf-8")
+                    subprocess.run([git, "add", "."], cwd=root, text=True, capture_output=True, check=True)
+                    module.MAX_GIT_LS_FILES_OUTPUT_BYTES = 32
+                    result = module.git_ls_files(root)
+                    self.assertTrue(result)
+                    self.assertLessEqual(len(result), module.MAX_QUERY_SCAN_FILES)
+                    self.assertLessEqual(sum(len(item.encode("utf-8")) + 1 for item in result), 64)
+
     def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -10765,6 +10811,20 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(no_read_break_even["risk"], "medium")
                 self.assertIsNone(no_read_break_even["max_profitable_reuses"])
                 self.assertAlmostEqual(no_read_break_even["expected_relative_savings"], 0.0)
+
+    def test_cache_score_json_walk_caps_nodes_depth_and_warnings(self):
+        payload = {
+            "tools": [{"name": "zeta"}, {"name": "alpha"}],
+            "items": [{"created_at": index, "value": index} for index in range(20)],
+        }
+        for index, script in enumerate(CACHE_SCORE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_cache_score_walk_caps_{index}")
+                warnings = module._walk_json(payload, max_nodes=5, max_depth=4, max_warnings=4)
+                codes = {item["code"] for item in warnings}
+                self.assertIn("tool_order_not_sorted", codes)
+                self.assertIn("json_walk_truncated", codes)
+                self.assertLessEqual(len(warnings), 4)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
@@ -19873,6 +19933,31 @@ for malformed in malformed_values:
                     self.assertIn("skipped oversized transcript file", data["parse_errors"][0])
                     self.assertNotIn(tmp, proc.stdout)
 
+    def test_transcript_audit_caps_scanned_file_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a.jsonl", "b.jsonl"):
+                Path(tmp, name).write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            tmp,
+                            "--json",
+                            "--max-files",
+                            "1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["files"], 1)
+                    self.assertEqual(data["skipped_files"], 1)
+                    self.assertEqual(data["scan_limits"]["max_files"], 1)
+                    self.assertIn("transcript scan file limit reached", data["parse_errors"][0])
+
     def test_transcript_audit_skips_oversized_jsonl_records_without_losing_following_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -23799,6 +23884,44 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         module.parse_tasks(parent_link / "tasks.json")
                     with self.assertRaises(OSError):
                         module.parse_variants(parent_link / "variants.json")
+
+    def test_benchmark_runner_bounds_fixture_prompt_and_resume_csv_reads(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_large_input_caps_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    oversized_tasks = root / "tasks.json"
+                    oversized_tasks.write_text(
+                        json.dumps([{"id": "t01", "prompt": "x" * (module.MAX_FIXTURE_FILE_BYTES + 1)}]),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(SystemExit) as fixture_ctx:
+                        module.parse_tasks(oversized_tasks)
+                    self.assertIn("fixture file exceeds", str(fixture_ctx.exception))
+
+                    prompt_tasks = root / "prompt-tasks.json"
+                    module.MAX_FIXTURE_FILE_BYTES = 10_000
+                    module.MAX_CLAUDE_PROMPT_ARG_BYTES = 8
+                    prompt_tasks.write_text(
+                        json.dumps([{"id": "t01", "prompt": "x" * 16}]),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(SystemExit) as prompt_ctx:
+                        module.parse_tasks(prompt_tasks)
+                    self.assertIn("prompt exceeds argv-safe limit", str(prompt_ctx.exception))
+
+                    csv_path = root / "resume.csv"
+                    csv_path.write_text(
+                        ",".join(module.CSV_COLUMNS) + "\n"
+                        + "t01,baseline,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n"
+                        + "t02,baseline,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n",
+                        encoding="utf-8",
+                    )
+                    module.MAX_CSV_ROWS = 1
+                    with self.assertRaises(SystemExit) as csv_ctx:
+                        module._read_existing_keys_unlocked(csv_path)
+                    self.assertIn("CSV row limit exceeded", str(csv_ctx.exception))
 
     def test_variant_prompt_files_select_prompt_and_fallback(self):
         for index, script in enumerate(BENCH_SCRIPTS):

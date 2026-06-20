@@ -7,6 +7,7 @@ lines into the conversation while preserving the lines most likely to be useful.
 from __future__ import annotations
 
 import argparse
+import codecs
 import collections
 import hashlib
 import importlib.machinery
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Iterable, Iterator
+from typing import BinaryIO, Iterable, Iterator
 
 MAX_SUMMARY_ITEM_CHARS = 500
 MAX_LINES_LIMIT = 5_000
@@ -35,6 +36,7 @@ MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
 DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES = 10_000_000
 MAX_ARTIFACT_RECEIPT_MAX_BYTES = 100_000_000
+COMMAND_READ_CHUNK_BYTES = 64 * 1024
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -1178,13 +1180,15 @@ class TimedCommandStream:
     def __init__(
         self,
         proc: subprocess.Popen[str],
-        stdout: Iterable[str],
+        stdout: BinaryIO,
         *,
         timeout_seconds: int,
+        max_line_chars: int,
         process_group_id: int | None = None,
     ) -> None:
         self.proc = proc
         self.timeout_seconds = timeout_seconds
+        self.max_unterminated_line_chars = max(1, max_line_chars)
         self.process_group_id = process_group_id
         self.deadline = time.monotonic() + timeout_seconds
         self.timed_out = False
@@ -1194,10 +1198,53 @@ class TimedCommandStream:
         self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
         self._thread.start()
 
-    def _read_stdout(self, stdout: Iterable[str]) -> None:
+    def _read_stdout(self, stdout: BinaryIO) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending = ""
+        discarding_oversized_line = False
+
+        def feed(text: str) -> None:
+            nonlocal pending, discarding_oversized_line
+            if not text:
+                return
+            pending += text
+            while pending:
+                if discarding_oversized_line:
+                    newline_index = pending.find("\n")
+                    if newline_index == -1:
+                        pending = ""
+                        return
+                    pending = pending[newline_index + 1 :]
+                    discarding_oversized_line = False
+                    continue
+
+                newline_index = pending.find("\n")
+                if newline_index != -1:
+                    self._queue.put(pending[: newline_index + 1])
+                    pending = pending[newline_index + 1 :]
+                    continue
+
+                if len(pending) > self.max_unterminated_line_chars:
+                    self._queue.put(
+                        pending[: self.max_unterminated_line_chars + 1]
+                        + (
+                            "...[context-guard-kit: raw line truncated before newline "
+                            f"after {self.max_unterminated_line_chars} chars]\n"
+                        )
+                    )
+                    pending = ""
+                    discarding_oversized_line = True
+                return
+
         try:
-            for line in stdout:
-                self._queue.put(line)
+            while True:
+                chunk = stdout.read(COMMAND_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                feed(decoder.decode(chunk, final=False))
+            feed(decoder.decode(b"", final=True))
+            if pending and not discarding_oversized_line:
+                self._queue.put(pending)
         finally:
             self._stream_closed = True
             self._queue.put(_STREAM_END)
@@ -1354,9 +1401,8 @@ def main() -> int:
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            errors="replace",
+            text=False,
+            bufsize=0,
             **popen_kwargs,
         )
     except OSError as exc:
@@ -1386,6 +1432,7 @@ def main() -> int:
         proc,
         proc.stdout,
         timeout_seconds=args.timeout_seconds,
+        max_line_chars=args.max_line_chars,
         process_group_id=process_group_id_for(proc),
     )
     for line in command_stream:

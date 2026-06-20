@@ -60,6 +60,9 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "var": Path("/private/var"),
 }
 MAX_JSON_PATH_SEGMENT_CHARS = 64
+MAX_JSON_WALK_NODES = 10_000
+MAX_JSON_WALK_DEPTH = 64
+MAX_JSON_SHAPE_WARNINGS = 200
 SAFE_JSON_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 DYNAMIC_JSON_KEY_RE = re.compile(r"(?i)(request|trace|nonce|random|timestamp|created[_-]?at|updated[_-]?at|date)")
 SENSITIVE_JSON_KEY_RE = re.compile(
@@ -225,39 +228,102 @@ def first_dynamic_marker(text: str) -> tuple[int | None, str | None]:
     return best_offset, best_name
 
 
-def _walk_json(value: Any, path: str = "$") -> list[dict[str, Any]]:
+def _walk_json(
+    value: Any,
+    path: str = "$",
+    *,
+    max_nodes: int = MAX_JSON_WALK_NODES,
+    max_depth: int = MAX_JSON_WALK_DEPTH,
+    max_warnings: int = MAX_JSON_SHAPE_WARNINGS,
+) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = []
-    if isinstance(value, dict):
-        keys = [str(key) for key in value]
-        if keys != sorted(keys):
-            warnings.append({
-                "code": "json_object_key_order_not_sorted",
-                "path": path,
-                "severity": "info",
-                "message": "Object keys are not in deterministic sorted order; keep generated JSON stable across runs.",
-            })
-        for key, item in value.items():
-            child_path = json_path_child(path, key)
-            if DYNAMIC_JSON_KEY_RE.search(str(key)):
-                warnings.append({
-                    "code": "dynamic_json_key",
-                    "path": child_path,
-                    "severity": "warn",
-                    "message": "Dynamic-looking JSON key appears in the prompt/request; place dynamic values after the reusable prefix.",
-                })
-            warnings.extend(_walk_json(item, child_path))
-    elif isinstance(value, list):
-        if path.endswith(".tools") and all(isinstance(item, dict) and "name" in item for item in value):
-            names = [str(item.get("name")) for item in value]
-            if names != sorted(names):
-                warnings.append({
-                    "code": "tool_order_not_sorted",
-                    "path": path,
+    capped_nodes = False
+    capped_depth = False
+    capped_warnings = False
+
+    def add_warning(item: dict[str, Any]) -> None:
+        nonlocal capped_warnings
+        if len(warnings) < max_warnings:
+            warnings.append(item)
+        else:
+            capped_warnings = True
+
+    stack: list[tuple[Any, str, int]] = [(value, path, 0)]
+    visited = 0
+    while stack:
+        if visited >= max_nodes:
+            capped_nodes = True
+            break
+        current, current_path, depth = stack.pop()
+        visited += 1
+        if depth >= max_depth and isinstance(current, (dict, list)) and current:
+            capped_depth = True
+            continue
+        if isinstance(current, dict):
+            previous_key: str | None = None
+            keys_sorted = True
+            for key in current:
+                text_key = str(key)
+                if previous_key is not None and text_key < previous_key:
+                    keys_sorted = False
+                    break
+                previous_key = text_key
+            if not keys_sorted:
+                add_warning({
+                    "code": "json_object_key_order_not_sorted",
+                    "path": current_path,
                     "severity": "info",
-                    "message": "Tool definitions are not sorted by name; deterministic ordering improves prefix reuse.",
+                    "message": "Object keys are not in deterministic sorted order; keep generated JSON stable across runs.",
                 })
-        for index, item in enumerate(value):
-            warnings.extend(_walk_json(item, f"{path}[{index}]"))
+            remaining_child_slots = max(0, max_nodes - visited - len(stack))
+            child_items: list[tuple[Any, str, int]] = []
+            for key, item in current.items():
+                child_path = json_path_child(current_path, key)
+                if DYNAMIC_JSON_KEY_RE.search(str(key)):
+                    add_warning({
+                        "code": "dynamic_json_key",
+                        "path": child_path,
+                        "severity": "warn",
+                        "message": "Dynamic-looking JSON key appears in the prompt/request; place dynamic values after the reusable prefix.",
+                    })
+                if len(child_items) >= remaining_child_slots:
+                    capped_nodes = True
+                    break
+                child_items.append((item, child_path, depth + 1))
+            stack.extend(reversed(child_items))
+        elif isinstance(current, list):
+            if current_path.endswith(".tools") and all(isinstance(item, dict) and "name" in item for item in current):
+                names = [str(item.get("name")) for item in current]
+                if names != sorted(names):
+                    add_warning({
+                        "code": "tool_order_not_sorted",
+                        "path": current_path,
+                        "severity": "info",
+                        "message": "Tool definitions are not sorted by name; deterministic ordering improves prefix reuse.",
+                    })
+            remaining_child_slots = max(0, max_nodes - visited - len(stack))
+            child_items = []
+            for index, item in enumerate(current):
+                if len(child_items) >= remaining_child_slots:
+                    capped_nodes = True
+                    break
+                child_items.append((item, f"{current_path}[{index}]", depth + 1))
+            stack.extend(reversed(child_items))
+    if capped_nodes or capped_depth or capped_warnings:
+        cap_warning = {
+            "code": "json_walk_truncated",
+            "path": "$",
+            "severity": "warn",
+            "message": "JSON shape analysis was capped by node, depth, or warning limits; rerun on a narrower prompt fixture for complete linting.",
+            "nodes_visited": visited,
+            "max_nodes": max_nodes,
+            "max_depth": max_depth,
+            "max_warnings": max_warnings,
+        }
+        if len(warnings) < max_warnings:
+            warnings.append(cap_warning)
+        elif warnings:
+            warnings[-1] = cap_warning
     return warnings
 
 

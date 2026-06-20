@@ -53,6 +53,8 @@ SUGGEST_WHOLE_FILE_MAX_LINES = 120
 MAX_SUGGEST_INPUT_BYTES = 256_000
 MAX_QUERY_SCAN_FILES = 2_000
 MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
+MAX_GIT_LS_FILES_OUTPUT_BYTES = MAX_QUERY_SCAN_FILES * 512
+GIT_LS_FILES_READ_CHUNK_BYTES = 64 * 1024
 MAX_REPO_MAP_FILES = 1_000
 MAX_REPO_MAP_SCAN_FILES = 160
 MAX_REPO_MAP_BYTES_PER_FILE = 120_000
@@ -1503,18 +1505,57 @@ def collect_output_candidates(
 
 
 def git_ls_files(root: Path) -> list[str]:
+    raw = b""
     try:
-        proc = subprocess.run(
+        deadline = time.monotonic() + 10
+        proc = subprocess.Popen(
             ["git", "-C", str(root), "ls-files", "-z"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=False,
-            capture_output=True,
-            timeout=10,
-            check=False,
         )
+        if proc.stdout is not None:
+            chunks: list[bytes] = []
+            total = 0
+            fd = proc.stdout.fileno()
+            try:
+                os.set_blocking(fd, False)
+            except (AttributeError, OSError):
+                pass
+            while True:
+                if total > MAX_GIT_LS_FILES_OUTPUT_BYTES:
+                    break
+                try:
+                    chunk = os.read(
+                        fd,
+                        min(
+                            GIT_LS_FILES_READ_CHUNK_BYTES,
+                            MAX_GIT_LS_FILES_OUTPUT_BYTES + 1 - total,
+                        ),
+                    )
+                except BlockingIOError:
+                    if proc.poll() is not None:
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
+                    continue
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            raw = b"".join(chunks)[:MAX_GIT_LS_FILES_OUTPUT_BYTES]
+            if total > MAX_GIT_LS_FILES_OUTPUT_BYTES and proc.poll() is None:
+                proc.terminate()
+            proc.stdout.close()
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         proc = None
-    if proc is not None and proc.returncode == 0:
-        raw = proc.stdout[: MAX_QUERY_SCAN_FILES * 512]
+    if raw:
         return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part][:MAX_QUERY_SCAN_FILES]
     out: list[str] = []
     skip_dirs = {".git", ".omx", ".context-guard", "node_modules", "dist", "build", "__pycache__"}

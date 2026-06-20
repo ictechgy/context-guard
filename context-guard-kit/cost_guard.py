@@ -2855,12 +2855,17 @@ def compile_command(args: argparse.Namespace) -> int:
 
     recommended = sorted(sections, key=lambda sec: (bool(sec["volatile"]), 0 if sec["ttl"] == "1h" else 1, -int(sec["bytes"] or 0), str(sec["id"])))
     findings: list[dict[str, Any]] = []
+    suffix_has_one_hour_ttl = [False] * (len(sections) + 1)
+    suffix_has_stable_section = [False] * (len(sections) + 1)
+    for index in range(len(sections) - 1, -1, -1):
+        suffix_has_one_hour_ttl[index] = suffix_has_one_hour_ttl[index + 1] or sections[index]["ttl"] == "1h"
+        suffix_has_stable_section[index] = suffix_has_stable_section[index + 1] or not bool(sections[index]["volatile"])
     for i, sec in enumerate(sections):
-        if sec["ttl"] == "5m" and any(later["ttl"] == "1h" for later in sections[i + 1 :]):
+        if sec["ttl"] == "5m" and suffix_has_one_hour_ttl[i + 1]:
             findings.append({"severity": "warn", "code": "ttl_order_violation", "section_id": sec["id"], "message": "place 1h cacheable stable sections before 5m sections"})
             break
     for i, sec in enumerate(sections):
-        if sec["volatile"] and any(not later["volatile"] for later in sections[i + 1 :]):
+        if sec["volatile"] and suffix_has_stable_section[i + 1]:
             findings.append({"severity": "warn", "code": "volatile_prefix_before_stable_context", "section_id": sec["id"], "message": "move volatile context toward the tail so stable prefixes can be reused"})
             break
     if len(sections) > 4:
