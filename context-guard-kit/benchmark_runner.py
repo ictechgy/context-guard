@@ -307,6 +307,8 @@ MAX_SELF_HOSTED_LABEL_CHARS = 120
 MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
 MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
 MAX_VARIANT_PROMPT_FILE_BYTES = 128_000
+MAX_FIXTURE_FILE_BYTES = 1_000_000
+MAX_CLAUDE_PROMPT_ARG_BYTES = MAX_VARIANT_PROMPT_FILE_BYTES
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
@@ -433,12 +435,18 @@ def _open_regular_no_symlink(
         os.close(parent_fd)
 
 
-def _read_text_no_follow(path: Path) -> str:
+def _read_text_no_follow(path: Path, *, max_bytes: int = MAX_FIXTURE_FILE_BYTES) -> str:
     fd = _open_regular_no_symlink(path)
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        with os.fdopen(fd, "rb") as handle:
             fd = -1
-            return handle.read()
+            raw = handle.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise SystemExit(f"fixture file exceeds {max_bytes} bytes: {path}")
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise SystemExit(f"fixture file must be UTF-8 text: {path}: {exc.reason}") from None
     finally:
         if fd != -1:
             os.close(fd)
@@ -618,6 +626,17 @@ def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[st
     return extra_args
 
 
+def require_argv_safe_prompt(text: str, *, owner: str) -> str:
+    """Keep prompt-bearing argv below a bounded size to avoid E2BIG failures."""
+    size = len(text.encode("utf-8", errors="replace"))
+    if size > MAX_CLAUDE_PROMPT_ARG_BYTES:
+        raise SystemExit(
+            f"{owner} prompt exceeds argv-safe limit "
+            f"({size} bytes > {MAX_CLAUDE_PROMPT_ARG_BYTES}); use a smaller fixture prompt"
+        )
+    return text
+
+
 def validate_variant_prompt_file_path(raw_path: str, *, owner: str) -> Path:
     """Return a safe relative prompt-file path, or fail before any file read."""
     rel_path = Path(raw_path)
@@ -670,26 +689,28 @@ def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None
                 f"{MAX_VARIANT_PROMPT_FILE_BYTES} bytes: {label}"
             )
         try:
-            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            with os.fdopen(fd, "rb") as handle:
                 fd = -1
-                text = handle.read()
-        except UnicodeDecodeError as exc:
-            raise SystemExit(
-                f"{owner} variant_prompt_files prompt file must be UTF-8 text: "
-                f"{label}: {exc.reason}"
-            ) from None
+                raw = handle.read(MAX_VARIANT_PROMPT_FILE_BYTES + 1)
         except OSError as exc:
             detail = exc.strerror or exc.__class__.__name__
             raise SystemExit(f"{owner} variant_prompt_files could not read prompt file: {label}: {detail}") from None
     finally:
         if fd != -1:
             os.close(fd)
-    if len(text.encode("utf-8", errors="replace")) > MAX_VARIANT_PROMPT_FILE_BYTES:
+    if len(raw) > MAX_VARIANT_PROMPT_FILE_BYTES:
         raise SystemExit(
             f"{owner} variant_prompt_files prompt text exceeds "
             f"{MAX_VARIANT_PROMPT_FILE_BYTES} bytes after decoding: {label}"
         )
-    return text
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            f"{owner} variant_prompt_files prompt file must be UTF-8 text: "
+            f"{label}: {exc.reason}"
+        ) from None
+    return require_argv_safe_prompt(text, owner=f"{owner} variant_prompt_files")
 
 
 def load_variant_prompt_files_for_targets(
@@ -1125,7 +1146,11 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
         argv.extend(["--allowedTools", ",".join(task.allowed_tools)])
     argv.extend(variant.extra_args)
     argv.append("--")
-    argv.append(task.variant_prompt_texts.get(variant.name, task.prompt))
+    prompt = require_argv_safe_prompt(
+        task.variant_prompt_texts.get(variant.name, task.prompt),
+        owner=f"task {task.id} variant {variant.name}",
+    )
+    argv.append(prompt)
     return argv
 
 
@@ -1593,7 +1618,9 @@ def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
             reader = csv.DictReader(f)
             fieldnames = list(reader.fieldnames) if reader.fieldnames is not None else None
             validate_csv_schema(csv_path, fieldnames)
-            for row in reader:
+            for index, row in enumerate(reader, start=1):
+                if index > MAX_CSV_ROWS:
+                    raise SystemExit(f"CSV row limit exceeded for {csv_path}: > {MAX_CSV_ROWS}")
                 tid = row.get("task_id") or ""
                 var = row.get("variant") or ""
                 if tid and var:

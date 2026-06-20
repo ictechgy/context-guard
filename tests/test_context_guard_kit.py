@@ -10175,6 +10175,90 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertLess(len(proc.stdout), 1200)
         self.assertIn("line trimmed", proc.stdout)
 
+    def test_trim_and_sanitize_bound_unterminated_huge_lines(self):
+        command = "import sys; sys.stdout.write('A' * 200000); sys.stdout.flush()"
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "1000",
+                        "--max-line-chars",
+                        "120",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertLess(len(proc.stdout), 2000)
+                self.assertIn("line trimmed", proc.stdout)
+
+    def test_trim_and_sanitize_resume_after_truncated_huge_line(self):
+        command = "import sys; sys.stdout.write(('A' * 200000) + '\\nB-after-huge-line\\n'); sys.stdout.flush()"
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "1000",
+                        "--max-line-chars",
+                        "120",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertLess(len(proc.stdout), 2000)
+                self.assertIn("line trimmed", proc.stdout)
+                self.assertIn("B-after-huge-line", proc.stdout)
+
+    def test_sanitize_does_not_emit_boundary_secret_prefix_on_raw_truncation(self):
+        token = "ghp_" + ("A" * 36)
+        filler = "X" * 4078
+        command = f"import sys; sys.stdout.write({(filler + token)!r}); sys.stdout.flush()"
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "6000",
+                        "--max-line-chars",
+                        "5000",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertNotIn("ghp_", proc.stdout)
+                self.assertIn("withheld 1024 boundary chars", proc.stdout)
+
     def test_trim_clamps_extreme_budget_arguments(self):
         proc = subprocess.run(
             [
@@ -10529,6 +10613,29 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             timeout=timeout,
         )
 
+    def test_context_pack_git_ls_files_uses_bounded_streaming_output(self):
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git unavailable")
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_pack_git_stream_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    subprocess.run([git, "init"], cwd=root, text=True, capture_output=True, check=True)
+                    for number in range(20):
+                        (root / f"tracked-{number:02d}.txt").write_text("x\n", encoding="utf-8")
+                    (root / ".gitignore").write_text("ignored-secret.txt\n", encoding="utf-8")
+                    (root / "ignored-secret.txt").write_text("token=ghp_" + ("A" * 36), encoding="utf-8")
+                    subprocess.run([git, "add", "."], cwd=root, text=True, capture_output=True, check=True)
+                    module.MAX_GIT_LS_FILES_OUTPUT_BYTES = 32
+                    result = module.git_ls_files(root)
+                    self.assertTrue(result)
+                    self.assertLessEqual(len(result), module.MAX_QUERY_SCAN_FILES)
+                    self.assertNotIn("ignored-secret.txt", result)
+                    for item in result:
+                        self.assertTrue((root / item).exists(), item)
+
     def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
         for script in PACK_SCRIPTS:
             with self.subTest(script=script):
@@ -10765,6 +10872,23 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(no_read_break_even["risk"], "medium")
                 self.assertIsNone(no_read_break_even["max_profitable_reuses"])
                 self.assertAlmostEqual(no_read_break_even["expected_relative_savings"], 0.0)
+
+    def test_cache_score_json_walk_caps_nodes_depth_and_warnings(self):
+        for index, script in enumerate(CACHE_SCORE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_cache_score_walk_caps_{index}")
+                order_warnings = module._walk_json(
+                    {"tools": [{"name": "zeta"}, {"name": "alpha"}]},
+                    max_nodes=10,
+                    max_depth=4,
+                    max_warnings=4,
+                )
+                self.assertIn("tool_order_not_sorted", {item["code"] for item in order_warnings})
+
+                broad_payload = {"items": [{"created_at": item, "value": item} for item in range(20)]}
+                capped_warnings = module._walk_json(broad_payload, max_nodes=5, max_depth=4, max_warnings=4)
+                self.assertIn("json_walk_truncated", {item["code"] for item in capped_warnings})
+                self.assertLessEqual(len(capped_warnings), 4)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
@@ -19873,6 +19997,47 @@ for malformed in malformed_values:
                     self.assertIn("skipped oversized transcript file", data["parse_errors"][0])
                     self.assertNotIn(tmp, proc.stdout)
 
+    def test_transcript_audit_caps_scanned_file_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a.jsonl", "b.jsonl"):
+                Path(tmp, name).write_text(json.dumps({"usage": {"input_tokens": 1}}) + "\n", encoding="utf-8")
+            for script in [KIT_DIR / "claude_transcript_cost_audit.py", PLUGIN_BIN / "context-guard-audit"]:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            tmp,
+                            "--json",
+                            "--max-files",
+                            "1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertEqual(data["files"], 1)
+                    self.assertEqual(data["skipped_files"], 1)
+                    self.assertTrue(data["scan_truncated"])
+                    self.assertEqual(data["unscanned_files_lower_bound"], 1)
+                    self.assertEqual(data["scan_limits"]["max_files"], 1)
+                    self.assertIn("transcript scan file limit reached", data["parse_errors"][0])
+                    text_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            tmp,
+                            "--max-files",
+                            "1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("max_files:1", text_proc.stdout)
+                    self.assertIn("scan_truncated=true", text_proc.stdout)
+
     def test_transcript_audit_skips_oversized_jsonl_records_without_losing_following_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "session.jsonl"
@@ -23799,6 +23964,54 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         module.parse_tasks(parent_link / "tasks.json")
                     with self.assertRaises(OSError):
                         module.parse_variants(parent_link / "variants.json")
+
+    def test_benchmark_runner_bounds_fixture_prompt_and_resume_csv_reads(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_large_input_caps_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    oversized_tasks = root / "tasks.json"
+                    oversized_tasks.write_text(
+                        json.dumps([{"id": "t01", "prompt": "x" * (module.MAX_FIXTURE_FILE_BYTES + 1)}]),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(SystemExit) as fixture_ctx:
+                        module.parse_tasks(oversized_tasks)
+                    self.assertIn("fixture file exceeds", str(fixture_ctx.exception))
+
+                    prompt_tasks = root / "prompt-tasks.json"
+                    module.MAX_FIXTURE_FILE_BYTES = 10_000
+                    module.MAX_CLAUDE_PROMPT_ARG_BYTES = 8
+                    prompt_tasks.write_text(
+                        json.dumps([{"id": "t01", "prompt": "x" * 16}]),
+                        encoding="utf-8",
+                    )
+                    prompt_fixtures = module.parse_tasks(prompt_tasks)
+                    variant = module.Variant(name="baseline", extra_args=[])
+                    with self.assertRaises(SystemExit) as prompt_ctx:
+                        module.build_claude_argv("claude", prompt_fixtures[0], variant)
+                    self.assertIn("prompt exceeds argv-safe limit", str(prompt_ctx.exception))
+
+                    csv_path = root / "resume.csv"
+                    task_id_index = module.CSV_COLUMNS.index("task_id")
+                    variant_index = module.CSV_COLUMNS.index("variant")
+                    csv_row_1 = [""] * len(module.CSV_COLUMNS)
+                    csv_row_1[task_id_index] = "t01"
+                    csv_row_1[variant_index] = "baseline"
+                    csv_row_2 = [""] * len(module.CSV_COLUMNS)
+                    csv_row_2[task_id_index] = "t02"
+                    csv_row_2[variant_index] = "baseline"
+                    csv_path.write_text(
+                        ",".join(module.CSV_COLUMNS) + "\n"
+                        + ",".join(csv_row_1) + "\n"
+                        + ",".join(csv_row_2) + "\n",
+                        encoding="utf-8",
+                    )
+                    module.MAX_CSV_ROWS = 1
+                    with self.assertRaises(SystemExit) as csv_ctx:
+                        module._read_existing_keys_unlocked(csv_path)
+                    self.assertIn("CSV row limit exceeded", str(csv_ctx.exception))
 
     def test_variant_prompt_files_select_prompt_and_fallback(self):
         for index, script in enumerate(BENCH_SCRIPTS):

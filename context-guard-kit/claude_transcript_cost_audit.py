@@ -56,8 +56,10 @@ JSON_PARSE_RECURSION_LIMIT = 10_000
 READ_CHUNK_BYTES = 64 * 1024
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_MAX_LINE_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_SCAN_FILES = 100_000
 MAX_FILE_BYTES_LIMIT = 2 * 1024 * 1024 * 1024
 MAX_LINE_BYTES_LIMIT = 128 * 1024 * 1024
+MAX_SCAN_FILES_LIMIT = 1_000_000
 SECRET_VALUE_RE = re.compile(
     r"(?i)(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{20,}|"
     r"xox[abprs]-[A-Za-z0-9-]{8,}|(?:AKIA|ASIA)[0-9A-Z]{8,}|"
@@ -169,6 +171,8 @@ class UsageSummary:
     files: int = 0
     records: int = 0
     skipped_files: int = 0
+    unscanned_files_lower_bound: int = 0
+    scan_truncated: bool = False
     skipped_records: int = 0
     parse_errors: list[str] = field(default_factory=list)
     tokens: Counter[str] = field(default_factory=Counter)
@@ -618,6 +622,7 @@ def os_error_summary(exc: OSError) -> str:
 class ScanLimits:
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     max_line_bytes: int = DEFAULT_MAX_LINE_BYTES
+    max_files: int = DEFAULT_MAX_SCAN_FILES
 
 
 def open_regular_no_symlink(file: Path):
@@ -809,6 +814,15 @@ def scan(
     limits = limits or ScanLimits()
     summary = UsageSummary()
     for file in iter_jsonl_files(paths):
+        if summary.files >= limits.max_files:
+            summary.skipped_files += 1
+            summary.unscanned_files_lower_bound += 1
+            summary.scan_truncated = True
+            summary.note_error(
+                f"transcript scan file limit reached ({limits.max_files}); "
+                "rerun with narrower paths or --max-files if more evidence is required"
+            )
+            break
         summary.files += 1
         try:
             with open_regular_no_symlink(file) as handle:
@@ -925,6 +939,8 @@ def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
         "files_scanned": summary.files,
         "records_scanned": summary.records,
         "skipped_files": summary.skipped_files,
+        "unscanned_files_lower_bound": summary.unscanned_files_lower_bound,
+        "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_error_count": len(summary.parse_errors),
         "complete": complete,
@@ -2151,11 +2167,14 @@ def summary_json(
         "files": summary.files,
         "records": summary.records,
         "skipped_files": summary.skipped_files,
+        "unscanned_files_lower_bound": summary.unscanned_files_lower_bound,
+        "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_errors": summary.parse_errors,
         "scan_limits": {
             "max_file_bytes": limits.max_file_bytes,
             "max_line_bytes": limits.max_line_bytes,
+            "max_files": limits.max_files,
         },
         "total_tokens": summary.total_tokens,
         "tokens": dict(summary.tokens),
@@ -2221,10 +2240,17 @@ def main() -> int:
         default=DEFAULT_MAX_LINE_BYTES,
         help="skip individual JSONL records larger than this many bytes (default: 2 MiB)",
     )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=DEFAULT_MAX_SCAN_FILES,
+        help=f"stop after this many transcript files (default: {DEFAULT_MAX_SCAN_FILES})",
+    )
     args = parser.parse_args()
     limits = ScanLimits(
         max_file_bytes=require_scan_limit(parser, "--max-file-bytes", args.max_file_bytes, MAX_FILE_BYTES_LIMIT),
         max_line_bytes=require_scan_limit(parser, "--max-line-bytes", args.max_line_bytes, MAX_LINE_BYTES_LIMIT),
+        max_files=require_scan_limit(parser, "--max-files", args.max_files, MAX_SCAN_FILES_LIMIT),
     )
 
     summary = scan(args.paths, show_paths=args.show_paths, show_commands=args.show_commands, limits=limits)
@@ -2248,9 +2274,14 @@ def main() -> int:
     print("Claude Code transcript usage audit")
     print(
         f"files_scanned={summary.files} records={summary.records} "
-        f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records}"
+        f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records} "
+        f"scan_truncated={str(summary.scan_truncated).lower()} "
+        f"unscanned_files_lower_bound={summary.unscanned_files_lower_bound}"
     )
-    print(f"scan_limits=max_file_bytes:{limits.max_file_bytes} max_line_bytes:{limits.max_line_bytes}")
+    print(
+        f"scan_limits=max_file_bytes:{limits.max_file_bytes} "
+        f"max_line_bytes:{limits.max_line_bytes} max_files:{limits.max_files}"
+    )
     print(f"observed_total_tokens={summary.total_tokens}")
     if summary.cost_usd:
         print(f"observed_cost_usd={summary.cost_usd:.4f}")

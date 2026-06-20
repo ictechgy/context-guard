@@ -53,6 +53,8 @@ SUGGEST_WHOLE_FILE_MAX_LINES = 120
 MAX_SUGGEST_INPUT_BYTES = 256_000
 MAX_QUERY_SCAN_FILES = 2_000
 MAX_QUERY_SCAN_BYTES_PER_FILE = 200_000
+MAX_GIT_LS_FILES_OUTPUT_BYTES = MAX_QUERY_SCAN_FILES * 512
+GIT_LS_FILES_READ_CHUNK_BYTES = 64 * 1024
 MAX_REPO_MAP_FILES = 1_000
 MAX_REPO_MAP_SCAN_FILES = 160
 MAX_REPO_MAP_BYTES_PER_FILE = 120_000
@@ -1503,19 +1505,81 @@ def collect_output_candidates(
 
 
 def git_ls_files(root: Path) -> list[str]:
+    def read_stdout_capped(proc: subprocess.Popen[bytes], limit: int, timeout_seconds: float) -> tuple[bytes, bool]:
+        if proc.stdout is None:
+            return b"", False
+        chunks: list[bytes] = []
+        total = 0
+        capped = False
+        timed_out = False
+
+        def reader() -> None:
+            nonlocal total, capped
+            try:
+                while total <= limit:
+                    chunk = proc.stdout.read(min(GIT_LS_FILES_READ_CHUNK_BYTES, limit + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > limit:
+                        capped = True
+                        break
+            finally:
+                if capped and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+        thread.join(timeout_seconds)
+        if thread.is_alive() and proc.poll() is None:
+            timed_out = True
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        thread.join(0.2)
+        raw_output = b"".join(chunks)[:limit]
+        complete = proc.returncode == 0 and not capped and not timed_out and raw_output.endswith(b"\0")
+        return raw_output, complete
+
+    raw = b""
+    git_returncode: int | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "-C", str(root), "ls-files", "-z"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=False,
-            capture_output=True,
-            timeout=10,
-            check=False,
         )
+        raw, _git_complete = read_stdout_capped(proc, MAX_GIT_LS_FILES_OUTPUT_BYTES, 10)
+        git_returncode = proc.returncode
     except (OSError, subprocess.TimeoutExpired):
         proc = None
-    if proc is not None and proc.returncode == 0:
-        raw = proc.stdout[: MAX_QUERY_SCAN_FILES * 512]
+    if raw:
+        if not raw.endswith(b"\0"):
+            raw = raw.rsplit(b"\0", 1)[0] if b"\0" in raw else b""
         return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part][:MAX_QUERY_SCAN_FILES]
+    if git_returncode == 0 or (git_returncode is not None and git_returncode < 0):
+        return []
     out: list[str] = []
     skip_dirs = {".git", ".omx", ".context-guard", "node_modules", "dist", "build", "__pycache__"}
     for current, dirs, files in os.walk(root):
