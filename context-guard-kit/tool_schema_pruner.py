@@ -38,6 +38,11 @@ MAX_TOP = 200
 MAX_DEFERRED_TOP = 1_000
 MAX_NAMESPACE_TOP = 200
 MAX_LABEL_CHARS = 160
+NO_FOLLOW_SUPPORTED = hasattr(os, "O_NOFOLLOW")
+DIR_FD_OPEN_SUPPORTED = bool(os.supports_dir_fd and os.open in os.supports_dir_fd)
+DIR_FD_MKDIR_SUPPORTED = bool(os.supports_dir_fd and os.mkdir in os.supports_dir_fd)
+DIR_FD_STAT_SUPPORTED = bool(os.supports_dir_fd and os.stat in os.supports_dir_fd)
+DIR_FD_UNLINK_SUPPORTED = bool(os.supports_dir_fd and os.unlink in os.supports_dir_fd)
 MAX_DESCRIPTION_CHARS = 360
 MAX_OMITTED_TOOLS = 30
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
@@ -409,15 +414,142 @@ def reject_symlink_components(path: Path) -> None:
             fail(f"refusing path through non-directory component: {current}")
 
 
-def ensure_private_dir(path: Path) -> None:
-    path = normalize_allowed_first_absolute_symlink(path)
-    reject_symlink_components(path)
+def dir_fd_replace_supported() -> bool:
     try:
-        path.mkdir(parents=True, exist_ok=True)
-        reject_symlink_components(path)
-        os.chmod(path, 0o700)
+        import inspect
+
+        signature = inspect.signature(os.replace)
+    except (TypeError, ValueError):
+        return True
+    return "src_dir_fd" in signature.parameters and "dst_dir_fd" in signature.parameters
+
+
+DIR_FD_REPLACE_SUPPORTED = dir_fd_replace_supported()
+
+
+def reject_parent_traversal(path: Path, *, label: str) -> None:
+    if ".." in path.parts:
+        fail(f"{label} must not contain parent traversal")
+
+
+def os_error_detail(exc: OSError) -> str:
+    detail = exc.strerror or str(exc) or exc.__class__.__name__
+    if exc.errno is not None:
+        return f"{detail} (errno {exc.errno})"
+    return detail
+
+
+def no_follow_dir_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        fail("private store IO requires O_NOFOLLOW support")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def private_temp_file_flags() -> int:
+    if not NO_FOLLOW_SUPPORTED:
+        fail("private store IO requires O_NOFOLLOW support")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOCTTY"):
+        flags |= os.O_NOCTTY
+    return flags
+
+
+def open_private_directory_no_follow(path: Path, *, label: str, create: bool) -> int:
+    reject_parent_traversal(path, label=label)
+    path = normalize_allowed_first_absolute_symlink(path.expanduser())
+    if not DIR_FD_OPEN_SUPPORTED:
+        fail(f"{label} requires dir_fd open support")
+    if create and not DIR_FD_MKDIR_SUPPORTED:
+        fail(f"{label} requires dir_fd mkdir support")
+    flags = no_follow_dir_flags()
+    if path.is_absolute():
+        root_flags = os.O_RDONLY | (os.O_CLOEXEC if hasattr(os, "O_CLOEXEC") else 0)
+        current_fd = os.open(path.anchor or os.sep, root_flags)
+        parts = path.parts[1:]
+    else:
+        current_fd = os.open(".", flags)
+        parts = path.parts
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                fail(f"{label} must not contain parent traversal")
+            try:
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, 0o700, dir_fd=current_fd)
+                next_fd = os.open(part, flags, dir_fd=current_fd)
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    fail(f"{label} must not traverse non-directory components")
+            except Exception:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        owned_fd = current_fd
+        current_fd = -1
+        return owned_fd
+    except OSError as exc:
+        fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    finally:
+        if current_fd >= 0:
+            os.close(current_fd)
+
+
+def precheck_private_leaf(parent_fd: int, leaf: str, *, label: str) -> None:
+    if not DIR_FD_STAT_SUPPORTED:
+        fail(f"{label} requires dir_fd stat support")
+    try:
+        st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        fail(f"could not inspect {label}: {os_error_detail(exc)}")
+    if not stat.S_ISREG(st.st_mode):
+        fail(f"{label} must be missing or a regular file")
+
+
+def write_all_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written <= 0:
+            raise OSError("short write")
+        offset += written
+
+
+def fsync_best_effort(fd: int) -> None:
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+
+
+def ensure_private_dir(path: Path) -> None:
+    reject_parent_traversal(path, label="store directory")
+    try:
+        fd = open_private_directory_no_follow(path, label="store directory", create=True)
     except OSError as exc:
         fail(f"store directory unavailable: {exc}")
+    try:
+        try:
+            os.fchmod(fd, 0o700)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
 
 
 def write_private_json_atomic(path: Path, data: dict[str, Any], *, max_bytes: int, label: str) -> int:
@@ -425,43 +557,75 @@ def write_private_json_atomic(path: Path, data: dict[str, Any], *, max_bytes: in
     size = byte_len_text(text)
     if size > max_bytes:
         fail(f"{label} exceeds size cap: {size} > {max_bytes}")
-    ensure_private_dir(path.parent)
-    tmp = path.with_name(path.name + f".tmp-{os.getpid()}-{time.time_ns()}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    reject_parent_traversal(path, label=label)
+    if not DIR_FD_REPLACE_SUPPORTED:
+        fail(f"{label} write requires dir_fd replace support")
+    if not DIR_FD_UNLINK_SUPPORTED:
+        fail(f"{label} write requires dir_fd unlink support")
+    parent_fd = open_private_directory_no_follow(path.parent, label="store directory", create=True)
+    fd = -1
+    temp_leaf: str | None = None
     try:
-        fd = os.open(str(tmp), flags, 0o600)
-    except OSError as exc:
-        fail(f"{label} write failed: {exc}")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-            handle.flush()
+        try:
+            os.fchmod(parent_fd, 0o700)
+        except OSError:
+            pass
+        leaf = path.name
+        if leaf in {"", ".", ".."}:
+            fail(f"{label} must name a regular file")
+        precheck_private_leaf(parent_fd, leaf, label=label)
+        for _attempt in range(20):
+            candidate = f".{leaf}.{os.getpid()}.{time.time_ns()}.tmp"
             try:
-                os.fsync(handle.fileno())
+                fd = os.open(candidate, private_temp_file_flags(), 0o600, dir_fd=parent_fd)
+                temp_leaf = candidate
+                break
+            except FileExistsError:
+                continue
+        if fd < 0 or temp_leaf is None:
+            fail(f"{label} write failed: could not create temporary file")
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fail(f"{label} temporary file must be a regular file")
+        os.fchmod(fd, 0o600)
+        write_all_fd(fd, text.encode("utf-8"))
+        fsync_best_effort(fd)
+        os.close(fd)
+        fd = -1
+        fsync_best_effort(parent_fd)
+        os.replace(temp_leaf, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        temp_leaf = None
+        fsync_best_effort(parent_fd)
+    except OSError as exc:
+        fail(f"{label} write failed: {os_error_detail(exc)}")
+    except Exception:
+        raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp_leaf is not None:
+            try:
+                os.unlink(temp_leaf, dir_fd=parent_fd)
             except OSError:
                 pass
-        os.replace(tmp, path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+        os.close(parent_fd)
     return size
 
 
 def read_private_text(path: Path, *, max_bytes: int, label: str) -> tuple[str, int]:
-    if path.is_symlink():
-        fail(f"{label} must not be a symlink")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    reject_parent_traversal(path, label=label)
+    parent_fd = open_private_directory_no_follow(path.parent, label=f"{label} directory", create=False)
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    leaf = path.name
+    if leaf in {"", ".", ".."}:
+        os.close(parent_fd)
+        fail(f"{label} must name a regular file")
     try:
-        fd = os.open(str(path), flags)
+        fd = os.open(leaf, flags, dir_fd=parent_fd)
     except OSError as exc:
-        fail(f"{label} read failed: {exc}")
+        os.close(parent_fd)
+        fail(f"{label} read failed: {os_error_detail(exc)}")
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -471,32 +635,16 @@ def read_private_text(path: Path, *, max_bytes: int, label: str) -> tuple[str, i
         data = os.read(fd, max_bytes + 1)
     finally:
         os.close(fd)
+        os.close(parent_fd)
     if len(data) > max_bytes:
         fail(f"{label} exceeds trusted size cap: > {max_bytes}")
     return data.decode("utf-8", errors="replace"), len(data)
 
 
 def read_private_json(path: Path, *, max_bytes: int, label: str) -> dict[str, Any]:
-    if path.is_symlink():
-        fail(f"{label} must not be a symlink")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    text, _size = read_private_text(path, max_bytes=max_bytes, label=label)
     try:
-        fd = os.open(str(path), flags)
-    except OSError as exc:
-        fail(f"{label} read failed: {exc}")
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            fail(f"{label} must be a regular file")
-        if st.st_size > max_bytes:
-            fail(f"{label} exceeds trusted size cap: {st.st_size} > {max_bytes}")
-        data = os.read(fd, max_bytes + 1)
-    finally:
-        os.close(fd)
-    if len(data) > max_bytes:
-        fail(f"{label} exceeds trusted size cap: > {max_bytes}")
-    try:
-        parsed = json.loads(data.decode("utf-8", errors="replace"))
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         fail(f"{label} is malformed JSON: {exc.msg}")
     if not isinstance(parsed, dict):

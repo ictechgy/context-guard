@@ -113,6 +113,7 @@ COMMAND_OUTPUT_MAX_BYTES = 64_000
 COMMAND_READ_CHUNK_BYTES = 65_536
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
 PROCESS_SELECT_TIMEOUT_SECONDS = 0.05
+ENTRYPOINT_SHEBANG_MAX_BYTES = 512
 PRESERVED_ENV_KEYS = (
     "PATH",
     "SYSTEMROOT",
@@ -244,6 +245,41 @@ def require_path_inside(child: Path, parent: Path, *, label: str) -> None:
         child.resolve().relative_to(parent.resolve())
     except (OSError, ValueError) as exc:
         fail(f"{label} resolved outside isolated npm prefix: {child}")
+
+
+def read_entrypoint_shebang(path: Path) -> str:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        fail(f"could not inspect entrypoint shebang without following symlinks: {path}: {exc}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            fail(f"entrypoint is not a regular file: {path}")
+        data = os.read(fd, ENTRYPOINT_SHEBANG_MAX_BYTES)
+    finally:
+        os.close(fd)
+    first = data.splitlines()[0] if data.splitlines() else b""
+    return first.decode("utf-8", errors="replace")
+
+
+def entrypoint_launch_argv(path: Path, args: list[str], *, trusted_root: Path | None = None) -> list[str]:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        fail(f"entrypoint could not be resolved: {path}: {exc}")
+    if trusted_root is not None:
+        require_path_inside(resolved, trusted_root, label=f"{path.name} entrypoint target")
+    inspected = resolved if path.is_symlink() else path
+    shebang = read_entrypoint_shebang(inspected).lower()
+    if shebang.startswith("#!") and "python" in shebang:
+        return [sys.executable, str(inspected), *args]
+    return [str(path), *args]
 
 
 def write_fake_context_guard_shadow(fake_bin: Path) -> None:
@@ -601,7 +637,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         env = smoke_environment(smoke_home, smoke_tmp)
 
         run_command(
-            [str(commands["context-guard-setup"]), "--root", str(project), "--plan", "--json"],
+            entrypoint_launch_argv(commands["context-guard-setup"], ["--root", str(project), "--plan", "--json"]),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -610,22 +646,26 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             ),
         )
         run_command(
-            [str(commands["context-guard-setup"]), "--root", str(project), "--verify", "--json"],
+            entrypoint_launch_argv(commands["context-guard-setup"], ["--root", str(project), "--verify", "--json"]),
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: check_doctor_smoke(proc, "context-guard-setup --verify"),
         )
         run_command(
-            [str(command_path(plugin_bin, "context-guard")), "doctor", "--root", str(project), "--json"],
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard"),
+                ["doctor", "--root", str(project), "--json"],
+            ),
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: check_doctor_smoke(proc, "context-guard doctor"),
         )
         run_command(
-            [
-                str(commands["context-guard-setup"]),
+            entrypoint_launch_argv(
+                commands["context-guard-setup"],
+                [
                 "--root",
                 str(project),
                 "--agent",
@@ -634,7 +674,8 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 "lite",
                 "--plan",
                 "--json",
-            ],
+                ],
+            ),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -645,8 +686,9 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         brief_apply_project = Path(td) / "brief-apply-project"
         brief_apply_project.mkdir()
         run_command(
-            [
-                str(commands["context-guard-setup"]),
+            entrypoint_launch_argv(
+                commands["context-guard-setup"],
+                [
                 "--root",
                 str(brief_apply_project),
                 "--agent",
@@ -656,7 +698,8 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 "--yes",
                 "--no-diet-scan",
                 "--json",
-            ],
+                ],
+            ),
             cwd=brief_apply_project,
             env=env,
             timeout=timeout,
@@ -667,7 +710,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             ),
         )
         run_command(
-            [str(commands["context-guard-diet"]), "scan", str(project), "--json"],
+            entrypoint_launch_argv(commands["context-guard-diet"], ["scan", str(project), "--json"]),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -676,8 +719,9 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             ),
         )
         run_command(
-            [
-                str(command_path(plugin_bin, "context-guard-pack")),
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
                 "auto",
                 "--root",
                 str(project),
@@ -691,14 +735,15 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 "--adaptive-k-min-recall-proxy",
                 "0.0",
                 "--no-artifact",
-            ],
+                ],
+            ),
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: check_auto_explain_smoke(proc, "context-guard-pack auto --explain"),
         )
         run_command(
-            [str(commands["context-guard-audit"]), str(project), "--json"],
+            entrypoint_launch_argv(commands["context-guard-audit"], [str(project), "--json"]),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -709,7 +754,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         for name, plan in launch_plan.items():
             mode = str(plan["mode"])
             run_command(
-                [str(command_path(plugin_bin, name)), *plan["args"]],
+                entrypoint_launch_argv(command_path(plugin_bin, name), list(plan["args"])),
                 cwd=project,
                 env=env,
                 timeout=timeout,
@@ -722,7 +767,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             args = [str(arg) for arg in plan["args"]]
             command_label = " ".join([entrypoint, *args])
             run_command(
-                [str(command_path(plugin_bin, entrypoint)), *args],
+                entrypoint_launch_argv(command_path(plugin_bin, entrypoint), args),
                 cwd=project,
                 env=env,
                 timeout=timeout,
@@ -812,7 +857,7 @@ def run_npm_package_smoke(timeout: float) -> None:
         require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
 
         run_command(
-            [str(context_guard), "--help"],
+            entrypoint_launch_argv(context_guard, ["--help"], trusted_root=install_prefix),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -823,7 +868,7 @@ def run_npm_package_smoke(timeout: float) -> None:
             ),
         )
         run_command(
-            [str(context_guard), "--version"],
+            entrypoint_launch_argv(context_guard, ["--version"], trusted_root=install_prefix),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -834,8 +879,9 @@ def run_npm_package_smoke(timeout: float) -> None:
             ),
         )
         run_command(
-            [
-                str(context_guard),
+            entrypoint_launch_argv(
+                context_guard,
+                [
                 "setup",
                 "--root",
                 str(project),
@@ -847,7 +893,9 @@ def run_npm_package_smoke(timeout: float) -> None:
                 "--with-skill",
                 "--plan",
                 "--json",
-            ],
+                ],
+                trusted_root=install_prefix,
+            ),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -856,8 +904,9 @@ def run_npm_package_smoke(timeout: float) -> None:
             ),
         )
         run_command(
-            [
-                str(context_guard),
+            entrypoint_launch_argv(
+                context_guard,
+                [
                 "setup",
                 "--root",
                 str(project),
@@ -870,7 +919,9 @@ def run_npm_package_smoke(timeout: float) -> None:
                 "--yes",
                 "--no-diet-scan",
                 "--json",
-            ],
+                ],
+                trusted_root=install_prefix,
+            ),
             cwd=project,
             env=env,
             timeout=timeout,
@@ -890,7 +941,7 @@ def run_npm_package_smoke(timeout: float) -> None:
             require_path_inside(entrypoint_path, install_prefix, label=f"{entrypoint} npm bin")
             command_label = " ".join(["isolated npm", entrypoint, *args])
             run_command(
-                [str(entrypoint_path), *args],
+                entrypoint_launch_argv(entrypoint_path, args, trusted_root=install_prefix),
                 cwd=project,
                 env=env,
                 timeout=timeout,

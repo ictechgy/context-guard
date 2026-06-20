@@ -262,22 +262,38 @@ def reject_symlink_components(path: Path) -> None:
 
 def regular_private_file_size(path: Path) -> int:
     path = normalize_allowed_first_absolute_symlink(path)
-    reject_symlink_components(path.parent)
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode):
-        raise ValueError(f"artifact file must not be a symlink: {path.name}")
-    if not stat.S_ISREG(st.st_mode):
-        raise ValueError(f"artifact file must be a regular file: {path.name}")
-    return int(st.st_size)
+    parent_fd = open_private_directory_no_follow(path.parent, label="artifact directory", create=False)
+    try:
+        leaf = path.name
+        if leaf in {"", ".", ".."}:
+            raise ValueError("artifact file must name a regular file")
+        if not DIR_FD_STAT_SUPPORTED:
+            raise RuntimeError("artifact reads require dir_fd stat support")
+        st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            raise ValueError(f"artifact file must not be a symlink: {path.name}")
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"artifact file must be a regular file: {path.name}")
+        return int(st.st_size)
+    finally:
+        os.close(parent_fd)
 
 
 def read_bounded_private_text(path: Path, max_bytes: int) -> str:
     path = normalize_allowed_first_absolute_symlink(path)
-    size = regular_private_file_size(path)
-    if size > max_bytes:
-        raise ValueError(f"artifact file exceeds trusted size cap: {path.name}: {size} > {max_bytes}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(str(path), flags)
+    parent_fd = open_private_directory_no_follow(path.parent, label="artifact directory", create=False)
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    leaf = path.name
+    if leaf in {"", ".", ".."}:
+        os.close(parent_fd)
+        raise ValueError("artifact file must name a regular file")
+    try:
+        fd = os.open(leaf, flags, dir_fd=parent_fd)
+    except OSError:
+        os.close(parent_fd)
+        raise
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -290,6 +306,7 @@ def read_bounded_private_text(path: Path, max_bytes: int) -> str:
         return data.decode("utf-8", errors="replace")
     finally:
         os.close(fd)
+        os.close(parent_fd)
 
 
 def no_follow_dir_flags() -> int:
@@ -352,6 +369,8 @@ def open_private_directory_no_follow(path: Path, *, label: str, create: bool) ->
         owned_fd = current_fd
         current_fd = -1
         return owned_fd
+    except FileNotFoundError:
+        raise
     except OSError as exc:
         raise RuntimeError(f"could not inspect {label}: {os_error_detail(exc)}") from exc
     finally:
