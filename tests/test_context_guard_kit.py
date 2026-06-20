@@ -9409,11 +9409,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
             shell_entrypoint = root / "context-guard-shell-demo"
             shell_entrypoint.write_text("#!/usr/bin/env sh\necho shell-ok:$1\n", encoding="utf-8")
             shell_entrypoint.chmod(0o700)
+            toolcache_root = root / "hostedtoolcache"
+            toolcache_bin = toolcache_root / "node" / "22.0.0" / "x64" / "bin"
+            toolcache_bin.mkdir(parents=True)
+            for tool_name in ("node", "npm"):
+                tool = toolcache_bin / tool_name
+                tool.write_text("#!/bin/sh\necho toolcache-" + tool_name + "\n", encoding="utf-8")
+                tool.chmod(0o700)
             original_path = os.environ.get("PATH")
-            os.environ["PATH"] = str(fake_bin) + os.pathsep + (original_path or "")
+            old_github_actions = os.environ.get("GITHUB_ACTIONS")
+            old_runner_tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
+            os.environ["PATH"] = str(fake_bin) + os.pathsep + str(toolcache_bin) + os.pathsep + (original_path or "")
+            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["RUNNER_TOOL_CACHE"] = str(toolcache_root)
             try:
                 env = smoke.smoke_environment(home, temp)
-                self.assertNotIn(str(fake_bin), env["PATH"].split(os.pathsep))
+                trusted_path_parts = env["PATH"].split(os.pathsep)
+                self.assertNotIn(str(fake_bin), trusted_path_parts)
+                self.assertIn(str(toolcache_bin.resolve()), trusted_path_parts)
+                self.assertEqual(Path(smoke.trusted_which("npm")).resolve(), (toolcache_bin / "npm").resolve())
                 for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
                     resolved = shutil.which(tool_name, path=env["PATH"])
                     if resolved is not None:
@@ -9451,6 +9465,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ.pop("PATH", None)
                 else:
                     os.environ["PATH"] = original_path
+                if old_github_actions is None:
+                    os.environ.pop("GITHUB_ACTIONS", None)
+                else:
+                    os.environ["GITHUB_ACTIONS"] = old_github_actions
+                if old_runner_tool_cache is None:
+                    os.environ.pop("RUNNER_TOOL_CACHE", None)
+                else:
+                    os.environ["RUNNER_TOOL_CACHE"] = old_runner_tool_cache
 
     def test_release_smoke_run_command_passes_bounded_output_to_expectation(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_success")
@@ -11392,6 +11414,21 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
             parsed = prune.read_private_json(receipt, max_bytes=1024, label="receipt")
             self.assertEqual(parsed["receipt_id"], "a" * 20)
+
+            unsupported_store = root / "unsupported" / "nested"
+            old_stat_supported = prune.DIR_FD_STAT_SUPPORTED
+            prune.DIR_FD_STAT_SUPPORTED = False
+            try:
+                with self.assertRaises(prune.ToolPruneError):
+                    prune.write_private_json_atomic(
+                        unsupported_store / (("b" * 20) + ".receipt.json"),
+                        {"receipt_id": "b" * 20},
+                        max_bytes=1024,
+                        label="receipt",
+                    )
+                self.assertFalse(unsupported_store.exists())
+            finally:
+                prune.DIR_FD_STAT_SUPPORTED = old_stat_supported
 
             leaf_link = store / "leaf-link.json"
             try:
@@ -15287,10 +15324,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             encoding="utf-8",
                         )
                     proc = run_trim_python(trim, f"print({secret!r})", max_lines=20)
-                    self.assertEqual(proc.returncode, 0)
-                    self.assertIn("API_TOKEN=[REDACTED]", proc.stdout)
-                    self.assertNotIn("ghp_A", proc.stdout)
-                    self.assertIn("sanitizer fallback active", proc.stderr)
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertEqual(proc.stdout, "")
+                    self.assertIn("unsafe adjacent helper", proc.stderr)
                     self.assertIn(expected_stderr, proc.stderr)
 
     def test_trim_fallback_sanitizer_redacts_and_reports_downgrade(self):

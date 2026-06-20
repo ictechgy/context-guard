@@ -122,6 +122,15 @@ TRUSTED_PATH_CANDIDATES = (
     "/opt/homebrew/bin",
     "/usr/local/bin",
 )
+TRUSTED_CI_TOOLCACHE_ENV_KEYS = (
+    "RUNNER_TOOL_CACHE",
+    "AGENT_TOOLSDIRECTORY",
+)
+TRUSTED_CI_TOOLCACHE_PREFIXES = (
+    "/opt/hostedtoolcache",
+    "/Users/runner/hostedtoolcache",
+    "/hostedtoolcache",
+)
 PRESERVED_ENV_KEYS = (
     "SYSTEMROOT",
     "WINDIR",
@@ -254,13 +263,42 @@ def require_path_inside(child: Path, parent: Path, *, label: str) -> None:
         fail(f"{label} resolved outside isolated npm prefix: {child}")
 
 
+def trusted_ci_toolcache_roots() -> list[Path]:
+    roots: list[Path] = []
+    if not running_in_ci():
+        return roots
+    candidates = list(TRUSTED_CI_TOOLCACHE_PREFIXES)
+    candidates.extend(os.environ.get(key, "") for key in TRUSTED_CI_TOOLCACHE_ENV_KEYS)
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            root = Path(raw).resolve(strict=True)
+        except OSError:
+            continue
+        if root.is_dir() and root not in roots:
+            roots.append(root)
+    return roots
+
+
+def path_is_under(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def trusted_smoke_path() -> str:
     """Build a narrow PATH for smoke children without inheriting ambient order.
 
     The packaged entrypoints intentionally run via their real shebangs so the
     smoke gate still validates what users execute.  The PATH they see is
-    constrained to the current Python plus fixed system/package directories; it
-    never calls shutil.which() on the caller-controlled ambient PATH.
+    constrained to the current Python, fixed system/package directories, and
+    setup-node-style CI toolcache paths; it never trusts arbitrary ambient PATH
+    entries.
     """
     dirs: list[str] = []
     seen: set[str] = set()
@@ -280,6 +318,19 @@ def trusted_smoke_path() -> str:
             dirs.append(value)
 
     add_dir(Path(sys.executable))
+
+    toolcache_roots = trusted_ci_toolcache_roots()
+    if toolcache_roots:
+        for raw in os.environ.get("PATH", "").split(os.pathsep):
+            if not raw:
+                continue
+            try:
+                directory = Path(raw).resolve(strict=True)
+            except OSError:
+                continue
+            if directory.is_dir() and path_is_under(directory, toolcache_roots):
+                add_dir(directory)
+
     for directory in TRUSTED_PATH_CANDIDATES:
         add_dir(directory)
     return os.pathsep.join(dirs)

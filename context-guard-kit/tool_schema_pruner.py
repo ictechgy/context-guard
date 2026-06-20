@@ -206,12 +206,26 @@ def sanitize_value(value: Any, *, sensitive_context: bool = False, sensitive_sch
 
 
 def read_limited_path(path: Path, max_bytes: int) -> str:
+    if not NO_FOLLOW_SUPPORTED:
+        fail("catalog reads require O_NOFOLLOW support")
+    reject_parent_traversal(path, label="catalog")
+    # Preserve clear diagnostics for stable symlink paths, then anchor the real
+    # read to an opened no-follow parent fd so parent/leaf swaps after this
+    # precheck still fail closed.
     reject_symlink_components(path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = open_private_directory_no_follow(path.parent, label="catalog directory", create=False)
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    leaf = path.name
+    if leaf in {"", ".", ".."}:
+        os.close(parent_fd)
+        fail("catalog must name a regular file")
     try:
-        fd = os.open(str(path), flags)
+        fd = os.open(leaf, flags, dir_fd=parent_fd)
     except OSError as exc:
-        fail(f"catalog read failed: {exc}")
+        os.close(parent_fd)
+        fail(f"catalog read failed: {os_error_detail(exc)}")
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -221,6 +235,7 @@ def read_limited_path(path: Path, max_bytes: int) -> str:
         data = os.read(fd, max_bytes + 1)
     finally:
         os.close(fd)
+        os.close(parent_fd)
     if len(data) > max_bytes:
         fail(f"catalog exceeds --max-catalog-bytes: > {max_bytes}")
     return data.decode("utf-8", errors="replace")
@@ -562,6 +577,8 @@ def write_private_json_atomic(path: Path, data: dict[str, Any], *, max_bytes: in
         fail(f"{label} write requires dir_fd replace support")
     if not DIR_FD_UNLINK_SUPPORTED:
         fail(f"{label} write requires dir_fd unlink support")
+    if not DIR_FD_STAT_SUPPORTED:
+        fail(f"{label} write requires dir_fd stat support")
     parent_fd = open_private_directory_no_follow(path.parent, label="store directory", create=True)
     fd = -1
     temp_leaf: str | None = None

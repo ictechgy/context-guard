@@ -137,6 +137,10 @@ def anonymize_absolute_paths(text: str) -> str:
     return ABSOLUTE_PATH_RE.sub(repl, text)
 
 
+class UnsafeAdjacentModuleError(RuntimeError):
+    """Adjacent helper exists but cannot be trusted for dynamic loading."""
+
+
 class FallbackLineSanitizer:
     def __init__(self, *, show_paths: bool = False, diagnostic: str | None = None) -> None:
         self.show_paths = show_paths
@@ -166,7 +170,7 @@ class FallbackLineSanitizer:
 
 def no_follow_file_flags() -> int:
     if not hasattr(os, "O_NOFOLLOW"):
-        raise RuntimeError("O_NOFOLLOW is required for adjacent helper loads")
+        raise UnsafeAdjacentModuleError("O_NOFOLLOW is required for adjacent helper loads")
     flags = os.O_RDONLY | os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
@@ -186,27 +190,27 @@ def read_adjacent_module_source(script_dir: Path, name: str, *, max_bytes: int) 
     try:
         dir_fd = os.open(str(script_dir), no_follow_dir_flags())
     except OSError as exc:
-        raise RuntimeError(f"could not inspect helper directory: {exc}") from exc
+        raise UnsafeAdjacentModuleError(f"could not inspect helper directory: {exc}") from exc
     try:
         try:
             fd = os.open(name, no_follow_file_flags(), dir_fd=dir_fd)
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise RuntimeError(f"{name} could not be opened without following symlinks: {exc}") from exc
+            raise UnsafeAdjacentModuleError(f"{name} could not be opened without following symlinks: {exc}") from exc
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
-                raise RuntimeError(f"{name} is not a regular helper file")
+                raise UnsafeAdjacentModuleError(f"{name} is not a regular helper file")
             if st.st_size > max_bytes:
-                raise RuntimeError(f"{name} exceeds helper size cap: {st.st_size} > {max_bytes}")
+                raise UnsafeAdjacentModuleError(f"{name} exceeds helper size cap: {st.st_size} > {max_bytes}")
             data = os.read(fd, max_bytes + 1)
         finally:
             os.close(fd)
     finally:
         os.close(dir_fd)
     if len(data) > max_bytes:
-        raise RuntimeError(f"{name} exceeds helper size cap: > {max_bytes}")
+        raise UnsafeAdjacentModuleError(f"{name} exceeds helper size cap: > {max_bytes}")
     return data.decode("utf-8", errors="replace")
 
 
@@ -236,6 +240,8 @@ def load_line_sanitizer(show_paths: bool) -> object:
             if module is None:
                 continue
             return module.LineSanitizer(show_paths=show_paths)
+        except UnsafeAdjacentModuleError:
+            raise
         except Exception as exc:
             load_errors.append(f"{name} failed to load: {exc.__class__.__name__}: {exc}")
             continue
@@ -1459,6 +1465,12 @@ def main() -> int:
         print("trim_command_output.py: missing command", file=sys.stderr)
         return 2
 
+    try:
+        line_sanitizer = load_line_sanitizer(args.show_paths)
+    except UnsafeAdjacentModuleError as exc:
+        print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+        return 2
+
     popen_kwargs: dict[str, object] = {}
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
@@ -1484,7 +1496,6 @@ def main() -> int:
     visible_chars = 0
     any_line_capped = False
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
-    line_sanitizer = load_line_sanitizer(args.show_paths)
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
     artifact_lines: list[str] = []
