@@ -276,8 +276,11 @@ def trusted_ci_toolcache_roots() -> list[Path]:
             root = Path(raw).resolve(strict=True)
         except OSError:
             continue
-        if root.is_dir() and root not in roots:
-            roots.append(root)
+        if not root.is_dir() or root in roots:
+            continue
+        if not path_is_under(root, [Path(prefix).resolve() for prefix in TRUSTED_CI_TOOLCACHE_PREFIXES if Path(prefix).exists()]):
+            continue
+        roots.append(root)
     return roots
 
 

@@ -9409,23 +9409,33 @@ class ClaudeTokenKitTests(unittest.TestCase):
             shell_entrypoint = root / "context-guard-shell-demo"
             shell_entrypoint.write_text("#!/usr/bin/env sh\necho shell-ok:$1\n", encoding="utf-8")
             shell_entrypoint.chmod(0o700)
-            toolcache_root = root / "hostedtoolcache"
-            toolcache_bin = toolcache_root / "node" / "22.0.0" / "x64" / "bin"
+            trusted_toolcache_root = root / "trusted-hostedtoolcache"
+            toolcache_root = trusted_toolcache_root / "node"
+            toolcache_bin = toolcache_root / "22.0.0" / "x64" / "bin"
             toolcache_bin.mkdir(parents=True)
             for tool_name in ("node", "npm"):
                 tool = toolcache_bin / tool_name
                 tool.write_text("#!/bin/sh\necho toolcache-" + tool_name + "\n", encoding="utf-8")
                 tool.chmod(0o700)
+            attacker_toolcache_root = root / "attacker-toolcache"
+            attacker_toolcache_bin = attacker_toolcache_root / "node" / "99.0.0" / "x64" / "bin"
+            attacker_toolcache_bin.mkdir(parents=True)
+            attacker_npm = attacker_toolcache_bin / "npm"
+            attacker_npm.write_text("#!/bin/sh\necho attacker-npm-used\nexit 99\n", encoding="utf-8")
+            attacker_npm.chmod(0o700)
+            old_trusted_prefixes = smoke.TRUSTED_CI_TOOLCACHE_PREFIXES
+            smoke.TRUSTED_CI_TOOLCACHE_PREFIXES = (str(trusted_toolcache_root),)
             original_path = os.environ.get("PATH")
             old_github_actions = os.environ.get("GITHUB_ACTIONS")
             old_runner_tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
-            os.environ["PATH"] = str(fake_bin) + os.pathsep + str(toolcache_bin) + os.pathsep + (original_path or "")
+            os.environ["PATH"] = str(fake_bin) + os.pathsep + str(attacker_toolcache_bin) + os.pathsep + str(toolcache_bin) + os.pathsep + (original_path or "")
             os.environ["GITHUB_ACTIONS"] = "true"
             os.environ["RUNNER_TOOL_CACHE"] = str(toolcache_root)
             try:
                 env = smoke.smoke_environment(home, temp)
                 trusted_path_parts = env["PATH"].split(os.pathsep)
                 self.assertNotIn(str(fake_bin), trusted_path_parts)
+                self.assertNotIn(str(attacker_toolcache_bin.resolve()), trusted_path_parts)
                 self.assertIn(str(toolcache_bin.resolve()), trusted_path_parts)
                 self.assertEqual(Path(smoke.trusted_which("npm")).resolve(), (toolcache_bin / "npm").resolve())
                 for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
@@ -9473,6 +9483,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     os.environ.pop("RUNNER_TOOL_CACHE", None)
                 else:
                     os.environ["RUNNER_TOOL_CACHE"] = old_runner_tool_cache
+                smoke.TRUSTED_CI_TOOLCACHE_PREFIXES = old_trusted_prefixes
 
     def test_release_smoke_run_command_passes_bounded_output_to_expectation(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_success")
