@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import queue
@@ -36,6 +37,18 @@ REQUIRED_COMMANDS = (
     "context-guard-diet",
     "context-guard-audit",
 )
+COMMAND_MANIFEST_LITERAL_NAMES = {
+    "IMPLEMENTATION_PAIRS",
+    "HELPER_PAIRS",
+    "NPM_BINS",
+    "NPM_BIN_PATHS",
+    "DISPATCHER_SUBCOMMANDS",
+    "LEGACY_WRAPPERS",
+    "ENTRYPOINT_SMOKE_CASES",
+    "PLUGIN_ENTRYPOINTS",
+    "DISPATCHER_SMOKE_CASES",
+}
+COMMAND_MANIFEST_ALLOWED_FUNCTIONS = {"expected_command_pack_files"}
 
 
 def manifest_open_flags() -> int | None:
@@ -82,17 +95,52 @@ def read_manifest_source(path: Path) -> str | None:
                 pass
 
 
+def literal_command_manifest_from_source(source: str) -> dict[str, Any]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError(f"invalid Python manifest syntax: line {exc.lineno}: {exc.msg}") from exc
+    values: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module in {"__future__", "typing"}:
+            continue
+        if isinstance(node, ast.FunctionDef) and node.name in COMMAND_MANIFEST_ALLOWED_FUNCTIONS and not node.decorator_list:
+            continue
+        target: str | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+            value = node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target = node.targets[0].id
+            value = node.value
+        if target is None:
+            raise ValueError(f"unsupported executable manifest statement: {type(node).__name__}")
+        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
+            raise ValueError(f"unsupported manifest assignment: {target}")
+        try:
+            values[target] = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"manifest assignment must be a literal: {target}") from exc
+    return values
+
+
 def load_command_manifest():
     manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
     source = read_manifest_source(manifest_path)
     if source is None:
         raise SystemExit(f"could not load trusted command manifest source: {manifest_path}")
-    namespace: dict[str, object] = {}
     try:
-        exec(compile(source, str(manifest_path), "exec"), namespace)
-    except Exception as exc:
-        raise SystemExit(f"could not execute trusted command manifest source: {manifest_path}: {exc}") from exc
-    return type("CommandManifest", (), namespace)
+        values = literal_command_manifest_from_source(source)
+    except ValueError as exc:
+        raise SystemExit(f"could not parse trusted command manifest literals: {manifest_path}: {exc}") from exc
+    required = {"ENTRYPOINT_SMOKE_CASES", "DISPATCHER_SMOKE_CASES"}
+    missing = sorted(required - values.keys())
+    if missing:
+        raise SystemExit(f"trusted command manifest missing required literals: {', '.join(missing)}")
+    return type("CommandManifest", (), values)
 
 
 COMMAND_MANIFEST = load_command_manifest()
@@ -946,10 +994,22 @@ def run_npm_package_smoke(timeout: float) -> None:
             fail(f"npm install isolated package smoke exited {install.proc.returncode}: {(install.proc.stderr or install.proc.stdout).strip()[:500]}")
 
         isolated_bin = install_prefix / "node_modules" / ".bin"
+        package_root = install_prefix / "node_modules" / "@ictechgy" / "context-guard"
         context_guard = isolated_bin / "context-guard"
         if not context_guard.is_file():
             fail(f"isolated npm install missing context-guard bin: {context_guard}")
         require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
+
+        for wrapper in COMMAND_MANIFEST.LEGACY_WRAPPERS:
+            packaged_wrapper = package_root / "plugins" / "context-guard" / "bin" / str(wrapper)
+            if not packaged_wrapper.is_file():
+                fail(f"isolated npm package missing legacy compatibility wrapper file: {packaged_wrapper}")
+            mode = stat.S_IMODE(packaged_wrapper.stat().st_mode)
+            if mode & stat.S_IXUSR == 0:
+                fail(f"legacy compatibility wrapper is not owner-executable in package: {packaged_wrapper}")
+            npm_bin_wrapper = isolated_bin / str(wrapper)
+            if npm_bin_wrapper.exists():
+                fail(f"legacy compatibility wrapper must not be exposed as an npm bin link: {npm_bin_wrapper}")
 
         run_command(
             entrypoint_launch_argv(context_guard, ["--help"], trusted_root=install_prefix),

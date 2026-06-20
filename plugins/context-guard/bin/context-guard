@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import ast
 from pathlib import Path
 import subprocess
 import stat
 import sys
-from types import ModuleType
 from typing import Any, NoReturn
 
 COMMAND_NAME = "context-guard"
@@ -26,6 +26,18 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
 }
 
 MANIFEST_LOAD_ERROR: str | None = None
+COMMAND_MANIFEST_LITERAL_NAMES = {
+    "IMPLEMENTATION_PAIRS",
+    "HELPER_PAIRS",
+    "NPM_BINS",
+    "NPM_BIN_PATHS",
+    "DISPATCHER_SUBCOMMANDS",
+    "LEGACY_WRAPPERS",
+    "ENTRYPOINT_SMOKE_CASES",
+    "PLUGIN_ENTRYPOINTS",
+    "DISPATCHER_SMOKE_CASES",
+}
+COMMAND_MANIFEST_ALLOWED_FUNCTIONS = {"expected_command_pack_files"}
 
 
 def _manifest_candidates(script_dir: Path) -> tuple[Path, ...]:
@@ -84,16 +96,43 @@ def _read_manifest_source(path: Path) -> str | None:
                 pass
 
 
-def _load_manifest_from_path(path: Path) -> ModuleType | None:
+def _literal_manifest_assignments(source: str) -> dict[str, Any] | None:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    values: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module in {"__future__", "typing"}:
+            continue
+        if isinstance(node, ast.FunctionDef) and node.name in COMMAND_MANIFEST_ALLOWED_FUNCTIONS and not node.decorator_list:
+            continue
+        target: str | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+            value = node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target = node.targets[0].id
+            value = node.value
+        if target is None:
+            return None
+        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
+            return None
+        try:
+            values[target] = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return None
+    return values
+
+
+def _load_manifest_from_path(path: Path) -> dict[str, Any] | None:
     source = _read_manifest_source(path)
     if source is None:
         return None
-    module = ModuleType("_context_guard_commands_manifest")
-    try:
-        exec(compile(source, str(path), "exec"), module.__dict__)
-    except Exception:
-        return None
-    return module
+    return _literal_manifest_assignments(source)
 
 
 def _coerce_helper_subcommands(value: Any) -> dict[str, tuple[str, ...]] | None:
@@ -119,10 +158,10 @@ def load_helper_subcommands() -> dict[str, tuple[str, ...]]:
     script_dir = Path(__file__).resolve().parent
     candidates = _manifest_candidates(script_dir)
     for candidate in candidates:
-        module = _load_manifest_from_path(candidate)
-        if module is None:
+        manifest = _load_manifest_from_path(candidate)
+        if manifest is None:
             continue
-        loaded = _coerce_helper_subcommands(getattr(module, "DISPATCHER_SUBCOMMANDS", None))
+        loaded = _coerce_helper_subcommands(manifest.get("DISPATCHER_SUBCOMMANDS"))
         if loaded is not None:
             MANIFEST_LOAD_ERROR = None
             return loaded

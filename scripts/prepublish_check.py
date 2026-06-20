@@ -7,6 +7,7 @@ from a maintainer shell before publishing the marketplace/plugin package.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import py_compile
@@ -73,6 +74,18 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
+COMMAND_MANIFEST_LITERAL_NAMES = {
+    "IMPLEMENTATION_PAIRS",
+    "HELPER_PAIRS",
+    "NPM_BINS",
+    "NPM_BIN_PATHS",
+    "DISPATCHER_SUBCOMMANDS",
+    "LEGACY_WRAPPERS",
+    "ENTRYPOINT_SMOKE_CASES",
+    "PLUGIN_ENTRYPOINTS",
+    "DISPATCHER_SMOKE_CASES",
+}
+COMMAND_MANIFEST_ALLOWED_FUNCTIONS = {"expected_command_pack_files"}
 
 def manifest_open_flags() -> int | None:
     if not hasattr(os, "O_NOFOLLOW"):
@@ -118,17 +131,63 @@ def read_manifest_source(path: Path) -> str | None:
                 pass
 
 
+def literal_command_manifest_from_source(source: str) -> dict[str, object]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ValueError(f"invalid Python manifest syntax: line {exc.lineno}: {exc.msg}") from exc
+    values: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module in {"__future__", "typing"}:
+            continue
+        if isinstance(node, ast.FunctionDef) and node.name in COMMAND_MANIFEST_ALLOWED_FUNCTIONS and not node.decorator_list:
+            continue
+        target: str | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target.id
+            value = node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target = node.targets[0].id
+            value = node.value
+        if target is None:
+            raise ValueError(f"unsupported executable manifest statement: {type(node).__name__}")
+        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
+            raise ValueError(f"unsupported manifest assignment: {target}")
+        try:
+            values[target] = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"manifest assignment must be a literal: {target}") from exc
+    return values
+
+
+def expected_command_pack_files_from_manifest(manifest: dict[str, object]) -> tuple[str, ...]:
+    implementation_pairs = manifest.get("IMPLEMENTATION_PAIRS", ())
+    helper_pairs = manifest.get("HELPER_PAIRS", ())
+    legacy_wrappers = manifest.get("LEGACY_WRAPPERS", ())
+    files = {f"plugins/context-guard/bin/{bin_name}" for _kit_name, bin_name in implementation_pairs}
+    files.update(f"plugins/context-guard/{plugin_rel}" for _kit_name, plugin_rel in helper_pairs)
+    files.update(f"plugins/context-guard/bin/{wrapper}" for wrapper in legacy_wrappers)
+    return tuple(sorted(files))
+
+
 def load_command_manifest():
     manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
     source = read_manifest_source(manifest_path)
     if source is None:
         raise SystemExit(f"could not load trusted command manifest source: {manifest_path}")
-    namespace: dict[str, object] = {}
     try:
-        exec(compile(source, str(manifest_path), "exec"), namespace)
-    except Exception as exc:
-        raise SystemExit(f"could not execute trusted command manifest source: {manifest_path}: {exc}") from exc
-    return type("CommandManifest", (), namespace)
+        values = literal_command_manifest_from_source(source)
+    except ValueError as exc:
+        raise SystemExit(f"could not parse trusted command manifest literals: {manifest_path}: {exc}") from exc
+    required = {"IMPLEMENTATION_PAIRS", "HELPER_PAIRS", "NPM_BINS", "LEGACY_WRAPPERS"}
+    missing = sorted(required - values.keys())
+    if missing:
+        raise SystemExit(f"trusted command manifest missing required literals: {', '.join(missing)}")
+    values["expected_command_pack_files"] = staticmethod(lambda manifest=values: expected_command_pack_files_from_manifest(manifest))
+    return type("CommandManifest", (), values)
 
 
 COMMAND_MANIFEST = load_command_manifest()

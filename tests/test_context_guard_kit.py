@@ -380,6 +380,12 @@ class ClaudeTokenKitTests(unittest.TestCase):
         )
         self.assertEqual(set(COMMAND_MANIFEST.NPM_BINS), {bin_name for _kit, bin_name in COMMAND_MANIFEST.IMPLEMENTATION_PAIRS})
         self.assertIsNot(COMMAND_MANIFEST.NPM_BINS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
+        self.assertTrue(
+            set(COMMAND_MANIFEST.LEGACY_WRAPPERS).isdisjoint(set(COMMAND_MANIFEST.NPM_BINS)),
+            "legacy compatibility wrappers ship as package files but are not npm bin links",
+        )
+        for wrapper in COMMAND_MANIFEST.LEGACY_WRAPPERS:
+            self.assertNotIn(wrapper, package["bin"])
         self.assertEqual(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS), set(COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES))
         self.assertTrue(set(COMMAND_MANIFEST.LEGACY_WRAPPERS).issubset(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS)))
 
@@ -405,6 +411,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(smoke.DISPATCHER_SMOKE_COMMANDS, COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES)
         self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS))
         self.assertEqual(smoke.npm_dispatcher_smoke_plan(), COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES)
+
+    def test_command_manifest_loaders_reject_executable_python(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_literal_manifest_test")
+        prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_literal_manifest_test")
+        malicious = "DISPATCHER_SUBCOMMANDS = {'setup': ('context-guard-setup',)}\nraise RuntimeError('executed')\n"
+        non_literal = "DISPATCHER_SUBCOMMANDS = dict(setup=('context-guard-setup',))\n"
+        for loader in (smoke.literal_command_manifest_from_source, prepublish.literal_command_manifest_from_source):
+            with self.subTest(loader=loader.__module__, case="executable"):
+                with self.assertRaises(ValueError):
+                    loader(malicious)
+            with self.subTest(loader=loader.__module__, case="non-literal"):
+                with self.assertRaises(ValueError):
+                    loader(non_literal)
 
     def test_context_guard_dispatcher_ignores_pythonpath_command_manifest_shadow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -480,6 +499,29 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 check=True,
             )
             self.assertRegex(version_proc.stdout.strip(), r"^\d+\.\d+\.\d+")
+
+    def test_staged_plugin_dispatcher_rejects_executable_command_manifest(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_exec_reject_test")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staged = smoke.copy_plugin_package_for_smoke(PLUGIN_DIR, root / "installed-plugin")
+            manifest = staged / "lib" / "context_guard_commands.py"
+            manifest.write_text(
+                "DISPATCHER_SUBCOMMANDS = {'setup': ('context-guard-setup',)}\n"
+                "raise RuntimeError('manifest executed')\n",
+                encoding="utf-8",
+            )
+            dispatcher = staged / "bin" / "context-guard"
+
+            proc = subprocess.run(
+                [str(dispatcher), "--help"],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("could not load trusted command manifest", proc.stderr)
+            self.assertNotIn("manifest executed", proc.stderr)
 
     def test_context_filter_validates_and_filters_successful_output(self):
         for script in FILTER_SCRIPTS:

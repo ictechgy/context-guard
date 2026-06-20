@@ -62,7 +62,27 @@ NPM_BINS: tuple[str, ...] = (
     "context-guard-trim-output",
 )
 NPM_BIN_PATHS: dict[str, str] = {
-    name: f"plugins/context-guard/bin/{name}" for name in NPM_BINS
+    "context-guard": "plugins/context-guard/bin/context-guard",
+    "context-guard-cost": "plugins/context-guard/bin/context-guard-cost",
+    "context-guard-cache-score": "plugins/context-guard/bin/context-guard-cache-score",
+    "context-guard-bench": "plugins/context-guard/bin/context-guard-bench",
+    "context-guard-artifact": "plugins/context-guard/bin/context-guard-artifact",
+    "context-guard-compress": "plugins/context-guard/bin/context-guard-compress",
+    "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
+    "context-guard-filter": "plugins/context-guard/bin/context-guard-filter",
+    "context-guard-tool-prune": "plugins/context-guard/bin/context-guard-tool-prune",
+    "context-guard-audit": "plugins/context-guard/bin/context-guard-audit",
+    "context-guard-diet": "plugins/context-guard/bin/context-guard-diet",
+    "context-guard-experiments": "plugins/context-guard/bin/context-guard-experiments",
+    "context-guard-failed-nudge": "plugins/context-guard/bin/context-guard-failed-nudge",
+    "context-guard-guard-read": "plugins/context-guard/bin/context-guard-guard-read",
+    "context-guard-read-symbol": "plugins/context-guard/bin/context-guard-read-symbol",
+    "context-guard-rewrite-bash": "plugins/context-guard/bin/context-guard-rewrite-bash",
+    "context-guard-sanitize-output": "plugins/context-guard/bin/context-guard-sanitize-output",
+    "context-guard-setup": "plugins/context-guard/bin/context-guard-setup",
+    "context-guard-statusline": "plugins/context-guard/bin/context-guard-statusline",
+    "context-guard-statusline-merged": "plugins/context-guard/bin/context-guard-statusline-merged",
+    "context-guard-trim-output": "plugins/context-guard/bin/context-guard-trim-output",
 }
 
 DISPATCHER_SUBCOMMANDS: dict[str, tuple[str, ...]] = {

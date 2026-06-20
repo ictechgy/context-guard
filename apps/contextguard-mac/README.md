@@ -17,7 +17,7 @@ cd apps/contextguard-mac
 swift run ContextGuardMac
 ```
 
-The prototype does not resolve `context-guard-audit` from arbitrary `PATH`. When launched from this repository it uses the repo-local helper at `../../plugins/context-guard/bin/context-guard-audit` as a trusted executable fallback and rejects fallback paths that traverse symlinks.
+The prototype does not resolve `context-guard-audit` from arbitrary `PATH`. It discovers trusted repo-local helpers by walking from durable anchors (the app bundle/executable, Swift source anchor, or current working directory during development) until it finds `plugins/context-guard/bin/context-guard-audit`, then rejects fallback paths that traverse symlinks. For explicit local testing, set `CONTEXT_GUARD_MAC_AUDIT_EXECUTABLE` to an absolute helper path; the same executable and no-symlink validation applies.
 
 ## Test
 
