@@ -102,6 +102,25 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertNil(discovered)
     }
 
+    func testDefaultExecutableDiscoveryRejectsRelativeEnvironmentOverride() throws {
+        let temp = try temporaryDirectory()
+        let maliciousBin = temp.appendingPathComponent("plugins/context-guard/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: maliciousBin, withIntermediateDirectories: true)
+        _ = try writeHelper(in: maliciousBin, body: "echo malicious-cwd-helper\n")
+        let previous = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(temp.path))
+        defer { XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(previous)) }
+
+        let discovered = AuditCLIAdapter.defaultTrustedAuditExecutable(
+            searchAnchors: [],
+            environment: [
+                AuditCLIAdapter.explicitAuditExecutableEnvironmentKey: "plugins/context-guard/bin/context-guard-audit"
+            ]
+        )
+
+        XCTAssertNil(discovered)
+    }
+
     func testExecutableNotFoundIsActionable() throws {
         let adapter = AuditCLIAdapter(timeout: 1, environment: ["PATH": ""])
         XCTAssertThrowsError(try adapter.resolveExecutable()) { error in
@@ -241,6 +260,37 @@ final class AuditCLIAdapterTests: XCTestCase {
         let mode = try adapter.runRaw(transcriptDirectory: temp).trimmingCharacters(in: .whitespacesAndNewlines)
 
         XCTAssertEqual(mode, "700")
+    }
+
+    func testRunRawScrubsUnsafeEnvironmentAndKeepsAllowedLocale() throws {
+        let temp = try temporaryDirectory()
+        let helper = try writeHelper(
+            in: temp,
+            body: """
+            if [ -n "${PYTHONPATH:-}" ] || [ -n "${DYLD_INSERT_LIBRARIES:-}" ] || [ -n "${LD_PRELOAD:-}" ] || [ -n "${TMPDIR:-}" ]; then
+              echo leaked
+            else
+              printf 'clean:%s\n' "${LANG:-missing}"
+            fi
+
+            """
+        )
+        let adapter = AuditCLIAdapter(
+            fallbackExecutableURL: helper,
+            timeout: 2,
+            environment: [
+                "PATH": "",
+                "PYTHONPATH": "malicious-pythonpath",
+                "DYLD_INSERT_LIBRARIES": "/tmp/malicious.dylib",
+                "LD_PRELOAD": "/tmp/malicious.so",
+                "TMPDIR": temp.path,
+                "LANG": "en_US.UTF-8",
+            ]
+        )
+
+        let output = try adapter.runRaw(transcriptDirectory: temp).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        XCTAssertEqual(output, "clean:en_US.UTF-8")
     }
 
     func testTimeoutDoesNotHang() throws {
