@@ -4,13 +4,17 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
-- Added `context-guard-bench` public claim readiness gates in report JSON and dashboards so release/public savings claims require matched successful tasks, provider-measured token/cost, quality non-inferiority, shifted-cost accounting, explicit confidence/failure notes, and complete provider-export provenance; unsupported hosted savings claims remain forbidden unless `public_claim_readiness.claim_allowed` is true.
-- Added a `context-guard-bench` default matrix in report JSON and dashboards that classifies trimming, artifact escrow, tool pruning, cache advice, adaptive-k, and optional compression from matched-pair evidence while remaining report-only and claim-safe.
-- Added explicit `context-guard experiments serve local-proxy --response-sandbox` mode that stores safe UTF-8 loopback upstream responses as sanitized local artifact receipts and returns a compact JSON rehydration envelope instead of the raw body; binary/sensitive/oversized/blocked responses are not artifacted, and the mode remains local-only with no hosted token/cost savings claim.
-- Added an agent-facing `context-guard-artifact receipt` / `output_sandbox` envelope so large sanitized command outputs carry a stable `contextguard-artifact:<id>` handle, compact local-only summary, and exact rehydration commands without exposing custom artifact paths by default.
-- Added `context-guard-bench --evidence-jsonl` replay and `--dashboard-md` rendering so synthetic/local benchmark evidence can regenerate CSV/report/dashboard artifacts while remaining non-public-claim-eligible unless provider-export provenance is complete.
-- Extended Batch 1 token-savings advisory reports with cache-score amortization risk fields, tool-prune deferred-schema proxy accounting, and a benchmark measurement-baseline contract while preserving local-only/no-savings-claim boundaries.
-- Clarified cache-score amortization output for cache-read multipliers above uncached cost by reporting a bounded `max_profitable_reuses` instead of a monotonic break-even reuse count.
+## [0.4.11] - 2026-06-21
+
+- Hardened token-savings advisory surfaces with cache-score amortization risk accounting, tool-prune deferred-schema proxy accounting, and benchmark measurement-baseline contracts while preserving claim-safe boundaries.
+- Added benchmark evidence replay dashboards, default matrix reporting, and public claim readiness gates so public savings claims remain blocked unless matched successful tasks, provider-measured tokens/cost, quality non-inferiority, shifted-cost accounting, confidence notes, and complete provider-export provenance all pass.
+- Added output artifact sandbox receipts and local artifact search with stable `contextguard-artifact:<id>` handles, compact summaries, exact rehydration commands, custom-dir path redaction, and no hosted savings claims.
+- Added local-proxy response sandbox envelopes for safe UTF-8 loopback responses, plus docs and safety tests that keep proxy behavior one-shot, literal-loopback, credential-free, and non-claimable for hosted token/cost savings.
+- Productionized adaptive context packing as explicit `--adaptive-k` policies and `--symbol-memory` source-verification metadata without automatically changing manifests, packs, receipts, or provider-savings claims.
+- Hardened large-input processing bounds, private helper IO, adjacent helper loading, release smoke execution, and symlink/no-follow handling for artifact, tool-prune, benchmark, setup, and related helper paths.
+- Constrained release and runtime command manifests to literal-only data, kept legacy `claude-*` wrappers packaged but out of npm `.bin` aliases, and locked npm/package smoke checks to canonical `context-guard`/`context-guard-*` entrypoints.
+- Constrained macOS visibility helper discovery to bundled/resource/executable-relative paths or absolute explicit overrides, removed launch-CWD trust, rejected relative overrides, and launched the helper with a minimal allowlisted child environment.
+- Polished README, Korean README, and GitHub Pages copy after Claude review so setup, packaging, helper trust, and conservative savings-claim boundaries match the shipped product.
 
 ## [0.4.10] - 2026-06-14
 
