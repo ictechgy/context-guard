@@ -115,7 +115,6 @@ PROCESS_TERMINATE_GRACE_SECONDS = 2.0
 PROCESS_SELECT_TIMEOUT_SECONDS = 0.05
 ENTRYPOINT_SHEBANG_MAX_BYTES = 512
 PRESERVED_ENV_KEYS = (
-    "PATH",
     "SYSTEMROOT",
     "WINDIR",
     "COMSPEC",
@@ -247,6 +246,39 @@ def require_path_inside(child: Path, parent: Path, *, label: str) -> None:
         fail(f"{label} resolved outside isolated npm prefix: {child}")
 
 
+def trusted_smoke_path() -> str:
+    """Build a narrow PATH for smoke children without inheriting ambient order.
+
+    The packaged entrypoints intentionally run via their real shebangs so the
+    smoke gate still validates what users execute.  The PATH they see is
+    constrained to the current Python and required tool directories, preventing
+    a caller-controlled PATH from hijacking `/usr/bin/env python3` shebangs.
+    """
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    def add_dir(path: str | Path | None) -> None:
+        if not path:
+            return
+        try:
+            directory = Path(path).resolve(strict=True)
+        except OSError:
+            return
+        if directory.is_file():
+            directory = directory.parent
+        value = str(directory)
+        if value not in seen:
+            seen.add(value)
+            dirs.append(value)
+
+    add_dir(Path(sys.executable))
+    for tool in ("node", "npm", "git", "sh", "bash"):
+        add_dir(shutil.which(tool))
+    for directory in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+        add_dir(directory)
+    return os.pathsep.join(dirs)
+
+
 def read_entrypoint_shebang(path: Path) -> str:
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -264,7 +296,7 @@ def read_entrypoint_shebang(path: Path) -> str:
         data = os.read(fd, ENTRYPOINT_SHEBANG_MAX_BYTES)
     finally:
         os.close(fd)
-    first = data.splitlines()[0] if data.splitlines() else b""
+    first = data.split(b"\n", 1)[0].rstrip(b"\r")
     return first.decode("utf-8", errors="replace")
 
 
@@ -276,9 +308,7 @@ def entrypoint_launch_argv(path: Path, args: list[str], *, trusted_root: Path | 
     if trusted_root is not None:
         require_path_inside(resolved, trusted_root, label=f"{path.name} entrypoint target")
     inspected = resolved if path.is_symlink() else path
-    shebang = read_entrypoint_shebang(inspected).lower()
-    if shebang.startswith("#!") and "python" in shebang:
-        return [sys.executable, str(inspected), *args]
+    read_entrypoint_shebang(inspected)
     return [str(path), *args]
 
 
@@ -314,6 +344,7 @@ def smoke_environment(home: Path, tmp: Path) -> dict[str, str]:
     env = {key: value for key in PRESERVED_ENV_KEYS if (value := os.environ.get(key))}
     env.update(
         {
+            "PATH": trusted_smoke_path(),
             "HOME": str(home),
             "USERPROFILE": str(home),
             "XDG_CONFIG_HOME": str(home / ".config"),

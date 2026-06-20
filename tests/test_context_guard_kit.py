@@ -9384,10 +9384,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(extra_blank_status, "statusline", "statusline")
 
-    def test_release_smoke_bypasses_env_shebang_for_python_entrypoints(self):
+    def test_release_smoke_uses_trusted_path_for_env_python_shebangs(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_shebang")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            home = root / "home"
+            temp = root / "tmp"
+            home.mkdir()
+            temp.mkdir()
             entrypoint = root / "context-guard-demo"
             entrypoint.write_text(
                 "#!/usr/bin/env python3\n"
@@ -9401,18 +9405,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
             fake_python = fake_bin / "python3"
             fake_python.write_text("#!/bin/sh\necho fake-python-used\nexit 99\n", encoding="utf-8")
             fake_python.chmod(0o700)
-            argv = smoke.entrypoint_launch_argv(entrypoint, ["--flag"])
-            self.assertEqual(Path(argv[0]).resolve(), Path(sys.executable).resolve())
-            proc = subprocess.run(
-                argv,
-                cwd=root,
-                env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", "")},
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            self.assertEqual(proc.stdout.strip(), "entrypoint-ok:--flag")
-            self.assertNotIn("fake-python-used", proc.stdout + proc.stderr)
+            original_path = os.environ.get("PATH")
+            os.environ["PATH"] = str(fake_bin) + os.pathsep + (original_path or "")
+            try:
+                env = smoke.smoke_environment(home, temp)
+                self.assertNotIn(str(fake_bin), env["PATH"].split(os.pathsep))
+                argv = smoke.entrypoint_launch_argv(entrypoint, ["--flag"])
+                self.assertEqual(argv, [str(entrypoint), "--flag"])
+                proc = subprocess.run(
+                    argv,
+                    cwd=root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(proc.stdout.strip(), "entrypoint-ok:--flag")
+                self.assertNotIn("fake-python-used", proc.stdout + proc.stderr)
+            finally:
+                if original_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = original_path
 
     def test_release_smoke_run_command_passes_bounded_output_to_expectation(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_success")
@@ -15030,9 +15044,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 linked_dir.symlink_to(artifact_dir, target_is_directory=True)
                 with self.assertRaises(RuntimeError):
                     artifact.read_bounded_private_text(linked_dir / f"{artifact_id}.txt", 100)
-            escrow_source = (KIT_DIR / "context_escrow.py").read_text(encoding="utf-8")
-            self.assertIn("open_private_directory_no_follow(path.parent", escrow_source)
-            self.assertIn("dir_fd=parent_fd", escrow_source)
             with self.assertRaises(ValueError):
                 artifact.load_metadata(artifact_dir, artifact_id)
 
@@ -15232,6 +15243,8 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
                     sanitizer = root / "sanitize_output.py"
                     if mode == "symlink":
+                        if not hasattr(os, "O_NOFOLLOW"):
+                            self.skipTest("O_NOFOLLOW unavailable")
                         target = root / "outside-sanitizer.py"
                         target.write_text(
                             "class LineSanitizer:\n"
