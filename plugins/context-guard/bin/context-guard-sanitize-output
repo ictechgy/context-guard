@@ -114,6 +114,7 @@ DEFAULT_TIMEOUT_SECONDS = 600
 MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
+COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -522,11 +523,11 @@ def terminate_process_tree(
 class TimedCommandStream:
     def __init__(
         self,
-        proc: subprocess.Popen[str],
+        proc: subprocess.Popen[bytes],
         stdout: BinaryIO,
         *,
         timeout_seconds: int,
-        max_line_chars: int,
+        max_line_chars: int = MAX_LINE_CHARS_LIMIT,
         process_group_id: int | None = None,
     ) -> None:
         self.proc = proc
@@ -563,13 +564,22 @@ class TimedCommandStream:
 
                 newline_index = pending.find("\n")
                 if newline_index != -1:
-                    self._queue.put(pending[: newline_index + 1])
+                    if newline_index > self.max_unterminated_line_chars:
+                        self._queue.put(
+                            pending[: self.max_unterminated_line_chars]
+                            + (
+                                "...[context-guard-kit: raw line truncated before newline "
+                                f"after {self.max_unterminated_line_chars} chars]\n"
+                            )
+                        )
+                    else:
+                        self._queue.put(pending[: newline_index + 1])
                     pending = pending[newline_index + 1 :]
                     continue
 
                 if len(pending) > self.max_unterminated_line_chars:
                     self._queue.put(
-                        pending[: self.max_unterminated_line_chars + 1]
+                        pending[: self.max_unterminated_line_chars]
                         + (
                             "...[context-guard-kit: raw line truncated before newline "
                             f"after {self.max_unterminated_line_chars} chars]\n"
@@ -661,8 +671,8 @@ def run_command(
     command: list[str],
     timeout_seconds: int,
     *,
-    max_line_chars: int,
-) -> tuple[Iterable[str], subprocess.Popen[str] | None, int | None]:
+    max_line_chars: int = MAX_LINE_CHARS_LIMIT,
+) -> tuple[Iterable[str], subprocess.Popen[bytes] | None, int | None]:
     popen_kwargs: dict[str, object] = {}
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
@@ -734,14 +744,14 @@ def main() -> int:
     if command and command[0] == "--":
         command = command[1:]
 
-    proc: subprocess.Popen[str] | None = None
+    proc: subprocess.Popen[bytes] | None = None
     command_stream: TimedCommandStream | None = None
     early_rc: int | None = None
     if command:
         stream, proc, early_rc = run_command(
             command,
             args.timeout_seconds,
-            max_line_chars=args.max_line_chars,
+            max_line_chars=COMMAND_MAX_UNTERMINATED_LINE_CHARS,
         )
         if isinstance(stream, TimedCommandStream):
             command_stream = stream

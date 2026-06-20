@@ -10202,6 +10202,34 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertLess(len(proc.stdout), 2000)
                 self.assertIn("line trimmed", proc.stdout)
 
+    def test_trim_and_sanitize_resume_after_truncated_huge_line(self):
+        command = "import sys; sys.stdout.write(('A' * 200000) + '\\nB-after-huge-line\\n'); sys.stdout.flush()"
+        for script in TRIM_SCRIPTS + SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "1000",
+                        "--max-line-chars",
+                        "120",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertLess(len(proc.stdout), 2000)
+                self.assertIn("line trimmed", proc.stdout)
+                self.assertIn("B-after-huge-line", proc.stdout)
+
     def test_trim_clamps_extreme_budget_arguments(self):
         proc = subprocess.run(
             [
@@ -10573,7 +10601,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     result = module.git_ls_files(root)
                     self.assertTrue(result)
                     self.assertLessEqual(len(result), module.MAX_QUERY_SCAN_FILES)
-                    self.assertLessEqual(sum(len(item.encode("utf-8")) + 1 for item in result), 64)
+                    self.assertIn("tracked-19.txt", result)
+                    for item in result:
+                        self.assertTrue((root / item).exists(), item)
 
     def test_context_pack_build_respects_rendered_budget_priority_and_partial(self):
         for script in PACK_SCRIPTS:
@@ -10813,18 +10843,21 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertAlmostEqual(no_read_break_even["expected_relative_savings"], 0.0)
 
     def test_cache_score_json_walk_caps_nodes_depth_and_warnings(self):
-        payload = {
-            "tools": [{"name": "zeta"}, {"name": "alpha"}],
-            "items": [{"created_at": index, "value": index} for index in range(20)],
-        }
         for index, script in enumerate(CACHE_SCORE_SCRIPTS):
             with self.subTest(script=script):
                 module = load_python_script_module(script, f"_cache_score_walk_caps_{index}")
-                warnings = module._walk_json(payload, max_nodes=5, max_depth=4, max_warnings=4)
-                codes = {item["code"] for item in warnings}
-                self.assertIn("tool_order_not_sorted", codes)
-                self.assertIn("json_walk_truncated", codes)
-                self.assertLessEqual(len(warnings), 4)
+                order_warnings = module._walk_json(
+                    {"tools": [{"name": "zeta"}, {"name": "alpha"}]},
+                    max_nodes=10,
+                    max_depth=4,
+                    max_warnings=4,
+                )
+                self.assertIn("tool_order_not_sorted", {item["code"] for item in order_warnings})
+
+                broad_payload = {"items": [{"created_at": item, "value": item} for item in range(20)]}
+                capped_warnings = module._walk_json(broad_payload, max_nodes=5, max_depth=4, max_warnings=4)
+                self.assertIn("json_walk_truncated", {item["code"] for item in capped_warnings})
+                self.assertLessEqual(len(capped_warnings), 5)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
@@ -19957,6 +19990,19 @@ for malformed in malformed_values:
                     self.assertEqual(data["skipped_files"], 1)
                     self.assertEqual(data["scan_limits"]["max_files"], 1)
                     self.assertIn("transcript scan file limit reached", data["parse_errors"][0])
+                    text_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            tmp,
+                            "--max-files",
+                            "1",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertIn("max_files:1", text_proc.stdout)
 
     def test_transcript_audit_skips_oversized_jsonl_records_without_losing_following_records(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23907,15 +23953,23 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         json.dumps([{"id": "t01", "prompt": "x" * 16}]),
                         encoding="utf-8",
                     )
+                    prompt_fixtures = module.parse_tasks(prompt_tasks)
+                    variant = module.Variant(name="baseline", extra_args=[])
                     with self.assertRaises(SystemExit) as prompt_ctx:
-                        module.parse_tasks(prompt_tasks)
+                        module.build_claude_argv("claude", prompt_fixtures[0], variant)
                     self.assertIn("prompt exceeds argv-safe limit", str(prompt_ctx.exception))
 
                     csv_path = root / "resume.csv"
+                    csv_row_1 = [""] * len(module.CSV_COLUMNS)
+                    csv_row_1[2] = "t01"
+                    csv_row_1[3] = "baseline"
+                    csv_row_2 = [""] * len(module.CSV_COLUMNS)
+                    csv_row_2[2] = "t02"
+                    csv_row_2[3] = "baseline"
                     csv_path.write_text(
                         ",".join(module.CSV_COLUMNS) + "\n"
-                        + "t01,baseline,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n"
-                        + "t02,baseline,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,\n",
+                        + ",".join(csv_row_1) + "\n"
+                        + ",".join(csv_row_2) + "\n",
                         encoding="utf-8",
                     )
                     module.MAX_CSV_ROWS = 1

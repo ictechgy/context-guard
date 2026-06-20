@@ -2268,7 +2268,10 @@ def main() -> int:
         f"files_scanned={summary.files} records={summary.records} "
         f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records}"
     )
-    print(f"scan_limits=max_file_bytes:{limits.max_file_bytes} max_line_bytes:{limits.max_line_bytes}")
+    print(
+        f"scan_limits=max_file_bytes:{limits.max_file_bytes} "
+        f"max_line_bytes:{limits.max_line_bytes} max_files:{limits.max_files}"
+    )
     print(f"observed_total_tokens={summary.total_tokens}")
     if summary.cost_usd:
         print(f"observed_cost_usd={summary.cost_usd:.4f}")

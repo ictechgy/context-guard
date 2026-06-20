@@ -784,10 +784,9 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
             raise SystemExit(
                 f"task {task_id} variant_prompts is not supported; use file-backed variant_prompt_files"
             )
-        prompt = require_argv_safe_prompt(str(item["prompt"]), owner=f"task {task_id}")
         fixtures.append(TaskFixture(
             id=task_id,
-            prompt=prompt,
+            prompt=str(item["prompt"]),
             model=str(item.get("model", "sonnet")),
             effort=str(effort_raw) if effort_raw is not None else None,
             max_turns=parse_positive_int(item.get("max_turns", 3), field="max_turns", owner=f"task {task_id}"),

@@ -262,24 +262,15 @@ def _walk_json(
         if isinstance(current, dict):
             previous_key: str | None = None
             keys_sorted = True
-            for key in current:
-                text_key = str(key)
-                if previous_key is not None and text_key < previous_key:
-                    keys_sorted = False
-                    break
-                previous_key = text_key
-            if not keys_sorted:
-                add_warning({
-                    "code": "json_object_key_order_not_sorted",
-                    "path": current_path,
-                    "severity": "info",
-                    "message": "Object keys are not in deterministic sorted order; keep generated JSON stable across runs.",
-                })
             remaining_child_slots = max(0, max_nodes - visited - len(stack))
             child_items: list[tuple[Any, str, int]] = []
             for key, item in current.items():
+                text_key = str(key)
+                if previous_key is not None and text_key < previous_key:
+                    keys_sorted = False
+                previous_key = text_key
                 child_path = json_path_child(current_path, key)
-                if DYNAMIC_JSON_KEY_RE.search(str(key)):
+                if DYNAMIC_JSON_KEY_RE.search(text_key):
                     add_warning({
                         "code": "dynamic_json_key",
                         "path": child_path,
@@ -290,6 +281,13 @@ def _walk_json(
                     capped_nodes = True
                     break
                 child_items.append((item, child_path, depth + 1))
+            if not keys_sorted:
+                add_warning({
+                    "code": "json_object_key_order_not_sorted",
+                    "path": current_path,
+                    "severity": "info",
+                    "message": "Object keys are not in deterministic sorted order; keep generated JSON stable across runs.",
+                })
             stack.extend(reversed(child_items))
         elif isinstance(current, list):
             if current_path.endswith(".tools") and all(isinstance(item, dict) and "name" in item for item in current):
@@ -322,8 +320,8 @@ def _walk_json(
         }
         if len(warnings) < max_warnings:
             warnings.append(cap_warning)
-        elif warnings:
-            warnings[-1] = cap_warning
+        elif max_warnings > 0:
+            warnings.append(cap_warning)
     return warnings
 
 
