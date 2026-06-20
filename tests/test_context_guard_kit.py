@@ -10230,6 +10230,35 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("line trimmed", proc.stdout)
                 self.assertIn("B-after-huge-line", proc.stdout)
 
+    def test_sanitize_does_not_emit_boundary_secret_prefix_on_raw_truncation(self):
+        token = "ghp_" + ("A" * 36)
+        filler = "X" * 4078
+        command = f"import sys; sys.stdout.write({(filler + token)!r}); sys.stdout.flush()"
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--max-lines",
+                        "20",
+                        "--max-chars",
+                        "6000",
+                        "--max-line-chars",
+                        "5000",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        command,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+                self.assertNotIn("ghp_", proc.stdout)
+                self.assertIn("withheld 1024 boundary chars", proc.stdout)
+
     def test_trim_clamps_extreme_budget_arguments(self):
         proc = subprocess.run(
             [
@@ -10596,12 +10625,14 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     subprocess.run([git, "init"], cwd=root, text=True, capture_output=True, check=True)
                     for number in range(20):
                         (root / f"tracked-{number:02d}.txt").write_text("x\n", encoding="utf-8")
+                    (root / ".gitignore").write_text("ignored-secret.txt\n", encoding="utf-8")
+                    (root / "ignored-secret.txt").write_text("token=ghp_" + ("A" * 36), encoding="utf-8")
                     subprocess.run([git, "add", "."], cwd=root, text=True, capture_output=True, check=True)
                     module.MAX_GIT_LS_FILES_OUTPUT_BYTES = 32
                     result = module.git_ls_files(root)
                     self.assertTrue(result)
                     self.assertLessEqual(len(result), module.MAX_QUERY_SCAN_FILES)
-                    self.assertIn("tracked-19.txt", result)
+                    self.assertNotIn("ignored-secret.txt", result)
                     for item in result:
                         self.assertTrue((root / item).exists(), item)
 
@@ -10857,7 +10888,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 broad_payload = {"items": [{"created_at": item, "value": item} for item in range(20)]}
                 capped_warnings = module._walk_json(broad_payload, max_nodes=5, max_depth=4, max_warnings=4)
                 self.assertIn("json_walk_truncated", {item["code"] for item in capped_warnings})
-                self.assertLessEqual(len(capped_warnings), 5)
+                self.assertLessEqual(len(capped_warnings), 4)
 
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
@@ -19988,6 +20019,8 @@ for malformed in malformed_values:
                     data = json.loads(proc.stdout)
                     self.assertEqual(data["files"], 1)
                     self.assertEqual(data["skipped_files"], 1)
+                    self.assertTrue(data["scan_truncated"])
+                    self.assertEqual(data["unscanned_files_lower_bound"], 1)
                     self.assertEqual(data["scan_limits"]["max_files"], 1)
                     self.assertIn("transcript scan file limit reached", data["parse_errors"][0])
                     text_proc = subprocess.run(
@@ -20003,6 +20036,7 @@ for malformed in malformed_values:
                         check=True,
                     )
                     self.assertIn("max_files:1", text_proc.stdout)
+                    self.assertIn("scan_truncated=true", text_proc.stdout)
 
     def test_transcript_audit_skips_oversized_jsonl_records_without_losing_following_records(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23960,12 +23994,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertIn("prompt exceeds argv-safe limit", str(prompt_ctx.exception))
 
                     csv_path = root / "resume.csv"
+                    task_id_index = module.CSV_COLUMNS.index("task_id")
+                    variant_index = module.CSV_COLUMNS.index("variant")
                     csv_row_1 = [""] * len(module.CSV_COLUMNS)
-                    csv_row_1[2] = "t01"
-                    csv_row_1[3] = "baseline"
+                    csv_row_1[task_id_index] = "t01"
+                    csv_row_1[variant_index] = "baseline"
                     csv_row_2 = [""] * len(module.CSV_COLUMNS)
-                    csv_row_2[2] = "t02"
-                    csv_row_2[3] = "baseline"
+                    csv_row_2[task_id_index] = "t02"
+                    csv_row_2[variant_index] = "baseline"
                     csv_path.write_text(
                         ",".join(module.CSV_COLUMNS) + "\n"
                         + ",".join(csv_row_1) + "\n"

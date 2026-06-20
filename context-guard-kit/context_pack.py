@@ -1562,7 +1562,7 @@ def git_ls_files(root: Path) -> list[str]:
         return raw_output, complete
 
     raw = b""
-    git_complete = False
+    git_returncode: int | None = None
     try:
         proc = subprocess.Popen(
             ["git", "-C", str(root), "ls-files", "-z"],
@@ -1570,11 +1570,16 @@ def git_ls_files(root: Path) -> list[str]:
             stderr=subprocess.DEVNULL,
             text=False,
         )
-        raw, git_complete = read_stdout_capped(proc, MAX_GIT_LS_FILES_OUTPUT_BYTES, 10)
+        raw, _git_complete = read_stdout_capped(proc, MAX_GIT_LS_FILES_OUTPUT_BYTES, 10)
+        git_returncode = proc.returncode
     except (OSError, subprocess.TimeoutExpired):
         proc = None
-    if raw and git_complete:
+    if raw:
+        if not raw.endswith(b"\0"):
+            raw = raw.rsplit(b"\0", 1)[0] if b"\0" in raw else b""
         return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part][:MAX_QUERY_SCAN_FILES]
+    if git_returncode == 0 or (git_returncode is not None and git_returncode < 0):
+        return []
     out: list[str] = []
     skip_dirs = {".git", ".omx", ".context-guard", "node_modules", "dist", "build", "__pycache__"}
     for current, dirs, files in os.walk(root):

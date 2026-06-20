@@ -318,10 +318,12 @@ def _walk_json(
             "max_depth": max_depth,
             "max_warnings": max_warnings,
         }
+        if max_warnings <= 0:
+            return warnings
         if len(warnings) < max_warnings:
             warnings.append(cap_warning)
-        elif max_warnings > 0:
-            warnings.append(cap_warning)
+        elif warnings:
+            warnings[-1] = cap_warning
     return warnings
 
 

@@ -171,6 +171,8 @@ class UsageSummary:
     files: int = 0
     records: int = 0
     skipped_files: int = 0
+    unscanned_files_lower_bound: int = 0
+    scan_truncated: bool = False
     skipped_records: int = 0
     parse_errors: list[str] = field(default_factory=list)
     tokens: Counter[str] = field(default_factory=Counter)
@@ -814,6 +816,8 @@ def scan(
     for file in iter_jsonl_files(paths):
         if summary.files >= limits.max_files:
             summary.skipped_files += 1
+            summary.unscanned_files_lower_bound += 1
+            summary.scan_truncated = True
             summary.note_error(
                 f"transcript scan file limit reached ({limits.max_files}); "
                 "rerun with narrower paths or --max-files if more evidence is required"
@@ -935,6 +939,8 @@ def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
         "files_scanned": summary.files,
         "records_scanned": summary.records,
         "skipped_files": summary.skipped_files,
+        "unscanned_files_lower_bound": summary.unscanned_files_lower_bound,
+        "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_error_count": len(summary.parse_errors),
         "complete": complete,
@@ -2161,6 +2167,8 @@ def summary_json(
         "files": summary.files,
         "records": summary.records,
         "skipped_files": summary.skipped_files,
+        "unscanned_files_lower_bound": summary.unscanned_files_lower_bound,
+        "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_errors": summary.parse_errors,
         "scan_limits": {
@@ -2266,7 +2274,9 @@ def main() -> int:
     print("Claude Code transcript usage audit")
     print(
         f"files_scanned={summary.files} records={summary.records} "
-        f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records}"
+        f"skipped_files={summary.skipped_files} skipped_records={summary.skipped_records} "
+        f"scan_truncated={str(summary.scan_truncated).lower()} "
+        f"unscanned_files_lower_bound={summary.unscanned_files_lower_bound}"
     )
     print(
         f"scan_limits=max_file_bytes:{limits.max_file_bytes} "

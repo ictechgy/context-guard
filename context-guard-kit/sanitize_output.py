@@ -115,6 +115,7 @@ MAX_TIMEOUT_SECONDS = 86_400
 TIMEOUT_EXIT_CODE = 124
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
+RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS = 1_024
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -542,6 +543,18 @@ class TimedCommandStream:
         self._thread = threading.Thread(target=self._read_stdout, args=(stdout,), daemon=True)
         self._thread.start()
 
+    def _truncated_raw_line(self, text: str) -> str:
+        holdback = min(RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS, self.max_unterminated_line_chars)
+        safe_keep = max(0, self.max_unterminated_line_chars - holdback)
+        return (
+            text[:safe_keep]
+            + (
+                "...[context-guard-kit: raw line truncated before newline "
+                f"after {self.max_unterminated_line_chars} chars; "
+                f"withheld {holdback} boundary chars for redaction safety]\n"
+            )
+        )
+
     def _read_stdout(self, stdout: BinaryIO) -> None:
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         pending = ""
@@ -565,26 +578,14 @@ class TimedCommandStream:
                 newline_index = pending.find("\n")
                 if newline_index != -1:
                     if newline_index > self.max_unterminated_line_chars:
-                        self._queue.put(
-                            pending[: self.max_unterminated_line_chars]
-                            + (
-                                "...[context-guard-kit: raw line truncated before newline "
-                                f"after {self.max_unterminated_line_chars} chars]\n"
-                            )
-                        )
+                        self._queue.put(self._truncated_raw_line(pending))
                     else:
                         self._queue.put(pending[: newline_index + 1])
                     pending = pending[newline_index + 1 :]
                     continue
 
                 if len(pending) > self.max_unterminated_line_chars:
-                    self._queue.put(
-                        pending[: self.max_unterminated_line_chars]
-                        + (
-                            "...[context-guard-kit: raw line truncated before newline "
-                            f"after {self.max_unterminated_line_chars} chars]\n"
-                        )
-                    )
+                    self._queue.put(self._truncated_raw_line(pending))
                     pending = ""
                     discarding_oversized_line = True
                 return
