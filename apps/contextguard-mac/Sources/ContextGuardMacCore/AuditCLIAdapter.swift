@@ -319,12 +319,7 @@ public struct AuditCLIAdapter {
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
-        "TMPDIR",
         "TZ",
-        "SYSTEMROOT",
-        "WINDIR",
-        "COMSPEC",
-        "PATHEXT",
     ]
 
     private func outputFileExceedsLimit(_ url: URL) throws -> Bool {
