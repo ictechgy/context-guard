@@ -66,6 +66,9 @@ public struct AuditCLIAdapter {
     ) -> URL? {
         if let explicit = environment[explicitAuditExecutableEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !explicit.isEmpty {
+            guard explicit.hasPrefix("/") else {
+                return nil
+            }
             return validatedFallback(URL(fileURLWithPath: explicit), fileManager: fileManager)
         }
 
@@ -302,10 +305,27 @@ public struct AuditCLIAdapter {
     }
 
     private func trustedProcessEnvironment() -> [String: String] {
-        var result = environment
+        var result: [String: String] = [:]
+        for key in Self.inheritedProcessEnvironmentAllowlist {
+            if let value = environment[key] {
+                result[key] = value
+            }
+        }
         result["PATH"] = Self.trustedExecutablePATH
         return result
     }
+
+    private static let inheritedProcessEnvironmentAllowlist: Set<String> = [
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TMPDIR",
+        "TZ",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+    ]
 
     private func outputFileExceedsLimit(_ url: URL) throws -> Bool {
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
