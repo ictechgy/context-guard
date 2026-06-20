@@ -268,6 +268,8 @@ def load_artifact_store_module() -> object:
             if module is None:
                 continue
             return module
+        except UnsafeAdjacentModuleError:
+            raise
         except Exception as exc:
             load_errors.append(f"{name} failed to load: {exc.__class__.__name__}: {exc}")
             continue
@@ -1457,6 +1459,18 @@ def main() -> int:
     if args.artifact_receipt and args.digest == "off":
         print("trim_command_output.py: --artifact-receipt requires --digest markdown or --digest json", file=sys.stderr)
         return 2
+    if args.artifact_receipt:
+        try:
+            load_artifact_store_module()
+        except UnsafeAdjacentModuleError as exc:
+            print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+            return 2
+        except Exception:
+            # Missing/broken artifact helpers are reported in the digest payload as
+            # artifact_receipt_unavailable for backward compatibility. Integrity
+            # failures above are different: they indicate an adjacent helper exists
+            # but cannot be safely trusted, so they fail closed.
+            pass
 
     command = args.command
     if command and command[0] == "--":
@@ -1604,6 +1618,9 @@ def main() -> int:
                         line_sanitizer=line_sanitizer,
                         redacted_lines=redacted_lines,
                     )
+                except UnsafeAdjacentModuleError as exc:
+                    print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+                    return 2
                 except Exception as exc:
                     payload["artifact_receipt"] = {
                         "stored": False,

@@ -15329,6 +15329,43 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn("unsafe adjacent helper", proc.stderr)
                     self.assertIn(expected_stderr, proc.stderr)
 
+
+    def test_trim_artifact_helper_integrity_failures_are_hard_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trim = root / "context-guard-trim-output"
+            shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
+            shutil.copy2(KIT_DIR / "sanitize_output.py", root / "sanitize_output.py")
+            safe_artifact = root / "context-guard-artifact"
+            safe_artifact.write_text(
+                "def normalize_allowed_first_absolute_symlink(path): return path\n"
+                "def artifact_paths(directory, artifact_id):\n"
+                "    return directory / (artifact_id + '.txt'), directory / (artifact_id + '.json')\n"
+                "def classify_content_type(text): return 'text'\n"
+                "def recommended_strategy(content_type): return 'head'\n"
+                "def build_receipt(*args, **kwargs): return {}\n"
+                "def write_private_text(path, text): print('fallback-loaded')\n",
+                encoding="utf-8",
+            )
+            unsafe_artifact = root / "context_escrow.py"
+            target = root / "outside-artifact.py"
+            target.write_text("raise RuntimeError('should not load')\n", encoding="utf-8")
+            try:
+                unsafe_artifact.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            proc = run_trim_python(
+                trim,
+                "print('artifact helper check')",
+                max_lines=20,
+                extra_args=["--digest", "json", "--artifact-receipt"],
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertEqual(proc.stdout, "")
+            self.assertIn("unsafe adjacent helper", proc.stderr)
+            self.assertIn("context_escrow.py could not be opened without following symlinks", proc.stderr)
+            self.assertNotIn("fallback-loaded", proc.stdout + proc.stderr)
+
     def test_trim_fallback_sanitizer_redacts_and_reports_downgrade(self):
         for sanitizer_body, expected_stderr in [
             (None, "strong sanitizer not found"),
