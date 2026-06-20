@@ -31,6 +31,8 @@ context-guard setup --agent claude --scope user --plan
 
 Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup looks for bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
+Distribution and helper trust boundaries are conservative too: npm exposes only canonical `context-guard`/`context-guard-*` bin links, legacy `claude-*` wrappers remain package files for path-based migration, command manifests are treated as literal data instead of executable Python, and the macOS visibility helper is discovered from bundled/resource/executable-relative paths or an absolute explicit override with a minimal child environment. Current working directories, relative overrides, symlinked helpers, arbitrary `PATH`, and ambient shell environment are not trusted by default.
+
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before-and-after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
 ## Claude Code first, other agents too
@@ -114,13 +116,14 @@ If you need a savings claim, measure it on your own tasks:
 - It does not guarantee a fixed token or cost reduction.
 - It does not send work to external AI providers to save model tokens.
 - It does not mutate global Claude settings during install.
+- It does not execute command manifests as code or trust arbitrary `PATH`/current-working-directory helpers during setup or packaged smoke checks.
 - It does not replace real before/after measurement when you need a savings claim.
 - Local RAM/disk receipts can help reduce what you send next, but they do **not** replace Anthropic's provider prompt cache or guarantee cache hits. Recheck Anthropic prompt-caching and pricing docs before release or billing claims: https://docs.anthropic.com/en/build-with-claude/prompt-caching and https://platform.claude.com/docs/en/about-claude/pricing.
 - Experimental helpers are mostly dry-run checker/planner surfaces, including a design-only external-forwarding opt-in gate. Explicit local runtimes exist only for caller-supplied context-diff replacement payloads, caller-supplied visual crop/OCR evidence packs, caller-supplied learned-compression prose candidates, self-hosted metrics JSONL sidecar records, local-proxy runtime-gate JSONL records, and one-shot `serve local-proxy` loopback forwarding with a private ready-file nonce, optional `--response-sandbox` compact artifact envelopes for safe UTF-8 responses, plus optional shifted-cost diagnostic JSONL rows for successful forwarded requests.
 - ContextGuard does not ship learned/synthetic compressor execution, embeddings, rerankers, model calls, generated replacement text, screenshot capture, image cropping, OCR execution, image parsing, external OCR/image services, self-hosted KV/latent inference optimization beyond explicit local metrics recording, or broader proxy forwarding beyond literal-loopback, one-request HTTP forwarding with credential material blocked.
 - It does not alias the old `/claude-token-optimizer:*` Claude Code slash-command namespace. Use `/context-guard:*` after installing this plugin.
 
-Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship as package files under `plugins/context-guard/bin/` so existing plugin-path automation can migrate gradually. npm global/`npx` bin links intentionally expose only the canonical `context-guard-*` commands; call the legacy wrappers by package/plugin path if you still need them.
+Legacy local CLI wrappers (`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, and `claude-sanitize-output`) still ship as package files under `plugins/context-guard/bin/` so existing plugin-path automation can migrate gradually. npm global/`npx` bin links intentionally expose only the canonical `context-guard`/`context-guard-*` commands; call the legacy wrappers by package/plugin path if you still need them.
 
 ## Features
 
@@ -173,7 +176,7 @@ Setup is explicit, project-local, and reversible. The plugin does not configure 
 
 ## Install with npm/npx
 
-The npm package exposes a canonical `context-guard` command plus backward-compatible `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself. If setup cannot find bundled or checkout-local helpers, `PATH` fallback remains disabled by default; use `--allow-path-helper-fallback` only for trusted helper directories after `context-guard doctor` or `setup --verify` confirms the plan.
+The npm package exposes a canonical `context-guard` command plus `context-guard-*` helper commands. Package installation is passive: there is no `postinstall` setup hook and no config write until you run `context-guard setup` yourself. npm global/`npx` bin links intentionally expose only canonical `context-guard`/`context-guard-*` commands; legacy `claude-*` wrapper files remain packaged for explicit path-based migration but are not advertised as executable bin aliases. If setup cannot find bundled or checkout-local helpers, `PATH` fallback remains disabled by default; use `--allow-path-helper-fallback` only for trusted helper directories after `context-guard doctor` or `setup --verify` confirms the plan.
 
 ```bash
 npm install -g @ictechgy/context-guard
@@ -521,7 +524,7 @@ export PATH="$PWD/plugins/context-guard/bin:$PATH"
 context-guard-setup --plan
 ```
 
-Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled or checkout-local helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper before writing commands.
+Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled or checkout-local helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper path, symlink state, and bounded identity probe before writing commands. The macOS app helper follows the same trust model: no launch-CWD discovery, no relative override paths, and no inherited ambient shell environment beyond the allowlisted values it needs to start.
 
 ## Release checks
 
@@ -533,7 +536,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the maintainer-facing exact-copy contract up front. npm packages intentionally ship only the synchronized plugin-local `plugins/context-guard/bin` entrypoints and `plugins/context-guard/lib` helpers to avoid duplicate implementation payloads. `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
+When a helper under `context-guard-kit/` changes, run `python3 scripts/sync_plugin_copies.py --write` before the gates. `sync_plugin_copies.py --check` verifies the maintainer-facing exact-copy contract up front. npm packages intentionally ship only the synchronized plugin-local `plugins/context-guard/bin` entrypoints and `plugins/context-guard/lib` helpers to avoid duplicate implementation payloads, and the npm bin map intentionally omits legacy `claude-*` wrapper aliases. Command manifests are loaded as literal assignments for release and runtime checks; executable Python, imports, functions, or shadow manifests are rejected. `prepublish_check.py` verifies package invariants, synchronized plugin binaries, manifests, diagnostic redaction, and the regression suite. `release_smoke.py` executes representative packaged entrypoints from `plugins/context-guard/bin` in a temporary project so broken CLI wiring is caught before publish. See [docs/release-runbook.md](docs/release-runbook.md) for the full release workflow, evidence checklist, quad-review requirement, and rollback checklist.
 
 Versioned release notes live in [CHANGELOG.md](CHANGELOG.md); the prepublish gate requires an entry matching the plugin manifest version before publishing.
 

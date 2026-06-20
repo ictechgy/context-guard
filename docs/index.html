@@ -303,7 +303,7 @@
           <p class="tagline">파일·로그·출력을 AI 컨텍스트로 보내기 전에 줄입니다.</p>
           <p class="subtitle">
             ContextGuard는 불필요한 파일·로그·명령 출력을 AI 에이전트 컨텍스트로 보내기 전에 줄이는 로컬 우선 가드레일입니다.
-            Claude Code 플러그인으로 바로 시작하고, 적용 전에는 읽기 전용 점검으로 현재 상태를 확인하세요. 같은 규칙은 다른 AI 코딩·도구 에이전트에도 적용할 수 있습니다.
+            Claude Code 플러그인으로 바로 시작하고, 적용 전에는 읽기 전용 점검으로 현재 상태를 확인하세요. 같은 규칙은 다른 AI 코딩·도구 에이전트에도 적용할 수 있으며, 설치는 명시적 허가 없이 설정을 변경하지 않습니다.
           </p>
           <div class="cta-row">
             <a class="button primary" href="#setup">빠른 시작</a>
@@ -356,6 +356,7 @@
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
         <article class="card"><span class="icon">∴</span><h3>안전한 텍스트 압축</h3><p>JSON·diff·로그를 결정적으로 줄이고, 바이트 근거와 추정 token proxy를 구분해 표시합니다.</p></article>
         <article class="card"><span class="icon">⌗</span><h3>Tool/MCP 스키마 정리기</h3><p>큰 tool/MCP catalog를 작업 query 기준 top-k 리포트로 줄이고, 전체 가림 처리된 schema는 로컬 요약 기록으로 다시 조회합니다.</p></article>
+        <article class="card"><span class="icon">▥</span><h3>패키징·헬퍼 신뢰 경계</h3><p>npm은 canonical <code>context-guard</code>/<code>context-guard-*</code> bin만 노출하고, 명령 매니페스트는 literal 데이터로 읽으며, setup과 macOS 헬퍼는 임의 <code>PATH</code>·CWD·symlink·상위 셸 환경을 기본 신뢰하지 않습니다.</p></article>
       </div>
     </section>
 
@@ -435,7 +436,7 @@
         <article class="card step"><h3>Codex / npm</h3><p><code>npm install -g @ictechgy/context-guard</code><br><code>context-guard setup --agent codex --scope project --with-init --with-skill --plan</code><br><code>context-guard setup --agent codex --scope project --brief-mode standard --plan</code></p></article>
         <article class="card step"><h3>macOS / Homebrew</h3><p><code>brew install ictechgy/tap/context-guard</code><br>이미 tap했다면 <code>brew install context-guard</code>도 사용할 수 있습니다.</p></article>
       </div>
-      <p class="setup-note">처음이라면 <code>context-guard doctor --root . --json</code>으로 현재 상태를 먼저 점검하세요. 기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 <code>--scope user</code>와 명시적인 <code>--agent</code>가 필요하며, 지원되는 쓰기는 백업과 되돌리기 기록을 남깁니다.</p>
+      <p class="setup-note">처음이라면 <code>context-guard doctor --root . --json</code>으로 현재 상태를 먼저 점검하세요. 기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 <code>--scope user</code>와 명시적인 <code>--agent</code>가 필요하며, 지원되는 쓰기는 백업과 되돌리기 기록을 남깁니다. 설치만으로 설정 파일을 쓰지 않고, <code>--allow-path-helper-fallback</code>은 신뢰한 외부 설치를 확인할 때만 사용하세요.</p>
     </section>
 
     <section class="shell">
@@ -486,7 +487,8 @@ long-command 2&gt;&amp;1 | ./plugins/context-guard/bin/context-guard-artifact st
         <article class="card warning-card"><span class="icon">↯</span><h3>외부 AI로 작업을 보내지 않습니다</h3><p>토큰을 줄이기 위해 작업을 다른 AI 서비스로 보내거나 대신 실행하지 않습니다. 헬퍼는 로컬에서 동작합니다.</p></article>
         <article class="card warning-card"><span class="icon">?</span><h3>실험 레이더는 제공 기능이 아닙니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">Experimental token-reduction radar</a>는 앞으로 검증할 후보와 later-roadmap gate를 기록합니다. 현재 제공되는 것은 대부분 dry-run checker/planner이며, 예외도 context-diff emit, visual evidence-pack emit, learned candidate emit, self-hosted metrics JSONL sidecar record, local proxy gate record, one-shot literal-loopback local proxy serve 같은 좁은 명시적 로컬 runtime뿐입니다. learned compressor runtime, 생성형 replacement, screenshot capture, image crop, OCR execution, self-hosted KV/latent runtime, external/daemon/hostname-DNS/credential-bearing proxy forwarding runtime은 provider-measured matched-task 근거와 별도 future PR gate 없이는 제공 기능이나 hosted API 절감으로 주장하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">⌂</span><h3>전역 설정을 자동 변경하지 않습니다</h3><p>설정은 프로젝트 단위로, 사용자가 명시적으로 적용할 때만 반영됩니다.</p></article>
-        <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼는 계속 제공합니다.</p></article>
+        <article class="card"><span class="icon">⇥</span><h3>헬퍼 실행 경로를 좁힙니다</h3><p>setup은 bundled/checkout-local helper를 우선 사용하고, macOS visibility helper는 bundle/resource/executable-relative 경로나 absolute explicit override만 허용합니다. 상대 override, launch CWD, symlink helper, 임의 <code>PATH</code>, 불필요한 상위 환경은 기본 신뢰하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">↺</span><h3>리브랜딩 호환성을 남겼습니다</h3><p>예전 슬래시 명령은 별칭으로 제공하지 않지만, 기존 자동화를 위한 CLI 래퍼 파일은 계속 제공합니다. npm global/<code>npx</code> bin 링크는 canonical <code>context-guard</code>/<code>context-guard-*</code> 명령만 노출합니다.</p></article>
       </div>
     </section>
   </main>

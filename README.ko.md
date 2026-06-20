@@ -29,6 +29,8 @@ context-guard setup --agent claude --scope user --plan
 
 기본값은 프로젝트 단위 설정입니다. 사용자 단위 설정은 명시적으로 선택해야 하며, 실제 변경을 적용하려면 `--yes`와 명시적인 `--agent`가 필요합니다. 지원되는 사용자 단위 변경은 백업과 되돌리기 기록을 남기며, 패키지 설치 중에는 실행되지 않습니다. `setup`은 먼저 패키지/체크아웃 내부 헬퍼를 찾습니다. 신뢰할 수 있는 설치임을 확인한 경우에만 `--allow-path-helper-fallback`으로 `PATH` 헬퍼 대체 경로를 허용하세요.
 
+배포와 헬퍼 신뢰 경계도 보수적입니다. npm은 canonical `context-guard`/`context-guard-*` bin 링크만 노출하고 legacy `claude-*` 래퍼는 경로 기반 마이그레이션용 패키지 파일로만 남깁니다. 명령 매니페스트는 실행 가능한 Python이 아니라 literal 데이터로만 읽으며, macOS visibility 헬퍼는 번들/resource/실행 파일 기준 경로나 absolute explicit override만 사용하고 최소 환경으로 실행합니다. 현재 작업 디렉터리, 상대 override, symlink 헬퍼, 임의 `PATH`, 상위 셸 환경은 기본적으로 신뢰하지 않습니다.
+
 ContextGuard는 절감 수치를 과장하지 않습니다. 흔히 컨텍스트를 불필요하게 키우는 원인을 줄이고, 실제 전후 비교 결과는 각자의 작업에서 측정할 수 있도록 벤치마크 도구를 제공합니다. 저장소마다 효과는 달라질 수 있으며, 고정된 토큰·비용 절감률은 보장하지 않습니다.
 
 ## Claude Code 우선, 다른 에이전트도 함께
@@ -112,13 +114,14 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 - 고정된 토큰·비용 절감률을 보장하지 않습니다.
 - 모델 토큰을 줄이기 위해 작업을 외부 AI 서비스로 전송하지 않습니다.
 - 설치만으로 전역 Claude 설정을 변경하지 않습니다.
+- setup이나 패키징 smoke check에서 명령 매니페스트를 코드로 실행하거나 임의 `PATH`/현재 작업 디렉터리 헬퍼를 신뢰하지 않습니다.
 - 절감 수치가 필요할 때 직접 전후 비교 측정을 대신하지 않습니다.
 - 로컬 RAM/디스크 보관본은 다음에 보낼 컨텍스트를 줄이는 데 도움이 될 수 있지만 Anthropic provider prompt cache를 대체하거나 cache hit를 보장하지 않습니다. 배포나 청구 설명 전에는 Anthropic prompt caching/pricing 문서를 다시 확인하세요: https://docs.anthropic.com/en/build-with-claude/prompt-caching 및 https://platform.claude.com/docs/en/about-claude/pricing.
 - 실험 헬퍼는 대부분 dry-run 안전성 checker/planner이며 design-only external-forwarding opt-in gate를 포함합니다. 명시적 로컬 runtime은 caller-supplied context-diff replacement payload, caller-supplied visual crop/OCR evidence pack, caller-supplied learned-compression prose candidate, self-hosted metrics JSONL sidecar 기록, local-proxy runtime-gate JSONL 기록, private ready-file nonce가 필요한 one-shot `serve local-proxy` loopback forwarding, safe UTF-8 응답을 compact artifact envelope로 바꾸는 optional `--response-sandbox`, successful forwarded request용 optional shifted-cost diagnostic JSONL row만 제공합니다.
 - ContextGuard는 learned/synthetic compressor 실행·embedding·reranker·model call·생성형 replacement, screenshot 캡처·image crop·OCR 실행·image parsing·외부 OCR/image service, 명시적 local metrics 기록을 넘어선 self-hosted KV/latent inference optimization runtime, literal-loopback 1회 HTTP forwarding과 credential 차단을 넘어선 proxy forwarding은 제공하지 않습니다.
 - 예전 `/claude-token-optimizer:*` Claude Code 슬래시 명령을 별칭으로 제공하지 않습니다. 설치 후에는 `/context-guard:*`를 사용하세요.
 
-기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 패키지 파일 `plugins/context-guard/bin/` 아래에 계속 포함합니다. npm global/`npx` bin 링크는 의도적으로 canonical `context-guard-*` 명령만 노출하므로, legacy 래퍼가 필요하면 패키지/플러그인 경로로 호출하세요.
+기존 자동화가 바로 깨지지 않도록 로컬 CLI 호환 래퍼(`claude-token-*`, `claude-read-symbol`, `claude-trim-output`, `claude-sanitize-output`)는 패키지 파일 `plugins/context-guard/bin/` 아래에 계속 포함합니다. npm global/`npx` bin 링크는 의도적으로 canonical `context-guard`/`context-guard-*` 명령만 노출하므로, legacy 래퍼가 필요하면 패키지/플러그인 경로로 호출하세요.
 
 ## 제공 기능
 
@@ -171,7 +174,7 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 ## npm/npx로 설치
 
-npm 패키지는 단일 `context-guard` 명령과 기존 `context-guard-*` 헬퍼 명령을 함께 제공합니다. 설치는 수동적입니다. `postinstall`로 설정을 쓰지 않으며, 사용자가 직접 `context-guard setup`을 실행할 때만 프로젝트나 사용자 설정을 변경합니다. setup이 패키지/체크아웃 내부 헬퍼를 찾지 못해도 `PATH` fallback은 기본적으로 꺼져 있습니다. `context-guard doctor` 또는 `setup --verify`로 계획을 확인한 뒤 신뢰하는 헬퍼 디렉터리에 한해서만 `--allow-path-helper-fallback`을 사용하세요.
+npm 패키지는 단일 `context-guard` 명령과 `context-guard-*` 헬퍼 명령을 함께 제공합니다. 설치는 수동적입니다. `postinstall`로 설정을 쓰지 않으며, 사용자가 직접 `context-guard setup`을 실행할 때만 프로젝트나 사용자 설정을 변경합니다. npm global/`npx` bin 링크는 의도적으로 canonical `context-guard`/`context-guard-*` 명령만 노출합니다. legacy `claude-*` 래퍼 파일은 명시적인 경로 기반 마이그레이션을 위해 패키지에 남지만 실행 bin 별칭으로 광고하지 않습니다. setup이 패키지/체크아웃 내부 헬퍼를 찾지 못해도 `PATH` fallback은 기본적으로 꺼져 있습니다. `context-guard doctor` 또는 `setup --verify`로 계획을 확인한 뒤 신뢰하는 헬퍼 디렉터리에 한해서만 `--allow-path-helper-fallback`을 사용하세요.
 
 ```bash
 npm install -g @ictechgy/context-guard
@@ -465,7 +468,7 @@ export PATH="$PWD/plugins/context-guard/bin:$PATH"
 context-guard-setup --plan
 ```
 
-생성되는 hook 명령은 기본적으로 `PATH` 조회에 의존하지 않습니다. setup 마법사는 명시적인 패키지/체크아웃 헬퍼 경로를 기록하며, `--allow-path-helper-fallback`은 신뢰한 외부 설치를 사용할 때만 canonical 경로·symlink 없음·bounded identity probe 검증 후 허용됩니다.
+생성되는 hook 명령은 기본적으로 `PATH` 조회에 의존하지 않습니다. setup 마법사는 명시적인 패키지/체크아웃 헬퍼 경로를 기록하며, `--allow-path-helper-fallback`은 신뢰한 외부 설치를 사용할 때만 canonical 경로·symlink 없음·bounded identity probe 검증 후 허용됩니다. macOS 앱 헬퍼도 같은 신뢰 모델을 따릅니다. launch CWD 탐색, 상대 override 경로, 필요한 allowlist 값을 넘어선 상위 셸 환경 상속을 사용하지 않습니다.
 
 ## 릴리스 확인
 
@@ -477,7 +480,7 @@ python3 scripts/prepublish_check.py
 python3 scripts/release_smoke.py
 ```
 
-헬퍼가 `context-guard-kit/` 아래에서 바뀌었다면 게이트 전에 `python3 scripts/sync_plugin_copies.py --write`를 실행하세요. `sync_plugin_copies.py --check`는 maintainer exact-copy 계약을 먼저 확인합니다. npm 패키지는 구현 payload 중복을 피하기 위해 동기화된 플러그인 로컬 `plugins/context-guard/bin` 엔트리포인트와 `plugins/context-guard/lib` 헬퍼만 배포합니다. `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
+헬퍼가 `context-guard-kit/` 아래에서 바뀌었다면 게이트 전에 `python3 scripts/sync_plugin_copies.py --write`를 실행하세요. `sync_plugin_copies.py --check`는 maintainer exact-copy 계약을 먼저 확인합니다. npm 패키지는 구현 payload 중복을 피하기 위해 동기화된 플러그인 로컬 `plugins/context-guard/bin` 엔트리포인트와 `plugins/context-guard/lib` 헬퍼만 배포하며, npm bin map은 legacy `claude-*` 래퍼 별칭을 의도적으로 제외합니다. 명령 매니페스트는 release/runtime 확인에서 literal assignment로만 읽고, 실행 가능한 Python·import·function·shadow manifest는 거부합니다. `prepublish_check.py`는 패키지 불변식, 동기화된 플러그인 바이너리, 매니페스트, 진단 메시지 가림 처리, 회귀 테스트를 확인합니다. `release_smoke.py`는 임시 프로젝트에서 `plugins/context-guard/bin`의 대표 패키징 엔트리포인트를 실제로 실행해, 배포 전 깨진 CLI 연결을 잡습니다. 전체 릴리스 절차, 증거 체크리스트, quad-review 요구사항, 롤백 체크리스트는 [docs/release-runbook.md](docs/release-runbook.md)를 참고하세요.
 
 버전별 릴리스 노트는 [CHANGELOG.md](CHANGELOG.md)에 기록하며, 사전 배포 게이트는 플러그인 매니페스트 버전과 일치하는 항목이 있는지 확인합니다.
 
