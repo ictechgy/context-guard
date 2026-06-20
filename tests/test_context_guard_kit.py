@@ -9402,14 +9402,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
             entrypoint.chmod(0o700)
             fake_bin = root / "fake-bin"
             fake_bin.mkdir()
-            fake_python = fake_bin / "python3"
-            fake_python.write_text("#!/bin/sh\necho fake-python-used\nexit 99\n", encoding="utf-8")
-            fake_python.chmod(0o700)
+            for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
+                fake_tool = fake_bin / tool_name
+                fake_tool.write_text(f"#!/bin/sh\necho fake-{tool_name}-used\nexit 99\n", encoding="utf-8")
+                fake_tool.chmod(0o700)
+            shell_entrypoint = root / "context-guard-shell-demo"
+            shell_entrypoint.write_text("#!/usr/bin/env sh\necho shell-ok:$1\n", encoding="utf-8")
+            shell_entrypoint.chmod(0o700)
             original_path = os.environ.get("PATH")
             os.environ["PATH"] = str(fake_bin) + os.pathsep + (original_path or "")
             try:
                 env = smoke.smoke_environment(home, temp)
                 self.assertNotIn(str(fake_bin), env["PATH"].split(os.pathsep))
+                for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
+                    resolved = shutil.which(tool_name, path=env["PATH"])
+                    if resolved is not None:
+                        try:
+                            Path(resolved).resolve().relative_to(fake_bin.resolve())
+                        except ValueError:
+                            pass
+                        else:
+                            self.fail(f"trusted smoke PATH selected fake {tool_name}: {resolved}")
                 argv = smoke.entrypoint_launch_argv(entrypoint, ["--flag"])
                 self.assertEqual(argv, [str(entrypoint), "--flag"])
                 proc = subprocess.run(
@@ -9421,7 +9434,18 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     check=True,
                 )
                 self.assertEqual(proc.stdout.strip(), "entrypoint-ok:--flag")
-                self.assertNotIn("fake-python-used", proc.stdout + proc.stderr)
+                shell_proc = subprocess.run(
+                    smoke.entrypoint_launch_argv(shell_entrypoint, ["arg-ok"]),
+                    cwd=root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                combined = proc.stdout + proc.stderr + shell_proc.stdout + shell_proc.stderr
+                self.assertEqual(shell_proc.stdout.strip(), "shell-ok:arg-ok")
+                self.assertNotIn("fake-python3-used", combined)
+                self.assertNotIn("fake-sh-used", combined)
             finally:
                 if original_path is None:
                     os.environ.pop("PATH", None)

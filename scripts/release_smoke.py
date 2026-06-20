@@ -114,6 +114,14 @@ COMMAND_READ_CHUNK_BYTES = 65_536
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
 PROCESS_SELECT_TIMEOUT_SECONDS = 0.05
 ENTRYPOINT_SHEBANG_MAX_BYTES = 512
+TRUSTED_PATH_CANDIDATES = (
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
 PRESERVED_ENV_KEYS = (
     "SYSTEMROOT",
     "WINDIR",
@@ -251,8 +259,8 @@ def trusted_smoke_path() -> str:
 
     The packaged entrypoints intentionally run via their real shebangs so the
     smoke gate still validates what users execute.  The PATH they see is
-    constrained to the current Python and required tool directories, preventing
-    a caller-controlled PATH from hijacking `/usr/bin/env python3` shebangs.
+    constrained to the current Python plus fixed system/package directories; it
+    never calls shutil.which() on the caller-controlled ambient PATH.
     """
     dirs: list[str] = []
     seen: set[str] = set()
@@ -272,11 +280,13 @@ def trusted_smoke_path() -> str:
             dirs.append(value)
 
     add_dir(Path(sys.executable))
-    for tool in ("node", "npm", "git", "sh", "bash"):
-        add_dir(shutil.which(tool))
-    for directory in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+    for directory in TRUSTED_PATH_CANDIDATES:
         add_dir(directory)
     return os.pathsep.join(dirs)
+
+
+def trusted_which(name: str) -> str | None:
+    return shutil.which(name, path=trusted_smoke_path())
 
 
 def read_entrypoint_shebang(path: Path) -> str:
@@ -811,7 +821,7 @@ def run_npm_package_smoke(timeout: float) -> None:
     if not NPM_PACKAGE_JSON.is_file():
         print("npm package smoke: skipped (package.json not found)")
         return
-    npm = shutil.which("npm")
+    npm = trusted_which("npm")
     if npm is None:
         if running_in_ci():
             fail("npm package smoke requires npm in CI; ensure actions/setup-node ran before release gates")
