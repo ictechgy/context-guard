@@ -9384,6 +9384,107 @@ class ClaudeTokenKitTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             smoke.check_launch_smoke(extra_blank_status, "statusline", "statusline")
 
+    def test_release_smoke_uses_trusted_path_for_env_python_shebangs(self):
+        smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_shebang")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            temp = root / "tmp"
+            home.mkdir()
+            temp.mkdir()
+            entrypoint = root / "context-guard-demo"
+            entrypoint.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "print('entrypoint-ok:' + ','.join(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            entrypoint.chmod(0o700)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
+                fake_tool = fake_bin / tool_name
+                fake_tool.write_text(f"#!/bin/sh\necho fake-{tool_name}-used\nexit 99\n", encoding="utf-8")
+                fake_tool.chmod(0o700)
+            shell_entrypoint = root / "context-guard-shell-demo"
+            shell_entrypoint.write_text("#!/usr/bin/env sh\necho shell-ok:$1\n", encoding="utf-8")
+            shell_entrypoint.chmod(0o700)
+            trusted_toolcache_root = root / "trusted-hostedtoolcache"
+            toolcache_root = trusted_toolcache_root / "node"
+            toolcache_bin = toolcache_root / "22.0.0" / "x64" / "bin"
+            toolcache_bin.mkdir(parents=True)
+            for tool_name in ("node", "npm"):
+                tool = toolcache_bin / tool_name
+                tool.write_text("#!/bin/sh\necho toolcache-" + tool_name + "\n", encoding="utf-8")
+                tool.chmod(0o700)
+            attacker_toolcache_root = root / "attacker-toolcache"
+            attacker_toolcache_bin = attacker_toolcache_root / "node" / "99.0.0" / "x64" / "bin"
+            attacker_toolcache_bin.mkdir(parents=True)
+            attacker_npm = attacker_toolcache_bin / "npm"
+            attacker_npm.write_text("#!/bin/sh\necho attacker-npm-used\nexit 99\n", encoding="utf-8")
+            attacker_npm.chmod(0o700)
+            old_trusted_prefixes = smoke.TRUSTED_CI_TOOLCACHE_PREFIXES
+            smoke.TRUSTED_CI_TOOLCACHE_PREFIXES = (str(trusted_toolcache_root),)
+            original_path = os.environ.get("PATH")
+            old_github_actions = os.environ.get("GITHUB_ACTIONS")
+            old_runner_tool_cache = os.environ.get("RUNNER_TOOL_CACHE")
+            os.environ["PATH"] = str(fake_bin) + os.pathsep + str(attacker_toolcache_bin) + os.pathsep + str(toolcache_bin) + os.pathsep + (original_path or "")
+            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["RUNNER_TOOL_CACHE"] = str(toolcache_root)
+            try:
+                env = smoke.smoke_environment(home, temp)
+                trusted_path_parts = env["PATH"].split(os.pathsep)
+                self.assertNotIn(str(fake_bin), trusted_path_parts)
+                self.assertNotIn(str(attacker_toolcache_bin.resolve()), trusted_path_parts)
+                self.assertIn(str(toolcache_bin.resolve()), trusted_path_parts)
+                self.assertEqual(Path(smoke.trusted_which("npm")).resolve(), (toolcache_bin / "npm").resolve())
+                for tool_name in ("python3", "sh", "bash", "git", "node", "npm"):
+                    resolved = shutil.which(tool_name, path=env["PATH"])
+                    if resolved is not None:
+                        try:
+                            Path(resolved).resolve().relative_to(fake_bin.resolve())
+                        except ValueError:
+                            pass
+                        else:
+                            self.fail(f"trusted smoke PATH selected fake {tool_name}: {resolved}")
+                argv = smoke.entrypoint_launch_argv(entrypoint, ["--flag"])
+                self.assertEqual(argv, [str(entrypoint), "--flag"])
+                proc = subprocess.run(
+                    argv,
+                    cwd=root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(proc.stdout.strip(), "entrypoint-ok:--flag")
+                shell_proc = subprocess.run(
+                    smoke.entrypoint_launch_argv(shell_entrypoint, ["arg-ok"]),
+                    cwd=root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                combined = proc.stdout + proc.stderr + shell_proc.stdout + shell_proc.stderr
+                self.assertEqual(shell_proc.stdout.strip(), "shell-ok:arg-ok")
+                self.assertNotIn("fake-python3-used", combined)
+                self.assertNotIn("fake-sh-used", combined)
+            finally:
+                if original_path is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = original_path
+                if old_github_actions is None:
+                    os.environ.pop("GITHUB_ACTIONS", None)
+                else:
+                    os.environ["GITHUB_ACTIONS"] = old_github_actions
+                if old_runner_tool_cache is None:
+                    os.environ.pop("RUNNER_TOOL_CACHE", None)
+                else:
+                    os.environ["RUNNER_TOOL_CACHE"] = old_runner_tool_cache
+                smoke.TRUSTED_CI_TOOLCACHE_PREFIXES = old_trusted_prefixes
+
     def test_release_smoke_run_command_passes_bounded_output_to_expectation(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_runner_success")
         with tempfile.TemporaryDirectory() as tmp:
@@ -11304,6 +11405,54 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     parent_proc = self._run_tool_prune(script, root, "select", "--catalog", str(symlink_parent / "tools.json"), check=False)
                     self.assertNotEqual(parent_proc.returncode, 0)
                     self.assertIn("symlink component", parent_proc.stderr)
+
+    def test_tool_prune_private_store_io_rejects_symlink_parents_and_leaves(self):
+        prune = load_python_script_module(KIT_DIR / "tool_schema_pruner.py", "tool_prune_private_io")
+        if not prune.NO_FOLLOW_SUPPORTED or not prune.DIR_FD_OPEN_SUPPORTED:
+            self.skipTest("dir_fd O_NOFOLLOW unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = root / "store" / "nested"
+            receipt = store / (("a" * 20) + ".receipt.json")
+            written = prune.write_private_json_atomic(
+                receipt,
+                {"schema_version": "contextguard.tool-prune.v1", "receipt_id": "a" * 20},
+                max_bytes=1024,
+                label="receipt",
+            )
+            self.assertGreater(written, 0)
+            self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+            parsed = prune.read_private_json(receipt, max_bytes=1024, label="receipt")
+            self.assertEqual(parsed["receipt_id"], "a" * 20)
+
+            unsupported_store = root / "unsupported" / "nested"
+            old_stat_supported = prune.DIR_FD_STAT_SUPPORTED
+            prune.DIR_FD_STAT_SUPPORTED = False
+            try:
+                with self.assertRaises(prune.ToolPruneError):
+                    prune.write_private_json_atomic(
+                        unsupported_store / (("b" * 20) + ".receipt.json"),
+                        {"receipt_id": "b" * 20},
+                        max_bytes=1024,
+                        label="receipt",
+                    )
+                self.assertFalse(unsupported_store.exists())
+            finally:
+                prune.DIR_FD_STAT_SUPPORTED = old_stat_supported
+
+            leaf_link = store / "leaf-link.json"
+            try:
+                leaf_link.symlink_to(receipt)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            with self.assertRaises(prune.ToolPruneError):
+                prune.read_private_json(leaf_link, max_bytes=1024, label="receipt")
+
+            linked_parent = root / "linked-store"
+            linked_parent.symlink_to(store, target_is_directory=True)
+            with self.assertRaises(prune.ToolPruneError):
+                prune.read_private_json(linked_parent / receipt.name, max_bytes=1024, label="receipt")
 
     def test_tool_prune_get_returns_full_sanitized_schema_after_budget_omission(self):
         for script in TOOL_PRUNE_SCRIPTS:
@@ -14954,6 +15103,19 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             os.chmod(content_path, 0o600)
             meta_path.write_text(json.dumps({"artifact_id": "b" * 20}), encoding="utf-8")
             os.chmod(meta_path, 0o600)
+            self.assertEqual(artifact.read_bounded_private_text(content_path, 100), "trusted\n")
+            if artifact.NO_FOLLOW_SUPPORTED and artifact.DIR_FD_OPEN_SUPPORTED:
+                leaf_link = artifact_dir / "leaf-link.txt"
+                try:
+                    leaf_link.symlink_to(content_path)
+                except (OSError, NotImplementedError):
+                    self.skipTest("symlink unavailable")
+                with self.assertRaises(OSError):
+                    artifact.read_bounded_private_text(leaf_link, 100)
+                linked_dir = Path(tmp) / "linked-artifacts"
+                linked_dir.symlink_to(artifact_dir, target_is_directory=True)
+                with self.assertRaises(RuntimeError):
+                    artifact.read_bounded_private_text(linked_dir / f"{artifact_id}.txt", 100)
             with self.assertRaises(ValueError):
                 artifact.load_metadata(artifact_dir, artifact_id)
 
@@ -15138,6 +15300,82 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             self.assertIn("[PRIMARY]", proc.stdout)
             self.assertNotIn("PRIMARY_SECRET", proc.stdout)
             self.assertNotIn("sanitizer fallback active", proc.stderr)
+
+    def test_trim_rejects_symlinked_or_oversized_adjacent_sanitizer(self):
+        secret = "API_TOKEN=ghp_" + ("A" * 36)
+        cases: list[tuple[str, str]] = [
+            ("symlink", "could not be opened without following symlinks"),
+            ("oversized", "exceeds helper size cap"),
+        ]
+        for mode, expected_stderr in cases:
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    trim = root / "context-guard-trim-output"
+                    shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
+                    sanitizer = root / "sanitize_output.py"
+                    if mode == "symlink":
+                        if not hasattr(os, "O_NOFOLLOW"):
+                            self.skipTest("O_NOFOLLOW unavailable")
+                        target = root / "outside-sanitizer.py"
+                        target.write_text(
+                            "class LineSanitizer:\n"
+                            "    def __init__(self, *, show_paths=False): pass\n"
+                            "    def sanitize(self, raw_line): return raw_line, False\n",
+                            encoding="utf-8",
+                        )
+                        try:
+                            sanitizer.symlink_to(target)
+                        except (OSError, NotImplementedError):
+                            self.skipTest("symlink unavailable")
+                    else:
+                        sanitizer.write_text(
+                            "# oversized adjacent sanitizer\n"
+                            + ("x = 'padding'\n" * 200_000),
+                            encoding="utf-8",
+                        )
+                    proc = run_trim_python(trim, f"print({secret!r})", max_lines=20)
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertEqual(proc.stdout, "")
+                    self.assertIn("unsafe adjacent helper", proc.stderr)
+                    self.assertIn(expected_stderr, proc.stderr)
+
+
+    def test_trim_artifact_helper_integrity_failures_are_hard_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            trim = root / "context-guard-trim-output"
+            shutil.copy2(KIT_DIR / "trim_command_output.py", trim)
+            shutil.copy2(KIT_DIR / "sanitize_output.py", root / "sanitize_output.py")
+            safe_artifact = root / "context-guard-artifact"
+            safe_artifact.write_text(
+                "def normalize_allowed_first_absolute_symlink(path): return path\n"
+                "def artifact_paths(directory, artifact_id):\n"
+                "    return directory / (artifact_id + '.txt'), directory / (artifact_id + '.json')\n"
+                "def classify_content_type(text): return 'text'\n"
+                "def recommended_strategy(content_type): return 'head'\n"
+                "def build_receipt(*args, **kwargs): return {}\n"
+                "def write_private_text(path, text): print('fallback-loaded')\n",
+                encoding="utf-8",
+            )
+            unsafe_artifact = root / "context_escrow.py"
+            target = root / "outside-artifact.py"
+            target.write_text("raise RuntimeError('should not load')\n", encoding="utf-8")
+            try:
+                unsafe_artifact.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            proc = run_trim_python(
+                trim,
+                "print('artifact helper check')",
+                max_lines=20,
+                extra_args=["--digest", "json", "--artifact-receipt"],
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertEqual(proc.stdout, "")
+            self.assertIn("unsafe adjacent helper", proc.stderr)
+            self.assertIn("context_escrow.py could not be opened without following symlinks", proc.stderr)
+            self.assertNotIn("fallback-loaded", proc.stdout + proc.stderr)
 
     def test_trim_fallback_sanitizer_redacts_and_reports_downgrade(self):
         for sanitizer_body, expected_stderr in [

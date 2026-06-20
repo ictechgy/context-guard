@@ -10,8 +10,6 @@ import argparse
 import codecs
 import collections
 import hashlib
-import importlib.machinery
-import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -19,10 +17,12 @@ import queue
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
+import types
 from typing import BinaryIO, Iterable, Iterator
 
 MAX_SUMMARY_ITEM_CHARS = 500
@@ -39,6 +39,7 @@ MAX_ARTIFACT_RECEIPT_MAX_BYTES = 100_000_000
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
 RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS = 1_024
+MAX_DYNAMIC_SIBLING_MODULE_BYTES = 2_000_000
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -136,6 +137,10 @@ def anonymize_absolute_paths(text: str) -> str:
     return ABSOLUTE_PATH_RE.sub(repl, text)
 
 
+class UnsafeAdjacentModuleError(RuntimeError):
+    """Adjacent helper exists but cannot be trusted for dynamic loading."""
+
+
 class FallbackLineSanitizer:
     def __init__(self, *, show_paths: bool = False, diagnostic: str | None = None) -> None:
         self.show_paths = show_paths
@@ -163,24 +168,82 @@ class FallbackLineSanitizer:
         return line, redacted
 
 
+def no_follow_file_flags() -> int:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise UnsafeAdjacentModuleError("O_NOFOLLOW is required for adjacent helper loads")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    return flags
+
+
+def no_follow_dir_flags() -> int:
+    flags = no_follow_file_flags()
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def read_adjacent_module_source(script_dir: Path, name: str, *, max_bytes: int) -> str | None:
+    if name in {"", ".", ".."} or "/" in name or os.sep in name:
+        raise RuntimeError(f"invalid adjacent helper name: {name!r}")
+    try:
+        dir_fd = os.open(str(script_dir), no_follow_dir_flags())
+    except OSError as exc:
+        raise UnsafeAdjacentModuleError(f"could not inspect helper directory: {exc}") from exc
+    try:
+        try:
+            fd = os.open(name, no_follow_file_flags(), dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise UnsafeAdjacentModuleError(f"{name} could not be opened without following symlinks: {exc}") from exc
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise UnsafeAdjacentModuleError(f"{name} is not a regular helper file")
+            if st.st_size > max_bytes:
+                raise UnsafeAdjacentModuleError(f"{name} exceeds helper size cap: {st.st_size} > {max_bytes}")
+            data = os.read(fd, max_bytes + 1)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+    if len(data) > max_bytes:
+        raise UnsafeAdjacentModuleError(f"{name} exceeds helper size cap: > {max_bytes}")
+    return data.decode("utf-8", errors="replace")
+
+
+def load_adjacent_python_module(script_dir: Path, name: str, *, module_prefix: str) -> object | None:
+    source = read_adjacent_module_source(script_dir, name, max_bytes=MAX_DYNAMIC_SIBLING_MODULE_BYTES)
+    if source is None:
+        return None
+    module_name = f"{module_prefix}_{os.getpid()}_{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(script_dir / name)
+    module.__package__ = ""
+    exec(compile(source, str(script_dir / name), "exec"), module.__dict__)
+    return module
+
+
 def load_line_sanitizer(show_paths: bool) -> object:
     """Reuse the stronger sanitizer when it is shipped next to this wrapper."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = Path(__file__).resolve().parent
     load_errors: list[str] = []
     for name in ("sanitize_output.py", "context-guard-sanitize-output"):
-        candidate = os.path.join(script_dir, name)
-        if not os.path.exists(candidate):
-            continue
         try:
-            loader = importlib.machinery.SourceFileLoader(f"_claude_token_sanitize_{os.getpid()}", candidate)
-            spec = importlib.util.spec_from_loader(loader.name, loader)
-            if spec is None:
+            module = load_adjacent_python_module(
+                script_dir,
+                name,
+                module_prefix="_claude_token_sanitize",
+            )
+            if module is None:
                 continue
-            module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
             return module.LineSanitizer(show_paths=show_paths)
+        except UnsafeAdjacentModuleError:
+            raise
         except Exception as exc:
-            load_errors.append(f"{os.path.basename(candidate)} failed to load: {exc.__class__.__name__}: {exc}")
+            load_errors.append(f"{name} failed to load: {exc.__class__.__name__}: {exc}")
             continue
     diagnostic = "; ".join(load_errors) if load_errors else "strong sanitizer not found next to trim wrapper"
     return FallbackLineSanitizer(show_paths=show_paths, diagnostic=diagnostic)
@@ -193,22 +256,22 @@ def load_artifact_store_module() -> object:
     wrapper must resolve both source-tree (`context_escrow.py`) and packaged
     (`context-guard-artifact`) names.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = Path(__file__).resolve().parent
     load_errors: list[str] = []
     for name in ("context_escrow.py", "context-guard-artifact", "claude-token-artifact"):
-        candidate = os.path.join(script_dir, name)
-        if not os.path.exists(candidate):
-            continue
         try:
-            loader = importlib.machinery.SourceFileLoader(f"_context_guard_artifact_{os.getpid()}", candidate)
-            spec = importlib.util.spec_from_loader(loader.name, loader)
-            if spec is None:
+            module = load_adjacent_python_module(
+                script_dir,
+                name,
+                module_prefix="_context_guard_artifact",
+            )
+            if module is None:
                 continue
-            module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
             return module
+        except UnsafeAdjacentModuleError:
+            raise
         except Exception as exc:
-            load_errors.append(f"{os.path.basename(candidate)} failed to load: {exc.__class__.__name__}: {exc}")
+            load_errors.append(f"{name} failed to load: {exc.__class__.__name__}: {exc}")
             continue
     diagnostic = "; ".join(load_errors) if load_errors else "artifact store not found next to trim wrapper"
     raise RuntimeError(diagnostic)
@@ -1396,12 +1459,30 @@ def main() -> int:
     if args.artifact_receipt and args.digest == "off":
         print("trim_command_output.py: --artifact-receipt requires --digest markdown or --digest json", file=sys.stderr)
         return 2
+    if args.artifact_receipt:
+        try:
+            load_artifact_store_module()
+        except UnsafeAdjacentModuleError as exc:
+            print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+            return 2
+        except Exception:
+            # Missing/broken artifact helpers are reported in the digest payload as
+            # artifact_receipt_unavailable for backward compatibility. Integrity
+            # failures above are different: they indicate an adjacent helper exists
+            # but cannot be safely trusted, so they fail closed.
+            pass
 
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
     if not command:
         print("trim_command_output.py: missing command", file=sys.stderr)
+        return 2
+
+    try:
+        line_sanitizer = load_line_sanitizer(args.show_paths)
+    except UnsafeAdjacentModuleError as exc:
+        print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
         return 2
 
     popen_kwargs: dict[str, object] = {}
@@ -1429,7 +1510,6 @@ def main() -> int:
     visible_chars = 0
     any_line_capped = False
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
-    line_sanitizer = load_line_sanitizer(args.show_paths)
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
     artifact_lines: list[str] = []
@@ -1538,6 +1618,9 @@ def main() -> int:
                         line_sanitizer=line_sanitizer,
                         redacted_lines=redacted_lines,
                     )
+                except UnsafeAdjacentModuleError as exc:
+                    print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+                    return 2
                 except Exception as exc:
                     payload["artifact_receipt"] = {
                         "stored": False,
