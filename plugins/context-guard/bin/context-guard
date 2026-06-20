@@ -36,8 +36,8 @@ COMMAND_MANIFEST_LITERAL_NAMES = {
     "ENTRYPOINT_SMOKE_CASES",
     "PLUGIN_ENTRYPOINTS",
     "DISPATCHER_SMOKE_CASES",
+    "EXPECTED_COMMAND_PACK_FILES",
 }
-COMMAND_MANIFEST_ALLOWED_FUNCTIONS = {"expected_command_pack_files"}
 
 
 def _manifest_candidates(script_dir: Path) -> tuple[Path, ...]:
@@ -104,10 +104,6 @@ def _literal_manifest_assignments(source: str) -> dict[str, Any] | None:
     values: dict[str, Any] = {}
     for node in tree.body:
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            continue
-        if isinstance(node, ast.ImportFrom) and node.module in {"__future__", "typing"}:
-            continue
-        if isinstance(node, ast.FunctionDef) and node.name in COMMAND_MANIFEST_ALLOWED_FUNCTIONS and not node.decorator_list:
             continue
         target: str | None = None
         value: ast.expr | None = None

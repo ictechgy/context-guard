@@ -84,8 +84,8 @@ COMMAND_MANIFEST_LITERAL_NAMES = {
     "ENTRYPOINT_SMOKE_CASES",
     "PLUGIN_ENTRYPOINTS",
     "DISPATCHER_SMOKE_CASES",
+    "EXPECTED_COMMAND_PACK_FILES",
 }
-COMMAND_MANIFEST_ALLOWED_FUNCTIONS = {"expected_command_pack_files"}
 
 def manifest_open_flags() -> int | None:
     if not hasattr(os, "O_NOFOLLOW"):
@@ -140,10 +140,6 @@ def literal_command_manifest_from_source(source: str) -> dict[str, object]:
     for node in tree.body:
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             continue
-        if isinstance(node, ast.ImportFrom) and node.module in {"__future__", "typing"}:
-            continue
-        if isinstance(node, ast.FunctionDef) and node.name in COMMAND_MANIFEST_ALLOWED_FUNCTIONS and not node.decorator_list:
-            continue
         target: str | None = None
         value: ast.expr | None = None
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -163,16 +159,6 @@ def literal_command_manifest_from_source(source: str) -> dict[str, object]:
     return values
 
 
-def expected_command_pack_files_from_manifest(manifest: dict[str, object]) -> tuple[str, ...]:
-    implementation_pairs = manifest.get("IMPLEMENTATION_PAIRS", ())
-    helper_pairs = manifest.get("HELPER_PAIRS", ())
-    legacy_wrappers = manifest.get("LEGACY_WRAPPERS", ())
-    files = {f"plugins/context-guard/bin/{bin_name}" for _kit_name, bin_name in implementation_pairs}
-    files.update(f"plugins/context-guard/{plugin_rel}" for _kit_name, plugin_rel in helper_pairs)
-    files.update(f"plugins/context-guard/bin/{wrapper}" for wrapper in legacy_wrappers)
-    return tuple(sorted(files))
-
-
 def load_command_manifest():
     manifest_path = ROOT / "context-guard-kit" / "context_guard_commands.py"
     source = read_manifest_source(manifest_path)
@@ -182,11 +168,10 @@ def load_command_manifest():
         values = literal_command_manifest_from_source(source)
     except ValueError as exc:
         raise SystemExit(f"could not parse trusted command manifest literals: {manifest_path}: {exc}") from exc
-    required = {"IMPLEMENTATION_PAIRS", "HELPER_PAIRS", "NPM_BINS", "LEGACY_WRAPPERS"}
+    required = {"IMPLEMENTATION_PAIRS", "HELPER_PAIRS", "NPM_BINS", "LEGACY_WRAPPERS", "EXPECTED_COMMAND_PACK_FILES"}
     missing = sorted(required - values.keys())
     if missing:
         raise SystemExit(f"trusted command manifest missing required literals: {', '.join(missing)}")
-    values["expected_command_pack_files"] = staticmethod(lambda manifest=values: expected_command_pack_files_from_manifest(manifest))
     return type("CommandManifest", (), values)
 
 
@@ -304,7 +289,7 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "plugins/context-guard/skills/optimize/SKILL.md",
     "plugins/context-guard/skills/setup/SKILL.md",
 }
-EXPECTED_NPM_PACK_FILES = BASE_EXPECTED_NPM_PACK_FILES | set(COMMAND_MANIFEST.expected_command_pack_files())
+EXPECTED_NPM_PACK_FILES = BASE_EXPECTED_NPM_PACK_FILES | set(COMMAND_MANIFEST.EXPECTED_COMMAND_PACK_FILES)
 
 def remove_generated_plugin_bin_python_caches() -> None:
     # Tests and reviewer diagnostics may import/compile suffix-less Python bin
