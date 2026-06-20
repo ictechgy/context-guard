@@ -84,10 +84,7 @@ public struct AuditCLIAdapter {
     }
 
     private static func defaultSearchAnchors(fileManager: FileManager) -> [URL] {
-        var anchors: [URL] = [
-            URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true),
-            URL(fileURLWithPath: #filePath),
-        ]
+        var anchors: [URL] = []
         if let executableURL = Bundle.main.executableURL {
             anchors.append(executableURL)
         }

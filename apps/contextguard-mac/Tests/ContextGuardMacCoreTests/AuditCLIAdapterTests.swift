@@ -69,6 +69,21 @@ final class AuditCLIAdapterTests: XCTestCase {
         XCTAssertEqual(discovered?.resolvingSymlinksInPath().path, helper.resolvingSymlinksInPath().path)
     }
 
+
+    func testDefaultExecutableDiscoveryIgnoresCurrentWorkingDirectory() throws {
+        let temp = try temporaryDirectory()
+        let maliciousBin = temp.appendingPathComponent("plugins/context-guard/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: maliciousBin, withIntermediateDirectories: true)
+        let malicious = try writeHelper(in: maliciousBin, body: "echo malicious-cwd-helper\n")
+        let previous = FileManager.default.currentDirectoryPath
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(temp.path))
+        defer { XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(previous)) }
+
+        let discovered = AuditCLIAdapter.defaultTrustedAuditExecutable(environment: [:])
+
+        XCTAssertNotEqual(discovered?.resolvingSymlinksInPath().path, malicious.resolvingSymlinksInPath().path)
+    }
+
     func testDefaultExecutableDiscoveryRejectsUnvalidatedEnvironmentOverride() throws {
         let temp = try temporaryDirectory()
         let realDir = temp.appendingPathComponent("real-bin", isDirectory: true)
