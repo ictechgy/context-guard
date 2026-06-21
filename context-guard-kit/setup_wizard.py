@@ -2210,6 +2210,25 @@ def backup_existing(path: Path) -> Path | None:
     return backup
 
 
+def rollback_restore_guidance(settings_path: Path, backup_path: Path | None, original_existed: bool) -> str:
+    if backup_path is not None:
+        return (
+            "Restore only with a no-follow, symlink-safe copy that opens the backup and target parent "
+            "without following links, then atomically replaces the target; do not use generic shell "
+            f"copy/delete commands on this mutable target. Backup: {backup_path}. Target: {settings_path}."
+        )
+    if original_existed:
+        return (
+            "No backup path was recorded; inspect the target with no-follow file operations before any "
+            f"manual recovery. Do not use generic shell copy/delete commands on this mutable target: {settings_path}."
+        )
+    return (
+        "The target did not exist before setup. If cleanup is required, verify the target and every parent "
+        "without following symlinks and remove only the verified regular file; do not use generic shell "
+        f"delete commands on this mutable target: {settings_path}."
+    )
+
+
 def write_rollback_record(
     *,
     root: Path,
@@ -2237,11 +2256,8 @@ def write_rollback_record(
         "target_path": str(settings_path),
         "backup_path": str(backup_path) if backup_path else None,
         "original_existed": original_existed,
-        "restore": (
-            f"cp {shlex.quote(str(backup_path))} {shlex.quote(str(settings_path))}"
-            if backup_path
-            else f"rm -f {shlex.quote(str(settings_path))}"
-        ),
+        "restore": rollback_restore_guidance(settings_path, backup_path, original_existed),
+        "restore_requires_no_follow": True,
     }
     atomic_write(rollback_path, json.dumps(record, indent=2, sort_keys=True) + "\n", 0o600)
     return rollback_id, rollback_path

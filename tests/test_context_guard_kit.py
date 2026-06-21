@@ -29124,8 +29124,31 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(rollback["schema_version"], "contextguard.rollback.v1")
                     self.assertEqual(rollback["target_path"], str(settings.resolve()))
                     self.assertEqual(rollback["backup_path"], data["backup_path"])
+                    self.assertTrue(rollback["restore_requires_no_follow"])
+                    self.assertIn("no-follow", rollback["restore"])
+                    self.assertIn("atomically replaces", rollback["restore"])
+                    self.assertIn(str(settings.resolve()), rollback["restore"])
+                    self.assertIn("generic shell copy/delete commands", rollback["restore"])
+                    self.assertNotIn("cp ", rollback["restore"])
+                    self.assertNotIn("rm -f", rollback["restore"])
+                    self.assertNotIn("cp/rm", rollback["restore"])
                     self.assertIn("--yes and explicit --agent", " ".join(data["warnings"]))
                     self.assertIn("Read(./custom/**)", json.loads(settings.read_text(encoding="utf-8"))["permissions"]["deny"])
+
+    def test_npm_publish_workflow_dispatch_verifies_release_tag_and_sha(self):
+        workflow = (ROOT / ".github" / "workflows" / "npm-publish.yml").read_text(encoding="utf-8")
+        self.assertIn("release_sha:", workflow)
+        self.assertIn("Expected 40-character commit SHA", workflow)
+        self.assertIn("EXPECTED_RELEASE_SHA", workflow)
+        self.assertIn("workflow_dispatch requires release_sha to be a 40-character commit SHA", workflow)
+        self.assertIn("git", workflow)
+        self.assertIn("ls-remote", workflow)
+        self.assertIn("refs/tags/{tag_name}^{{}}", workflow)
+        self.assertIn("checked-out HEAD", workflow)
+        self.assertIn("origin tag", workflow)
+        self.assertIn("https://api.github.com/repos/{repo}/releases/tags/{url_tag}", workflow)
+        self.assertIn("published GitHub release not found", workflow)
+        self.assertLess(workflow.index("Verify publish target and OIDC toolchain"), workflow.index("Publish npm package with trusted publishing"))
 
     def test_user_scope_existing_claude_settings_rejects_no_backup(self):
         for script in SETUP_SCRIPTS:
