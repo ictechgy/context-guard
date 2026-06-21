@@ -84,7 +84,9 @@ SAFE_UNQUOTED_VALUES = {
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
 SAFE_UNQUOTED_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get|re\.compile)\([^;\n]*\)$")
-CODE_EXPRESSION_CALL_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\([^;\n]*\)$")
+CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+SAFE_CODE_EXPRESSION_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\(\s*(?:{CODE_IDENTIFIER}(?:\s*,\s*{CODE_IDENTIFIER})*)?\s*\)$")
+SAFE_GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'][A-Za-z0-9_.-]{{1,80}}[\"']\s*\)$")
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
@@ -187,7 +189,9 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
         return False
     if SAFE_UNQUOTED_CALL_RE.match(value) or value.startswith(("os.getenv(", "os.environ.get(", "re.compile(")):
         return False
-    if CODE_EXPRESSION_CALL_RE.match(value) and re.search(r"\s[:=]\s*$", prefix):
+    if re.search(r"\s[:=]\s*$", prefix) and (
+        SAFE_CODE_EXPRESSION_CALL_RE.match(value) or SAFE_GETTER_CALL_RE.match(value)
+    ):
         return False
     return True
 
