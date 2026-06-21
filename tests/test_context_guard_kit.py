@@ -16276,6 +16276,28 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertNotIn("abc{def}", proc.stdout)
                 self.assertNotIn("token[value]", proc.stdout)
 
+    def test_sanitize_output_preserves_spaced_code_expression_secret_assignments(self):
+        raw = (
+            "token = get_token()\n"
+            'api_key = config.get("api_key")\n'
+            "client_secret = build_client_secret(user)\n"
+            "password=abc(def)\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("token = get_token()", proc.stdout)
+                self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
+                self.assertIn("password=[REDACTED]", proc.stdout)
+                self.assertNotIn("password=abc(def)", proc.stdout)
+
     def test_sanitize_output_redacts_cookie_headers(self):
         raw = (
             "Cookie: sessionid=abcdef1234567890; theme=light\n"
