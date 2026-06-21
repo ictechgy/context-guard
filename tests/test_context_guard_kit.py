@@ -16319,6 +16319,19 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             'api_key = config.get("api_key") if ok else "conditional-secret"\n'
             'api_key = (config.get("api_key") or "paren-secret")\n'
             'token = process.env.TOKEN || "js-fallback-secret"\n'
+            'api_key = config.get("api_key") or fallback_secret\n'
+            'api_key = config.get("api_key") if ok else fallback_secret\n'
+            'token = process.env.TOKEN || fallback_token\n'
+            'api_key = (\n'
+            '    config.get("api_key")\n'
+            '    or "multi-fallback-secret"\n'
+            ')\n'
+            'client_secret = config.get(\n'
+            '    "client_secret",\n'
+            '    "multi-default-secret",\n'
+            ')\n'
+            'token = process.env.TOKEN ||\n'
+            '    "multi-js-secret"\n'
             'api_key = config.get("api_key")\n'
             'api_key = config.get("API_KEY")\n'
             'access_token = config.get("ACCESS_TOKEN")\n'
@@ -16350,6 +16363,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertNotIn("conditional-secret", proc.stdout)
                 self.assertNotIn("paren-secret", proc.stdout)
                 self.assertNotIn("js-fallback-secret", proc.stdout)
+                self.assertNotIn("fallback_secret", proc.stdout)
+                self.assertNotIn("fallback_token", proc.stdout)
+                self.assertNotIn("multi-fallback-secret", proc.stdout)
+                self.assertNotIn("multi-default-secret", proc.stdout)
+                self.assertNotIn("multi-js-secret", proc.stdout)
                 self.assertNotIn("[REDACTED]]", proc.stdout)
 
     def test_sanitize_output_redacts_cookie_headers(self):
@@ -19982,6 +20000,11 @@ for malformed in malformed_values:
                 "    password = 'hunter2'\n"
                 "    sessionid = 'abcdef1234567890'\n"
                 "    callback = 'https://example.invalid/cb?sessionid=abc123&ok=1'\n"
+                "    api_key = config.get('api_key') or fallback_secret\n"
+                "    token = (\n"
+                "        config.get('token')\n"
+                "        or 'multi-fallback-secret'\n"
+                "    )\n"
                 "    return api_key\n",
                 encoding="utf-8",
             )
@@ -20000,6 +20023,8 @@ for malformed in malformed_values:
                     self.assertNotIn("hunter2", data["content"])
                     self.assertNotIn("abcdef1234567890", data["content"])
                     self.assertNotIn("abc123", data["content"])
+                    self.assertNotIn("fallback_secret", data["content"])
+                    self.assertNotIn("multi-fallback-secret", data["content"])
 
     def test_read_symbol_helper_edges_bound_languages_and_missing_symbols(self):
         # Protects symbol slicing heuristics: language routing, syntax fallback,

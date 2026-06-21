@@ -77,13 +77,19 @@ INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<value>(?![\"']){CODE_IDENTIFIER}\({CALL_ARGUMENT_CHUNK}\))"
 )
+SECRET_IDENTIFIER_PART = (
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*(?:api_?key|apikey|token|secret|password|passwd|pwd|"
+    r"private_?key|access_?key|client_?secret|sessionid|session_id|session_token|"
+    r"csrf_token|xsrf_token)[A-Za-z0-9_$]*|session|sid|csrf|xsrf)"
+)
+FALLBACK_SECRET_OPERAND = rf"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*{SECRET_IDENTIFIER_PART}"
 INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<value>(?![\"']|\[REDACTED\])"
     rf"[^;\n]*?(?:\bor\b|\|\||\?\?|\belse\b|\?[^:\n;]*:)\s*"
-    rf"[\"'](?:\\.|[^\"'\\])*[\"'][^;\n]*)"
+    rf"(?:[\"'](?:\\.|[^\"'\\])*[\"']|{FALLBACK_SECRET_OPERAND})[^;\n]*)"
 )
 INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
@@ -97,6 +103,14 @@ INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<value>(?![\"']|\[REDACTED\])[^\s,;}}\]]+)"
+)
+UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?:^|[\s;{{\[,])"
+    rf"(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<value>(?![\"']).*)$"
+)
+CONTINUATION_OPERATOR_RE = re.compile(
+    r"(?i)(?:\\|\|\||&&|\?\?|[+*/%&|^?,]|\?|:|\bor\b|\band\b|\belse\b)\s*(?://.*|#.*)?$"
 )
 URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
@@ -341,6 +355,54 @@ def detect_multiline_secret_assignment(line: str) -> str | None:
     return None
 
 
+def expression_bracket_delta(text: str) -> int:
+    delta = 0
+    quote: str | None = None
+    escaped = False
+    for char in text:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            delta += 1
+        elif char in ")}]":
+            delta -= 1
+    return delta
+
+
+def ends_with_continuation_operator(text: str) -> bool:
+    return bool(CONTINUATION_OPERATOR_RE.search(text.rstrip()))
+
+
+def detect_multiline_secret_expression(line: str) -> int | None:
+    marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE.search(line)
+    if marker is None:
+        return None
+    value = marker.group("value").strip()
+    if not value:
+        return 0
+    delta = expression_bracket_delta(value)
+    if delta > 0:
+        return delta
+    if ends_with_continuation_operator(value):
+        return max(delta, 0)
+    return None
+
+
+def update_multiline_secret_expression_state(line: str, depth: int) -> int | None:
+    next_depth = max(0, depth + expression_bracket_delta(line))
+    if next_depth == 0 and not ends_with_continuation_operator(line):
+        return None
+    return next_depth
+
+
 def private_key_state_after_line(line: str) -> bool | None:
     """Return updated private-key state for a line, or None when no marker appears."""
     if PRIVATE_KEY_BEGIN_RE.search(line):
@@ -361,6 +423,7 @@ class LineSanitizer:
         self.show_paths = show_paths
         self.in_private_key_block = False
         self.multiline_secret_quote: str | None = None
+        self.multiline_secret_expression_depth: int | None = None
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -393,6 +456,12 @@ class LineSanitizer:
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
+        if self.multiline_secret_expression_depth is not None:
+            self.multiline_secret_expression_depth = update_multiline_secret_expression_state(
+                line, self.multiline_secret_expression_depth
+            )
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", True)
+
         multiline_quote = detect_multiline_secret_assignment(line)
         if multiline_quote is not None:
             self.multiline_secret_quote = multiline_quote
@@ -406,6 +475,11 @@ class LineSanitizer:
             if not PRIVATE_KEY_END_RE.search(line):
                 self.in_private_key_block = True
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
+
+        expression_depth = detect_multiline_secret_expression(line)
+        if expression_depth is not None:
+            self.multiline_secret_expression_depth = expression_depth
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", True)
 
         new_line, count = AUTH_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:
