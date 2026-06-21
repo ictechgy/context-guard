@@ -41,6 +41,7 @@ def _load_hook_secret_patterns():
 
 _hook_secret_patterns = _load_hook_secret_patterns()
 hook_label_has_sensitive_evidence = _hook_secret_patterns.hook_label_has_sensitive_evidence
+redact_sensitive_hook_text = _hook_secret_patterns.redact_sensitive_hook_text
 
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_CHARS = 16_000
@@ -409,6 +410,7 @@ def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, sho
     start_with_context = max(0, start - max(0, context))
     end_with_context = min(len(lines), end + max(0, context))
     content = "".join(lines[start_with_context:end_with_context])
+    content = redact_sensitive_hook_text(content, "[REDACTED]")
     capped = False
     if max_chars > 0 and len(content) > max_chars:
         marker = f"\n[context-guard-kit] symbol slice capped: {len(content)} chars total\n"

@@ -49,6 +49,9 @@ PRIVATE_KEY_END_RE = re.compile(
 AUTH_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$"
 )
+COOKIE_HEADER_RE = re.compile(
+    r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
+)
 SECRET_KEY = (
     r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
     r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
@@ -65,7 +68,7 @@ INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>[^\s,;}}\]]+)"
+    rf"(?P<value>(?![\"'])[^\s,;}}\]]+)"
 )
 URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
@@ -80,6 +83,7 @@ SAFE_UNQUOTED_VALUES = {
     "undefined",
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
+SAFE_UNQUOTED_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get|re\.compile)\([^;\n]*\)$")
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
@@ -179,12 +183,7 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
         return False
     if IDENTIFIER_CHAIN_RE.match(value):
         return False
-    end = match.end("value")
-    if end < len(line) and line[end] in "([{":
-        # Likely a function call or expression (`api_key = os.getenv(...)`);
-        # preserve it so Claude can still reason about code flow.
-        return False
-    if any(ch in value for ch in "()[]{}"):
+    if SAFE_UNQUOTED_CALL_RE.match(value) or value.startswith(("os.getenv(", "os.environ.get(", "re.compile(")):
         return False
     return True
 
@@ -324,6 +323,11 @@ class LineSanitizer:
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
         new_line, count = AUTH_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
+        if count:
+            redacted = True
+            line = new_line
+
+        new_line, count = COOKIE_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:
             redacted = True
             line = new_line

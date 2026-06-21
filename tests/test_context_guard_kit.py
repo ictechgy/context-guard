@@ -16250,6 +16250,54 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertNotIn("hunter2", proc.stdout)
         self.assertNotIn("abc123", proc.stdout)
 
+    def test_sanitize_output_redacts_bracketed_unquoted_secret_literals(self):
+        raw = (
+            "password=abc(def)\n"
+            "client_secret=abc{def}\n"
+            "api_key=token[value]\n"
+            "api_key=os.getenv(\"API_KEY\")\n"
+            "SECRET_WORD_RE = re.compile(r\"secret|password\")\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("password=[REDACTED]", proc.stdout)
+                self.assertIn("client_secret=[REDACTED]", proc.stdout)
+                self.assertIn("api_key=[REDACTED]", proc.stdout)
+                self.assertIn('api_key=os.getenv("API_KEY")', proc.stdout)
+                self.assertIn("SECRET_WORD_RE = re.compile", proc.stdout)
+                self.assertNotIn("abc(def)", proc.stdout)
+                self.assertNotIn("abc{def}", proc.stdout)
+                self.assertNotIn("token[value]", proc.stdout)
+
+    def test_sanitize_output_redacts_cookie_headers(self):
+        raw = (
+            "Cookie: sessionid=abcdef1234567890; theme=light\n"
+            "Set-Cookie: sid=abcdef1234567890; HttpOnly\n"
+            "src/api.py:12:Cookie: jwt=eyJsecret.payload.sig; csrftoken=csrf-secret\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("Cookie: [REDACTED]", proc.stdout)
+                self.assertIn("Set-Cookie: [REDACTED]", proc.stdout)
+                self.assertIn("src/api.py:12:Cookie: [REDACTED]", proc.stdout)
+                self.assertNotIn("abcdef1234567890", proc.stdout)
+                self.assertNotIn("eyJsecret", proc.stdout)
+                self.assertNotIn("csrf-secret", proc.stdout)
+
     def test_sanitize_output_redacts_semicolon_chained_inline_assignments(self):
         raw = (
             'echo ok;TOKEN=first-secret;PASSWORD="second-secret";SAFE_VALUE=visible\n'
@@ -19812,6 +19860,31 @@ for malformed in malformed_values:
             data = json.loads(proc.stdout)
             self.assertIn("VERSION", data["content"])
             self.assertNotIn("OTHER", data["content"])
+
+
+    def test_read_symbol_redacts_high_confidence_secrets_from_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            py = root / "sample.py"
+            token = "ghp_" + ("A" * 36)
+            py.write_text(
+                "def target():\n"
+                f"    api_key = '{token}'\n"
+                "    return api_key\n",
+                encoding="utf-8",
+            )
+            for script in READ_SYMBOL_SCRIPTS:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(py), "target", "--json", "--context", "0"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertIn("def target", data["content"])
+                    self.assertIn("[REDACTED]", data["content"])
+                    self.assertNotIn(token, data["content"])
 
     def test_read_symbol_helper_edges_bound_languages_and_missing_symbols(self):
         # Protects symbol slicing heuristics: language routing, syntax fallback,
