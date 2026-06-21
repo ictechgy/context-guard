@@ -41,6 +41,14 @@ def canonicalize_current_test_module():
     module = sys.modules[__name__]
     sys.modules[BASE_TEST_TOPLEVEL_MODULE] = module
     sys.modules[BASE_TEST_PACKAGE_MODULE] = module
+    package = sys.modules.get("tests")
+    if package is None:
+        try:
+            package = __import__("tests")
+        except ModuleNotFoundError:
+            package = None
+    if package is not None:
+        setattr(package, "test_context_guard_kit", module)
     return module
 
 

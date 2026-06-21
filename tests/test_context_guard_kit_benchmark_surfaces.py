@@ -29,6 +29,14 @@ def canonicalize_current_module():
     module = sys.modules[__name__]
     sys.modules[SELF_TOPLEVEL_MODULE] = module
     sys.modules[SELF_PACKAGE_MODULE] = module
+    package = sys.modules.get("tests")
+    if package is None:
+        try:
+            package = importlib.import_module("tests")
+        except ModuleNotFoundError:
+            package = None
+    if package is not None:
+        setattr(package, "test_context_guard_kit_benchmark_surfaces", module)
     return module
 
 
@@ -90,6 +98,7 @@ class SplitModuleCompatibilityTests(unittest.TestCase):
 import importlib
 import pathlib
 import sys
+import unittest
 root = pathlib.Path.cwd()
 sys.path.insert(0, str(root / 'tests'))
 sys.path.insert(0, str(root))
@@ -97,6 +106,12 @@ first = importlib.import_module({first!r})
 second = importlib.import_module({second!r})
 assert first is second, (first, second)
 assert sys.modules[{top_name!r}] is sys.modules[{package_name!r}]
+import tests
+assert getattr(tests, {package_name.rsplit('.', 1)[1]!r}) is sys.modules[{package_name!r}]
+base_suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_context_guard_kit.BenchmarkRunnerTests')
+split_suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_context_guard_kit_benchmark_surfaces.BenchmarkRunnerTests')
+assert base_suite.countTestCases() == 74, base_suite
+assert split_suite.countTestCases() == 74, split_suite
 """
                 subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, check=True, text=True, capture_output=True)
 
