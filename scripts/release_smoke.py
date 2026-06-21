@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import os
 import queue
@@ -22,7 +21,8 @@ from typing import Any, Callable, NamedTuple, NoReturn
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = ROOT / "plugins" / "context-guard"
 PLUGIN_BIN = ROOT / "plugins" / "context-guard" / "bin"
-MAX_COMMAND_MANIFEST_BYTES = 128 * 1024
+KIT_DIR = ROOT / "context-guard-kit"
+MAX_MANIFEST_HELPER_BYTES = 128 * 1024
 PACKAGE_REQUIRED_FILES = (".claude-plugin/plugin.json",)
 PACKAGE_REQUIRED_DIRS = ("bin", "lib", "skills")
 PACKAGE_COPY_IGNORE_NAMES = {
@@ -37,21 +37,9 @@ REQUIRED_COMMANDS = (
     "context-guard-diet",
     "context-guard-audit",
 )
-COMMAND_MANIFEST_LITERAL_NAMES = {
-    "IMPLEMENTATION_PAIRS",
-    "HELPER_PAIRS",
-    "NPM_BINS",
-    "NPM_BIN_PATHS",
-    "DISPATCHER_SUBCOMMANDS",
-    "LEGACY_WRAPPERS",
-    "ENTRYPOINT_SMOKE_CASES",
-    "PLUGIN_ENTRYPOINTS",
-    "DISPATCHER_SMOKE_CASES",
-    "EXPECTED_COMMAND_PACK_FILES",
-}
 
 
-def manifest_open_flags() -> int | None:
+def trusted_source_open_flags() -> int | None:
     if not hasattr(os, "O_NOFOLLOW"):
         return None
     flags = os.O_RDONLY | os.O_NOFOLLOW
@@ -64,25 +52,25 @@ def manifest_open_flags() -> int | None:
     return flags
 
 
-def read_manifest_source(path: Path) -> str | None:
-    flags = manifest_open_flags()
+def read_manifest_helper_source(path: Path) -> str | None:
+    flags = trusted_source_open_flags()
     if flags is None:
         return None
     fd = -1
     try:
         fd = os.open(path, flags)
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_COMMAND_MANIFEST_BYTES:
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_MANIFEST_HELPER_BYTES:
             return None
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = os.read(fd, min(64 * 1024, MAX_COMMAND_MANIFEST_BYTES + 1 - total))
+            chunk = os.read(fd, min(64 * 1024, MAX_MANIFEST_HELPER_BYTES + 1 - total))
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
-            if total > MAX_COMMAND_MANIFEST_BYTES:
+            if total > MAX_MANIFEST_HELPER_BYTES:
                 return None
         return b"".join(chunks).decode("utf-8")
     except (OSError, UnicodeDecodeError):
@@ -95,32 +83,41 @@ def read_manifest_source(path: Path) -> str | None:
                 pass
 
 
-def literal_command_manifest_from_source(source: str) -> dict[str, Any]:
+def load_manifest_helper() -> dict[str, Any]:
+    helper_path = KIT_DIR / "context_guard_command_manifest_loader.py"
+    source = read_manifest_helper_source(helper_path)
+    if source is None:
+        raise SystemExit(f"could not load trusted command manifest helper source: {helper_path}")
+    namespace: dict[str, Any] = {
+        "__builtins__": __builtins__,
+        "__file__": str(helper_path),
+        "__name__": "_context_guard_command_manifest_loader",
+    }
     try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        raise ValueError(f"invalid Python manifest syntax: line {exc.lineno}: {exc.msg}") from exc
-    values: dict[str, Any] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            continue
-        target: str | None = None
-        value: ast.expr | None = None
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            target = node.target.id
-            value = node.value
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            target = node.targets[0].id
-            value = node.value
-        if target is None:
-            raise ValueError(f"unsupported executable manifest statement: {type(node).__name__}")
-        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
-            raise ValueError(f"unsupported manifest assignment: {target}")
-        try:
-            values[target] = ast.literal_eval(value)
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"manifest assignment must be a literal: {target}") from exc
-    return values
+        exec(compile(source, str(helper_path), "exec"), namespace)
+    except Exception as exc:
+        raise SystemExit(f"could not load trusted command manifest helper: {helper_path}: {exc}") from exc
+    required = (
+        "COMMAND_MANIFEST_LITERAL_NAMES",
+        "MAX_COMMAND_MANIFEST_BYTES",
+        "command_manifest_namespace",
+        "literal_command_manifest_from_source",
+        "manifest_open_flags",
+        "read_manifest_source",
+    )
+    missing = [name for name in required if name not in namespace]
+    if missing:
+        raise SystemExit(f"trusted command manifest helper missing required API: {', '.join(missing)}")
+    return namespace
+
+
+COMMAND_MANIFEST_HELPER = load_manifest_helper()
+MAX_COMMAND_MANIFEST_BYTES = COMMAND_MANIFEST_HELPER["MAX_COMMAND_MANIFEST_BYTES"]
+COMMAND_MANIFEST_LITERAL_NAMES = COMMAND_MANIFEST_HELPER["COMMAND_MANIFEST_LITERAL_NAMES"]
+manifest_open_flags = COMMAND_MANIFEST_HELPER["manifest_open_flags"]
+read_manifest_source = COMMAND_MANIFEST_HELPER["read_manifest_source"]
+literal_command_manifest_from_source = COMMAND_MANIFEST_HELPER["literal_command_manifest_from_source"]
+command_manifest_namespace = COMMAND_MANIFEST_HELPER["command_manifest_namespace"]
 
 
 def load_command_manifest():
@@ -133,10 +130,10 @@ def load_command_manifest():
     except ValueError as exc:
         raise SystemExit(f"could not parse trusted command manifest literals: {manifest_path}: {exc}") from exc
     required = {"ENTRYPOINT_SMOKE_CASES", "DISPATCHER_SMOKE_CASES"}
-    missing = sorted(required - values.keys())
-    if missing:
-        raise SystemExit(f"trusted command manifest missing required literals: {', '.join(missing)}")
-    return type("CommandManifest", (), values)
+    try:
+        return command_manifest_namespace(values, required=required)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 COMMAND_MANIFEST = load_command_manifest()
@@ -757,6 +754,59 @@ def check_auto_explain_smoke(proc: subprocess.CompletedProcess[str], command: st
         fail(f"{command} adaptive_k missing source verification safeguard")
 
 
+def run_entrypoint_launch_smokes(
+    *,
+    plugin_bin: Path,
+    launch_plan: dict[str, dict[str, Any]],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+) -> None:
+    for name, plan in launch_plan.items():
+        mode = str(plan["mode"])
+        run_command(
+            entrypoint_launch_argv(command_path(plugin_bin, name), list(plan["args"])),
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            input_text=launch_stdin(mode),
+            expect=lambda proc, command=name, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
+        )
+
+
+def run_dispatcher_launch_smokes(
+    *,
+    bin_dir: Path,
+    plans: tuple[dict[str, Any], ...],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+    trusted_root: Path | None = None,
+    label_prefix: str = "",
+) -> None:
+    for plan in plans:
+        entrypoint = str(plan["entrypoint"])
+        mode = str(plan["mode"])
+        args = [str(arg) for arg in plan["args"]]
+        entrypoint_path = bin_dir / entrypoint
+        if not entrypoint_path.is_file():
+            fail(f"{label_prefix}{entrypoint} dispatcher bin missing: {entrypoint_path}")
+        if trusted_root is None:
+            argv = entrypoint_launch_argv(command_path(bin_dir, entrypoint), args)
+        else:
+            require_path_inside(entrypoint_path, trusted_root, label=f"{entrypoint} npm bin")
+            argv = entrypoint_launch_argv(entrypoint_path, args, trusted_root=trusted_root)
+        command_label = " ".join([label_prefix.rstrip(), entrypoint, *args]).strip()
+        run_command(
+            argv,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            input_text=launch_stdin(mode),
+            expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
+        )
+
+
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
@@ -890,29 +940,14 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 check_json_field(load_json(proc.stdout, "context-guard-audit"), "records", 1, "context-guard-audit")
             ),
         )
-        for name, plan in launch_plan.items():
-            mode = str(plan["mode"])
-            run_command(
-                entrypoint_launch_argv(command_path(plugin_bin, name), list(plan["args"])),
-                cwd=project,
-                env=env,
-                timeout=timeout,
-                input_text=launch_stdin(mode),
-                expect=lambda proc, command=name, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
-            )
-        for plan in DISPATCHER_SMOKE_COMMANDS:
-            entrypoint = str(plan["entrypoint"])
-            mode = str(plan["mode"])
-            args = [str(arg) for arg in plan["args"]]
-            command_label = " ".join([entrypoint, *args])
-            run_command(
-                entrypoint_launch_argv(command_path(plugin_bin, entrypoint), args),
-                cwd=project,
-                env=env,
-                timeout=timeout,
-                input_text=launch_stdin(mode),
-                expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
-            )
+        run_entrypoint_launch_smokes(plugin_bin=plugin_bin, launch_plan=launch_plan, cwd=project, env=env, timeout=timeout)
+        run_dispatcher_launch_smokes(
+            bin_dir=plugin_bin,
+            plans=DISPATCHER_SMOKE_COMMANDS,
+            cwd=project,
+            env=env,
+            timeout=timeout,
+        )
 
 
 def run_npm_package_smoke(timeout: float) -> None:
@@ -1082,23 +1117,15 @@ def run_npm_package_smoke(timeout: float) -> None:
                 "isolated npm context-guard setup brief-mode apply",
             ),
         )
-        for plan in npm_dispatcher_smoke_plan():
-            entrypoint = str(plan["entrypoint"])
-            mode = str(plan["mode"])
-            args = [str(arg) for arg in plan["args"]]
-            entrypoint_path = isolated_bin / entrypoint
-            if not entrypoint_path.is_file():
-                fail(f"isolated npm install missing dispatcher bin: {entrypoint_path}")
-            require_path_inside(entrypoint_path, install_prefix, label=f"{entrypoint} npm bin")
-            command_label = " ".join(["isolated npm", entrypoint, *args])
-            run_command(
-                entrypoint_launch_argv(entrypoint_path, args, trusted_root=install_prefix),
-                cwd=project,
-                env=env,
-                timeout=timeout,
-                input_text=launch_stdin(mode),
-                expect=lambda proc, command=command_label, launch_mode=mode: check_launch_smoke(proc, command, launch_mode),
-            )
+        run_dispatcher_launch_smokes(
+            bin_dir=isolated_bin,
+            plans=npm_dispatcher_smoke_plan(),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            trusted_root=install_prefix,
+            label_prefix="isolated npm ",
+        )
 
 
 def npm_dispatcher_smoke_plan() -> tuple[dict[str, Any], ...]:
