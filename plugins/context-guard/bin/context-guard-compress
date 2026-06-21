@@ -25,6 +25,7 @@ from typing import Callable
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
 MAX_SEARCH_DEDUPE_KEYS = 50_000
+JSON_PARSE_FAILED = object()
 # 토큰 추정은 보수적 proxy 일 뿐이다(관측값 아님). 평균 ~4 chars/token 휴리스틱을 쓰되
 # 메타데이터에 measurement="estimated" 로 명시해 관측 토큰 수와 혼동되지 않게 한다.
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
@@ -218,15 +219,19 @@ def token_proxy(text: str) -> int:
 def classify_content(text: str) -> str:
     """Best-effort content classification into one of CONTENT_TYPES.
 
-    Order matters: JSON and diff have the strongest unambiguous signals and are
-    checked first; search/log/code are sampled over the first lines; prose is the
-    conservative default so unknown text is never over-compressed.
+    Order matters: valid JSON and diff have the strongest unambiguous signals;
+    search/log/code are sampled over the first lines; prose is the conservative
+    default so unknown text is never over-compressed.
     """
     stripped = text.strip()
     if not stripped:
         return "prose"
     if _looks_like_json(stripped):
         return "json"
+    return classify_non_json_content(stripped)
+
+
+def classify_non_json_content(stripped: str) -> str:
     lines = stripped.splitlines()
     sample = lines[:200]
     if _looks_like_diff(sample):
@@ -356,8 +361,17 @@ def build_readable_compression_metadata(
     }
 
 
+def parse_json_candidate(stripped: str) -> object:
+    if not stripped or stripped[0] not in "{[":
+        return JSON_PARSE_FAILED
+    try:
+        return json.loads(stripped)
+    except (ValueError, RecursionError):
+        return JSON_PARSE_FAILED
+
+
 def _looks_like_json(stripped: str) -> bool:
-    return bool(stripped and stripped[0] in "{[")
+    return parse_json_candidate(stripped) is not JSON_PARSE_FAILED
 
 
 def _ratio(matches: int, total: int, threshold: float) -> bool:
@@ -385,21 +399,24 @@ def _looks_like_code(sample: list[str]) -> bool:
     return _ratio(matches, len(sample), 0.25)
 
 
-def compress_json(text: str) -> tuple[str, dict[str, object]]:
-    """Re-serialize JSON without insignificant whitespace (data-preserving)."""
-    try:
-        parsed = json.loads(text)
-    except (ValueError, RecursionError):
-        # 파싱 불가 시 무손실을 깨지 않도록 prose 전략으로 안전하게 폴백한다.
-        compressed, detail = compress_prose(text)
-        detail["fallback_from"] = "json"
-        return compressed, detail
+def compress_parsed_json(text: str, parsed: object) -> tuple[str, dict[str, object]]:
     compact = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
     if not text.endswith("\n"):
         trailing = ""
     else:
         trailing = "\n"
     return compact + trailing, {"strategy": "json-compact", "lossy": False, "json_parse_ok": True}
+
+
+def compress_json(text: str) -> tuple[str, dict[str, object]]:
+    """Re-serialize JSON without insignificant whitespace (data-preserving)."""
+    parsed = parse_json_candidate(text.strip())
+    if parsed is JSON_PARSE_FAILED:
+        # 파싱 불가 시 무손실을 깨지 않도록 prose 전략으로 안전하게 폴백한다.
+        compressed, detail = compress_prose(text)
+        detail["fallback_from"] = "json"
+        return compressed, detail
+    return compress_parsed_json(text, parsed)
 
 
 def compress_diff(text: str) -> tuple[str, dict[str, object]]:
@@ -694,14 +711,21 @@ def compress_text(
     the compressed body, or the metadata that follows.
     """
     sanitized, redacted_lines = sanitize_text(text, show_paths=show_paths)
+    parsed_json: object = JSON_PARSE_FAILED
     if forced_type is not None:
         content_type, type_source = forced_type, "override"
     else:
-        content_type, type_source = classify_content(sanitized), "detected"
+        stripped = sanitized.strip()
+        parsed_json = parse_json_candidate(stripped)
+        content_type = "json" if parsed_json is not JSON_PARSE_FAILED else classify_non_json_content(stripped)
+        type_source = "detected"
     if compression_mode == "readable" and content_type == "prose":
         compressed, strategy_detail = compress_prose_readable(sanitized)
     else:
-        compressed, strategy_detail = STRATEGIES[content_type](sanitized)
+        if content_type == "json" and parsed_json is not JSON_PARSE_FAILED:
+            compressed, strategy_detail = compress_parsed_json(sanitized, parsed_json)
+        else:
+            compressed, strategy_detail = STRATEGIES[content_type](sanitized)
         if compression_mode == "readable":
             strategy_detail["readable_mode"] = True
             strategy_detail["readable_strategy"] = "sentence-window-preview"

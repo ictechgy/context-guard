@@ -1009,6 +1009,41 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(module.select_lines(lines(), flt, 1000), ["KEEP 0\n", "KEEP 1\n", "KEEP 2\n"])
                 self.assertEqual(consumed, 3)
 
+    def test_context_filter_head_only_selection_stops_after_head_limit(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_head_only_bounded_{index}")
+                consumed = 0
+
+                def lines():
+                    nonlocal consumed
+                    for number in range(10000):
+                        consumed += 1
+                        yield f"HEAD {number}\n"
+
+                flt = module.CompiledFilter(
+                    id="head-only",
+                    argv_prefix=("cmd",),
+                    argv_regex=None,
+                    passthrough_on_exit=True,
+                    include_regex=(),
+                    exclude_regex=(),
+                    head_lines=2,
+                    tail_lines=None,
+                    max_lines=None,
+                )
+                selection = module.select_lines_with_stats(lines(), flt, 1000)
+                self.assertEqual(selection.lines, ["HEAD 0\n", "HEAD 1\n"])
+                self.assertEqual(consumed, 2)
+                self.assertFalse(selection.input_complete)
+
+    def test_context_filter_streaming_lines_preserve_splitlines_boundaries(self):
+        raw = "L1\rL2\u2028L3\r\nL4"
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_splitlines_boundaries_{index}")
+                self.assertEqual(list(module.iter_text_lines_keepends(raw)), raw.splitlines(keepends=True))
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {
@@ -10521,6 +10556,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 finally:
                     capture.close()
 
+    def test_trim_artifact_capture_flushes_and_replaces_unencodable_text(self):
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_flush_{index}")
+                capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                try:
+                    capture.add("bad-surrogate-\udcff\n")
+                    text = capture.text()
+                    self.assertIn("bad-surrogate-", text)
+                    self.assertNotIn("\udcff", text)
+                    self.assertFalse(capture.overflow)
+                    self.assertIsNone(capture.error)
+                finally:
+                    capture.close()
+
     def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
         for script in TRIM_SCRIPTS:
             with self.subTest(script=script):
@@ -10689,6 +10739,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_compress_log_and_search_reduce_duplicates(self):
         log_raw = "2026-01-01 00:00:00 INFO repeated\n" * 40
+        bracket_log_raw = "[INFO] repeated\n" * 40
         search_raw = "src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n"
         for script in COMPRESS_SCRIPTS:
             with self.subTest(script=script):
@@ -10696,6 +10747,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(log_meta["content_type"], "log")
                 self.assertLess(log_meta["bytes"]["compressed"], log_meta["bytes"]["original"])
                 self.assertGreaterEqual(log_meta["strategy_detail"]["lines_collapsed"], 1)
+                bracket_log_meta = json.loads(self._run_compress(script, bracket_log_raw, "--metadata-only").stdout)
+                self.assertEqual(bracket_log_meta["content_type"], "log")
+                self.assertEqual(bracket_log_meta["strategy"], "log-collapse-repeats")
+                self.assertLess(bracket_log_meta["bytes"]["compressed"], bracket_log_meta["bytes"]["original"])
                 search_meta = json.loads(self._run_compress(script, search_raw, "--metadata-only").stdout)
                 self.assertEqual(search_meta["content_type"], "search")
                 self.assertEqual(search_meta["strategy_detail"]["duplicate_lines_dropped"], 1)

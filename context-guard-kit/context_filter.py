@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import collections
+import itertools
 from dataclasses import dataclass
 import json
 import os
@@ -456,21 +457,36 @@ def cap_line(line: str, max_chars: int) -> str:
     return line[: max(0, max_chars - len(marker) - len(suffix))] + marker + suffix
 
 
+LINE_BOUNDARY_CHARS = {"\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
+
+
+@dataclass
+class LineSelection:
+    lines: list[str]
+    input_lines: int
+    input_complete: bool
+
+
 def iter_text_lines_keepends(text: str) -> Iterable[str]:
+    """Yield lines with Python splitlines(keepends=True) boundaries without a list."""
     start = 0
-    while start < len(text):
-        newline = text.find("\n", start)
-        if newline == -1:
-            yield text[start:]
-            return
-        yield text[start : newline + 1]
-        start = newline + 1
-
-
-def count_logical_lines(text: str) -> int:
-    if not text:
-        return 0
-    return text.count("\n") + (0 if text.endswith("\n") else 1)
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\r" and index + 1 < length and text[index + 1] == "\n":
+            yield text[start : index + 2]
+            index += 2
+            start = index
+            continue
+        if char in LINE_BOUNDARY_CHARS:
+            yield text[start : index + 1]
+            index += 1
+            start = index
+            continue
+        index += 1
+    if start < length:
+        yield text[start:]
 
 
 def line_matches_filter(line: str, flt: CompiledFilter) -> bool:
@@ -481,43 +497,54 @@ def line_matches_filter(line: str, flt: CompiledFilter) -> bool:
     return True
 
 
-def select_lines(lines: Iterable[str], flt: CompiledFilter, max_line_chars: int) -> list[str]:
-    selected_count = 0
+def select_lines_with_stats(lines: Iterable[str], flt: CompiledFilter, max_line_chars: int) -> LineSelection:
+    source_count = 0
+    matched_count = 0
+    input_complete = True
     if flt.head_lines is not None or flt.tail_lines is not None:
         head_n = flt.head_lines if flt.head_lines is not None else 0
         tail_n = flt.tail_lines if flt.tail_lines is not None else 0
         head: list[str] = []
         tail: collections.deque[str] = collections.deque(maxlen=tail_n)
         for source_line in lines:
+            source_count += 1
             line = cap_line(source_line, max_line_chars)
             if not line_matches_filter(line, flt):
                 continue
-            selected_count += 1
+            matched_count += 1
             if head_n and len(head) < head_n:
                 head.append(line)
             if tail_n:
                 tail.append(line)
+            elif head_n and len(head) >= head_n:
+                input_complete = False
+                break
         tail_list = list(tail)
         if head and tail_list:
-            tail_list = tail_list[max(0, len(head) + len(tail_list) - selected_count):]
+            tail_list = tail_list[max(0, len(head) + len(tail_list) - matched_count):]
         selected = head + tail_list
     else:
         limit = min(flt.max_lines if flt.max_lines is not None else MAX_EMIT_LINES, MAX_EMIT_LINES)
         selected = []
         for source_line in lines:
+            source_count += 1
             line = cap_line(source_line, max_line_chars)
             if not line_matches_filter(line, flt):
                 continue
-            selected_count += 1
-            if len(selected) < limit:
-                selected.append(line)
+            matched_count += 1
+            selected.append(line)
             if len(selected) >= limit:
+                input_complete = False
                 break
     if flt.max_lines is not None and len(selected) > flt.max_lines:
         selected = selected[:flt.max_lines]
     if len(selected) > MAX_EMIT_LINES:
         selected = selected[:MAX_EMIT_LINES]
-    return selected
+    return LineSelection(selected, source_count, input_complete)
+
+
+def select_lines(lines: Iterable[str], flt: CompiledFilter, max_line_chars: int) -> list[str]:
+    return select_lines_with_stats(lines, flt, max_line_chars).lines
 
 
 def validation_payload(valid: bool, errors: list[str], count: int = 0) -> dict[str, Any]:
@@ -763,7 +790,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     filters, errors = load_filters(Path(args.config).expanduser())
     result = run_command(command, timeout_seconds, max_capture)
     rc = result.returncode
-    output = result.stdout_text + result.stderr_text
     protected_nonzero = rc != 0 and is_protected_command(command)
     report: dict[str, Any] = {"tool": TOOL_NAME, "schema_version": SCHEMA_VERSION, "mode": "run", "command_exit_code": rc, "decision": "passthrough", "reason": "unclassified", "protected_nonzero": protected_nonzero}
     if result.timed_out:
@@ -789,18 +815,19 @@ def cmd_run(args: argparse.Namespace) -> int:
             report["filter_id"] = matched.id
         else:
             try:
-                input_lines = count_logical_lines(output)
-                filtered = select_lines(iter_text_lines_keepends(output), matched, max_line_chars)
+                source_lines = itertools.chain(iter_text_lines_keepends(result.stdout_text), iter_text_lines_keepends(result.stderr_text))
+                selection = select_lines_with_stats(source_lines, matched, max_line_chars)
+                filtered = selection.lines
             except re.error as exc:
                 report["reason"] = f"filter-error:{compact(str(exc), 80)}"
                 report["filter_id"] = matched.id
             else:
-                if output and not filtered:
+                if (result.stdout_text or result.stderr_text) and not filtered:
                     report["reason"] = "empty-output-fallback"
                     report["filter_id"] = matched.id
                 else:
                     sys.stdout.write("".join(filtered))
-                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": input_lines, "output_lines": len(filtered)})
+                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": selection.input_lines, "input_lines_complete": selection.input_complete, "output_lines": len(filtered)})
                     emit_run_report(args, report)
                     return rc
     if not result.passthrough_emitted:

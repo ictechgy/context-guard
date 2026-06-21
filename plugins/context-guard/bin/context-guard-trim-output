@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import types
-from typing import BinaryIO, Iterable, Iterator
+from typing import BinaryIO, Iterable, Iterator, TextIO
 
 MAX_SUMMARY_ITEM_CHARS = 500
 MAX_LINES_LIMIT = 5_000
@@ -405,26 +405,39 @@ class SanitizedArtifactCapture:
         self.max_bytes = max_bytes
         self.bytes = 0
         self.overflow = False
-        self._file = tempfile.TemporaryFile("w+t", encoding="utf-8") if enabled else None
+        self.error: str | None = None
+        self._file: TextIO | None = None
+
+    def _ensure_file(self) -> TextIO | None:
+        if self._file is not None:
+            return self._file
+        try:
+            self._file = tempfile.TemporaryFile("w+t", encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self.error = f"{exc.__class__.__name__}: {exc}"
+            return None
+        return self._file
 
     def add(self, sanitized_line: str) -> None:
-        if not self.enabled or self.overflow:
+        if not self.enabled or self.overflow or self.error:
             return
         source_bytes = len(sanitized_line.encode("utf-8", errors="replace"))
         if self.bytes + source_bytes > self.max_bytes:
             self.overflow = True
-            self.bytes = min(self.bytes, self.max_bytes)
             if self._file is not None:
                 self._file.close()
                 self._file = None
             return
-        assert self._file is not None
-        self._file.write(sanitized_line)
+        target = self._ensure_file()
+        if target is None:
+            return
+        target.write(sanitized_line)
         self.bytes += source_bytes
 
     def text(self) -> str:
         if self._file is None:
             return ""
+        self._file.flush()
         self._file.seek(0)
         return self._file.read()
 
@@ -1616,6 +1629,13 @@ def main() -> int:
                     "error": "sanitized_output_exceeds_artifact_max_bytes",
                     "max_bytes": args.artifact_max_bytes,
                     "exact_reexpand": {"available": False, "reason": "artifact size cap exceeded"},
+                }
+            elif artifact_capture.error:
+                payload["artifact_receipt"] = {
+                    "stored": False,
+                    "error": "artifact_receipt_capture_unavailable",
+                    "reason": artifact_capture.error,
+                    "exact_reexpand": {"available": False, "reason": "artifact receipt capture unavailable"},
                 }
             else:
                 try:
