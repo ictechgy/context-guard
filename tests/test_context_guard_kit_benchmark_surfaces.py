@@ -19,8 +19,20 @@ import tempfile
 import time
 import unittest
 
+SELF_TOPLEVEL_MODULE = "test_context_guard_kit_benchmark_surfaces"
+SELF_PACKAGE_MODULE = "tests.test_context_guard_kit_benchmark_surfaces"
 BASE_TOPLEVEL_MODULE = "test_context_guard_kit"
 BASE_PACKAGE_MODULE = "tests.test_context_guard_kit"
+
+
+def canonicalize_current_module():
+    module = sys.modules[__name__]
+    sys.modules[SELF_TOPLEVEL_MODULE] = module
+    sys.modules[SELF_PACKAGE_MODULE] = module
+    return module
+
+
+canonicalize_current_module()
 
 
 def load_base_test_module():
@@ -56,6 +68,12 @@ BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-be
 class SplitModuleCompatibilityTests(unittest.TestCase):
     def test_base_module_aliases_share_one_module_object(self):
         self.assertIs(sys.modules[BASE_TOPLEVEL_MODULE], sys.modules[BASE_PACKAGE_MODULE])
+
+    def test_split_module_aliases_share_one_module_object(self):
+        top_level = importlib.import_module(SELF_TOPLEVEL_MODULE)
+        package_qualified = importlib.import_module(SELF_PACKAGE_MODULE)
+        self.assertIs(top_level, package_qualified)
+        self.assertIs(top_level, sys.modules[__name__])
 
     def test_legacy_dotted_test_paths_resolve_without_discovery_aliases(self):
         self.assertNotIn("BenchmarkRunnerTests", dir(base))
