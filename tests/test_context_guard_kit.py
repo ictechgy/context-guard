@@ -24873,3 +24873,35 @@ for malformed in malformed_values:
         script_path = ROOT / post_hook_cmd.split(maxsplit=1)[1]
         self.assertTrue(script_path.exists())
         self.assertTrue(os.access(script_path, os.X_OK))
+
+_MOVED_TEST_EXPORTS = {
+    "BENCH_SCRIPTS",
+    "BenchmarkRunnerTests",
+    "ContextEscrowCcrMetadataTests",
+    "CrossAgentAdapterTests",
+    "StatuslineMergedWrapperTests",
+    "_make_fake_claude",
+}
+
+
+def _load_moved_test_module():
+    import importlib
+    import sys
+
+    top_level = "test_context_guard_kit_benchmark_surfaces"
+    package_name = "tests.test_context_guard_kit_benchmark_surfaces"
+    module = sys.modules.get(top_level) or sys.modules.get(package_name)
+    if module is None:
+        try:
+            module = importlib.import_module(top_level)
+        except ModuleNotFoundError:
+            module = importlib.import_module(package_name)
+    sys.modules[top_level] = module
+    sys.modules[package_name] = module
+    return module
+
+
+def __getattr__(name):
+    if name not in _MOVED_TEST_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(_load_moved_test_module(), name)

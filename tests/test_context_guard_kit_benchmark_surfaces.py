@@ -6,6 +6,7 @@ discovery does not duplicate tests.
 """
 
 import csv
+import importlib
 import json
 import os
 from pathlib import Path
@@ -18,10 +19,27 @@ import tempfile
 import time
 import unittest
 
-try:
-    from tests import test_context_guard_kit as base
-except ModuleNotFoundError:  # unittest discover -s tests imports modules from tests/ directly.
-    import test_context_guard_kit as base
+BASE_TOPLEVEL_MODULE = "test_context_guard_kit"
+BASE_PACKAGE_MODULE = "tests.test_context_guard_kit"
+
+
+def load_base_test_module():
+    # unittest discover -s tests imports test modules by top-level name, while
+    # dotted invocations such as `python -m unittest tests.<module>` use the
+    # package-qualified name.  Keep both sys.modules keys pointed at the same
+    # object so shared fixtures/state are not duplicated by the split module.
+    module = sys.modules.get(BASE_TOPLEVEL_MODULE) or sys.modules.get(BASE_PACKAGE_MODULE)
+    if module is None:
+        try:
+            module = importlib.import_module(BASE_TOPLEVEL_MODULE)
+        except ModuleNotFoundError:
+            module = importlib.import_module(BASE_PACKAGE_MODULE)
+    sys.modules[BASE_TOPLEVEL_MODULE] = module
+    sys.modules[BASE_PACKAGE_MODULE] = module
+    return module
+
+
+base = load_base_test_module()
 
 ARTIFACT_SCRIPTS = base.ARTIFACT_SCRIPTS
 KIT_DIR = base.KIT_DIR
@@ -33,6 +51,18 @@ load_module_from_path = base.load_module_from_path
 load_python_script_module = base.load_python_script_module
 
 BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"]
+
+
+class SplitModuleCompatibilityTests(unittest.TestCase):
+    def test_base_module_aliases_share_one_module_object(self):
+        self.assertIs(sys.modules[BASE_TOPLEVEL_MODULE], sys.modules[BASE_PACKAGE_MODULE])
+
+    def test_legacy_dotted_test_paths_resolve_without_discovery_aliases(self):
+        self.assertNotIn("BenchmarkRunnerTests", dir(base))
+        suite = unittest.defaultTestLoader.loadTestsFromName(f"{BASE_TOPLEVEL_MODULE}.BenchmarkRunnerTests")
+        self.assertEqual(suite.countTestCases(), 74)
+        statusline_suite = unittest.defaultTestLoader.loadTestsFromName(f"{BASE_TOPLEVEL_MODULE}.StatuslineMergedWrapperTests")
+        self.assertEqual(statusline_suite.countTestCases(), 10)
 
 
 def _make_fake_claude(tmpdir: Path, usage: dict | None = None, exit_code: int = 0,
