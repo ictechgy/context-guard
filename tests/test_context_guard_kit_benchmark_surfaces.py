@@ -75,6 +75,31 @@ class SplitModuleCompatibilityTests(unittest.TestCase):
         self.assertIs(top_level, package_qualified)
         self.assertIs(top_level, sys.modules[__name__])
 
+    def test_module_aliases_are_import_order_independent(self):
+        pairs = (
+            (BASE_TOPLEVEL_MODULE, BASE_PACKAGE_MODULE, BASE_TOPLEVEL_MODULE, BASE_PACKAGE_MODULE),
+            (BASE_PACKAGE_MODULE, BASE_TOPLEVEL_MODULE, BASE_TOPLEVEL_MODULE, BASE_PACKAGE_MODULE),
+            (SELF_TOPLEVEL_MODULE, SELF_PACKAGE_MODULE, SELF_TOPLEVEL_MODULE, SELF_PACKAGE_MODULE),
+            (SELF_PACKAGE_MODULE, SELF_TOPLEVEL_MODULE, SELF_TOPLEVEL_MODULE, SELF_PACKAGE_MODULE),
+        )
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        for first, second, top_name, package_name in pairs:
+            with self.subTest(first=first, second=second):
+                code = f"""
+import importlib
+import pathlib
+import sys
+root = pathlib.Path.cwd()
+sys.path.insert(0, str(root / 'tests'))
+sys.path.insert(0, str(root))
+first = importlib.import_module({first!r})
+second = importlib.import_module({second!r})
+assert first is second, (first, second)
+assert sys.modules[{top_name!r}] is sys.modules[{package_name!r}]
+"""
+                subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, check=True, text=True, capture_output=True)
+
     def test_legacy_dotted_test_paths_resolve_without_discovery_aliases(self):
         self.assertNotIn("BenchmarkRunnerTests", dir(base))
         suite = unittest.defaultTestLoader.loadTestsFromName(f"{BASE_TOPLEVEL_MODULE}.BenchmarkRunnerTests")

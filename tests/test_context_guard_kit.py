@@ -33,6 +33,18 @@ PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "context-guard-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
+BASE_TEST_TOPLEVEL_MODULE = "test_context_guard_kit"
+BASE_TEST_PACKAGE_MODULE = "tests.test_context_guard_kit"
+
+
+def canonicalize_current_test_module():
+    module = sys.modules[__name__]
+    sys.modules[BASE_TEST_TOPLEVEL_MODULE] = module
+    sys.modules[BASE_TEST_PACKAGE_MODULE] = module
+    return module
+
+
+canonicalize_current_test_module()
 
 
 def load_manifest_helper_for_tests():
