@@ -49,9 +49,17 @@ PRIVATE_KEY_END_RE = re.compile(
 AUTH_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Proxy-)?Authorization\s*:\s*).+$"
 )
+COOKIE_HEADER_RE = re.compile(
+    r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
+)
+SESSION_SECRET_KEY = (
+    r"(?:session(?:[_-]?(?:id|token))?|sessionid|sid|jsessionid|"
+    r"csrf(?:[_-]?token)?|xsrf(?:[_-]?token)?)"
+)
 SECRET_KEY = (
     r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
     r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
+    rf"|{SESSION_SECRET_KEY}"
     r"|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
     r"GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET"
 )
@@ -61,11 +69,48 @@ INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
+CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]+|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"
+INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']){CODE_IDENTIFIER}\({CALL_ARGUMENT_CHUNK}\))"
+)
+SECRET_IDENTIFIER_PART = (
+    r"(?:[A-Za-z_$][A-Za-z0-9_$]*(?:api_?key|apikey|token|secret|password|passwd|pwd|"
+    r"private_?key|access_?key|client_?secret|sessionid|session_id|session_token|"
+    r"csrf_token|xsrf_token)[A-Za-z0-9_$]*|session|sid|csrf|xsrf)"
+)
+FALLBACK_SECRET_OPERAND = rf"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*{SECRET_IDENTIFIER_PART}"
+INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])"
+    rf"[^;\n]*?(?:\bor\b|\|\||\?\?|\belse\b|\?[^:\n;]*:)\s*"
+    rf"(?:[\"'](?:\\.|[^\"'\\])*[\"']|{FALLBACK_SECRET_OPERAND})[^;\n]*)"
+)
+INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])"
+    rf"[^\s,;}}\]]*(?:\([^;\n]*?\)|\{{[^;\n]*?\}}|\[[^;\n]*?\])[^\s,;}}\]]*)"
+)
 INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>[^\s,;}}\]]+)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])[^\s,;}}\]]+)"
+)
+UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?:^|[\s;{{\[,])"
+    rf"(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<value>(?![\"']).*)$"
+)
+CONTINUATION_OPERATOR_RE = re.compile(
+    r"(?i)(?:\\|\|\||&&|\?\?|[+*/%&|^?,]|\?|:|\bor\b|\band\b|\belse\b)\s*(?://.*|#.*)?$"
 )
 URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
@@ -80,6 +125,43 @@ SAFE_UNQUOTED_VALUES = {
     "undefined",
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
+SAFE_ENV_LOOKUP_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get)\(\s*[\"'][A-Za-z0-9_.-]{1,80}[\"']\s*\)$")
+SAFE_RE_COMPILE_CALL_RE = re.compile(r"^re\.compile\([^;\n]*\)$")
+SAFE_CODE_EXPRESSION_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\(\s*(?:{CODE_IDENTIFIER}(?:\s*,\s*{CODE_IDENTIFIER})*)?\s*\)$")
+GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'](?P<key>[A-Za-z0-9_.-]{{1,80}})[\"']\s*\)$")
+CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+SAFE_GETTER_KEY_NAMES = {
+    "access_key",
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth",
+    "authorization",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "azure_client_secret",
+    "client_id",
+    "client_secret",
+    "cookie",
+    "credential",
+    "credentials",
+    "csrf",
+    "google_application_credentials",
+    "jwt",
+    "password",
+    "passwd",
+    "private_key",
+    "pwd",
+    "refresh_token",
+    "secret",
+    "session",
+    "session_id",
+    "sessionid",
+    "sid",
+    "token",
+}
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
@@ -171,20 +253,33 @@ def cap_line(line: str, max_line_chars: int) -> tuple[str, bool]:
     return body[:keep] + marker + newline, True
 
 
+def normalize_getter_key(key: str) -> str:
+    key = CAMEL_ACRONYM_BOUNDARY_RE.sub("_", key)
+    key = CAMEL_WORD_BOUNDARY_RE.sub("_", key)
+    key = re.sub(r"[_.-]+", "_", key)
+    return re.sub(r"_+", "_", key).strip("_").lower()
+
+
+def is_safe_getter_key(key: str) -> bool:
+    return normalize_getter_key(key) in SAFE_GETTER_KEY_NAMES
+
+
 def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool:
     value = match.group("value").strip()
+    prefix = match.group("prefix")
     if not value:
         return False
     if value.lower() in SAFE_UNQUOTED_VALUES:
         return False
     if IDENTIFIER_CHAIN_RE.match(value):
         return False
-    end = match.end("value")
-    if end < len(line) and line[end] in "([{":
-        # Likely a function call or expression (`api_key = os.getenv(...)`);
-        # preserve it so Claude can still reason about code flow.
+    if SAFE_ENV_LOOKUP_CALL_RE.match(value) or SAFE_RE_COMPILE_CALL_RE.match(value):
         return False
-    if any(ch in value for ch in "()[]{}"):
+    getter_match = GETTER_CALL_RE.match(value)
+    if re.search(r"\s[:=]\s*$", prefix) and (
+        SAFE_CODE_EXPRESSION_CALL_RE.match(value)
+        or (getter_match is not None and is_safe_getter_key(getter_match.group("key")))
+    ):
         return False
     return True
 
@@ -218,6 +313,9 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
         return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
 
     line = INLINE_QUOTED_SECRET_ASSIGNMENT_RE.sub(quoted_repl, line)
+    line = INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     return line, redacted
 
@@ -257,6 +355,54 @@ def detect_multiline_secret_assignment(line: str) -> str | None:
     return None
 
 
+def expression_bracket_delta(text: str) -> int:
+    delta = 0
+    quote: str | None = None
+    escaped = False
+    for char in text:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            delta += 1
+        elif char in ")}]":
+            delta -= 1
+    return delta
+
+
+def ends_with_continuation_operator(text: str) -> bool:
+    return bool(CONTINUATION_OPERATOR_RE.search(text.rstrip()))
+
+
+def detect_multiline_secret_expression(line: str) -> int | None:
+    marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE.search(line)
+    if marker is None:
+        return None
+    value = marker.group("value").strip()
+    if not value:
+        return 0
+    delta = expression_bracket_delta(value)
+    if delta > 0:
+        return delta
+    if ends_with_continuation_operator(value):
+        return max(delta, 0)
+    return None
+
+
+def update_multiline_secret_expression_state(line: str, depth: int) -> int | None:
+    next_depth = max(0, depth + expression_bracket_delta(line))
+    if next_depth == 0 and not ends_with_continuation_operator(line):
+        return None
+    return next_depth
+
+
 def private_key_state_after_line(line: str) -> bool | None:
     """Return updated private-key state for a line, or None when no marker appears."""
     if PRIVATE_KEY_BEGIN_RE.search(line):
@@ -277,6 +423,7 @@ class LineSanitizer:
         self.show_paths = show_paths
         self.in_private_key_block = False
         self.multiline_secret_quote: str | None = None
+        self.multiline_secret_expression_depth: int | None = None
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -309,6 +456,12 @@ class LineSanitizer:
                 self.in_private_key_block = False
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
+        if self.multiline_secret_expression_depth is not None:
+            self.multiline_secret_expression_depth = update_multiline_secret_expression_state(
+                line, self.multiline_secret_expression_depth
+            )
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", True)
+
         multiline_quote = detect_multiline_secret_assignment(line)
         if multiline_quote is not None:
             self.multiline_secret_quote = multiline_quote
@@ -323,7 +476,17 @@ class LineSanitizer:
                 self.in_private_key_block = True
             return self._finish(diff_prefix + "[REDACTED PRIVATE KEY BLOCK]\n", redacted)
 
+        expression_depth = detect_multiline_secret_expression(line)
+        if expression_depth is not None:
+            self.multiline_secret_expression_depth = expression_depth
+            return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", True)
+
         new_line, count = AUTH_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
+        if count:
+            redacted = True
+            line = new_line
+
+        new_line, count = COOKIE_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:
             redacted = True
             line = new_line

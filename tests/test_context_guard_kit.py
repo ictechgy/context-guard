@@ -16250,6 +16250,181 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertNotIn("hunter2", proc.stdout)
         self.assertNotIn("abc123", proc.stdout)
 
+    def test_sanitize_output_redacts_bracketed_unquoted_secret_literals(self):
+        raw = (
+            "password=abc(def)\n"
+            "client_secret=abc{def}\n"
+            "api_key=token[value]\n"
+            "api_key=os.getenv(\"API_KEY\")\n"
+            "SECRET_WORD_RE = re.compile(r\"secret|password\")\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("password=[REDACTED]", proc.stdout)
+                self.assertIn("client_secret=[REDACTED]", proc.stdout)
+                self.assertIn("api_key=[REDACTED]", proc.stdout)
+                self.assertIn('api_key=os.getenv("API_KEY")', proc.stdout)
+                self.assertIn("SECRET_WORD_RE = re.compile", proc.stdout)
+                self.assertNotIn("abc(def)", proc.stdout)
+                self.assertNotIn("abc{def}", proc.stdout)
+                self.assertNotIn("token[value]", proc.stdout)
+
+    def test_sanitize_output_preserves_spaced_code_expression_secret_assignments(self):
+        raw = (
+            "token = get_token()\n"
+            'api_key = config.get("api_key")\n'
+            'api_key = config.get("API_KEY")\n'
+            'access_token = config.get("access_token")\n'
+            'access_token = config.get("ACCESS_TOKEN")\n'
+            "client_secret = build_client_secret(user)\n"
+            "password=abc(def)\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("token = get_token()", proc.stdout)
+                self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn('api_key = config.get("API_KEY")', proc.stdout)
+                self.assertIn('access_token = config.get("access_token")', proc.stdout)
+                self.assertIn('access_token = config.get("ACCESS_TOKEN")', proc.stdout)
+                self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
+                self.assertIn("password=[REDACTED]", proc.stdout)
+                self.assertNotIn("password=abc(def)", proc.stdout)
+
+    def test_sanitize_output_redacts_literal_arguments_in_secret_named_calls(self):
+        raw = (
+            'password = build_password("hunter2")\n'
+            'password = build_password(user, "hunter2")\n'
+            'token = mint_token("abc(def)")\n'
+            'token = mint_token(user, "abc(def)")\n'
+            'client_secret = factory.create("literal-secret")\n'
+            'password = config.get("hunter2")\n'
+            'api_key = config.get("live-secret")\n'
+            'api_key = config.get("api_key", "live-secret")\n'
+            'api_key = os.getenv("API_KEY", "live-secret")\n'
+            'api_key = config.get("api_key") or "fallback-secret"\n'
+            'api_key = config.get("api_key") if ok else "conditional-secret"\n'
+            'api_key = (config.get("api_key") or "paren-secret")\n'
+            'token = process.env.TOKEN || "js-fallback-secret"\n'
+            'api_key = config.get("api_key") or fallback_secret\n'
+            'api_key = config.get("api_key") if ok else fallback_secret\n'
+            'token = process.env.TOKEN || fallback_token\n'
+            'api_key = (\n'
+            '    config.get("api_key")\n'
+            '    or "multi-fallback-secret"\n'
+            ')\n'
+            'client_secret = config.get(\n'
+            '    "client_secret",\n'
+            '    "multi-default-secret",\n'
+            ')\n'
+            'token = process.env.TOKEN ||\n'
+            '    "multi-js-secret"\n'
+            'api_key = config.get("api_key")\n'
+            'api_key = config.get("API_KEY")\n'
+            'access_token = config.get("ACCESS_TOKEN")\n'
+            'password = config.get("password")\n'
+            "client_secret = build_client_secret(user)\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("password = [REDACTED]", proc.stdout)
+                self.assertIn("token = [REDACTED]", proc.stdout)
+                self.assertIn("client_secret = [REDACTED]", proc.stdout)
+                self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn('api_key = config.get("API_KEY")', proc.stdout)
+                self.assertIn('access_token = config.get("ACCESS_TOKEN")', proc.stdout)
+                self.assertIn('password = config.get("password")', proc.stdout)
+                self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
+                self.assertNotIn("hunter2", proc.stdout)
+                self.assertNotIn("abc(def)", proc.stdout)
+                self.assertNotIn("literal-secret", proc.stdout)
+                self.assertNotIn("live-secret", proc.stdout)
+                self.assertNotIn("fallback-secret", proc.stdout)
+                self.assertNotIn("conditional-secret", proc.stdout)
+                self.assertNotIn("paren-secret", proc.stdout)
+                self.assertNotIn("js-fallback-secret", proc.stdout)
+                self.assertNotIn("fallback_secret", proc.stdout)
+                self.assertNotIn("fallback_token", proc.stdout)
+                self.assertNotIn("multi-fallback-secret", proc.stdout)
+                self.assertNotIn("multi-default-secret", proc.stdout)
+                self.assertNotIn("multi-js-secret", proc.stdout)
+                self.assertNotIn("[REDACTED]]", proc.stdout)
+
+    def test_sanitize_output_redacts_cookie_headers(self):
+        raw = (
+            "Cookie: sessionid=abcdef1234567890; theme=light\n"
+            "Set-Cookie: sid=abcdef1234567890; HttpOnly\n"
+            "src/api.py:12:Cookie: jwt=eyJsecret.payload.sig; csrftoken=csrf-secret\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("Cookie: [REDACTED]", proc.stdout)
+                self.assertIn("Set-Cookie: [REDACTED]", proc.stdout)
+                self.assertIn("src/api.py:12:Cookie: [REDACTED]", proc.stdout)
+                self.assertNotIn("abcdef1234567890", proc.stdout)
+                self.assertNotIn("eyJsecret", proc.stdout)
+                self.assertNotIn("csrf-secret", proc.stdout)
+
+    def test_sanitize_output_redacts_session_secret_keys(self):
+        raw = (
+            "sessionid=abcdef1234567890\n"
+            "sid=short-session-secret\n"
+            "session=abc(def)\n"
+            'session_id="quoted-session-secret"\n'
+            "url=https://example.invalid/cb?sessionid=abc123&sid=def456&session=ghi789&ok=1\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("sessionid=[REDACTED]", proc.stdout)
+                self.assertIn("sid=[REDACTED]", proc.stdout)
+                self.assertIn("session=[REDACTED]", proc.stdout)
+                self.assertIn('session_id="[REDACTED]"', proc.stdout)
+                self.assertIn(
+                    "url=https://example.invalid/cb?sessionid=[REDACTED]&sid=[REDACTED]&session=[REDACTED]&ok=1",
+                    proc.stdout,
+                )
+                self.assertNotIn("abcdef1234567890", proc.stdout)
+                self.assertNotIn("short-session-secret", proc.stdout)
+                self.assertNotIn("abc(def)", proc.stdout)
+                self.assertNotIn("quoted-session-secret", proc.stdout)
+                self.assertNotIn("abc123", proc.stdout)
+                self.assertNotIn("def456", proc.stdout)
+                self.assertNotIn("ghi789", proc.stdout)
+
     def test_sanitize_output_redacts_semicolon_chained_inline_assignments(self):
         raw = (
             'echo ok;TOKEN=first-secret;PASSWORD="second-secret";SAFE_VALUE=visible\n'
@@ -19812,6 +19987,44 @@ for malformed in malformed_values:
             data = json.loads(proc.stdout)
             self.assertIn("VERSION", data["content"])
             self.assertNotIn("OTHER", data["content"])
+
+
+    def test_read_symbol_redacts_high_confidence_secrets_from_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            py = root / "sample.py"
+            token = "ghp_" + ("A" * 36)
+            py.write_text(
+                "def target():\n"
+                f"    api_key = '{token}'\n"
+                "    password = 'hunter2'\n"
+                "    sessionid = 'abcdef1234567890'\n"
+                "    callback = 'https://example.invalid/cb?sessionid=abc123&ok=1'\n"
+                "    api_key = config.get('api_key') or fallback_secret\n"
+                "    token = (\n"
+                "        config.get('token')\n"
+                "        or 'multi-fallback-secret'\n"
+                "    )\n"
+                "    return api_key\n",
+                encoding="utf-8",
+            )
+            for script in READ_SYMBOL_SCRIPTS:
+                with self.subTest(script=script):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), str(py), "target", "--json", "--context", "0"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    data = json.loads(proc.stdout)
+                    self.assertIn("def target", data["content"])
+                    self.assertIn("[REDACTED]", data["content"])
+                    self.assertNotIn(token, data["content"])
+                    self.assertNotIn("hunter2", data["content"])
+                    self.assertNotIn("abcdef1234567890", data["content"])
+                    self.assertNotIn("abc123", data["content"])
+                    self.assertNotIn("fallback_secret", data["content"])
+                    self.assertNotIn("multi-fallback-secret", data["content"])
 
     def test_read_symbol_helper_edges_bound_languages_and_missing_symbols(self):
         # Protects symbol slicing heuristics: language routing, syntax fallback,
