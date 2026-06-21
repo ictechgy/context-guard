@@ -16280,6 +16280,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         raw = (
             "token = get_token()\n"
             'api_key = config.get("api_key")\n'
+            'api_key = config.get("API_KEY")\n'
+            'access_token = config.get("access_token")\n'
+            'access_token = config.get("ACCESS_TOKEN")\n'
             "client_secret = build_client_secret(user)\n"
             "password=abc(def)\n"
         )
@@ -16294,6 +16297,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 )
                 self.assertIn("token = get_token()", proc.stdout)
                 self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn('api_key = config.get("API_KEY")', proc.stdout)
+                self.assertIn('access_token = config.get("access_token")', proc.stdout)
+                self.assertIn('access_token = config.get("ACCESS_TOKEN")', proc.stdout)
                 self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
                 self.assertIn("password=[REDACTED]", proc.stdout)
                 self.assertNotIn("password=abc(def)", proc.stdout)
@@ -16301,11 +16307,17 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
     def test_sanitize_output_redacts_literal_arguments_in_secret_named_calls(self):
         raw = (
             'password = build_password("hunter2")\n'
+            'password = build_password(user, "hunter2")\n'
             'token = mint_token("abc(def)")\n'
+            'token = mint_token(user, "abc(def)")\n'
             'client_secret = factory.create("literal-secret")\n'
             'password = config.get("hunter2")\n'
             'api_key = config.get("live-secret")\n'
+            'api_key = config.get("api_key", "live-secret")\n'
+            'api_key = os.getenv("API_KEY", "live-secret")\n'
             'api_key = config.get("api_key")\n'
+            'api_key = config.get("API_KEY")\n'
+            'access_token = config.get("ACCESS_TOKEN")\n'
             'password = config.get("password")\n'
             "client_secret = build_client_secret(user)\n"
         )
@@ -16322,12 +16334,15 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("token = [REDACTED]", proc.stdout)
                 self.assertIn("client_secret = [REDACTED]", proc.stdout)
                 self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn('api_key = config.get("API_KEY")', proc.stdout)
+                self.assertIn('access_token = config.get("ACCESS_TOKEN")', proc.stdout)
                 self.assertIn('password = config.get("password")', proc.stdout)
                 self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
                 self.assertNotIn("hunter2", proc.stdout)
                 self.assertNotIn("abc(def)", proc.stdout)
                 self.assertNotIn("literal-secret", proc.stdout)
                 self.assertNotIn("live-secret", proc.stdout)
+                self.assertNotIn("[REDACTED]]", proc.stdout)
 
     def test_sanitize_output_redacts_cookie_headers(self):
         raw = (

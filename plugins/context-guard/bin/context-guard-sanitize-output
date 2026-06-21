@@ -64,11 +64,26 @@ INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
+CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]+|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"
+INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']){CODE_IDENTIFIER}\({CALL_ARGUMENT_CHUNK}\))"
+)
+INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])"
+    rf"[^\s,;}}\]]*(?:\([^;\n]*?\)|\{{[^;\n]*?\}}|\[[^;\n]*?\])[^\s,;}}\]]*)"
+)
 INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<value>(?![\"'])[^\s,;}}\]]+)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])[^\s,;}}\]]+)"
 )
 URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
@@ -83,41 +98,41 @@ SAFE_UNQUOTED_VALUES = {
     "undefined",
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
-SAFE_UNQUOTED_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get|re\.compile)\([^;\n]*\)$")
-CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+SAFE_ENV_LOOKUP_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get)\(\s*[\"'][A-Za-z0-9_.-]{1,80}[\"']\s*\)$")
+SAFE_RE_COMPILE_CALL_RE = re.compile(r"^re\.compile\([^;\n]*\)$")
 SAFE_CODE_EXPRESSION_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\(\s*(?:{CODE_IDENTIFIER}(?:\s*,\s*{CODE_IDENTIFIER})*)?\s*\)$")
 GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'](?P<key>[A-Za-z0-9_.-]{{1,80}})[\"']\s*\)$")
-SAFE_GETTER_KEYS = {
-    "access-key",
+CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+SAFE_GETTER_KEY_NAMES = {
     "access_key",
-    "accessKey",
-    "api-key",
+    "access_token",
     "api_key",
-    "apiKey",
     "apikey",
     "auth",
-    "client-id",
-    "client-secret",
+    "authorization",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "azure_client_secret",
     "client_id",
     "client_secret",
-    "clientId",
-    "clientSecret",
     "cookie",
     "credential",
     "credentials",
     "csrf",
+    "google_application_credentials",
     "jwt",
     "password",
     "passwd",
-    "private-key",
     "private_key",
-    "privateKey",
     "pwd",
-    "refresh-token",
     "refresh_token",
-    "refreshToken",
     "secret",
     "session",
+    "session_id",
+    "sessionid",
+    "sid",
     "token",
 }
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -211,6 +226,17 @@ def cap_line(line: str, max_line_chars: int) -> tuple[str, bool]:
     return body[:keep] + marker + newline, True
 
 
+def normalize_getter_key(key: str) -> str:
+    key = CAMEL_ACRONYM_BOUNDARY_RE.sub("_", key)
+    key = CAMEL_WORD_BOUNDARY_RE.sub("_", key)
+    key = re.sub(r"[_.-]+", "_", key)
+    return re.sub(r"_+", "_", key).strip("_").lower()
+
+
+def is_safe_getter_key(key: str) -> bool:
+    return normalize_getter_key(key) in SAFE_GETTER_KEY_NAMES
+
+
 def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool:
     value = match.group("value").strip()
     prefix = match.group("prefix")
@@ -220,12 +246,12 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
         return False
     if IDENTIFIER_CHAIN_RE.match(value):
         return False
-    if SAFE_UNQUOTED_CALL_RE.match(value) or value.startswith(("os.getenv(", "os.environ.get(", "re.compile(")):
+    if SAFE_ENV_LOOKUP_CALL_RE.match(value) or SAFE_RE_COMPILE_CALL_RE.match(value):
         return False
     getter_match = GETTER_CALL_RE.match(value)
     if re.search(r"\s[:=]\s*$", prefix) and (
         SAFE_CODE_EXPRESSION_CALL_RE.match(value)
-        or (getter_match is not None and getter_match.group("key") in SAFE_GETTER_KEYS)
+        or (getter_match is not None and is_safe_getter_key(getter_match.group("key")))
     ):
         return False
     return True
@@ -260,6 +286,8 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
         return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
 
     line = INLINE_QUOTED_SECRET_ASSIGNMENT_RE.sub(quoted_repl, line)
+    line = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     return line, redacted
 
