@@ -25781,6 +25781,73 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(rows[0]["notes"], "rerun")
 
+    def test_resume_runnable_targets_refreshes_before_preflight(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_resume_preflight_refresh_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    first = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="first",
+                    )
+                    self.assertTrue(module.append_csv(csv_path, "test", first))
+                    cache, loaded_stamp = module.existing_keys_snapshot(csv_path)
+                    stamp = {"stamp": loaded_stamp}
+                    self.assertIn(("t01", "baseline"), cache)
+
+                    task_id_index = module.CSV_COLUMNS.index("task_id")
+                    variant_index = module.CSV_COLUMNS.index("variant")
+                    csv_row = [""] * len(module.CSV_COLUMNS)
+                    csv_row[task_id_index] = "t02"
+                    csv_row[variant_index] = "baseline"
+                    csv_path.write_text(
+                        ",".join(module.CSV_COLUMNS) + "\n"
+                        + ",".join(csv_row) + "\n",
+                        encoding="utf-8",
+                    )
+                    targets = [
+                        (module.TaskFixture(id="t01", prompt="p1"), module.Variant(name="baseline")),
+                        (module.TaskFixture(id="t02", prompt="p2"), module.Variant(name="baseline")),
+                    ]
+                    runnable = module.resume_runnable_targets(
+                        csv_path,
+                        targets,
+                        resume=True,
+                        existing_key_cache=cache,
+                        existing_key_cache_stamp=stamp,
+                    )
+                    self.assertEqual([task.id for task, _variant in runnable], ["t01"])
+                    self.assertEqual(cache, {("t02", "baseline")})
+                    evidence = module.EvidenceReplayRow(
+                        result=module.RunResult(
+                            task_id="t01",
+                            variant="baseline",
+                            model="evidence",
+                            effort="",
+                            tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                            cost_usd=0.0,
+                            success=True,
+                            notes="ok",
+                        ),
+                        source_type="synthetic_fixture",
+                        provider_name=None,
+                        capture_command_or_export_id=None,
+                        claim_scope="fixture_only",
+                        provider_export_provenance_complete=False,
+                        public_claim_eligible=False,
+                        explicit_notes=True,
+                        line_number=1,
+                    )
+                    coverage = module.validate_evidence_coverage([evidence], runnable)
+                    self.assertEqual(set(coverage), {("t01", "baseline")})
+
     def test_benchmark_runner_rejects_incompatible_existing_csv_schema(self):
         shift_columns = {
             "turns",

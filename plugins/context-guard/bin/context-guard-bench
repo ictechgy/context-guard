@@ -1472,6 +1472,23 @@ def resume_key_present(
         return key in existing_key_cache
 
 
+def resume_runnable_targets(
+    csv_path: Path,
+    targets: list[tuple[TaskFixture, Variant]],
+    *,
+    resume: bool,
+    existing_key_cache: set[tuple[str, str]],
+    existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None,
+) -> list[tuple[TaskFixture, Variant]]:
+    if not resume:
+        return list(targets)
+    return [
+        (task, variant)
+        for task, variant in targets
+        if not resume_key_present(csv_path, (task.id, variant.name), existing_key_cache, existing_key_cache_stamp)
+    ]
+
+
 def append_csv(
     csv_path: Path,
     claude_ver: str,
@@ -3858,11 +3875,13 @@ def main() -> int:
     else:
         skip_keys = set()
         skip_keys_stamp = None
-    runnable_targets = [
-        (task, variant)
-        for task, variant in targets
-        if (task.id, variant.name) not in skip_keys
-    ]
+    runnable_targets = resume_runnable_targets(
+        args.csv,
+        targets,
+        resume=args.resume,
+        existing_key_cache=skip_keys,
+        existing_key_cache_stamp=skip_keys_stamp,
+    )
     if args.evidence_jsonl is not None:
         if args.dry_run:
             for task, variant in targets:
@@ -3874,12 +3893,20 @@ def main() -> int:
             return 0
         csv_had_preexisting_content = file_has_content_no_follow(args.csv)
         evidence_rows = read_evidence_jsonl(args.evidence_jsonl)
+        runnable_targets = resume_runnable_targets(
+            args.csv,
+            targets,
+            resume=args.resume,
+            existing_key_cache=skip_keys,
+            existing_key_cache_stamp=skip_keys_stamp,
+        )
         evidence_by_key = validate_evidence_coverage(evidence_rows, runnable_targets)
+        runnable_keys = {(task.id, variant.name) for task, variant in runnable_targets}
         claude_ver = "evidence-replay"
         completed = 0
         replay_rows_written: list[EvidenceReplayRow] = []
         for task, variant in targets:
-            if args.resume and resume_key_present(args.csv, (task.id, variant.name), skip_keys, skip_keys_stamp):
+            if args.resume and (task.id, variant.name) not in runnable_keys:
                 print(f"skip {task.id}/{variant.name} (already in {args.csv})")
                 continue
             evidence = evidence_by_key[(task.id, variant.name)]
@@ -3925,6 +3952,13 @@ def main() -> int:
         print(f"completed {completed} run(s); results in {args.csv}")
         return 0
 
+    runnable_targets = resume_runnable_targets(
+        args.csv,
+        targets,
+        resume=args.resume,
+        existing_key_cache=skip_keys,
+        existing_key_cache_stamp=skip_keys_stamp,
+    )
     placeholder_targets = [
         f"{task.id}/{variant.name}"
         for task, variant in runnable_targets
