@@ -1,5 +1,4 @@
 import argparse
-import ast
 import base64
 import csv
 import contextlib
@@ -34,39 +33,33 @@ PLUGIN_LIB = PLUGIN_DIR / "lib"
 KIT_REWRITE = KIT_DIR / "rewrite_bash_for_token_budget.py"
 PLUGIN_REWRITE = PLUGIN_BIN / "context-guard-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
-COMMAND_MANIFEST_LITERAL_NAMES = {
-    "IMPLEMENTATION_PAIRS",
-    "HELPER_PAIRS",
-    "NPM_BINS",
-    "NPM_BIN_PATHS",
-    "DISPATCHER_SUBCOMMANDS",
-    "LEGACY_WRAPPERS",
-    "ENTRYPOINT_SMOKE_CASES",
-    "PLUGIN_ENTRYPOINTS",
-    "DISPATCHER_SMOKE_CASES",
-    "EXPECTED_COMMAND_PACK_FILES",
-}
+
+
+def load_manifest_helper_for_tests():
+    helper_path = KIT_DIR / "context_guard_command_manifest_loader.py"
+    namespace = {
+        "__builtins__": __builtins__,
+        "__file__": str(helper_path),
+        "__name__": "_context_guard_command_manifest_loader_for_tests",
+    }
+    exec(compile(helper_path.read_text(encoding="utf-8"), str(helper_path), "exec"), namespace)
+    return type("CommandManifestLoaderForTests", (), namespace)
+
+
+COMMAND_MANIFEST_HELPER = load_manifest_helper_for_tests()
+COMMAND_MANIFEST_LITERAL_NAMES = COMMAND_MANIFEST_HELPER.COMMAND_MANIFEST_LITERAL_NAMES
 
 
 def load_command_manifest_for_tests():
     manifest_path = KIT_DIR / "context_guard_commands.py"
-    tree = ast.parse(manifest_path.read_text(encoding="utf-8"))
-    values = {}
-    for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            continue
-        target = None
-        value = None
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            target = node.target.id
-            value = node.value
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            target = node.targets[0].id
-            value = node.value
-        if target is None or target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
-            raise RuntimeError(f"command manifest must contain only literal assignments: {manifest_path}")
-        values[target] = ast.literal_eval(value)
-    return type("CommandManifestForTests", (), values)
+    try:
+        values = COMMAND_MANIFEST_HELPER.literal_command_manifest_from_source(
+            manifest_path.read_text(encoding="utf-8"),
+            allowed_names=COMMAND_MANIFEST_LITERAL_NAMES,
+        )
+        return COMMAND_MANIFEST_HELPER.command_manifest_namespace(values)
+    except ValueError as exc:
+        raise RuntimeError(f"command manifest must contain only literal assignments: {manifest_path}: {exc}") from exc
 
 
 COMMAND_MANIFEST = load_command_manifest_for_tests()
@@ -413,6 +406,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertTrue(set(COMMAND_MANIFEST.LEGACY_WRAPPERS).issubset(set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS)))
 
         prepublish = load_module_from_path(ROOT / "scripts" / "prepublish_check.py", "prepublish_manifest_test")
+        self.assertIs(
+            prepublish.literal_command_manifest_from_source,
+            prepublish.COMMAND_MANIFEST_HELPER["literal_command_manifest_from_source"],
+        )
         self.assertEqual(prepublish.IMPLEMENTATION_PAIRS, COMMAND_MANIFEST.IMPLEMENTATION_PAIRS)
         self.assertEqual(prepublish.HELPER_PAIRS, COMMAND_MANIFEST.HELPER_PAIRS)
         self.assertEqual(prepublish.REQUIRED_NPM_BINS, set(COMMAND_MANIFEST.NPM_BINS))
@@ -436,6 +433,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
         )
 
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_test")
+        self.assertIs(
+            smoke.literal_command_manifest_from_source,
+            smoke.COMMAND_MANIFEST_HELPER["literal_command_manifest_from_source"],
+        )
         self.assertEqual(smoke.ENTRYPOINT_SMOKE_COMMANDS, COMMAND_MANIFEST.ENTRYPOINT_SMOKE_CASES)
         self.assertEqual(smoke.DISPATCHER_SMOKE_COMMANDS, COMMAND_MANIFEST.DISPATCHER_SMOKE_CASES)
         self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), set(COMMAND_MANIFEST.PLUGIN_ENTRYPOINTS))
@@ -448,7 +449,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
         non_literal = "DISPATCHER_SUBCOMMANDS = dict(setup=('context-guard-setup',))\n"
         import_stmt = "from typing import Any\nDISPATCHER_SUBCOMMANDS = {'setup': ('context-guard-setup',)}\n"
         function_stmt = "DISPATCHER_SUBCOMMANDS = {'setup': ('context-guard-setup',)}\ndef expected_command_pack_files():\n    return ()\n"
-        for loader in (smoke.literal_command_manifest_from_source, prepublish.literal_command_manifest_from_source):
+        for loader in (
+            COMMAND_MANIFEST_HELPER.literal_command_manifest_from_source,
+            smoke.literal_command_manifest_from_source,
+            prepublish.literal_command_manifest_from_source,
+        ):
             with self.subTest(loader=loader.__module__, case="executable"):
                 with self.assertRaises(ValueError):
                     loader(malicious)
@@ -470,6 +475,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 "DISPATCHER_SUBCOMMANDS = {'pwned': ('context-guard-pwned',)}\n",
                 encoding="utf-8",
             )
+            (shadow / "context_guard_command_manifest_loader.py").write_text(
+                "raise RuntimeError('helper shadow executed')\n",
+                encoding="utf-8",
+            )
             env = os.environ.copy()
             env["PYTHONPATH"] = str(shadow)
             for script in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
@@ -485,6 +494,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("  experiments", proc.stdout)
                     self.assertNotIn("pwned", proc.stdout)
                     self.assertNotIn("context-guard-pwned", proc.stdout)
+                    self.assertNotIn("helper shadow executed", proc.stderr)
 
     def test_staged_plugin_dispatcher_runs_with_packaged_command_manifest(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_manifest_stage_test")

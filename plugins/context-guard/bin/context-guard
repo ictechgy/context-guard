@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import ast
 from pathlib import Path
 import subprocess
 import stat
@@ -19,25 +18,13 @@ from typing import Any, NoReturn
 COMMAND_NAME = "context-guard"
 PACKAGE_NAME = "@ictechgy/context-guard"
 MAX_VERSION_METADATA_BYTES = 64 * 1024
-MAX_COMMAND_MANIFEST_BYTES = 128 * 1024
+MAX_MANIFEST_HELPER_BYTES = 128 * 1024
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
     "var": Path("/private/var"),
 }
 
 MANIFEST_LOAD_ERROR: str | None = None
-COMMAND_MANIFEST_LITERAL_NAMES = {
-    "IMPLEMENTATION_PAIRS",
-    "HELPER_PAIRS",
-    "NPM_BINS",
-    "NPM_BIN_PATHS",
-    "DISPATCHER_SUBCOMMANDS",
-    "LEGACY_WRAPPERS",
-    "ENTRYPOINT_SMOKE_CASES",
-    "PLUGIN_ENTRYPOINTS",
-    "DISPATCHER_SMOKE_CASES",
-    "EXPECTED_COMMAND_PACK_FILES",
-}
 
 
 def _manifest_candidates(script_dir: Path) -> tuple[Path, ...]:
@@ -52,7 +39,15 @@ def _manifest_candidates(script_dir: Path) -> tuple[Path, ...]:
     return ()
 
 
-def _manifest_open_flags() -> int | None:
+def _manifest_helper_candidates(script_dir: Path) -> tuple[Path, ...]:
+    if script_dir.name == "context-guard-kit":
+        return (script_dir / "context_guard_command_manifest_loader.py",)
+    if script_dir.name == "bin":
+        return (script_dir.parent / "lib" / "context_guard_command_manifest_loader.py",)
+    return ()
+
+
+def _trusted_source_open_flags() -> int | None:
     if not hasattr(os, "O_NOFOLLOW"):
         return None
     flags = os.O_RDONLY | os.O_NOFOLLOW
@@ -65,25 +60,25 @@ def _manifest_open_flags() -> int | None:
     return flags
 
 
-def _read_manifest_source(path: Path) -> str | None:
-    flags = _manifest_open_flags()
+def _read_trusted_helper_source(path: Path) -> str | None:
+    flags = _trusted_source_open_flags()
     if flags is None:
         return None
     fd = -1
     try:
         fd = os.open(path, flags)
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_COMMAND_MANIFEST_BYTES:
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_MANIFEST_HELPER_BYTES:
             return None
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = os.read(fd, min(64 * 1024, MAX_COMMAND_MANIFEST_BYTES + 1 - total))
+            chunk = os.read(fd, min(64 * 1024, MAX_MANIFEST_HELPER_BYTES + 1 - total))
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
-            if total > MAX_COMMAND_MANIFEST_BYTES:
+            if total > MAX_MANIFEST_HELPER_BYTES:
                 return None
         return b"".join(chunks).decode("utf-8")
     except (OSError, UnicodeDecodeError):
@@ -96,39 +91,40 @@ def _read_manifest_source(path: Path) -> str | None:
                 pass
 
 
-def _literal_manifest_assignments(source: str) -> dict[str, Any] | None:
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return None
-    values: dict[str, Any] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+def _load_manifest_helper() -> dict[str, Any] | None:
+    script_dir = Path(__file__).resolve().parent
+    for candidate in _manifest_helper_candidates(script_dir):
+        source = _read_trusted_helper_source(candidate)
+        if source is None:
             continue
-        target: str | None = None
-        value: ast.expr | None = None
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            target = node.target.id
-            value = node.value
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            target = node.targets[0].id
-            value = node.value
-        if target is None:
-            return None
-        if target not in COMMAND_MANIFEST_LITERAL_NAMES or value is None:
-            return None
+        namespace: dict[str, Any] = {
+            "__builtins__": __builtins__,
+            "__file__": str(candidate),
+            "__name__": "_context_guard_command_manifest_loader",
+        }
         try:
-            values[target] = ast.literal_eval(value)
-        except (SyntaxError, ValueError):
-            return None
-    return values
+            exec(compile(source, str(candidate), "exec"), namespace)
+        except Exception:
+            continue
+        if callable(namespace.get("read_manifest_source")) and callable(namespace.get("literal_command_manifest_from_source")):
+            return namespace
+    return None
+
+
+COMMAND_MANIFEST_LOADER = _load_manifest_helper()
 
 
 def _load_manifest_from_path(path: Path) -> dict[str, Any] | None:
-    source = _read_manifest_source(path)
+    if COMMAND_MANIFEST_LOADER is None:
+        return None
+    source = COMMAND_MANIFEST_LOADER["read_manifest_source"](path)
     if source is None:
         return None
-    return _literal_manifest_assignments(source)
+    try:
+        values = COMMAND_MANIFEST_LOADER["literal_command_manifest_from_source"](source)
+    except ValueError:
+        return None
+    return values
 
 
 def _coerce_helper_subcommands(value: Any) -> dict[str, tuple[str, ...]] | None:
