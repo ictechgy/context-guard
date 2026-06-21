@@ -86,7 +86,40 @@ IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za
 SAFE_UNQUOTED_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get|re\.compile)\([^;\n]*\)$")
 CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
 SAFE_CODE_EXPRESSION_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\(\s*(?:{CODE_IDENTIFIER}(?:\s*,\s*{CODE_IDENTIFIER})*)?\s*\)$")
-SAFE_GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'][A-Za-z0-9_.-]{{1,80}}[\"']\s*\)$")
+GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'](?P<key>[A-Za-z0-9_.-]{{1,80}})[\"']\s*\)$")
+SAFE_GETTER_KEYS = {
+    "access-key",
+    "access_key",
+    "accessKey",
+    "api-key",
+    "api_key",
+    "apiKey",
+    "apikey",
+    "auth",
+    "client-id",
+    "client-secret",
+    "client_id",
+    "client_secret",
+    "clientId",
+    "clientSecret",
+    "cookie",
+    "credential",
+    "credentials",
+    "csrf",
+    "jwt",
+    "password",
+    "passwd",
+    "private-key",
+    "private_key",
+    "privateKey",
+    "pwd",
+    "refresh-token",
+    "refresh_token",
+    "refreshToken",
+    "secret",
+    "session",
+    "token",
+}
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
@@ -189,8 +222,10 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
         return False
     if SAFE_UNQUOTED_CALL_RE.match(value) or value.startswith(("os.getenv(", "os.environ.get(", "re.compile(")):
         return False
+    getter_match = GETTER_CALL_RE.match(value)
     if re.search(r"\s[:=]\s*$", prefix) and (
-        SAFE_CODE_EXPRESSION_CALL_RE.match(value) or SAFE_GETTER_CALL_RE.match(value)
+        SAFE_CODE_EXPRESSION_CALL_RE.match(value)
+        or (getter_match is not None and getter_match.group("key") in SAFE_GETTER_KEYS)
     ):
         return False
     return True

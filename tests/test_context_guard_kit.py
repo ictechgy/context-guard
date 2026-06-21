@@ -16303,7 +16303,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             'password = build_password("hunter2")\n'
             'token = mint_token("abc(def)")\n'
             'client_secret = factory.create("literal-secret")\n'
+            'password = config.get("hunter2")\n'
+            'api_key = config.get("live-secret")\n'
             'api_key = config.get("api_key")\n'
+            'password = config.get("password")\n'
             "client_secret = build_client_secret(user)\n"
         )
         for script in SANITIZE_SCRIPTS:
@@ -16319,10 +16322,12 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("token = [REDACTED]", proc.stdout)
                 self.assertIn("client_secret = [REDACTED]", proc.stdout)
                 self.assertIn('api_key = config.get("api_key")', proc.stdout)
+                self.assertIn('password = config.get("password")', proc.stdout)
                 self.assertIn("client_secret = build_client_secret(user)", proc.stdout)
                 self.assertNotIn("hunter2", proc.stdout)
                 self.assertNotIn("abc(def)", proc.stdout)
                 self.assertNotIn("literal-secret", proc.stdout)
+                self.assertNotIn("live-secret", proc.stdout)
 
     def test_sanitize_output_redacts_cookie_headers(self):
         raw = (
