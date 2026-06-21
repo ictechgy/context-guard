@@ -9,6 +9,10 @@ on:
         description: "Existing release tag to publish, matching package.json (for example v0.4.9)"
         required: true
         type: string
+      release_sha:
+        description: "Expected 40-character commit SHA for the existing release tag"
+        required: true
+        type: string
       confirm_publish:
         description: "Confirm publishing this tag to npm"
         required: true
@@ -30,6 +34,7 @@ jobs:
       id-token: write
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+      EXPECTED_RELEASE_SHA: ${{ github.event.inputs.release_sha || '' }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -51,6 +56,8 @@ jobs:
 
       - name: Verify publish target and OIDC toolchain
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -z "${RELEASE_TAG}" ]; then
@@ -68,11 +75,74 @@ jobs:
           import re
           import subprocess
           import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
           from pathlib import Path
 
           tag = os.environ["RELEASE_TAG"]
           if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag):
               sys.exit(f"release tag must look like vMAJOR.MINOR.PATCH: {tag}")
+
+          def remote_tag_commit(tag_name: str) -> str:
+              output = subprocess.check_output(
+                  ["git", "ls-remote", "--exit-code", "--tags", "origin", f"refs/tags/{tag_name}", f"refs/tags/{tag_name}^{{}}"],
+                  text=True,
+              )
+              refs = {}
+              for line in output.splitlines():
+                  sha, ref = line.split(maxsplit=1)
+                  refs[ref] = sha
+              resolved = refs.get(f"refs/tags/{tag_name}^{{}}") or refs.get(f"refs/tags/{tag_name}")
+              if not resolved:
+                  sys.exit(f"release tag was not found on origin: {tag_name}")
+              return resolved
+
+          def load_github_release(tag_name: str) -> dict[str, object]:
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+                  sys.exit("GITHUB_REPOSITORY is missing or invalid")
+              url_tag = urllib.parse.quote(tag_name, safe="")
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/releases/tags/{url_tag}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "context-guard-npm-publish",
+                  },
+              )
+              token = os.environ.get("GITHUB_TOKEN", "")
+              if token:
+                  request.add_header("Authorization", f"Bearer {token}")
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      sys.exit(f"published GitHub release not found for tag: {tag_name}")
+                  sys.exit(f"could not verify GitHub release for {tag_name}: HTTP {exc.code}")
+              except urllib.error.URLError as exc:
+                  sys.exit(f"could not verify GitHub release for {tag_name}: {exc.__class__.__name__}")
+
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          release = load_github_release(tag)
+          if release.get("tag_name") != tag:
+              sys.exit(f"GitHub release tag mismatch: {release.get('tag_name')} != {tag}")
+          if release.get("draft"):
+              sys.exit(f"refusing to publish draft release: {tag}")
+
+          head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tag_sha = remote_tag_commit(tag)
+          if tag_sha != head_sha:
+              sys.exit(f"checked-out HEAD {head_sha} does not match origin tag {tag} -> {tag_sha}")
+          expected_sha = os.environ.get("EXPECTED_RELEASE_SHA", "").strip()
+          if event_name == "workflow_dispatch":
+              if not re.fullmatch(r"[0-9a-fA-F]{40}", expected_sha):
+                  sys.exit("workflow_dispatch requires release_sha to be a 40-character commit SHA")
+              if head_sha.lower() != expected_sha.lower():
+                  sys.exit(f"workflow_dispatch release_sha {expected_sha} does not match checked-out HEAD {head_sha}")
+              if not release.get("published_at"):
+                  sys.exit(f"workflow_dispatch requires an already published release for tag: {tag}")
 
           package = json.loads(Path("package.json").read_text(encoding="utf-8"))
           plugin = json.loads(Path("plugins/context-guard/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
