@@ -11317,6 +11317,22 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertIn("json_canonical_check_skipped", codes)
                 self.assertNotIn("json_not_canonical", codes)
 
+    def test_cache_score_whitespace_heavy_json_uses_bounded_output_cap(self):
+        for index, script in enumerate(CACHE_SCORE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_cache_score_whitespace_canonical_{index}")
+                payload = '{   "a"   :    1   }'
+                original_limit = module.MAX_JSON_CANONICAL_COMPARE_BYTES
+                module.MAX_JSON_CANONICAL_COMPARE_BYTES = 15
+                try:
+                    kind, warnings = module.json_shape_warnings(payload)
+                finally:
+                    module.MAX_JSON_CANONICAL_COMPARE_BYTES = original_limit
+                codes = {item["code"] for item in warnings}
+                self.assertEqual(kind, "json")
+                self.assertIn("json_not_canonical", codes)
+                self.assertNotIn("json_canonical_check_skipped", codes)
+
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
             "tools": [
@@ -25716,6 +25732,54 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         rows = list(csv.DictReader(f))
                     self.assertEqual(len(rows), 1)
                     self.assertEqual(rows[0]["notes"], "first")
+
+    def test_append_csv_resume_key_cache_drops_keys_removed_by_rewrite(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_dedupe_cache_rewrite_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    first = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="first",
+                    )
+                    rerun = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 2, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="rerun",
+                    )
+                    self.assertTrue(module.append_csv(csv_path, "test", first))
+                    stale_cache, stale_stamp = module.existing_keys_snapshot(csv_path)
+                    self.assertIn(("t01", "baseline"), stale_cache)
+                    stamp = {"stamp": stale_stamp}
+                    csv_path.write_text(",".join(module.CSV_COLUMNS) + "\n", encoding="utf-8")
+                    self.assertFalse(module.resume_key_present(csv_path, ("t01", "baseline"), stale_cache, stamp))
+                    self.assertNotIn(("t01", "baseline"), stale_cache)
+                    self.assertTrue(
+                        module.append_csv(
+                            csv_path,
+                            "test",
+                            rerun,
+                            skip_existing=True,
+                            existing_key_cache=stale_cache,
+                            existing_key_cache_stamp=stamp,
+                        )
+                    )
+                    with csv_path.open(encoding="utf-8") as f:
+                        rows = list(csv.DictReader(f))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["notes"], "rerun")
 
     def test_benchmark_runner_rejects_incompatible_existing_csv_schema(self):
         shift_columns = {

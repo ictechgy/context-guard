@@ -1441,6 +1441,37 @@ def csv_file_stamp_unlocked(csv_path: Path) -> tuple[int, int, int, int] | None:
         os.close(fd)
 
 
+def refresh_existing_key_cache_unlocked(
+    csv_path: Path,
+    existing_key_cache: set[tuple[str, str]],
+    existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None,
+) -> None:
+    current_stamp = csv_file_stamp_unlocked(csv_path)
+    if existing_key_cache_stamp is not None and existing_key_cache_stamp.get("stamp") == current_stamp:
+        return
+    refreshed = _read_existing_keys_unlocked(csv_path)
+    existing_key_cache.clear()
+    existing_key_cache.update(refreshed)
+    if existing_key_cache_stamp is not None:
+        existing_key_cache_stamp["stamp"] = current_stamp
+
+
+def resume_key_present(
+    csv_path: Path,
+    key: tuple[str, str],
+    existing_key_cache: set[tuple[str, str]],
+    existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None,
+) -> bool:
+    if not _csv_exists_no_follow(csv_path):
+        existing_key_cache.clear()
+        if existing_key_cache_stamp is not None:
+            existing_key_cache_stamp["stamp"] = None
+        return False
+    with csv_file_lock(csv_path, create_parent=False):
+        refresh_existing_key_cache_unlocked(csv_path, existing_key_cache, existing_key_cache_stamp)
+        return key in existing_key_cache
+
+
 def append_csv(
     csv_path: Path,
     claude_ver: str,
@@ -1454,15 +1485,9 @@ def append_csv(
         key = (result.task_id, result.variant)
         if skip_existing:
             if existing_key_cache is not None:
+                refresh_existing_key_cache_unlocked(csv_path, existing_key_cache, existing_key_cache_stamp)
                 if key in existing_key_cache:
                     return False
-                current_stamp = csv_file_stamp_unlocked(csv_path)
-                if existing_key_cache_stamp is None or existing_key_cache_stamp.get("stamp") != current_stamp:
-                    existing_key_cache.update(_read_existing_keys_unlocked(csv_path))
-                    if existing_key_cache_stamp is not None:
-                        existing_key_cache_stamp["stamp"] = current_stamp
-                    if key in existing_key_cache:
-                        return False
             elif key in _read_existing_keys_unlocked(csv_path):
                 return False
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
@@ -3841,7 +3866,7 @@ def main() -> int:
     if args.evidence_jsonl is not None:
         if args.dry_run:
             for task, variant in targets:
-                if (task.id, variant.name) in skip_keys:
+                if args.resume and resume_key_present(args.csv, (task.id, variant.name), skip_keys, skip_keys_stamp):
                     print(f"skip {task.id}/{variant.name} (already in {args.csv})")
                     continue
                 print(f"evidence replay dry-run: {task.id}/{variant.name} <- {args.evidence_jsonl}")
@@ -3854,7 +3879,7 @@ def main() -> int:
         completed = 0
         replay_rows_written: list[EvidenceReplayRow] = []
         for task, variant in targets:
-            if (task.id, variant.name) in skip_keys:
+            if args.resume and resume_key_present(args.csv, (task.id, variant.name), skip_keys, skip_keys_stamp):
                 print(f"skip {task.id}/{variant.name} (already in {args.csv})")
                 continue
             evidence = evidence_by_key[(task.id, variant.name)]
@@ -3927,7 +3952,7 @@ def main() -> int:
 
     completed = 0
     for task, variant in targets:
-        if (task.id, variant.name) in skip_keys:
+        if args.resume and resume_key_present(args.csv, (task.id, variant.name), skip_keys, skip_keys_stamp):
             print(f"skip {task.id}/{variant.name} (already in {args.csv})")
             continue
         print(f"run {task.id}/{variant.name} ...", flush=True)

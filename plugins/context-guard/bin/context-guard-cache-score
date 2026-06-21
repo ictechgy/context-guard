@@ -353,32 +353,22 @@ def json_shape_warnings(text: str) -> tuple[str, list[dict[str, Any]]]:
         return "json-scalar", []
     warnings = _walk_json(data)
     input_bytes = byte_len_text(text)
-    if input_bytes <= MAX_JSON_CANONICAL_COMPARE_BYTES:
-        canonical = bounded_canonical_json(data, max_bytes=MAX_JSON_CANONICAL_COMPARE_BYTES)
-        if canonical is None:
-            warnings.append({
-                "code": "json_canonical_check_skipped",
-                "path": "$",
-                "severity": "info",
-                "message": "JSON input is parseable but canonical formatting would exceed the comparison byte cap.",
-                "input_bytes": input_bytes,
-                "max_bytes": MAX_JSON_CANONICAL_COMPARE_BYTES,
-            })
-        elif canonical != text:
-            warnings.append({
-                "code": "json_not_canonical",
-                "path": "$",
-                "severity": "info",
-                "message": "JSON input is parseable but not canonical sort-key formatting; generated prompt JSON should be byte-stable.",
-            })
-    else:
+    canonical = bounded_canonical_json(data, max_bytes=MAX_JSON_CANONICAL_COMPARE_BYTES)
+    if canonical is None:
         warnings.append({
             "code": "json_canonical_check_skipped",
             "path": "$",
             "severity": "info",
-            "message": "JSON input is large; canonical byte-for-byte formatting comparison was skipped to keep lint memory bounded.",
+            "message": "JSON input is parseable but canonical formatting would exceed the comparison byte cap.",
             "input_bytes": input_bytes,
             "max_bytes": MAX_JSON_CANONICAL_COMPARE_BYTES,
+        })
+    elif canonical != text:
+        warnings.append({
+            "code": "json_not_canonical",
+            "path": "$",
+            "severity": "info",
+            "message": "JSON input is parseable but not canonical sort-key formatting; generated prompt JSON should be byte-stable.",
         })
     return "json", warnings
 
