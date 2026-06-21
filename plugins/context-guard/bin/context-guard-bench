@@ -1429,6 +1429,18 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
     )
 
 
+def csv_file_stamp_unlocked(csv_path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        fd = _open_regular_no_symlink(csv_path)
+    except FileNotFoundError:
+        return None
+    try:
+        st = os.fstat(fd)
+        return (int(st.st_dev), int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
+    finally:
+        os.close(fd)
+
+
 def append_csv(
     csv_path: Path,
     claude_ver: str,
@@ -1436,6 +1448,7 @@ def append_csv(
     *,
     skip_existing: bool = False,
     existing_key_cache: set[tuple[str, str]] | None = None,
+    existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None = None,
 ) -> bool:
     with csv_file_lock(csv_path, create_parent=True):
         key = (result.task_id, result.variant)
@@ -1443,6 +1456,13 @@ def append_csv(
             if existing_key_cache is not None:
                 if key in existing_key_cache:
                     return False
+                current_stamp = csv_file_stamp_unlocked(csv_path)
+                if existing_key_cache_stamp is None or existing_key_cache_stamp.get("stamp") != current_stamp:
+                    existing_key_cache.update(_read_existing_keys_unlocked(csv_path))
+                    if existing_key_cache_stamp is not None:
+                        existing_key_cache_stamp["stamp"] = current_stamp
+                    if key in existing_key_cache:
+                        return False
             elif key in _read_existing_keys_unlocked(csv_path):
                 return False
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
@@ -1500,6 +1520,8 @@ def append_csv(
                 os.close(fd)
         if existing_key_cache is not None:
             existing_key_cache.add(key)
+        if existing_key_cache_stamp is not None:
+            existing_key_cache_stamp["stamp"] = csv_file_stamp_unlocked(csv_path)
     return True
 
 
@@ -1658,10 +1680,16 @@ def _csv_exists_no_follow(csv_path: Path) -> bool:
 
 def existing_keys(csv_path: Path) -> set[tuple[str, str]]:
     """이미 적재된 (task_id, variant) 조합. resume 시 skip 판정에 사용."""
+    keys, _stamp = existing_keys_snapshot(csv_path)
+    return keys
+
+
+def existing_keys_snapshot(csv_path: Path) -> tuple[set[tuple[str, str]], tuple[int, int, int, int] | None]:
+    """Loaded resume keys plus the CSV stamp observed under the same lock."""
     if not _csv_exists_no_follow(csv_path):
-        return set()
+        return set(), None
     with csv_file_lock(csv_path, create_parent=False):
-        return _read_existing_keys_unlocked(csv_path)
+        return _read_existing_keys_unlocked(csv_path), csv_file_stamp_unlocked(csv_path)
 
 
 def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -3799,7 +3827,12 @@ def main() -> int:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
 
-    skip_keys = existing_keys(args.csv) if args.resume else set()
+    if args.resume:
+        skip_keys, skip_keys_loaded_stamp = existing_keys_snapshot(args.csv)
+        skip_keys_stamp = {"stamp": skip_keys_loaded_stamp}
+    else:
+        skip_keys = set()
+        skip_keys_stamp = None
     runnable_targets = [
         (task, variant)
         for task, variant in targets
@@ -3833,6 +3866,7 @@ def main() -> int:
                 result,
                 skip_existing=args.resume,
                 existing_key_cache=skip_keys if args.resume else None,
+                existing_key_cache_stamp=skip_keys_stamp,
             )
             if wrote:
                 replay_rows_written.append(evidence)
@@ -3908,6 +3942,7 @@ def main() -> int:
                 result,
                 skip_existing=args.resume,
                 existing_key_cache=skip_keys if args.resume else None,
+                existing_key_cache_stamp=skip_keys_stamp,
             )
             if wrote and args.ledger_jsonl is not None:
                 append_cost_shift_ledger(args.ledger_jsonl, claude_ver, result)

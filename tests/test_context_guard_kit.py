@@ -11301,6 +11301,22 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertEqual(kind, "json")
                 self.assertIn("json_canonical_check_skipped", {item["code"] for item in warnings})
 
+    def test_cache_score_skips_canonical_compare_when_pretty_output_exceeds_cap(self):
+        for index, script in enumerate(CACHE_SCORE_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_cache_score_expanded_canonical_{index}")
+                payload = json.dumps({"items": list(range(40))}, separators=(",", ":"))
+                original_limit = module.MAX_JSON_CANONICAL_COMPARE_BYTES
+                module.MAX_JSON_CANONICAL_COMPARE_BYTES = len(payload.encode("utf-8")) + 1
+                try:
+                    kind, warnings = module.json_shape_warnings(payload)
+                finally:
+                    module.MAX_JSON_CANONICAL_COMPARE_BYTES = original_limit
+                codes = {item["code"] for item in warnings}
+                self.assertEqual(kind, "json")
+                self.assertIn("json_canonical_check_skipped", codes)
+                self.assertNotIn("json_not_canonical", codes)
+
     def test_cache_score_json_order_provider_thresholds_and_help(self):
         request = {
             "tools": [
@@ -12683,6 +12699,45 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertTrue(receipt["pack_omitted_from_receipt"])
                 self.assertNotIn("pack", receipt)
                 self.assertTrue(receipt["artifact"]["capped"])
+
+    def test_context_pack_stores_oversized_pack_receipt_with_omission_contract(self):
+        for script in PACK_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "large.txt").write_text(("large pack body\n" * 6000), encoding="utf-8")
+                    manifest = root / "pack.json"
+                    manifest.write_text(
+                        json.dumps({"version": 1, "sources": [{"path": "large.txt", "priority": 1}]}),
+                        encoding="utf-8",
+                    )
+                    data = json.loads(
+                        self._run_pack(
+                            script,
+                            root,
+                            "build",
+                            "--root",
+                            ".",
+                            "--manifest",
+                            str(manifest),
+                            "--budget-bytes",
+                            "120000",
+                            "--json",
+                        ).stdout
+                    )
+                    self.assertIn("large pack body", data["pack"])
+                    artifact = data["artifact"]
+                    self.assertTrue(artifact["stored"], artifact)
+                    self.assertTrue(artifact["capped"], artifact)
+                    self.assertLessEqual(artifact["bytes"], 64_000)
+                    receipt_path = root / ".context-guard" / "packs" / f"{data['pack_id']}.json"
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["pack_id"], data["pack_id"])
+                    self.assertNotIn("pack", receipt)
+                    self.assertTrue(receipt["pack_omitted_from_receipt"])
+                    self.assertTrue(receipt["artifact"]["stored"])
+                    self.assertTrue(receipt["artifact"]["capped"])
+                    self.assertEqual(receipt["artifact"]["path"], f".context-guard/packs/{data['pack_id']}.json")
 
     def _init_pack_git_repo(self, root: Path) -> None:
         if shutil.which("git") is None:
@@ -25570,6 +25625,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         notes="fresh",
                     )
                     original = module._read_existing_keys_unlocked
+                    stamp = {"stamp": module.csv_file_stamp_unlocked(csv_path)}
 
                     def fail_read(_path):
                         raise AssertionError("resume writes should use the already-loaded key cache")
@@ -25583,6 +25639,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 duplicate,
                                 skip_existing=True,
                                 existing_key_cache=existing,
+                                existing_key_cache_stamp=stamp,
                             )
                         )
                         self.assertTrue(
@@ -25592,6 +25649,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 fresh,
                                 skip_existing=True,
                                 existing_key_cache=existing,
+                                existing_key_cache_stamp=stamp,
                             )
                         )
                     finally:
@@ -25600,6 +25658,64 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     with csv_path.open(encoding="utf-8") as f:
                         rows = list(csv.DictReader(f))
                     self.assertEqual([row["task_id"] for row in rows], ["t02"])
+
+    def test_append_csv_resume_key_cache_refreshes_when_csv_changes(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_dedupe_cache_refresh_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "results.csv"
+                    stale_cache: set[tuple[str, str]] = set()
+                    stamp = {"stamp": module.csv_file_stamp_unlocked(csv_path)}
+                    first = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 1, "output_tokens": 0, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=0.0,
+                        success=True,
+                        notes="first",
+                    )
+                    duplicate = module.RunResult(
+                        task_id="t01",
+                        variant="baseline",
+                        model="sonnet",
+                        effort=None,
+                        tokens={"input_tokens": 999, "output_tokens": 999, "cache_read": 0, "cache_creation": 0},
+                        cost_usd=999.0,
+                        success=False,
+                        notes="duplicate",
+                    )
+                    self.assertTrue(module.append_csv(csv_path, "test", first))
+                    real_read = module._read_existing_keys_unlocked
+                    read_count = 0
+
+                    def counting_read(path):
+                        nonlocal read_count
+                        read_count += 1
+                        return real_read(path)
+
+                    module._read_existing_keys_unlocked = counting_read
+                    try:
+                        self.assertFalse(
+                            module.append_csv(
+                                csv_path,
+                                "test",
+                                duplicate,
+                                skip_existing=True,
+                                existing_key_cache=stale_cache,
+                                existing_key_cache_stamp=stamp,
+                            )
+                        )
+                    finally:
+                        module._read_existing_keys_unlocked = real_read
+                    self.assertEqual(read_count, 1)
+                    self.assertIn(("t01", "baseline"), stale_cache)
+                    with csv_path.open(encoding="utf-8") as f:
+                        rows = list(csv.DictReader(f))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0]["notes"], "first")
 
     def test_benchmark_runner_rejects_incompatible_existing_csv_schema(self):
         shift_columns = {
