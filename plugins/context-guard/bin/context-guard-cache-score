@@ -63,6 +63,7 @@ MAX_JSON_PATH_SEGMENT_CHARS = 64
 MAX_JSON_WALK_NODES = 10_000
 MAX_JSON_WALK_DEPTH = 64
 MAX_JSON_SHAPE_WARNINGS = 200
+MAX_JSON_CANONICAL_COMPARE_BYTES = 200_000
 SAFE_JSON_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 DYNAMIC_JSON_KEY_RE = re.compile(r"(?i)(request|trace|nonce|random|timestamp|created[_-]?at|updated[_-]?at|date)")
 SENSITIVE_JSON_KEY_RE = re.compile(
@@ -91,6 +92,22 @@ def byte_len_text(text: str) -> int:
 
 def json_bytes(data: Any, *, indent: int | None = None) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":") if indent is None else None, indent=indent)
+
+
+def bounded_canonical_json(data: Any, *, max_bytes: int) -> str | None:
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, indent=2)
+    chunks: list[str] = []
+    size = 0
+    for chunk in encoder.iterencode(data):
+        size += byte_len_text(chunk)
+        if size > max_bytes:
+            return None
+        chunks.append(chunk)
+    size += 1
+    if size > max_bytes:
+        return None
+    chunks.append("\n")
+    return "".join(chunks)
 
 
 def json_path_child(path: str, key: object) -> str:
@@ -335,8 +352,18 @@ def json_shape_warnings(text: str) -> tuple[str, list[dict[str, Any]]]:
     if not isinstance(data, (dict, list)):
         return "json-scalar", []
     warnings = _walk_json(data)
-    canonical = json_bytes(data, indent=2) + "\n"
-    if canonical != text:
+    input_bytes = byte_len_text(text)
+    canonical = bounded_canonical_json(data, max_bytes=MAX_JSON_CANONICAL_COMPARE_BYTES)
+    if canonical is None:
+        warnings.append({
+            "code": "json_canonical_check_skipped",
+            "path": "$",
+            "severity": "info",
+            "message": "JSON input is parseable but canonical formatting would exceed the comparison byte cap.",
+            "input_bytes": input_bytes,
+            "max_bytes": MAX_JSON_CANONICAL_COMPARE_BYTES,
+        })
+    elif canonical != text:
         warnings.append({
             "code": "json_not_canonical",
             "path": "$",

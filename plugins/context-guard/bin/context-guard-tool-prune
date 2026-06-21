@@ -87,6 +87,8 @@ class Candidate:
     index: int
     score: float = 0.0
     rank: int = 0
+    schema_bytes: int = 0
+    parameter_terms: frozenset[str] | None = None
 
 
 def fail(message: str) -> NoReturn:
@@ -276,7 +278,15 @@ def tool_schema_from_dict(raw: dict[str, Any], *, fallback_name: str | None = No
         schema["description"] = description
     if server and "server" not in schema:
         schema["server"] = server
-    return Candidate(name=name, server=cap_text(server, MAX_LABEL_CHARS) if server else None, description=description, schema=schema, index=index)
+    return Candidate(
+        name=name,
+        server=cap_text(server, MAX_LABEL_CHARS) if server else None,
+        description=description,
+        schema=schema,
+        index=index,
+        schema_bytes=byte_len_json(schema),
+        parameter_terms=frozenset(terms(" ".join(collect_parameter_text(schema)))),
+    )
 
 
 def normalize_catalog(raw: Any) -> list[Candidate]:
@@ -362,7 +372,11 @@ def score_candidate(candidate: Candidate, query_terms: set[str]) -> float:
         return 0.0
     name_terms = terms(candidate.name)
     desc_terms = terms(candidate.description)
-    parameter_terms = terms(" ".join(collect_parameter_text(candidate.schema)))
+    parameter_terms = (
+        set(candidate.parameter_terms)
+        if candidate.parameter_terms is not None
+        else terms(" ".join(collect_parameter_text(candidate.schema)))
+    )
     score = 0.0
     score += 4.0 * len(query_terms & name_terms)
     score += 1.5 * len(query_terms & desc_terms)
@@ -379,12 +393,36 @@ def rank_candidates(candidates: list[Candidate], query: str) -> list[Candidate]:
     query_terms = terms(query)
     scored: list[Candidate] = []
     for cand in candidates:
-        scored.append(Candidate(cand.name, cand.server, cand.description, cand.schema, cand.index, score_candidate(cand, query_terms), 0))
+        scored.append(Candidate(
+            cand.name,
+            cand.server,
+            cand.description,
+            cand.schema,
+            cand.index,
+            score_candidate(cand, query_terms),
+            0,
+            schema_bytes=cand.schema_bytes,
+            parameter_terms=cand.parameter_terms,
+        ))
     scored.sort(key=lambda item: (-item.score, item.index))
     ranked: list[Candidate] = []
     for rank, cand in enumerate(scored, start=1):
-        ranked.append(Candidate(cand.name, cand.server, cand.description, cand.schema, cand.index, cand.score, rank))
+        ranked.append(Candidate(
+            cand.name,
+            cand.server,
+            cand.description,
+            cand.schema,
+            cand.index,
+            cand.score,
+            rank,
+            schema_bytes=cand.schema_bytes,
+            parameter_terms=cand.parameter_terms,
+        ))
     return ranked
+
+
+def candidate_schema_bytes(cand: Candidate) -> int:
+    return cand.schema_bytes if cand.schema_bytes > 0 else byte_len_json(cand.schema)
 
 
 def normalized_link_target(parent: Path, raw_target: str) -> Path:
@@ -707,7 +745,7 @@ def build_payload(receipt_id: str, ranked: list[Candidate], query: str, redactio
                 "description": cand.description,
                 "score": cand.score,
                 "rank": cand.rank,
-                "schema_bytes": byte_len_json(cand.schema),
+                "schema_bytes": candidate_schema_bytes(cand),
                 "schema": cand.schema,
             }
             for cand in ranked
@@ -739,7 +777,7 @@ def retrieval_command(receipt_id: str, *, store_dir: str, tool_name: str | None 
 
 
 def selected_tool_record(cand: Candidate, receipt_id: str, budget_left: int, *, store_dir: str) -> tuple[dict[str, Any], int]:
-    schema_size = byte_len_json(cand.schema)
+    schema_size = candidate_schema_bytes(cand)
     record: dict[str, Any] = {
         "name": cand.name,
         "server": cand.server,
@@ -765,7 +803,7 @@ def deferred_tool_record(cand: Candidate, receipt_id: str, *, store_dir: str) ->
         "score": cand.score,
         "rank": cand.rank,
         "description": cand.description,
-        "schema_bytes": byte_len_json(cand.schema),
+        "schema_bytes": candidate_schema_bytes(cand),
         "reason": "deferred_after_core_top",
         "retrieval": retrieval_command(receipt_id, store_dir=store_dir, tool_name=cand.name),
     }
@@ -1008,9 +1046,9 @@ def defer_report(args: argparse.Namespace) -> str:
         store_dir=args.store_dir,
         namespace_top=namespace_top,
     )
-    all_schema_bytes = sum(byte_len_json(cand.schema) for cand in ranked)
-    listed_deferred_schema_bytes = sum(byte_len_json(cand.schema) for cand in deferred_candidates)
-    total_deferred_schema_bytes = sum(byte_len_json(cand.schema) for cand in ranked[core_top:])
+    all_schema_bytes = sum(candidate_schema_bytes(cand) for cand in ranked)
+    listed_deferred_schema_bytes = sum(candidate_schema_bytes(cand) for cand in deferred_candidates)
+    total_deferred_schema_bytes = sum(candidate_schema_bytes(cand) for cand in ranked[core_top:])
     tool_stub_report_bytes = byte_len_json(core_tools) + byte_len_json(deferred_tools)
     all_schema_tokens = proxy_tokens(all_schema_bytes)
     inline_core_schema_tokens = proxy_tokens(core_schema_bytes)

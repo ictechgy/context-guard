@@ -145,13 +145,13 @@ class PromptCacheAudit:
 
     def observe(self, root: Any) -> None:
         self.sampled_records += 1
+        if len(self.samples) >= PROMPT_AUDIT_MAX_RECORDS:
+            self.capped_records += 1
+            return
         segments, bytes_sampled, redactions, collection_capped = prompt_segments_for_record(root)
         if collection_capped:
             self.prompt_collection_capped_records += 1
         if not segments:
-            return
-        if len(self.samples) >= PROMPT_AUDIT_MAX_RECORDS:
-            self.capped_records += 1
             return
         self.analyzed_prompt_records += 1
         self.total_segments += len(segments)

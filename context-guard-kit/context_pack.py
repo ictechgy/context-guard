@@ -957,6 +957,29 @@ def metadata_size(data: dict[str, Any]) -> int:
     return len(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8", errors="replace")) + 1
 
 
+def receipt_working_copy(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Copy receipt metadata without deep-copying or serializing an oversized pack body.
+
+    The pack body is already an immutable string in normal builds and stdout remains
+    authoritative for it.  When it cannot possibly fit under the receipt cap by
+    itself, omit it before the first receipt-size probe so capping work only touches
+    metadata previews.
+    """
+    receipt: dict[str, Any] = {}
+    pack_omitted = False
+    for key, value in data.items():
+        if key == "pack" and isinstance(value, str):
+            if len(value.encode("utf-8", errors="replace")) > MAX_RECEIPT_BYTES:
+                pack_omitted = True
+                continue
+            receipt[key] = value
+            continue
+        receipt[key] = copy.deepcopy(value)
+    if pack_omitted:
+        receipt["pack_omitted_from_receipt"] = True
+    return receipt, pack_omitted
+
+
 def artifact_failure(error: str, *, bytes_count: int = 0, capped: bool = False) -> dict[str, Any]:
     return {
         "stored": False,
@@ -1113,8 +1136,11 @@ def finalize_receipt_size(receipt: dict[str, Any]) -> int:
 
 
 def shrink_receipt_for_write(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    receipt = copy.deepcopy(data)
-    capped = False
+    receipt, pack_omitted = receipt_working_copy(data)
+    capped = pack_omitted
+    if pack_omitted:
+        receipt.setdefault("artifact", {})["capped"] = True
+        receipt.setdefault("artifact", {})["cap_bytes"] = MAX_RECEIPT_BYTES
     if metadata_size(receipt) <= MAX_RECEIPT_BYTES:
         return receipt, capped
     capped = True
