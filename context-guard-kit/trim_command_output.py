@@ -20,6 +20,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -398,23 +399,75 @@ def store_sanitized_artifact_receipt(
     return receipt
 
 
-def capture_sanitized_artifact_line(
-    *,
-    capture_enabled: bool,
-    sanitized_line: str,
-    artifact_lines: list[str],
-    capture_bytes: int,
-    capture_overflow: bool,
-    max_bytes: int,
-) -> tuple[int, bool]:
-    if not capture_enabled or capture_overflow:
-        return capture_bytes, capture_overflow
-    source_bytes = len(sanitized_line.encode("utf-8", errors="replace"))
-    if capture_bytes + source_bytes <= max_bytes:
-        artifact_lines.append(sanitized_line)
-        return capture_bytes + source_bytes, False
-    artifact_lines.clear()
-    return capture_bytes, True
+class SanitizedArtifactCapture:
+    def __init__(self, *, enabled: bool, max_bytes: int) -> None:
+        self.enabled = enabled
+        self.max_bytes = max_bytes
+        self.bytes = 0
+        self.overflow = False
+        self.error: str | None = None
+        self._file: BinaryIO | None = None
+
+    def _ensure_file(self) -> BinaryIO | None:
+        if self._file is not None:
+            return self._file
+        try:
+            self._file = tempfile.TemporaryFile("w+b")
+        except OSError as exc:
+            self._record_error(exc)
+            return None
+        return self._file
+
+    def _record_error(self, exc: OSError) -> None:
+        if self.error is None:
+            self.error = f"{exc.__class__.__name__}: {exc}"
+
+    def add(self, sanitized_line: str) -> None:
+        if not self.enabled or self.overflow or self.error:
+            return
+        encoded = sanitized_line.encode("utf-8", errors="replace")
+        source_bytes = len(encoded)
+        if self.bytes + source_bytes > self.max_bytes:
+            self.overflow = True
+            self.close()
+            return
+        target = self._ensure_file()
+        if target is None:
+            return
+        try:
+            target.write(encoded)
+        except OSError as exc:
+            self._record_error(exc)
+            self.close()
+            return
+        self.bytes += source_bytes
+
+    def text(self) -> str:
+        if self._file is None:
+            return ""
+        try:
+            self._file.flush()
+            self._file.seek(0)
+            return self._file.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            self._record_error(exc)
+            self.close()
+            return ""
+
+    def close(self) -> None:
+        target = self._file
+        self._file = None
+        if target is not None:
+            try:
+                target.close()
+            except OSError as exc:
+                self._record_error(exc)
+
+    def __enter__(self) -> "SanitizedArtifactCapture":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 def unique_keep_order(lines: Iterable[str]) -> list[str]:
@@ -1512,11 +1565,10 @@ def main() -> int:
     runner_summary = RunnerFailureSummary(args.runner_summary_items, show_paths=args.show_paths)
     duplicate_tracker = DuplicateLineTracker()
     redacted_lines = 0
-    artifact_lines: list[str] = []
-    artifact_capture_bytes = 0
-    artifact_capture_overflow = False
+    artifact_capture = SanitizedArtifactCapture(enabled=args.artifact_receipt, max_bytes=args.artifact_max_bytes)
 
     if proc.stdout is None:
+        artifact_capture.close()
         print("trim_command_output.py: subprocess produced no stdout pipe", file=sys.stderr)
         return 1
     command_stream = TimedCommandStream(
@@ -1532,14 +1584,7 @@ def main() -> int:
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
         if redacted:
             redacted_lines += 1
-        artifact_capture_bytes, artifact_capture_overflow = capture_sanitized_artifact_line(
-            capture_enabled=args.artifact_receipt,
-            sanitized_line=visible_source,
-            artifact_lines=artifact_lines,
-            capture_bytes=artifact_capture_bytes,
-            capture_overflow=artifact_capture_overflow,
-            max_bytes=args.artifact_max_bytes,
-        )
+        artifact_capture.add(visible_source)
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
@@ -1562,14 +1607,7 @@ def main() -> int:
         visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
         if redacted:
             redacted_lines += 1
-        artifact_capture_bytes, artifact_capture_overflow = capture_sanitized_artifact_line(
-            capture_enabled=args.artifact_receipt,
-            sanitized_line=visible_source,
-            artifact_lines=artifact_lines,
-            capture_bytes=artifact_capture_bytes,
-            capture_overflow=artifact_capture_overflow,
-            max_bytes=args.artifact_max_bytes,
-        )
+        artifact_capture.add(visible_source)
         visible_line, line_capped = cap_line(visible_source, args.max_line_chars)
         any_line_capped = any_line_capped or line_capped
         visible_chars += len(visible_line)
@@ -1602,32 +1640,49 @@ def main() -> int:
             duplicate_line_groups=duplicate_tracker.as_list(),
         )
         if args.artifact_receipt:
-            if artifact_capture_overflow:
+            if artifact_capture.overflow:
                 payload["artifact_receipt"] = {
                     "stored": False,
                     "error": "sanitized_output_exceeds_artifact_max_bytes",
                     "max_bytes": args.artifact_max_bytes,
                     "exact_reexpand": {"available": False, "reason": "artifact size cap exceeded"},
                 }
+            elif artifact_capture.error:
+                payload["artifact_receipt"] = {
+                    "stored": False,
+                    "error": "artifact_receipt_capture_unavailable",
+                    "reason": artifact_capture.error,
+                    "exact_reexpand": {"available": False, "reason": "artifact receipt capture unavailable"},
+                }
             else:
-                try:
-                    payload["artifact_receipt"] = store_sanitized_artifact_receipt(
-                        sanitized_text="".join(artifact_lines),
-                        command=command,
-                        args=args,
-                        line_sanitizer=line_sanitizer,
-                        redacted_lines=redacted_lines,
-                    )
-                except UnsafeAdjacentModuleError as exc:
-                    print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
-                    return 2
-                except Exception as exc:
+                sanitized_artifact_text = artifact_capture.text()
+                if artifact_capture.error:
                     payload["artifact_receipt"] = {
                         "stored": False,
-                        "error": "artifact_receipt_unavailable",
-                        "reason": f"{exc.__class__.__name__}: {exc}",
-                        "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
+                        "error": "artifact_receipt_capture_unavailable",
+                        "reason": artifact_capture.error,
+                        "exact_reexpand": {"available": False, "reason": "artifact receipt capture unavailable"},
                     }
+                else:
+                    try:
+                        payload["artifact_receipt"] = store_sanitized_artifact_receipt(
+                            sanitized_text=sanitized_artifact_text,
+                            command=command,
+                            args=args,
+                            line_sanitizer=line_sanitizer,
+                            redacted_lines=redacted_lines,
+                        )
+                    except UnsafeAdjacentModuleError as exc:
+                        artifact_capture.close()
+                        print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+                        return 2
+                    except Exception as exc:
+                        payload["artifact_receipt"] = {
+                            "stored": False,
+                            "error": "artifact_receipt_unavailable",
+                            "reason": f"{exc.__class__.__name__}: {exc}",
+                            "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
+                        }
             artifact_receipt = payload.get("artifact_receipt")
             if isinstance(artifact_receipt, dict) and artifact_receipt.get("stored"):
                 next_queries = payload.setdefault("next_queries", [])
@@ -1642,6 +1697,7 @@ def main() -> int:
             sys.stdout.write(render_digest_json(payload, args.max_chars))
         else:
             sys.stdout.write(render_digest_markdown(payload, args.max_chars))
+        artifact_capture.close()
         return rc
 
     if total <= args.max_lines and visible_chars <= args.max_chars and not any_line_capped:
@@ -1689,6 +1745,7 @@ def main() -> int:
             output += "[context-guard-kit] final summary was capped by --max-chars.\n"
         sys.stdout.write(output)
 
+    artifact_capture.close()
     return rc
 
 

@@ -983,6 +983,67 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertFalse(second.is_alive())
                 self.assertEqual(b"".join(emitted), b"ABC")
 
+    def test_context_filter_select_lines_stops_after_bounded_max_lines(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_select_lines_bounded_{index}")
+                consumed = 0
+
+                def lines():
+                    nonlocal consumed
+                    for number in range(10000):
+                        consumed += 1
+                        yield f"KEEP {number}\n"
+
+                flt = module.CompiledFilter(
+                    id="bounded",
+                    argv_prefix=("cmd",),
+                    argv_regex=None,
+                    passthrough_on_exit=True,
+                    include_regex=(),
+                    exclude_regex=(),
+                    head_lines=None,
+                    tail_lines=None,
+                    max_lines=3,
+                )
+                self.assertEqual(module.select_lines(lines(), flt, 1000), ["KEEP 0\n", "KEEP 1\n", "KEEP 2\n"])
+                self.assertEqual(consumed, 3)
+
+    def test_context_filter_head_only_selection_stops_after_head_limit(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_head_only_bounded_{index}")
+                consumed = 0
+
+                def lines():
+                    nonlocal consumed
+                    for number in range(10000):
+                        consumed += 1
+                        yield f"HEAD {number}\n"
+
+                flt = module.CompiledFilter(
+                    id="head-only",
+                    argv_prefix=("cmd",),
+                    argv_regex=None,
+                    passthrough_on_exit=True,
+                    include_regex=(),
+                    exclude_regex=(),
+                    head_lines=2,
+                    tail_lines=None,
+                    max_lines=None,
+                )
+                selection = module.select_lines_with_stats(lines(), flt, 1000)
+                self.assertEqual(selection.lines, ["HEAD 0\n", "HEAD 1\n"])
+                self.assertEqual(consumed, 2)
+                self.assertFalse(selection.input_complete)
+
+    def test_context_filter_streaming_lines_preserve_splitlines_boundaries(self):
+        raw = "L1\rL2\u2028L3\r\nL4"
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_splitlines_boundaries_{index}")
+                self.assertEqual(list(module.iter_text_lines_keepends(raw)), raw.splitlines(keepends=True))
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {
@@ -10479,6 +10540,106 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("ghp_A", proc.stdout)
         self.assertNotIn("opaque-token-value", proc.stdout)
 
+    def test_trim_artifact_capture_spools_and_overflows_without_line_list(self):
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_spool_{index}")
+                capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=8)
+                try:
+                    capture.add("abc\n")
+                    capture.add("def\n")
+                    self.assertEqual(capture.text(), "abc\ndef\n")
+                    self.assertEqual(capture.bytes, 8)
+                    capture.add("overflow\n")
+                    self.assertTrue(capture.overflow)
+                    self.assertEqual(capture.text(), "")
+                finally:
+                    capture.close()
+
+    def test_trim_artifact_capture_flushes_and_replaces_unencodable_text(self):
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_flush_{index}")
+                capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                try:
+                    capture.add("bad-surrogate-\udcff\n")
+                    text = capture.text()
+                    self.assertIn("bad-surrogate-", text)
+                    self.assertNotIn("\udcff", text)
+                    self.assertFalse(capture.overflow)
+                    self.assertIsNone(capture.error)
+                finally:
+                    capture.close()
+
+    def test_trim_artifact_capture_downgrades_tempfile_write_errors(self):
+        class FailingWrite:
+            def write(self, _payload: bytes) -> int:
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                pass
+
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_write_error_{index}")
+                original_temporary_file = module.tempfile.TemporaryFile
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingWrite()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                    try:
+                        capture.add("line\n")
+                        self.assertIn("OSError", capture.error)
+                        self.assertEqual(capture.text(), "")
+                    finally:
+                        capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
+    def test_trim_artifact_capture_downgrades_tempfile_close_and_flush_errors(self):
+        class FailingClose:
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def close(self) -> None:
+                raise OSError("close failed")
+
+        class FailingFlush:
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def flush(self) -> None:
+                raise OSError("flush failed")
+
+            def close(self) -> None:
+                pass
+
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_close_error_{index}")
+                original_temporary_file = module.tempfile.TemporaryFile
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingClose()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=8)
+                    capture.add("abc\n")
+                    capture.add("overflow\n")
+                    self.assertTrue(capture.overflow)
+                    self.assertIn("OSError", capture.error)
+                    capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingFlush()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                    try:
+                        capture.add("abc\n")
+                        self.assertEqual(capture.text(), "")
+                        self.assertIn("OSError", capture.error)
+                    finally:
+                        capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
     def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
         for script in TRIM_SCRIPTS:
             with self.subTest(script=script):
@@ -10647,6 +10808,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_compress_log_and_search_reduce_duplicates(self):
         log_raw = "2026-01-01 00:00:00 INFO repeated\n" * 40
+        bracket_log_raw = "[INFO] repeated\n" * 40
         search_raw = "src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n"
         for script in COMPRESS_SCRIPTS:
             with self.subTest(script=script):
@@ -10654,9 +10816,56 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(log_meta["content_type"], "log")
                 self.assertLess(log_meta["bytes"]["compressed"], log_meta["bytes"]["original"])
                 self.assertGreaterEqual(log_meta["strategy_detail"]["lines_collapsed"], 1)
+                bracket_log_meta = json.loads(self._run_compress(script, bracket_log_raw, "--metadata-only").stdout)
+                self.assertEqual(bracket_log_meta["content_type"], "log")
+                self.assertEqual(bracket_log_meta["strategy"], "log-collapse-repeats")
+                self.assertLess(bracket_log_meta["bytes"]["compressed"], bracket_log_meta["bytes"]["original"])
                 search_meta = json.loads(self._run_compress(script, search_raw, "--metadata-only").stdout)
                 self.assertEqual(search_meta["content_type"], "search")
                 self.assertEqual(search_meta["strategy_detail"]["duplicate_lines_dropped"], 1)
+
+    def test_compress_search_dedupe_bounds_seen_keys(self):
+        for index, script in enumerate(COMPRESS_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_compress_search_bound_{index}")
+                original_limit = module.MAX_SEARCH_DEDUPE_KEYS
+                try:
+                    module.MAX_SEARCH_DEDUPE_KEYS = 2
+                    compressed, detail = module.compress_search(
+                        "src/a.py:1:alpha\n"
+                        "src/b.py:2:beta\n"
+                        "src/c.py:3:gamma\n"
+                        "src/a.py:1:alpha\n"
+                        "src/c.py:3:gamma\n"
+                    )
+                finally:
+                    module.MAX_SEARCH_DEDUPE_KEYS = original_limit
+                self.assertTrue(detail["dedupe_key_limit_reached"])
+                self.assertEqual(detail["dedupe_key_limit"], 2)
+                self.assertEqual(detail["duplicate_lines_dropped"], 1)
+                self.assertIn("src/c.py:3:gamma", compressed)
+
+    def test_compress_search_dedupe_iterates_without_splitlines_list(self):
+        for index, script in enumerate(COMPRESS_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_compress_search_iter_{index}")
+                original_iter_text_lines = module.iter_text_lines
+                consumed = 0
+
+                def counting_iter(text: str):
+                    nonlocal consumed
+                    for line in original_iter_text_lines(text):
+                        consumed += 1
+                        yield line
+
+                module.iter_text_lines = counting_iter
+                try:
+                    compressed, detail = module.compress_search("src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n")
+                finally:
+                    module.iter_text_lines = original_iter_text_lines
+                self.assertEqual(consumed, 3)
+                self.assertEqual(detail["duplicate_lines_dropped"], 1)
+                self.assertEqual(compressed, "src/a.py:1:foo\nsrc/b.py:2:bar\n")
 
     def test_compress_type_override_forces_strategy(self):
         for script in COMPRESS_SCRIPTS:
