@@ -63,6 +63,7 @@ MAX_JSON_PATH_SEGMENT_CHARS = 64
 MAX_JSON_WALK_NODES = 10_000
 MAX_JSON_WALK_DEPTH = 64
 MAX_JSON_SHAPE_WARNINGS = 200
+MAX_JSON_CANONICAL_COMPARE_BYTES = 200_000
 SAFE_JSON_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 DYNAMIC_JSON_KEY_RE = re.compile(r"(?i)(request|trace|nonce|random|timestamp|created[_-]?at|updated[_-]?at|date)")
 SENSITIVE_JSON_KEY_RE = re.compile(
@@ -335,13 +336,24 @@ def json_shape_warnings(text: str) -> tuple[str, list[dict[str, Any]]]:
     if not isinstance(data, (dict, list)):
         return "json-scalar", []
     warnings = _walk_json(data)
-    canonical = json_bytes(data, indent=2) + "\n"
-    if canonical != text:
+    input_bytes = byte_len_text(text)
+    if input_bytes <= MAX_JSON_CANONICAL_COMPARE_BYTES:
+        canonical = json_bytes(data, indent=2) + "\n"
+        if canonical != text:
+            warnings.append({
+                "code": "json_not_canonical",
+                "path": "$",
+                "severity": "info",
+                "message": "JSON input is parseable but not canonical sort-key formatting; generated prompt JSON should be byte-stable.",
+            })
+    else:
         warnings.append({
-            "code": "json_not_canonical",
+            "code": "json_canonical_check_skipped",
             "path": "$",
             "severity": "info",
-            "message": "JSON input is parseable but not canonical sort-key formatting; generated prompt JSON should be byte-stable.",
+            "message": "JSON input is large; canonical byte-for-byte formatting comparison was skipped to keep lint memory bounded.",
+            "input_bytes": input_bytes,
+            "max_bytes": MAX_JSON_CANONICAL_COMPARE_BYTES,
         })
     return "json", warnings
 

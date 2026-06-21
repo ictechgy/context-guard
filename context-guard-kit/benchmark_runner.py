@@ -1429,10 +1429,22 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
     )
 
 
-def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_existing: bool = False) -> bool:
+def append_csv(
+    csv_path: Path,
+    claude_ver: str,
+    result: RunResult,
+    *,
+    skip_existing: bool = False,
+    existing_key_cache: set[tuple[str, str]] | None = None,
+) -> bool:
     with csv_file_lock(csv_path, create_parent=True):
-        if skip_existing and (result.task_id, result.variant) in _read_existing_keys_unlocked(csv_path):
-            return False
+        key = (result.task_id, result.variant)
+        if skip_existing:
+            if existing_key_cache is not None:
+                if key in existing_key_cache:
+                    return False
+            elif key in _read_existing_keys_unlocked(csv_path):
+                return False
         flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
         fd = _open_regular_no_symlink(csv_path, flags, 0o600, create_parent=True)
         try:
@@ -1486,6 +1498,8 @@ def append_csv(csv_path: Path, claude_ver: str, result: RunResult, *, skip_exist
         finally:
             if fd != -1:
                 os.close(fd)
+        if existing_key_cache is not None:
+            existing_key_cache.add(key)
     return True
 
 
@@ -3813,7 +3827,13 @@ def main() -> int:
             evidence = evidence_by_key[(task.id, variant.name)]
             print(f"replay {task.id}/{variant.name} ...", flush=True)
             result = run_evidence_fixture(task, variant, evidence)
-            wrote = append_csv(args.csv, claude_ver, result, skip_existing=args.resume)
+            wrote = append_csv(
+                args.csv,
+                claude_ver,
+                result,
+                skip_existing=args.resume,
+                existing_key_cache=skip_keys if args.resume else None,
+            )
             if wrote:
                 replay_rows_written.append(evidence)
                 if args.ledger_jsonl is not None:
@@ -3882,7 +3902,13 @@ def main() -> int:
         # 깎고, (b) --resume 이 그 (task, variant) 를 skip 해 실제 측정값이 영구 누락된다.
         wrote = True
         if not args.dry_run:
-            wrote = append_csv(args.csv, claude_ver, result, skip_existing=args.resume)
+            wrote = append_csv(
+                args.csv,
+                claude_ver,
+                result,
+                skip_existing=args.resume,
+                existing_key_cache=skip_keys if args.resume else None,
+            )
             if wrote and args.ledger_jsonl is not None:
                 append_cost_shift_ledger(args.ledger_jsonl, claude_ver, result)
         completed += 1
