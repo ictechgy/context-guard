@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import collections
 from dataclasses import dataclass
 import json
 import os
@@ -455,21 +456,63 @@ def cap_line(line: str, max_chars: int) -> str:
     return line[: max(0, max_chars - len(marker) - len(suffix))] + marker + suffix
 
 
-def select_lines(lines: list[str], flt: CompiledFilter, max_line_chars: int) -> list[str]:
-    selected = [cap_line(line, max_line_chars) for line in lines]
-    if flt.include_regex:
-        selected = [line for line in selected if any(pattern.search(line) for pattern in flt.include_regex)]
-    if flt.exclude_regex:
-        selected = [line for line in selected if not any(pattern.search(line) for pattern in flt.exclude_regex)]
+def iter_text_lines_keepends(text: str) -> Iterable[str]:
+    start = 0
+    while start < len(text):
+        newline = text.find("\n", start)
+        if newline == -1:
+            yield text[start:]
+            return
+        yield text[start : newline + 1]
+        start = newline + 1
+
+
+def count_logical_lines(text: str) -> int:
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def line_matches_filter(line: str, flt: CompiledFilter) -> bool:
+    if flt.include_regex and not any(pattern.search(line) for pattern in flt.include_regex):
+        return False
+    if flt.exclude_regex and any(pattern.search(line) for pattern in flt.exclude_regex):
+        return False
+    return True
+
+
+def select_lines(lines: Iterable[str], flt: CompiledFilter, max_line_chars: int) -> list[str]:
+    selected_count = 0
     if flt.head_lines is not None or flt.tail_lines is not None:
         head_n = flt.head_lines if flt.head_lines is not None else 0
         tail_n = flt.tail_lines if flt.tail_lines is not None else 0
-        head = selected[:head_n] if head_n else []
-        tail = selected[-tail_n:] if tail_n else []
-        if head and tail:
-            seen_head_count = len(head)
-            tail = tail[max(0, seen_head_count + len(tail) - len(selected)):]
-        selected = head + tail
+        head: list[str] = []
+        tail: collections.deque[str] = collections.deque(maxlen=tail_n)
+        for source_line in lines:
+            line = cap_line(source_line, max_line_chars)
+            if not line_matches_filter(line, flt):
+                continue
+            selected_count += 1
+            if head_n and len(head) < head_n:
+                head.append(line)
+            if tail_n:
+                tail.append(line)
+        tail_list = list(tail)
+        if head and tail_list:
+            tail_list = tail_list[max(0, len(head) + len(tail_list) - selected_count):]
+        selected = head + tail_list
+    else:
+        limit = min(flt.max_lines if flt.max_lines is not None else MAX_EMIT_LINES, MAX_EMIT_LINES)
+        selected = []
+        for source_line in lines:
+            line = cap_line(source_line, max_line_chars)
+            if not line_matches_filter(line, flt):
+                continue
+            selected_count += 1
+            if len(selected) < limit:
+                selected.append(line)
+            if len(selected) >= limit:
+                break
     if flt.max_lines is not None and len(selected) > flt.max_lines:
         selected = selected[:flt.max_lines]
     if len(selected) > MAX_EMIT_LINES:
@@ -746,8 +789,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             report["filter_id"] = matched.id
         else:
             try:
-                lines = output.splitlines(keepends=True)
-                filtered = select_lines(lines, matched, max_line_chars)
+                input_lines = count_logical_lines(output)
+                filtered = select_lines(iter_text_lines_keepends(output), matched, max_line_chars)
             except re.error as exc:
                 report["reason"] = f"filter-error:{compact(str(exc), 80)}"
                 report["filter_id"] = matched.id
@@ -757,7 +800,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     report["filter_id"] = matched.id
                 else:
                     sys.stdout.write("".join(filtered))
-                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": len(lines), "output_lines": len(filtered)})
+                    report.update({"decision": "filtered", "reason": "matched", "filter_id": matched.id, "input_lines": input_lines, "output_lines": len(filtered)})
                     emit_run_report(args, report)
                     return rc
     if not result.passthrough_emitted:

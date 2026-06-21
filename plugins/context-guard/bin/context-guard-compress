@@ -24,6 +24,7 @@ from typing import Callable
 
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
+MAX_SEARCH_DEDUPE_KEYS = 50_000
 # 토큰 추정은 보수적 proxy 일 뿐이다(관측값 아님). 평균 ~4 chars/token 휴리스틱을 쓰되
 # 메타데이터에 measurement="estimated" 로 명시해 관측 토큰 수와 혼동되지 않게 한다.
 TOKEN_PROXY_CHARS_PER_TOKEN = 4
@@ -356,13 +357,7 @@ def build_readable_compression_metadata(
 
 
 def _looks_like_json(stripped: str) -> bool:
-    if stripped[0] not in "{[":
-        return False
-    try:
-        json.loads(stripped)
-    except (ValueError, RecursionError):
-        return False
-    return True
+    return bool(stripped and stripped[0] in "{[")
 
 
 def _ratio(matches: int, total: int, threshold: float) -> bool:
@@ -464,18 +459,28 @@ def compress_log(text: str) -> tuple[str, dict[str, object]]:
 
 
 def compress_search(text: str) -> tuple[str, dict[str, object]]:
-    """Drop exact-duplicate match lines while preserving first-seen order."""
+    """Drop exact-duplicate match lines while preserving first-seen order with bounded keys."""
     out: list[str] = []
     seen: set[str] = set()
     dropped = 0
+    dedupe_limit_reached = False
     for line in text.splitlines():
         key = line.rstrip()
         if key in seen:
             dropped += 1
             continue
-        seen.add(key)
+        if len(seen) < MAX_SEARCH_DEDUPE_KEYS:
+            seen.add(key)
+        else:
+            dedupe_limit_reached = True
         out.append(line)
-    return _join_lines(out, text), {"strategy": "search-dedupe", "lossy": dropped > 0, "duplicate_lines_dropped": dropped}
+    return _join_lines(out, text), {
+        "strategy": "search-dedupe",
+        "lossy": dropped > 0,
+        "duplicate_lines_dropped": dropped,
+        "dedupe_key_limit": MAX_SEARCH_DEDUPE_KEYS,
+        "dedupe_key_limit_reached": dedupe_limit_reached,
+    }
 
 
 def compress_code(text: str) -> tuple[str, dict[str, object]]:

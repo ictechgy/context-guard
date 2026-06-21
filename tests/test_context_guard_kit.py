@@ -983,6 +983,32 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertFalse(second.is_alive())
                 self.assertEqual(b"".join(emitted), b"ABC")
 
+    def test_context_filter_select_lines_stops_after_bounded_max_lines(self):
+        for index, script in enumerate(FILTER_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_filter_select_lines_bounded_{index}")
+                consumed = 0
+
+                def lines():
+                    nonlocal consumed
+                    for number in range(10000):
+                        consumed += 1
+                        yield f"KEEP {number}\n"
+
+                flt = module.CompiledFilter(
+                    id="bounded",
+                    argv_prefix=("cmd",),
+                    argv_regex=None,
+                    passthrough_on_exit=True,
+                    include_regex=(),
+                    exclude_regex=(),
+                    head_lines=None,
+                    tail_lines=None,
+                    max_lines=3,
+                )
+                self.assertEqual(module.select_lines(lines(), flt, 1000), ["KEEP 0\n", "KEEP 1\n", "KEEP 2\n"])
+                self.assertEqual(consumed, 3)
+
     def test_context_filter_validation_rejects_schema_regex_and_bounds_errors(self):
         cases = {
             "unknown": {
@@ -10479,6 +10505,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertNotIn("ghp_A", proc.stdout)
         self.assertNotIn("opaque-token-value", proc.stdout)
 
+    def test_trim_artifact_capture_spools_and_overflows_without_line_list(self):
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_spool_{index}")
+                capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=8)
+                try:
+                    capture.add("abc\n")
+                    capture.add("def\n")
+                    self.assertEqual(capture.text(), "abc\ndef\n")
+                    self.assertEqual(capture.bytes, 8)
+                    capture.add("overflow\n")
+                    self.assertTrue(capture.overflow)
+                    self.assertEqual(capture.text(), "")
+                finally:
+                    capture.close()
+
     def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
         for script in TRIM_SCRIPTS:
             with self.subTest(script=script):
@@ -10657,6 +10699,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 search_meta = json.loads(self._run_compress(script, search_raw, "--metadata-only").stdout)
                 self.assertEqual(search_meta["content_type"], "search")
                 self.assertEqual(search_meta["strategy_detail"]["duplicate_lines_dropped"], 1)
+
+    def test_compress_search_dedupe_bounds_seen_keys(self):
+        for index, script in enumerate(COMPRESS_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_compress_search_bound_{index}")
+                original_limit = module.MAX_SEARCH_DEDUPE_KEYS
+                try:
+                    module.MAX_SEARCH_DEDUPE_KEYS = 2
+                    compressed, detail = module.compress_search(
+                        "src/a.py:1:alpha\n"
+                        "src/b.py:2:beta\n"
+                        "src/c.py:3:gamma\n"
+                        "src/a.py:1:alpha\n"
+                        "src/c.py:3:gamma\n"
+                    )
+                finally:
+                    module.MAX_SEARCH_DEDUPE_KEYS = original_limit
+                self.assertTrue(detail["dedupe_key_limit_reached"])
+                self.assertEqual(detail["dedupe_key_limit"], 2)
+                self.assertEqual(detail["duplicate_lines_dropped"], 1)
+                self.assertIn("src/c.py:3:gamma", compressed)
 
     def test_compress_type_override_forces_strategy(self):
         for script in COMPRESS_SCRIPTS:
