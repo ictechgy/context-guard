@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Callable
+from typing import Callable, Iterable
 
 DEFAULT_MAX_BYTES = 10_000_000
 MAX_MAX_BYTES = 100_000_000
@@ -216,6 +216,40 @@ def token_proxy(text: str) -> int:
     return max(1, round(len(text) / TOKEN_PROXY_CHARS_PER_TOKEN))
 
 
+LINE_BOUNDARY_CHARS = {"\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
+
+
+def iter_text_lines(text: str) -> Iterable[str]:
+    """Yield lines with str.splitlines() boundaries without building a line list."""
+    start = 0
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\r" and index + 1 < length and text[index + 1] == "\n":
+            yield text[start:index]
+            index += 2
+            start = index
+            continue
+        if char in LINE_BOUNDARY_CHARS:
+            yield text[start:index]
+            index += 1
+            start = index
+            continue
+        index += 1
+    if start < length:
+        yield text[start:]
+
+
+def sample_text_lines(text: str, limit: int) -> list[str]:
+    sample: list[str] = []
+    for line in iter_text_lines(text):
+        sample.append(line)
+        if len(sample) >= limit:
+            break
+    return sample
+
+
 def classify_content(text: str) -> str:
     """Best-effort content classification into one of CONTENT_TYPES.
 
@@ -232,8 +266,7 @@ def classify_content(text: str) -> str:
 
 
 def classify_non_json_content(stripped: str) -> str:
-    lines = stripped.splitlines()
-    sample = lines[:200]
+    sample = sample_text_lines(stripped, 200)
     if _looks_like_diff(sample):
         return "diff"
     if _looks_like_search(sample):
@@ -481,7 +514,7 @@ def compress_search(text: str) -> tuple[str, dict[str, object]]:
     seen: set[str] = set()
     dropped = 0
     dedupe_limit_reached = False
-    for line in text.splitlines():
+    for line in iter_text_lines(text):
         key = line.rstrip()
         if key in seen:
             dropped += 1

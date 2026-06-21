@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import types
-from typing import BinaryIO, Iterable, Iterator, TextIO
+from typing import BinaryIO, Iterable, Iterator
 
 MAX_SUMMARY_ITEM_CHARS = 500
 MAX_LINES_LIMIT = 5_000
@@ -406,13 +406,13 @@ class SanitizedArtifactCapture:
         self.bytes = 0
         self.overflow = False
         self.error: str | None = None
-        self._file: TextIO | None = None
+        self._file: BinaryIO | None = None
 
-    def _ensure_file(self) -> TextIO | None:
+    def _ensure_file(self) -> BinaryIO | None:
         if self._file is not None:
             return self._file
         try:
-            self._file = tempfile.TemporaryFile("w+t", encoding="utf-8", errors="replace")
+            self._file = tempfile.TemporaryFile("w+b")
         except OSError as exc:
             self.error = f"{exc.__class__.__name__}: {exc}"
             return None
@@ -421,7 +421,8 @@ class SanitizedArtifactCapture:
     def add(self, sanitized_line: str) -> None:
         if not self.enabled or self.overflow or self.error:
             return
-        source_bytes = len(sanitized_line.encode("utf-8", errors="replace"))
+        encoded = sanitized_line.encode("utf-8", errors="replace")
+        source_bytes = len(encoded)
         if self.bytes + source_bytes > self.max_bytes:
             self.overflow = True
             if self._file is not None:
@@ -431,15 +432,25 @@ class SanitizedArtifactCapture:
         target = self._ensure_file()
         if target is None:
             return
-        target.write(sanitized_line)
+        try:
+            target.write(encoded)
+        except OSError as exc:
+            self.error = f"{exc.__class__.__name__}: {exc}"
+            self.close()
+            return
         self.bytes += source_bytes
 
     def text(self) -> str:
         if self._file is None:
             return ""
-        self._file.flush()
-        self._file.seek(0)
-        return self._file.read()
+        try:
+            self._file.flush()
+            self._file.seek(0)
+            return self._file.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            self.error = f"{exc.__class__.__name__}: {exc}"
+            self.close()
+            return ""
 
     def close(self) -> None:
         if self._file is not None:
@@ -1638,25 +1649,34 @@ def main() -> int:
                     "exact_reexpand": {"available": False, "reason": "artifact receipt capture unavailable"},
                 }
             else:
-                try:
-                    payload["artifact_receipt"] = store_sanitized_artifact_receipt(
-                        sanitized_text=artifact_capture.text(),
-                        command=command,
-                        args=args,
-                        line_sanitizer=line_sanitizer,
-                        redacted_lines=redacted_lines,
-                    )
-                except UnsafeAdjacentModuleError as exc:
-                    artifact_capture.close()
-                    print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
-                    return 2
-                except Exception as exc:
+                sanitized_artifact_text = artifact_capture.text()
+                if artifact_capture.error:
                     payload["artifact_receipt"] = {
                         "stored": False,
-                        "error": "artifact_receipt_unavailable",
-                        "reason": f"{exc.__class__.__name__}: {exc}",
-                        "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
+                        "error": "artifact_receipt_capture_unavailable",
+                        "reason": artifact_capture.error,
+                        "exact_reexpand": {"available": False, "reason": "artifact receipt capture unavailable"},
                     }
+                else:
+                    try:
+                        payload["artifact_receipt"] = store_sanitized_artifact_receipt(
+                            sanitized_text=sanitized_artifact_text,
+                            command=command,
+                            args=args,
+                            line_sanitizer=line_sanitizer,
+                            redacted_lines=redacted_lines,
+                        )
+                    except UnsafeAdjacentModuleError as exc:
+                        artifact_capture.close()
+                        print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
+                        return 2
+                    except Exception as exc:
+                        payload["artifact_receipt"] = {
+                            "stored": False,
+                            "error": "artifact_receipt_unavailable",
+                            "reason": f"{exc.__class__.__name__}: {exc}",
+                            "exact_reexpand": {"available": False, "reason": "artifact receipt unavailable"},
+                        }
             artifact_receipt = payload.get("artifact_receipt")
             if isinstance(artifact_receipt, dict) and artifact_receipt.get("stored"):
                 next_queries = payload.setdefault("next_queries", [])

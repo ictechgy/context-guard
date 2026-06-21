@@ -10571,6 +10571,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 finally:
                     capture.close()
 
+    def test_trim_artifact_capture_downgrades_tempfile_write_errors(self):
+        class FailingWrite:
+            def write(self, _payload: bytes) -> int:
+                raise OSError("disk full")
+
+            def close(self) -> None:
+                pass
+
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_write_error_{index}")
+                original_temporary_file = module.tempfile.TemporaryFile
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingWrite()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                    try:
+                        capture.add("line\n")
+                        self.assertIn("OSError", capture.error)
+                        self.assertEqual(capture.text(), "")
+                    finally:
+                        capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
     def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
         for script in TRIM_SCRIPTS:
             with self.subTest(script=script):
@@ -10775,6 +10799,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(detail["dedupe_key_limit"], 2)
                 self.assertEqual(detail["duplicate_lines_dropped"], 1)
                 self.assertIn("src/c.py:3:gamma", compressed)
+
+    def test_compress_search_dedupe_iterates_without_splitlines_list(self):
+        for index, script in enumerate(COMPRESS_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_compress_search_iter_{index}")
+                original_iter_text_lines = module.iter_text_lines
+                consumed = 0
+
+                def counting_iter(text: str):
+                    nonlocal consumed
+                    for line in original_iter_text_lines(text):
+                        consumed += 1
+                        yield line
+
+                module.iter_text_lines = counting_iter
+                try:
+                    compressed, detail = module.compress_search("src/a.py:1:foo\nsrc/a.py:1:foo\nsrc/b.py:2:bar\n")
+                finally:
+                    module.iter_text_lines = original_iter_text_lines
+                self.assertEqual(consumed, 3)
+                self.assertEqual(detail["duplicate_lines_dropped"], 1)
+                self.assertEqual(compressed, "src/a.py:1:foo\nsrc/b.py:2:bar\n")
 
     def test_compress_type_override_forces_strategy(self):
         for script in COMPRESS_SCRIPTS:
