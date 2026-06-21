@@ -16366,6 +16366,39 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertNotIn("eyJsecret", proc.stdout)
                 self.assertNotIn("csrf-secret", proc.stdout)
 
+    def test_sanitize_output_redacts_session_secret_keys(self):
+        raw = (
+            "sessionid=abcdef1234567890\n"
+            "sid=short-session-secret\n"
+            "session=abc(def)\n"
+            'session_id="quoted-session-secret"\n'
+            "url=https://example.invalid/cb?sessionid=abc123&sid=def456&session=ghi789&ok=1\n"
+        )
+        for script in SANITIZE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script)],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("sessionid=[REDACTED]", proc.stdout)
+                self.assertIn("sid=[REDACTED]", proc.stdout)
+                self.assertIn("session=[REDACTED]", proc.stdout)
+                self.assertIn('session_id="[REDACTED]"', proc.stdout)
+                self.assertIn(
+                    "url=https://example.invalid/cb?sessionid=[REDACTED]&sid=[REDACTED]&session=[REDACTED]&ok=1",
+                    proc.stdout,
+                )
+                self.assertNotIn("abcdef1234567890", proc.stdout)
+                self.assertNotIn("short-session-secret", proc.stdout)
+                self.assertNotIn("abc(def)", proc.stdout)
+                self.assertNotIn("quoted-session-secret", proc.stdout)
+                self.assertNotIn("abc123", proc.stdout)
+                self.assertNotIn("def456", proc.stdout)
+                self.assertNotIn("ghi789", proc.stdout)
+
     def test_sanitize_output_redacts_semicolon_chained_inline_assignments(self):
         raw = (
             'echo ok;TOKEN=first-secret;PASSWORD="second-secret";SAFE_VALUE=visible\n'

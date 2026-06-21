@@ -52,9 +52,14 @@ AUTH_HEADER_RE = re.compile(
 COOKIE_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
 )
+SESSION_SECRET_KEY = (
+    r"(?:session(?:[_-]?(?:id|token))?|sessionid|sid|jsessionid|"
+    r"csrf(?:[_-]?token)?|xsrf(?:[_-]?token)?)"
+)
 SECRET_KEY = (
     r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
     r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
+    rf"|{SESSION_SECRET_KEY}"
     r"|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
     r"GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET"
 )
