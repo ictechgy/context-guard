@@ -77,6 +77,14 @@ INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
     rf"(?P<value>(?![\"']){CODE_IDENTIFIER}\({CALL_ARGUMENT_CHUNK}\))"
 )
+INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<lead>^|[\s;{{\[,])"
+    rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"(?P<value>(?![\"']|\[REDACTED\])"
+    rf"[^;\n]*?(?:\bor\b|\|\||\?\?|\belse\b|\?[^:\n;]*:)\s*"
+    rf"[\"'](?:\\.|[^\"'\\])*[\"'][^;\n]*)"
+)
 INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
@@ -291,6 +299,7 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
         return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
 
     line = INLINE_QUOTED_SECRET_ASSIGNMENT_RE.sub(quoted_repl, line)
+    line = INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     line = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     line = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
     line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)

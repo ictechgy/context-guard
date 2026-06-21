@@ -16315,6 +16315,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             'api_key = config.get("live-secret")\n'
             'api_key = config.get("api_key", "live-secret")\n'
             'api_key = os.getenv("API_KEY", "live-secret")\n'
+            'api_key = config.get("api_key") or "fallback-secret"\n'
+            'api_key = config.get("api_key") if ok else "conditional-secret"\n'
+            'api_key = (config.get("api_key") or "paren-secret")\n'
+            'token = process.env.TOKEN || "js-fallback-secret"\n'
             'api_key = config.get("api_key")\n'
             'api_key = config.get("API_KEY")\n'
             'access_token = config.get("ACCESS_TOKEN")\n'
@@ -16342,6 +16346,10 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 self.assertNotIn("abc(def)", proc.stdout)
                 self.assertNotIn("literal-secret", proc.stdout)
                 self.assertNotIn("live-secret", proc.stdout)
+                self.assertNotIn("fallback-secret", proc.stdout)
+                self.assertNotIn("conditional-secret", proc.stdout)
+                self.assertNotIn("paren-secret", proc.stdout)
+                self.assertNotIn("js-fallback-secret", proc.stdout)
                 self.assertNotIn("[REDACTED]]", proc.stdout)
 
     def test_sanitize_output_redacts_cookie_headers(self):
@@ -19971,6 +19979,9 @@ for malformed in malformed_values:
             py.write_text(
                 "def target():\n"
                 f"    api_key = '{token}'\n"
+                "    password = 'hunter2'\n"
+                "    sessionid = 'abcdef1234567890'\n"
+                "    callback = 'https://example.invalid/cb?sessionid=abc123&ok=1'\n"
                 "    return api_key\n",
                 encoding="utf-8",
             )
@@ -19986,6 +19997,9 @@ for malformed in malformed_values:
                     self.assertIn("def target", data["content"])
                     self.assertIn("[REDACTED]", data["content"])
                     self.assertNotIn(token, data["content"])
+                    self.assertNotIn("hunter2", data["content"])
+                    self.assertNotIn("abcdef1234567890", data["content"])
+                    self.assertNotIn("abc123", data["content"])
 
     def test_read_symbol_helper_edges_bound_languages_and_missing_symbols(self):
         # Protects symbol slicing heuristics: language routing, syntax fallback,

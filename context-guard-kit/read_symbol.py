@@ -11,6 +11,7 @@ import argparse
 import ast
 import errno
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -39,9 +40,27 @@ def _load_hook_secret_patterns():
     raise ImportError("hook_secret_patterns.py not found in " + ", ".join(searched))
 
 
+def _load_sanitize_output():
+    searched = []
+    for helper_path in (SCRIPT_DIR / "sanitize_output.py", SCRIPT_DIR / "context-guard-sanitize-output"):
+        searched.append(str(helper_path))
+        if not helper_path.is_file():
+            continue
+        loader = importlib.machinery.SourceFileLoader("_claude_token_sanitize_output", str(helper_path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        if spec is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+    raise ImportError("sanitize_output helper not found in " + ", ".join(searched))
+
+
 _hook_secret_patterns = _load_hook_secret_patterns()
+_sanitize_output = _load_sanitize_output()
 hook_label_has_sensitive_evidence = _hook_secret_patterns.hook_label_has_sensitive_evidence
 redact_sensitive_hook_text = _hook_secret_patterns.redact_sensitive_hook_text
+LineSanitizer = _sanitize_output.LineSanitizer
 
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_CHARS = 16_000
@@ -392,6 +411,11 @@ def strip_line_for_brace_count(line: str, in_block_comment: bool = False) -> tup
     return "".join(output), in_block_comment
 
 
+def redact_symbol_content(content: str) -> str:
+    sanitizer = LineSanitizer(show_paths=True)
+    return "".join(sanitizer.sanitize(line)[0] for line in content.splitlines(keepends=True))
+
+
 def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, show_paths: bool) -> SymbolSlice | None:
     text, scan_truncated = read_text_bounded(path)
     lines = text.splitlines(keepends=True)
@@ -410,6 +434,7 @@ def find_symbol_slice(path: Path, symbol: str, context: int, max_chars: int, sho
     start_with_context = max(0, start - max(0, context))
     end_with_context = min(len(lines), end + max(0, context))
     content = "".join(lines[start_with_context:end_with_context])
+    content = redact_symbol_content(content)
     content = redact_sensitive_hook_text(content, "[REDACTED]")
     capped = False
     if max_chars > 0 and len(content) > max_chars:
