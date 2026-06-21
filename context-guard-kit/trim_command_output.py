@@ -414,9 +414,13 @@ class SanitizedArtifactCapture:
         try:
             self._file = tempfile.TemporaryFile("w+b")
         except OSError as exc:
-            self.error = f"{exc.__class__.__name__}: {exc}"
+            self._record_error(exc)
             return None
         return self._file
+
+    def _record_error(self, exc: OSError) -> None:
+        if self.error is None:
+            self.error = f"{exc.__class__.__name__}: {exc}"
 
     def add(self, sanitized_line: str) -> None:
         if not self.enabled or self.overflow or self.error:
@@ -425,9 +429,7 @@ class SanitizedArtifactCapture:
         source_bytes = len(encoded)
         if self.bytes + source_bytes > self.max_bytes:
             self.overflow = True
-            if self._file is not None:
-                self._file.close()
-                self._file = None
+            self.close()
             return
         target = self._ensure_file()
         if target is None:
@@ -435,7 +437,7 @@ class SanitizedArtifactCapture:
         try:
             target.write(encoded)
         except OSError as exc:
-            self.error = f"{exc.__class__.__name__}: {exc}"
+            self._record_error(exc)
             self.close()
             return
         self.bytes += source_bytes
@@ -448,14 +450,18 @@ class SanitizedArtifactCapture:
             self._file.seek(0)
             return self._file.read().decode("utf-8", errors="replace")
         except OSError as exc:
-            self.error = f"{exc.__class__.__name__}: {exc}"
+            self._record_error(exc)
             self.close()
             return ""
 
     def close(self) -> None:
-        if self._file is not None:
-            self._file.close()
-            self._file = None
+        target = self._file
+        self._file = None
+        if target is not None:
+            try:
+                target.close()
+            except OSError as exc:
+                self._record_error(exc)
 
     def __enter__(self) -> "SanitizedArtifactCapture":
         return self

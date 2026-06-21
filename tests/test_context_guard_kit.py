@@ -10595,6 +10595,51 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 finally:
                     module.tempfile.TemporaryFile = original_temporary_file
 
+    def test_trim_artifact_capture_downgrades_tempfile_close_and_flush_errors(self):
+        class FailingClose:
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def close(self) -> None:
+                raise OSError("close failed")
+
+        class FailingFlush:
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def flush(self) -> None:
+                raise OSError("flush failed")
+
+            def close(self) -> None:
+                pass
+
+        for index, script in enumerate(TRIM_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_trim_artifact_capture_close_error_{index}")
+                original_temporary_file = module.tempfile.TemporaryFile
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingClose()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=8)
+                    capture.add("abc\n")
+                    capture.add("overflow\n")
+                    self.assertTrue(capture.overflow)
+                    self.assertIn("OSError", capture.error)
+                    capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
+                module.tempfile.TemporaryFile = lambda *args, **kwargs: FailingFlush()
+                try:
+                    capture = module.SanitizedArtifactCapture(enabled=True, max_bytes=32)
+                    try:
+                        capture.add("abc\n")
+                        self.assertEqual(capture.text(), "")
+                        self.assertIn("OSError", capture.error)
+                    finally:
+                        capture.close()
+                finally:
+                    module.tempfile.TemporaryFile = original_temporary_file
+
     def test_trim_digest_markdown_summarizes_success_without_raw_dump(self):
         for script in TRIM_SCRIPTS:
             with self.subTest(script=script):
