@@ -350,7 +350,7 @@
         <article class="card"><span class="icon">▣</span><h3>로컬 로그 보관소</h3><p>큰 로그는 대화 밖에 저장하고, 필요한 줄 범위나 패턴 결과만 다시 가져옵니다.</p></article>
         <article class="card"><span class="icon">⊡</span><h3>예산 기반 컨텍스트 팩</h3><p>우선순위가 있는 로컬 파일을 바이트 예산 안의 Markdown 팩으로 조립하고, <code>--explain</code>으로 로컬 선택 이유를 짧게 남깁니다.</p></article>
         <article class="card"><span class="icon">◎</span><h3>설치 전 상태 점검</h3><p><code>doctor</code>와 <code>setup --verify</code>로 변경 없이 누락된 가드레일, 넓은 읽기 범위, 큰 컨텍스트 파일, 비용이 큰 설정을 확인합니다.</p></article>
-        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량, 캐시 신호, 주장 경계를 확인합니다.</p></article>
+        <article class="card"><span class="icon">↗</span><h3>상태와 측정</h3><p>상태표시줄, 대화 기록 감사, 기준/변형 쌍 비교로 사용량, 캐시 신호, 주장 범위를 확인합니다.</p></article>
         <article class="card"><span class="icon">⌬</span><h3>캐시 친화성 감사</h3><p>대화 기록의 프롬프트 배치를 점검해 캐시에 불리한 구성과 안정적인 prefix 후보를 알려줍니다.</p></article>
         <article class="card"><span class="icon">₩</span><h3>비용 가드와 route advisor</h3><p>호출 전 cache breakpoint별 위험과 비용 범위를 추정하고, 로컬 총비용·batchability route 후보를 shifted-cost 경계와 함께 요약합니다. 원문 대신 keyed HMAC fingerprint만 로컬에 남깁니다.</p></article>
         <article class="card"><span class="icon">↔</span><h3>에이전트 간 규칙</h3><p>AGENTS.md, GEMINI.md, Cursor·Copilot 지시 파일에 brief 모드 권고 블록을 dry-run으로 확인한 뒤 설치합니다.</p></article>
@@ -404,7 +404,7 @@
         <p>벤치마크와 감사 결과는 숫자를 보여주지만, 어떤 숫자가 절감 근거이고 어떤 숫자가 진단용 신호인지 분리해 읽어야 합니다.</p>
       </div>
       <div class="feature-grid">
-        <article class="card"><span class="icon">B</span><h3>기준/변형 쌍 비교 벤치마크</h3><p><code>context-guard-bench --ledger-jsonl ... --report-json ...</code>는 성공한 baseline/variant task를 맞춰 비교합니다. <a href="https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md">workflow examples</a>의 주장 경계를 먼저 확인하세요.</p></article>
+        <article class="card"><span class="icon">B</span><h3>기준/변형 쌍 비교 벤치마크</h3><p><code>context-guard-bench --ledger-jsonl ... --report-json ...</code>는 성공한 baseline/variant task를 맞춰 비교합니다. <a href="https://github.com/ictechgy/context-guard/blob/main/docs/benchmark-workflow-examples.md">workflow examples</a>의 주장 범위를 먼저 확인하세요.</p></article>
         <article class="card"><span class="icon">S</span><h3>self-hosted sidecar</h3><p><code>self_hosted_metrics</code>는 run별 JSONL ledger sidecar입니다. <code>context-guard experiments plan self-hosted-metrics-ledger</code>는 dry-run preview만 만들며, CSV/report 요약이나 hosted API token/cost savings claim의 근거로 쓰지 않습니다.</p></article>
         <article class="card"><span class="icon">V</span><h3>측정 결과 binding 계약</h3><p><code>--feasibility-json</code>은 <a href="https://github.com/ictechgy/context-guard/blob/main/docs/mac-visibility-feasibility-schema.md"><code>mac_visibility</code> 스키마</a> 같은 stable top-level binding 계약을 제공합니다. 과거 transcript scan은 live headroom이나 billing hit rate를 증명하지 않습니다.</p></article>
         <article class="card warning-card"><span class="icon">R</span><h3>실험 fixture는 출발점입니다</h3><p><a href="https://github.com/ictechgy/context-guard/blob/main/docs/experimental-benchmark-fixtures.md">fixture-only starter</a>와 <a href="https://github.com/ictechgy/context-guard/blob/main/research/experimental-token-reduction-radar.md">experimental-token-reduction-radar</a>는 matched successful task, provider-measured evidence, later-roadmap gate가 없으면 제공 기능이 아닙니다.</p></article>
@@ -422,7 +422,7 @@
         <article class="card"><span class="icon">λ</span><h3>learned compression</h3><p><code>learned-compression</code>은 deny-by-default plan과 명시적 <code>emit learned-compression</code>으로 caller-supplied compact prose candidate를 검토합니다. verified exact fallback content가 필요하며 compressor 실행·embedding·reranker·model call·subprocess·external service·생성형 replacement·hosted savings claim은 하지 않습니다.</p></article>
         <article class="card"><span class="icon">S</span><h3>self-hosted metrics</h3><p><code>self-hosted-metrics-ledger</code>는 dry-run preview와 명시적 <code>record ... --ledger-jsonl</code> 로컬 sidecar 기록을 제공합니다. dry-run preview는 ledger 파일을 쓰지 않으며, record 결과도 hosted API 절감 근거로 쓰지 않습니다.</p></article>
         <article class="card"><span class="icon">⌂</span><h3>local proxy</h3><p><code>local-proxy</code>는 localhost-only advisory plan, design-only <code>local-proxy-external-forwarding</code> gate, 명시적 <code>local-proxy-runtime-gate</code> gate row, one-shot loopback forwarding MVP로만 검토합니다. plan/record는 listener, DNS lookup, external service call, traffic forwarding을 시작하지 않습니다. serve는 private ready-file nonce, literal loopback bind/target IP, 1회 요청, byte/time limit, credential-free request를 요구하며 API key persistence, CONNECT/TLS proxying, hosted savings claim을 차단합니다. optional diagnostic ledger는 successful forwarded request 뒤에만 shifted-cost 진단 row를 쓰고 raw headers/raw bodies나 hosted API 절감 근거를 저장하지 않습니다.</p></article>
-        <article class="card warning-card"><span class="icon">!</span><h3>공통 안전 경계</h3><p><code>experiments enable</code>은 의도 기록일 뿐입니다. helper별 명시 flag, claim boundary, 별도 runtime gate를 통과하기 전까지 안정 동작이나 절감 주장으로 승격하지 않습니다.</p></article>
+        <article class="card warning-card"><span class="icon">!</span><h3>공통 안전 경계</h3><p><code>experiments enable</code>은 의도 기록일 뿐입니다. helper별 명시 flag, 주장 범위, 별도 runtime gate를 통과하기 전까지 안정 동작이나 절감 주장으로 승격하지 않습니다.</p></article>
       </div>
     </section>
 

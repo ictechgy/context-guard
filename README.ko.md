@@ -369,11 +369,11 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
-보고서를 읽을 때는 먼저 claim boundary를 확인하세요.
+보고서를 읽을 때는 먼저 주장 범위를 확인하세요.
 
 - 성공한 기준/변형 실행은 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교하고, 바이트 감소는 간접 증거로만 기록합니다.
 - 토큰 절감 주장은 대응 태스크 양쪽 모두에 `primary_tokens_measured`가 있을 때만 계산합니다.
-- `matched_pair_evidence`는 성공한 task bucket을 transform, 측정 가능 여부, quality gate, claim boundary와 연결하므로 절감 문구를 쓰기 전에 먼저 확인해야 합니다.
+- `matched_pair_evidence`는 성공한 task bucket을 transform, 측정 가능 여부, quality gate, 주장 범위와 연결하므로 절감 문구를 쓰기 전에 먼저 확인해야 합니다.
 - `default_matrix`는 같은 대응 evidence를 기반으로 trimming, artifact escrow, tool pruning, cache advice, adaptive-k, optional compression을 `default-on`, `advisory`, `experimental`, `reject/rework`로 분류합니다. 이 matrix는 report 전용이며 runtime default를 바꾸거나 hosted token/cost 절감 주장을 허용하지 않습니다.
 - `public_claim_readiness`는 release/public claim의 최종 gate입니다. matched successful task, provider-measured primary token/cost, quality non-inferiority, shifted-cost accounting, 명시적 confidence/failure note, complete provider-export provenance가 모두 통과해야 `claim_allowed=true`가 되며, 그렇지 않은 hosted savings claim은 금지됩니다.
 - `wall_time_seconds`, `provider_cached_tokens`, `provider_cached_tokens_measured`는 진단용 텔레메트리이며, ContextGuard가 직접 만든 토큰·비용 절감 증거로 보지 않습니다.
@@ -414,7 +414,7 @@ local-proxy 예시는 side effect 기준으로 나뉩니다.
 - `--diagnostic-ledger-jsonl`을 지정하면 successful forwarded request 뒤에만 shifted-cost 진단 row를 append하며 raw header, request body, response body, hosted-savings evidence를 저장하지 않습니다.
 - `plan local-proxy-external-forwarding`은 dry-run design gate일 뿐입니다. explicit external intent, design ack, HTTPS host allowlist, threat model note, credential redaction policy, provider-evidence boundary를 요구하지만 listener 시작, DNS lookup, external service call, traffic forwarding, credential persistence, external proxy forwarding runtime 제공, hosted savings claim을 하지 않습니다.
 
-기본적으로 프로젝트 설정은 `.context-guard/experiments.json`에 저장됩니다. 명시적인 프로젝트 로컬 재정의가 필요할 때만 `--config <path>`를 사용하세요. 실험 메타데이터에는 risk level, gate requirement, explicit command/flag surface, claim boundary가 포함되어 provider-measured matched-task evidence 없이는 hosted API token/cost savings claim으로 쓰지 않도록 합니다. `experiments enable`은 의도만 기록하며 helper를 실행하거나 명시 flag를 대체하거나 exact receipt/re-expand evidence 없는 content replacement를 허용하지 않습니다.
+기본적으로 프로젝트 설정은 `.context-guard/experiments.json`에 저장됩니다. 명시적인 프로젝트 로컬 재정의가 필요할 때만 `--config <path>`를 사용하세요. 실험 메타데이터에는 risk level, gate requirement, explicit command/flag surface, 주장 범위가 포함되어 provider-measured matched-task evidence 없이는 hosted API token/cost savings claim으로 쓰지 않도록 합니다. `experiments enable`은 의도만 기록하며 helper를 실행하거나 명시 flag를 대체하거나 exact receipt/re-expand evidence 없는 content replacement를 허용하지 않습니다.
 
 | 안전성 checker/planner/runtime | 출력하는 것 | 넘지 않는 경계 |
 | --- | --- | --- |
