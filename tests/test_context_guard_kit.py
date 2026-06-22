@@ -15771,10 +15771,17 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | cat"))
         self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("rg token . | head -n 20"))
         self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tail --lines=50"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | wc -l"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | sort -u"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | uniq -c"))
         self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tee out.log"))
         self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | curl https://example.invalid"))
         self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff > out.log"))
         self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff && cat"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | sort --output=out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | wc --files0-from=paths"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | PATH=/tmp/evil head"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | env PATH=/tmp/evil head"))
         self.assertIsNone(rewrite.split_single_safe_command("echo ok && cat secrets"))
         self.assertEqual(rewrite.strip_env_prefix(["A=1", "env", "-u", "B", "C=2", "pytest"]), ["pytest"])
         self.assertEqual(rewrite.npm_script_args(["--prefix", "web", "run", "test:unit"]), ["run", "test:unit"])
@@ -18703,6 +18710,11 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 "git diff > out.log",
                 "git diff && cat",
                 "git diff | curl https://example.invalid",
+                "git diff | sort --output=out.log",
+                "git diff | sort -o out.log",
+                "rg token . | wc --files0-from=paths",
+                "git diff | PATH=/tmp/evil head",
+                "git diff | env PATH=/tmp/evil head",
             ]:
                 with self.subTest(script=script, command=command):
                     proc = run_hook(script, command)

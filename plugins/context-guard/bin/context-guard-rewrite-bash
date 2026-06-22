@@ -272,6 +272,20 @@ def _filter_args_are_stdin_only(first: str, args: list[str]) -> bool:
     """Accept small, option-only filter argv forms that do not name files."""
     if first == "cat":
         return not args
+    long_no_value_options = {
+        "head": set(),
+        "tail": set(),
+        "wc": {"--bytes", "--chars", "--lines", "--words"},
+        "sort": {"--ignore-leading-blanks", "--dictionary-order", "--ignore-case", "--general-numeric-sort", "--human-numeric-sort", "--numeric-sort", "--reverse", "--unique"},
+        "uniq": {"--count", "--repeated", "--unique", "--ignore-case"},
+    }.get(first, set())
+    short_no_value_chars = {
+        "head": set(),
+        "tail": {"f", "F", "r"},
+        "wc": {"c", "m", "l", "w"},
+        "sort": {"b", "d", "f", "g", "h", "n", "r", "u"},
+        "uniq": {"c", "d", "u", "i"},
+    }.get(first, set())
     value_options = {"-n", "--lines", "-c", "--bytes"} if first in {"head", "tail"} else set()
     i = 0
     while i < len(args):
@@ -279,6 +293,11 @@ def _filter_args_are_stdin_only(first: str, args: list[str]) -> bool:
         if arg == "--":
             return i == len(args) - 1
         if arg.startswith("--") and "=" in arg:
+            name, value = arg.split("=", 1)
+            if name not in value_options:
+                return False
+            if not re.fullmatch(r"[+-]?\d+[KkMmGg]?", value):
+                return False
             i += 1
             continue
         if arg in value_options:
@@ -288,15 +307,23 @@ def _filter_args_are_stdin_only(first: str, args: list[str]) -> bool:
                 return False
             i += 2
             continue
-        if arg.startswith("-"):
+        if arg in long_no_value_options:
             i += 1
             continue
+        if arg.startswith("--"):
+            return False
+        if arg.startswith("-") and arg != "-":
+            if not set(arg[1:]).issubset(short_no_value_chars):
+                return False
+            i += 1
+            continue
+        if arg.startswith("-"):
+            return False
         return False
     return True
 
 
 def is_safe_pipe_filter(argv: list[str]) -> bool:
-    argv = strip_env_prefix(argv)
     if not argv:
         return False
     first = command_basename(argv[0])
