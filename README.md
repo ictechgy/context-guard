@@ -1,15 +1,15 @@
 # ContextGuard
 
-ContextGuard is a local-first context management toolkit for AI coding and tool-using agents. It ships as a Claude Code plugin first: install it once, enable it per project, and roll it back when needed.
+ContextGuard is a local-first context-management toolkit for AI coding and tool-using agents. It starts with a Claude Code plugin: install it once, enable it explicitly per project, and roll it back when needed.
 
-It helps trim noisy output, steer agents toward symbol-level reads, nudge repeated failures, redact secret-like patterns, and measure usage. The same guardrails extend to other agents through local helper commands and advisory brief-mode rule snippets.
+It trims noisy output, guides agents toward symbol-level reads, flags repeated failures, redacts secret-like patterns, and measures usage. The same guardrails are reusable by other agents through local helper commands and advisory brief-mode snippets.
 
 - Korean documentation: [`README.ko.md`](README.ko.md)
 - Static landing page: [GitHub Pages](https://ictechgy.github.io/context-guard/) ([source](docs/index.html))
 
 ## TL;DR
 
-Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available; configuration changes happen only when you run an explicit setup command.
+Installation and activation are deliberately separate. Installing ContextGuard only makes local helpers or Claude plugin skills available; it does not write configuration until you run an explicit setup command.
 
 | If you use... | Install | Activate |
 | --- | --- | --- |
@@ -29,15 +29,15 @@ context-guard setup --agent claude --scope user --verify --json  # read-only use
 context-guard setup --agent claude --scope user --plan
 ```
 
-Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup. `doctor` reports next commands and makes no changes. Setup looks for bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
+Project scope is the default. User-level setup is opt-in, requires an explicit agent for writes, records backups and rollback metadata, and never runs during package installation. Before applying setup, use `context-guard doctor` or `context-guard setup --verify` for a read-only health check. `doctor` reports next commands and makes no changes. Setup looks for bundled or checkout-local helpers first; it does not trust arbitrary `PATH` helpers unless you explicitly pass `--allow-path-helper-fallback` for a known-good install.
 
-Distribution and helper trust boundaries are conservative too: npm exposes only canonical `context-guard`/`context-guard-*` bin links, legacy `claude-*` wrappers remain package files for path-based migration, command manifests are treated as literal data instead of executable Python, and the macOS visibility helper is discovered from bundled/resource/executable-relative paths or an absolute explicit override with a minimal child environment. Current working directories, relative overrides, symlinked helpers, arbitrary `PATH`, and ambient shell environment are not trusted by default.
+Distribution and helper trust boundaries are conservative too: npm exposes only canonical `context-guard`/`context-guard-*` bin links, legacy `claude-*` wrappers remain package files for path-based migration, command manifests are treated as literal data rather than executable Python, and the macOS visibility helper is discovered only from bundled/resource/executable-relative paths or an absolute explicit override with a minimal child environment. Current working directories, relative overrides, symlinked helpers, arbitrary `PATH`, and ambient shell environment are not trusted by default.
 
 ContextGuard is intentionally conservative about savings claims. It reduces common sources of context bloat and provides benchmark tooling so you can measure before-and-after results on your own tasks. It does **not** promise a fixed token or cost reduction for every repository.
 
 ## Claude Code first, other agents too
 
-ContextGuard ships as a Claude Code plugin first, which is still the fastest path to value for Claude users. After installation, the same local-first guardrails can be reused by other AI coding and tool-using agents through:
+ContextGuard ships as a Claude Code plugin first, which is still the fastest starting point for Claude users. After installation, the same local-first guardrails can be reused by other AI coding and tool-using agents through:
 
 - **Local helper commands** (`context-guard-*`) that run as plain shell commands, independent of any specific agent.
 - **Advisory brief-mode rule snippets** that you install into an agent's own instruction file (`AGENTS.md`, `GEMINI.md`, `.cursorrules`, Copilot instructions, and similar rule files) and remove by deleting the marker-delimited block.
@@ -58,7 +58,7 @@ Current setup surfaces:
 
 ## How ContextGuard reduces token waste
 
-ContextGuard does not lower model prices by itself. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
+ContextGuard does not change model prices. It reduces avoidable context before it reaches an AI coding agent, then gives you signals to measure whether the change helped.
 
 | Waste path | ContextGuard guardrail |
 | --- | --- |
@@ -73,7 +73,7 @@ ContextGuard does not lower model prices by itself. It reduces avoidable context
 
 ## How it fits with caching and compression tools
 
-ContextGuard complements provider and semantic caches, and sits next to prompt compression. Its main job is simpler: **do not send unnecessary files, logs, or output in the first place**.
+ContextGuard complements provider and semantic caches, and works alongside prompt compression. Its main job is simpler: **do not send unnecessary files, logs, or output in the first place**.
 
 | Tool category | Saves by | ContextGuard relationship |
 | --- | --- | --- |
@@ -89,11 +89,11 @@ Related patterns that informed the design:
 | --- | --- | --- |
 | Compression-first | Shortening text already selected for the model, often with lossy transforms. | ContextGuard prefers local artifact storage with exact slice retrieval over lossy one-way compression, so you can get the original back. |
 | Terse-output rulesets across agents | Installing brief-mode output rules into many agents at once. | ContextGuard offers advisory brief-mode snippets and dry-run cross-agent setup — opt-in per project, no guaranteed savings claimed. |
-| ContextGuard | Avoiding unnecessary files, logs, and output before they enter context, with conservative measurement. | Local guardrails, reversible artifacts and retrieval, and benchmark evidence you measure yourself. |
+| ContextGuard | Avoiding unnecessary files, logs, and output before they enter context, with conservative measurement. | Local guardrails, reversible artifacts and retrieval, plus benchmark evidence you measure yourself. |
 
 ## Brief mode (advisory)
 
-Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving the evidence a reviewer needs: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
+Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving reviewer evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee token or cost savings.
 
 Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block for an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Manage it through setup with `context-guard setup --agent codex --scope project --brief-mode standard --plan`, rerun with `--yes` to apply, and use `--brief-mode off` to remove the managed block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
 
@@ -475,7 +475,7 @@ Shipped experimental checker/planner surfaces, plus explicit local context-diff,
 
 ## What is not yet shipped
 
-These are directions the project has tracked, not committed features. Nothing here ships unless documented elsewhere in the repository.
+These are tracked directions, not committed features. Nothing here ships unless another repository document says it does.
 
 ContextGuard does not yet ship:
 
