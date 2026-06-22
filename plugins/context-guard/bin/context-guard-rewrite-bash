@@ -423,6 +423,16 @@ def build_sanitized_command(wrapper: str, command: str) -> str:
     return shlex.join(wrapped_argv)
 
 
+def print_updated_command(wrapped: str) -> None:
+    response = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": {"command": wrapped},
+        }
+    }
+    print(json.dumps(response, ensure_ascii=False))
+
+
 def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
@@ -450,11 +460,16 @@ def main() -> int:
     argv = split_single_safe_command(command)
     if not argv:
         if unparseable_command_needs_sanitizer(command):
-            deny(
-                "Search/diff/log command contains shell operators that cannot be safely rewritten. "
-                "Run the command through context-guard-sanitize-output explicitly, simplify it, or set "
-                f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
-            )
+            wrapper = find_wrapper("sanitize")
+            if wrapper is None:
+                deny(
+                    "Search/diff/log command blocked because it contains shell operators and "
+                    "context-guard-sanitize-output is not installed next to context-guard-rewrite-bash. "
+                    "Install the sanitizer or set "
+                    f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
+                )
+                return 0
+            print_updated_command(build_sanitized_command(wrapper, command))
             return 0
         print_noop()
         return 0
@@ -490,13 +505,7 @@ def main() -> int:
         print("{}")
         return 0
 
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": {"command": wrapped},
-        }
-    }
-    print(json.dumps(response, ensure_ascii=False))
+    print_updated_command(wrapped)
     return 0
 
 
