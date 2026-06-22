@@ -19,6 +19,7 @@ import sys
 SHELL_OPERATOR_TOKENS = {";", ";;", ";&", ";;&", "&", "&&", "|", "||", "<", ">", "<<", ">>", "<>", "(", ")"}
 SHELL_OPERATOR_CHARS = frozenset(";&|<>()")
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
+SAFE_PIPE_FILTER_BASENAMES = frozenset({"cat", "head", "tail", "wc", "sort", "uniq"})
 WRAPPER_BASENAMES = frozenset({
     "trim_command_output.py",
     "context-guard-trim-output",
@@ -164,6 +165,59 @@ def split_single_safe_command(command: str) -> list[str] | None:
     return argv
 
 
+def split_safe_sanitizer_pipeline(command: str) -> list[list[str]] | None:
+    """Return argv segments for a narrow read-only pipeline safe to sanitizer-wrap.
+
+    Compound search/diff/log commands are useful in practice (`git diff | cat`,
+    `rg token . | head`), but arbitrary shell operators can branch output to
+    files/network or change control flow before the sanitizer sees it.  This
+    helper therefore allows only plain `|` pipelines where the first segment is
+    sanitizer-worthy and every later segment is a simple stdout filter.  It
+    intentionally rejects redirection, here-doc/string, `tee`, `curl`, `&&`,
+    command substitution, and other shell syntax.
+    """
+    if not command.strip():
+        return None
+    if any(char in command for char in "\n\r\t`"):
+        return None
+    if "$(" in command or "${" in command:
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if "|" not in tokens:
+        return None
+
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        is_operator = token in SHELL_OPERATOR_TOKENS or (
+            any(char in SHELL_OPERATOR_CHARS for char in token)
+            and all(char in SHELL_OPERATOR_CHARS for char in token)
+        )
+        if is_operator:
+            if token != "|":
+                return None
+            if not segments[-1]:
+                return None
+            segments.append([])
+            continue
+        if any(char in token for char in "`\n\r\t"):
+            return None
+        if "$(" in token or "${" in token:
+            return None
+        segments[-1].append(token)
+    if not segments or not segments[-1] or len(segments) < 2:
+        return None
+    if not (is_sanitizable_output_command(segments[0]) or is_log_streaming_command(segments[0])):
+        return None
+    if not all(is_safe_pipe_filter(segment) for segment in segments[1:]):
+        return None
+    return segments
+
+
 def command_basename(command: str) -> str:
     return os.path.basename(command)
 
@@ -212,6 +266,70 @@ def npm_script_args(rest: list[str]) -> list[str]:
             continue
         break
     return rest[i:]
+
+
+def _filter_args_are_stdin_only(first: str, args: list[str]) -> bool:
+    """Accept small, option-only filter argv forms that do not name files."""
+    if first == "cat":
+        return not args
+    long_no_value_options = {
+        "head": set(),
+        "tail": set(),
+        "wc": {"--bytes", "--chars", "--lines", "--words"},
+        "sort": {"--ignore-leading-blanks", "--dictionary-order", "--ignore-case", "--general-numeric-sort", "--human-numeric-sort", "--numeric-sort", "--reverse", "--unique"},
+        "uniq": {"--count", "--repeated", "--unique", "--ignore-case"},
+    }.get(first, set())
+    short_no_value_chars = {
+        "head": set(),
+        "tail": {"f", "F", "r"},
+        "wc": {"c", "m", "l", "w"},
+        "sort": {"b", "d", "f", "g", "h", "n", "r", "u"},
+        "uniq": {"c", "d", "u", "i"},
+    }.get(first, set())
+    value_options = {"-n", "--lines", "-c", "--bytes"} if first in {"head", "tail"} else set()
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return i == len(args) - 1
+        if arg.startswith("--") and "=" in arg:
+            name, value = arg.split("=", 1)
+            if name not in value_options:
+                return False
+            if not re.fullmatch(r"[+-]?\d+[KkMmGg]?", value):
+                return False
+            i += 1
+            continue
+        if arg in value_options:
+            if i + 1 >= len(args):
+                return False
+            if not re.fullmatch(r"[+-]?\d+[KkMmGg]?", args[i + 1]):
+                return False
+            i += 2
+            continue
+        if arg in long_no_value_options:
+            i += 1
+            continue
+        if arg.startswith("--"):
+            return False
+        if arg.startswith("-") and arg != "-":
+            if not set(arg[1:]).issubset(short_no_value_chars):
+                return False
+            i += 1
+            continue
+        if arg.startswith("-"):
+            return False
+        return False
+    return True
+
+
+def is_safe_pipe_filter(argv: list[str]) -> bool:
+    if not argv:
+        return False
+    first = command_basename(argv[0])
+    if first not in SAFE_PIPE_FILTER_BASENAMES:
+        return False
+    return _filter_args_are_stdin_only(first, argv[1:])
 
 
 def is_noisy_command(argv: list[str]) -> bool:
@@ -423,6 +541,16 @@ def build_sanitized_command(wrapper: str, command: str) -> str:
     return shlex.join(wrapped_argv)
 
 
+def print_updated_command(wrapped: str) -> None:
+    response = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": {"command": wrapped},
+        }
+    }
+    print(json.dumps(response, ensure_ascii=False))
+
+
 def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
@@ -450,11 +578,25 @@ def main() -> int:
     argv = split_single_safe_command(command)
     if not argv:
         if unparseable_command_needs_sanitizer(command):
-            deny(
-                "Search/diff/log command contains shell operators that cannot be safely rewritten. "
-                "Run the command through context-guard-sanitize-output explicitly, simplify it, or set "
-                f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
-            )
+            safe_pipeline = split_safe_sanitizer_pipeline(command)
+            if safe_pipeline is None:
+                deny(
+                    "Search/diff/log command contains shell operators that are not in ContextGuard's "
+                    "read-only pipe allowlist. Simplify to a plain pipeline ending in cat/head/tail/wc/sort/uniq, "
+                    "run context-guard-sanitize-output explicitly after review, or set "
+                    f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
+                )
+                return 0
+            wrapper = find_wrapper("sanitize")
+            if wrapper is None:
+                deny(
+                    "Search/diff/log command blocked because it contains shell operators and "
+                    "context-guard-sanitize-output is not installed next to context-guard-rewrite-bash. "
+                    "Install the sanitizer or set "
+                    f"{FAIL_OPEN_ENV}=1 to run unsanitized intentionally."
+                )
+                return 0
+            print_updated_command(build_sanitized_command(wrapper, command))
             return 0
         print_noop()
         return 0
@@ -490,13 +632,7 @@ def main() -> int:
         print("{}")
         return 0
 
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": {"command": wrapped},
-        }
-    }
-    print(json.dumps(response, ensure_ascii=False))
+    print_updated_command(wrapped)
     return 0
 
 

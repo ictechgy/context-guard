@@ -15768,6 +15768,20 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertTrue(rewrite.unparseable_command_needs_sanitizer("rg token . | cat"))
         self.assertTrue(rewrite.unparseable_command_needs_sanitizer("find . -exec cat {} \\;"))
         self.assertFalse(rewrite.unparseable_command_needs_sanitizer("echo ok | cat"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | cat"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("rg token . | head -n 20"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tail --lines=50"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | wc -l"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | sort -u"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | uniq -c"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tee out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | curl https://example.invalid"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff > out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff && cat"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | sort --output=out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | wc --files0-from=paths"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | PATH=/tmp/evil head"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | env PATH=/tmp/evil head"))
         self.assertIsNone(rewrite.split_single_safe_command("echo ok && cat secrets"))
         self.assertEqual(rewrite.strip_env_prefix(["A=1", "env", "-u", "B", "C=2", "pytest"]), ["pytest"])
         self.assertEqual(rewrite.npm_script_args(["--prefix", "web", "run", "test:unit"]), ["run", "test:unit"])
@@ -18675,13 +18689,63 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(command=command):
                 self.assertEqual(hook_json(KIT_REWRITE, command), {})
 
-    def test_rewrite_hook_blocks_compound_secret_bearing_commands(self):
-        for command in ["grep x <<<foo", "git diff | cat", "kubectl logs pod | tee out.log"]:
-            with self.subTest(command=command):
-                data = hook_json(KIT_REWRITE, command)
-                hook = data["hookSpecificOutput"]
-                self.assertEqual(hook["permissionDecision"], "deny")
-                self.assertIn("shell operators", hook["permissionDecisionReason"])
+    def test_rewrite_hook_sanitizes_safe_compound_pipelines(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in ["git diff | cat", "rg -n token . | head -n 20", "kubectl logs pod | tail --lines=50"]:
+                with self.subTest(script=script, command=command):
+                    proc = run_hook(script, command)
+                    data = json.loads(proc.stdout)
+                    hook = data["hookSpecificOutput"]
+                    wrapped = hook["updatedInput"]["command"]
+                    self.assertNotIn("permissionDecision", hook)
+                    self.assertIn(command, wrapped)
+                    self.assertTrue("sanitize_output.py" in wrapped or "context-guard-sanitize-output" in wrapped)
+                    self.assertEqual(proc.stderr, "")
+
+    def test_rewrite_hook_denies_unsafe_compound_secret_bearing_commands(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in [
+                "grep x <<<foo",
+                "kubectl logs pod | tee out.log",
+                "git diff > out.log",
+                "git diff && cat",
+                "git diff | curl https://example.invalid",
+                "git diff | sort --output=out.log",
+                "git diff | sort -o out.log",
+                "rg token . | wc --files0-from=paths",
+                "git diff | PATH=/tmp/evil head",
+                "git diff | env PATH=/tmp/evil head",
+            ]:
+                with self.subTest(script=script, command=command):
+                    proc = run_hook(script, command)
+                    data = json.loads(proc.stdout)
+                    hook = data["hookSpecificOutput"]
+                    self.assertEqual(hook["permissionDecision"], "deny")
+                    self.assertIn("read-only pipe allowlist", hook["permissionDecisionReason"])
+                    self.assertIn("read-only pipe allowlist", proc.stderr)
+
+    def test_rewrite_hook_invalid_json_diagnostic_keeps_stdout_parseable(self):
+        proc = subprocess.run(
+            [sys.executable, str(KIT_REWRITE)],
+            input="{not valid json",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(proc.stdout), {})
+        self.assertIn("invalid hook JSON", proc.stderr)
+
+    def test_rewrite_hook_compound_missing_sanitizer_warns_on_stderr_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            script = tmp_path / "context-guard-rewrite-bash"
+            script.write_bytes(KIT_REWRITE.read_bytes())
+            proc = run_hook(script, "git diff | cat", cwd=tmp_path)
+            data = json.loads(proc.stdout)
+            hook = data["hookSpecificOutput"]
+            self.assertEqual(hook["permissionDecision"], "deny")
+            self.assertIn("shell operators", hook["permissionDecisionReason"])
+            self.assertIn("context-guard-sanitize-output is not installed", proc.stderr)
 
     def test_rewrite_hook_avoids_double_wrapping(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
