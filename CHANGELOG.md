@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-06-22
+
+- Kept the Bash rewrite hook stdout JSON-parseable while routing sanitizer-worthy read-only pipelines through `context-guard-sanitize-output`.
+- Preserved fail-closed handling for side-effecting shell operators, redirections, here-strings, `tee`, network commands, environment-prefixed filters, and file-reading/writing filter options.
+
 ## [0.4.12] - 2026-06-22
 
 - Published the post-merge README, Korean README, and GitHub Pages copy polish into the npm/package metadata so package consumers see the same setup, packaging, helper-trust, and conservative savings-claim guidance as the product site.
