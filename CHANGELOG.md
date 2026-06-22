@@ -4,6 +4,10 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-06-22
+
+- Published the post-merge README, Korean README, and GitHub Pages copy polish into the npm/package metadata so package consumers see the same setup, packaging, helper-trust, and conservative savings-claim guidance as the product site.
+
 ## [0.4.11] - 2026-06-21
 
 - Hardened token-savings advisory surfaces with cache-score amortization risk accounting, tool-prune deferred-schema proxy accounting, and benchmark measurement-baseline contracts while preserving claim-safe boundaries.
