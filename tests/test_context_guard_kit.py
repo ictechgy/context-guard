@@ -6959,6 +6959,30 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"raw headers?|raw bodies|raw header/body|request bodies|response bodies|원문 header|원문 body")
                 self.assertRegex(text, r"hosted.*savings|hosted api 절감")
 
+    def test_experimental_image_context_pack_docs_surface_boundary(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8").lower()
+                self.assertIn("image-context-pack", text)
+                self.assertIn("visual-crop-ocr", text)
+                self.assertRegex(text, r"plan-only|plan only|dry-run|드라이런|plan 전용")
+                self.assertRegex(text, r"caller-supplied|호출자|사용자")
+                self.assertRegex(text, r"exact text|exact .*text|정확한 text|정확한 텍스트")
+                self.assertRegex(text, r"protected-zone|protected zone|보호")
+                self.assertRegex(text, r"provider-measured|provider.*measured|provider가 측정")
+                self.assertRegex(text, r"hosted.*savings|hosted api 절감|token/cost savings")
+                self.assertRegex(text, r"does not (?:render|run ocr|call|proxy|store binary)|no image rendering|ocr.*하지|proxy.*하지|binary")
+                self.assertNotIn("emit image-context-pack", text)
+                self.assertNotIn("context-guard-image-context-pack", text)
+
     def test_experimental_registry_dispatcher_help_routes_to_helper(self):
         diff_text = "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
