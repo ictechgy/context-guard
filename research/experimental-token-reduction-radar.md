@@ -64,6 +64,20 @@ Future PR checklist:
 - [ ] Show bounded-loss disclosure whenever lossy replacement is allowed.
 - [ ] Make no hosted token/cost savings claim from a smaller local diff alone.
 
+### Pxpipe-inspired image context pack gate
+
+`image-context-pack` is a plan-only pxpipe-inspired evaluation gate, not a shipped renderer, proxy, image artifact store, OCR pipeline, image parser, or replacement emitter. Any future image/context packing must keep exact text retrievable through a verified local text artifact receipt before omitted text is used, deny protected zones (code, diffs, identifiers, hashes, paths, numeric constants, JSON keys, stack frames, secrets, and prompt-like instructions), record missed-context guardrails, and treat image/request byte reductions as proxy evidence only.
+
+`context-guard experiments plan image-context-pack --json` emits deterministic planning metadata for that future work and no images, binary artifacts, evidence packs, replacement text, ledgers, listeners, proxy forwarding, model calls, OCR calls, or file writes. `visual-crop-ocr` remains the existing caller-supplied visual evidence-pack surface; `image-context-pack` is not a duplicate emitter and does not claim verified exact binary/image fallback. Provider/model-specific token or cost savings require matched successful tasks with provider-measured image/text token and cost fields before any hosted claim.
+
+Future PR checklist:
+- [ ] Keep `image-context-pack` plan-only unless a separate PR adds a verified runtime gate.
+- [ ] Verify exact text artifact fallback before any omitted text is used.
+- [ ] Deny protected zones, code, diffs, identifiers, paths, stack frames, numeric constants, hashes, JSON keys, secrets, and prompt-like instructions.
+- [ ] Record missed-context notes and human-review requirements.
+- [ ] Keep `visual-crop-ocr` as caller-supplied visual evidence only; do not duplicate it as an image-context-pack emitter.
+- [ ] Make no hosted token/cost savings claim from image/request byte reductions without provider-measured matched successful tasks.
+
 ### Opt-in local proxy constraints gate
 
 Local proxy constraints are opt-in and local-only. The shipped gate recorder is record-only, and the shipped forwarding MVP is one-shot literal-loopback HTTP forwarding only; any broader proxy behavior must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
@@ -99,11 +113,11 @@ Broader context-diff compaction remains gated if it would automatically generate
 
 Broader visual-token reduction remains gated if it would generate crops, invoke OCR/image models, prune visual tokens inside model architectures, replace full evidence without review, or claim provider savings.
 
-## Graduated plan-only experiment — pxpipe-inspired image-context-pack gate
+## Plan-only local experiment — image-context-pack gate
 
-`context-guard experiments plan image-context-pack --explicit-opt-in ...` is a pxpipe-inspired dry-run planning gate for future image/context packing evaluation. It emits deterministic JSON metadata only: no image rendering, screenshot capture, image parsing, OCR execution, binary image artifact storage, replacement text, provider/model call, proxy forwarding, or hosted savings claim.
+`context-guard experiments plan image-context-pack --json` is the plan-only control-plane marker for pxpipe-inspired image/context packing evaluation. It requires explicit provider-boundary acknowledgement, exact text fallback receipt/re-expand metadata, missed-context notes, and protected-zone denial before it can report `ready_for_plan_review`. It does not emit images, pack context, render PNGs, store binary/image artifacts, run OCR/image parsing/model calls, proxy traffic, write files, or change stable runtime behavior. Area or byte reductions in the plan are proxy-only diagnostics, not hosted token/cost savings evidence.
 
-The gate requires explicit opt-in, protected-zone denial for code/diffs/identifiers/hashes/paths/numeric constants/JSON keys/stack frames/secrets/prompt-like instructions, missed-context guardrails, a provider/model measurement boundary, and an exact text fallback receipt/re-expand handle that must be verified before omitted exact text is relied on. Image/request byte reductions are proxy evidence only until matched successful tasks include provider-measured token/cost fields. `visual-crop-ocr` remains the caller-supplied visual evidence-pack surface and is not a verified exact binary/image fallback; `image-context-pack` is not a duplicate emitter.
+Future runtime work remains gated by verified exact text fallback, protected-zone denial, missed-context review, and provider-measured matched successful tasks. The existing `visual-crop-ocr` lane remains the caller-supplied visual evidence-pack surface and is not a verified exact binary/image fallback.
 
 ## Graduated local experiment — learned-compression candidate emitter
 
@@ -174,5 +188,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated plan-only image-context-pack planner, local context-diff emitter, visual crop/OCR evidence-pack emitter, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, plan-only image-context-pack gate, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.

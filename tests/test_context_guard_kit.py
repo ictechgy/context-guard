@@ -8895,6 +8895,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for phrase in [
             "learned prompt/context compression",
             "multimodal crop, ocr",
+            "image-context-pack",
+            "pxpipe-inspired",
             "visual-token",
             "image-context-pack",
             "pxpipe-inspired",
@@ -8912,6 +8914,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "failure-rate guardrail",
             "human-correction tracking",
             "shifted-cost accounting",
+            "verified exact text fallback",
+            "provider-measured matched successful tasks",
         ]:
             with self.subTest(claim_gate=claim_gate):
                 self.assertIn(claim_gate, plain_text)
