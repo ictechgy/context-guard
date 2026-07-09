@@ -2830,164 +2830,182 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
         self.assertIn("LOCAL_PROXY_FORWARD_SCHEMA_VERSION", source)
 
-    def test_experimental_image_context_pack_plan_only_gate(self):
-        valid_args = [
+    def test_experimental_image_context_pack_plan_only_gate_json_contract(self):
+        receipt_id = "abcdef1234567890"
+        ready_args = [
             "plan",
             "image-context-pack",
-            "--explicit-opt-in",
-            "--exact-text-receipt",
-            "text-receipt-123",
+            "--evaluation-intent-ack",
+            "--exact-text-fallback-ack",
+            "--text-fallback-receipt",
+            receipt_id,
             "--reexpand-command",
-            "context-guard-artifact get text-receipt-123 --full",
-            "--protected-zone-policy",
-            "deny",
-            "--provider-measurement-boundary",
-            "provider-measured-matched-tasks-required",
-            "--missed-context-note",
-            "layout and color relationships omitted from text fallback",
-            "--image-size",
-            "800,600",
+            f"context-guard-artifact get {receipt_id} --full",
+            "--protected-zone-deny-ack",
+            "--provider-measurement-boundary-ack",
+            "--missed-context-guardrail-ack",
+            "--visual-crop-ocr-relation-ack",
+            "--proposed-image-size",
+            "640,480",
             "--json",
         ]
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
+                blocked = subprocess.run(
+                    [sys.executable, str(script), "plan", "image-context-pack", "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                blocked_payload = json.loads(blocked.stdout)
+                self.assertEqual(blocked_payload["tool"], "context-guard-experiments")
+                self.assertEqual(blocked_payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(blocked_payload["experiment_id"], "image-context-pack")
+                self.assertEqual(blocked_payload["mode"], "dry_run")
+                self.assertEqual(blocked_payload["status"], "blocked_until_plan_constraints")
+                self.assertIn("missing_evaluation_intent_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_exact_text_fallback_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_exact_fallback", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_protected_zone_deny_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_provider_measurement_boundary_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_missed_context_guardrail_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertIn("missing_visual_crop_ocr_relation_ack", blocked_payload["review_plan"]["readiness_blockers"])
+                self.assertFalse(blocked_payload["policy"]["emit_runtime_implemented"])
+                self.assertFalse(blocked_payload["policy"]["image_rendering_allowed"])
+                self.assertFalse(blocked_payload["policy"]["ocr_allowed"])
+                self.assertFalse(blocked_payload["policy"]["model_call_allowed"])
+                self.assertFalse(blocked_payload["policy"]["provider_call_allowed"])
+                self.assertFalse(blocked_payload["policy"]["proxy_forwarding_allowed"])
+                self.assertFalse(blocked_payload["policy"]["binary_artifact_storage_allowed"])
+                self.assertFalse(blocked_payload["external_services"]["called"])
+                self.assertFalse(blocked_payload["network_actions"]["traffic_forwarded"])
+                self.assertFalse(blocked_payload["file_system_actions"]["files_written"])
+                self.assertFalse(blocked_payload["file_system_actions"]["binary_artifacts_written"])
+                self.assertIsNone(blocked_payload["candidate_replacement"])
+                self.assertNotIn("evidence_pack", blocked_payload)
+                self.assertNotIn("artifact_path", json.dumps(blocked_payload))
+                self.assertIn("visual-crop-ocr", blocked_payload["relation_to_visual_crop_ocr"]["note"])
+                self.assertFalse(blocked_payload["relation_to_visual_crop_ocr"]["duplicate_emitter"])
+                self.assertFalse(blocked_payload["relation_to_visual_crop_ocr"]["visual_handles_verified_exact_binary_fallback"])
+                self.assertIn("no image rendering", blocked_payload["claim_boundary"].lower())
+                self.assertIn("hosted token/cost savings", blocked_payload["claim_boundary"].lower())
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    first = subprocess.run(
+                        [sys.executable, str(script), *ready_args],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    second = subprocess.run(
+                        [sys.executable, str(script), *ready_args],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    self.assertEqual(json.loads(first.stdout), json.loads(second.stdout))
+                    ready_payload = json.loads(first.stdout)
+                    self.assertEqual(ready_payload["status"], "ready_for_experiment_design_review")
+                    self.assertEqual(ready_payload["review_plan"]["readiness_blockers"], [])
+                    self.assertTrue(ready_payload["exact_text_fallback"]["available"])
+                    self.assertFalse(ready_payload["exact_text_fallback"]["verified"])
+                    self.assertTrue(ready_payload["exact_text_fallback"]["verified_before_use_required"])
+                    self.assertEqual(ready_payload["proposed_image_context_pack"]["image_size"]["width"], 640)
+                    self.assertFalse(ready_payload["proposed_image_context_pack"]["render_performed"])
+                    self.assertFalse(ready_payload["proposed_image_context_pack"]["binary_receipt_created"])
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    self.assertEqual(after, before)
+
+                invalid_size = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "image-context-pack",
+                        "--evaluation-intent-ack",
+                        "--exact-text-fallback-ack",
+                        "--text-fallback-receipt",
+                        receipt_id,
+                        "--reexpand-command",
+                        f"context-guard-artifact get {receipt_id} --full",
+                        "--protected-zone-deny-ack",
+                        "--provider-measurement-boundary-ack",
+                        "--missed-context-guardrail-ack",
+                        "--visual-crop-ocr-relation-ack",
+                        "--proposed-image-size",
+                        "20000,10",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("invalid_proposed_image_size", json.loads(invalid_size.stdout)["review_plan"]["readiness_blockers"])
+
+                emit = subprocess.run(
+                    [sys.executable, str(script), "emit", "image-context-pack", "--json"],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(emit.returncode, 0)
+                self.assertIn("invalid choice", emit.stderr)
+                self.assertNotIn("Traceback", emit.stderr + emit.stdout)
+
+    def test_experimental_image_context_pack_dispatcher_and_no_runtime_surface(self):
+        receipt_id = "abcdef1234567890"
+        for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
+            with self.subTest(dispatcher=dispatcher):
                 proc = subprocess.run(
-                    [sys.executable, str(script), *valid_args],
+                    [
+                        sys.executable,
+                        str(dispatcher),
+                        "experiments",
+                        "plan",
+                        "image-context-pack",
+                        "--evaluation-intent-ack",
+                        "--exact-text-fallback-ack",
+                        "--text-fallback-receipt",
+                        receipt_id,
+                        "--reexpand-command",
+                        f"context-guard-artifact get {receipt_id} --full",
+                        "--protected-zone-deny-ack",
+                        "--provider-measurement-boundary-ack",
+                        "--missed-context-guardrail-ack",
+                        "--visual-crop-ocr-relation-ack",
+                        "--json",
+                    ],
                     text=True,
                     capture_output=True,
                     check=True,
                     cwd=ROOT,
                 )
                 payload = json.loads(proc.stdout)
-                self.assertEqual(payload["schema_version"], "contextguard.experiments.image-context-pack-plan.v1")
                 self.assertEqual(payload["experiment_id"], "image-context-pack")
-                self.assertEqual(payload["status"], "ready_for_design_review")
-                self.assertEqual(payload["mode"], "dry_run")
-                self.assertIsNone(payload["candidate_replacement"])
-                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
-                self.assertTrue(payload["explicit_opt_in"])
-                self.assertTrue(payload["exact_text_fallback"]["available"])
-                self.assertFalse(payload["exact_text_fallback"]["verified"])
-                self.assertTrue(payload["exact_text_fallback"]["verification_required_before_use"])
-                self.assertEqual(payload["protected_zones"]["policy"], "deny")
-                self.assertIn("prompt_like_instructions", payload["protected_zones"]["protected_classes"])
-                self.assertEqual(
-                    payload["measurement_boundary"]["provided_value"],
-                    "provider-measured-matched-tasks-required",
-                )
-                self.assertFalse(payload["measurement_boundary"]["hosted_token_or_cost_savings_claim_allowed"])
-                self.assertTrue(payload["measurement_boundary"]["image_request_byte_reductions_proxy_only"])
-                self.assertFalse(payload["image_context_plan"]["rendering_planned"])
-                self.assertEqual(payload["image_context_plan"]["image_size"], {"width": 800, "height": 600})
-                for key in (
-                    "image_rendering",
-                    "image_parsing",
-                    "ocr_execution",
-                    "model_calls",
-                    "provider_calls",
-                    "proxy_forwarding",
-                    "binary_artifact_storage",
-                    "replacement_emitted",
-                    "files_written",
-                ):
-                    self.assertFalse(payload["side_effects"][key])
-                self.assertIn("visual-crop-ocr remains", payload["relation_to_visual_crop_ocr"])
-                self.assertIn("not a verified exact binary/image fallback", payload["relation_to_visual_crop_ocr"])
-                self.assertIn("provider-measured matched successful tasks", payload["claim_boundary"])
-
-                missing_boundary = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "plan",
-                        "image-context-pack",
-                        "--explicit-opt-in",
-                        "--exact-text-receipt",
-                        "text-receipt-123",
-                        "--reexpand-command",
-                        "context-guard-artifact get text-receipt-123 --full",
-                        "--protected-zone-policy",
-                        "deny",
-                        "--missed-context-note",
-                        "note",
-                        "--json",
-                    ],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                    cwd=ROOT,
-                )
-                self.assertIn(
-                    "missing_provider_measurement_boundary",
-                    json.loads(missing_boundary.stdout)["review_plan"]["readiness_blockers"],
-                )
-
-                override = subprocess.run(
-                    [
-                        sys.executable,
-                        str(script),
-                        "plan",
-                        "image-context-pack",
-                        "--explicit-opt-in",
-                        "--exact-text-receipt",
-                        "text-receipt-123",
-                        "--reexpand-command",
-                        "context-guard-artifact get text-receipt-123 --full",
-                        "--protected-zone-policy",
-                        "allow",
-                        "--provider-measurement-boundary",
-                        "provider-measured-matched-tasks-required",
-                        "--missed-context-note",
-                        "note",
-                        "--json",
-                    ],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                    cwd=ROOT,
-                )
-                self.assertIn(
-                    "protected_zone_policy_not_deny",
-                    json.loads(override.stdout)["review_plan"]["readiness_blockers"],
-                )
-
-                malformed_image = subprocess.run(
-                    [sys.executable, str(script), *valid_args[:-2], "0,600", "--json"],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                    cwd=ROOT,
-                )
-                self.assertIn(
-                    "invalid_image_size",
-                    json.loads(malformed_image.stdout)["review_plan"]["readiness_blockers"],
-                )
-
-                emit_proc = subprocess.run(
-                    [sys.executable, str(script), "emit", "image-context-pack", "--json"],
-                    text=True,
-                    capture_output=True,
-                    cwd=ROOT,
-                )
-                self.assertNotEqual(emit_proc.returncode, 0)
-                self.assertIn("invalid choice", emit_proc.stderr)
+                self.assertEqual(payload["status"], "ready_for_experiment_design_review")
+                self.assertFalse(payload["policy"]["emit_runtime_implemented"])
+                self.assertFalse(payload["policy"]["image_rendering_allowed"])
+                self.assertFalse(payload["policy"]["ocr_allowed"])
+                self.assertFalse(payload["external_services"]["called"])
 
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        command_manifest_text = (KIT_DIR / "context_guard_commands.py").read_text(encoding="utf-8")
         for name in (
             "context-guard-image-context-pack",
-            "context-guard-image-pack",
-            "context-guard-render",
-            "context-guard-image-parser",
+            "context-guard-image-context-pack-emit",
             "context-guard-ocr",
             "context-guard-crop",
             "context-guard-visual-token",
+            "context-guard-image-render",
+            "context-guard-renderer",
+            "context-guard-proxy-image",
         ):
             self.assertNotIn(name, package["bin"])
+            self.assertNotIn(name, command_manifest_text)
             self.assertFalse((PLUGIN_BIN / name).exists())
-        source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
-        self.assertNotIn("def command_emit_image_context_pack", source)
-        for forbidden in ("import requests", "urllib.request", "import subprocess"):
-            self.assertNotIn(forbidden, source)
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
