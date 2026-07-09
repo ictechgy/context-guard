@@ -304,10 +304,11 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "plan-only dry-run gate with no emit/record/serve runtime and no stable behavior change."
         ),
         evidence_contract=(
-            "The planner requires acknowledgements for explicit evaluation intent, exact text artifact fallback, "
-            "protected-zone denial, provider/model measurement boundaries, missed-context review, and the fact that "
-            "visual-crop-ocr is the existing caller-supplied visual evidence-pack surface rather than a verified "
-            "exact binary/image fallback."
+            "Plan output requires explicit opt-in, a verified exact text fallback receipt/re-expand handle before "
+            "omitted text is relied on, protected-zone denial, provider/model measurement boundaries, "
+            "and missed-context notes. relation_to_visual_crop_ocr: existing visual-crop-ocr packs are caller-supplied "
+            "visual evidence and are not verified exact binary/image fallback; image-context-pack is an inspired "
+            "evaluation planning gate, not a duplicate emitter."
         ),
     ),
     Experiment(
