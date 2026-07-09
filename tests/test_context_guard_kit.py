@@ -1669,6 +1669,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertIn("full visual evidence receipt", visual_ocr["evidence_contract"])
                         self.assertIn("missed-context", visual_ocr["evidence_contract"].lower())
 
+                        image_context_pack = experiments["image-context-pack"]
+                        self.assertFalse(image_context_pack["default_enabled"])
+                        self.assertEqual(image_context_pack["runtime_status"], "available-plan-only")
+                        self.assertEqual(image_context_pack["commands"], ["context-guard experiments plan image-context-pack"])
+                        self.assertIn("plan image-context-pack", image_context_pack["opt_in_flags"])
+                        self.assertIn("--exact-text-fallback-receipt", image_context_pack["opt_in_flags"])
+                        self.assertIn("--provider-boundary-ack", image_context_pack["opt_in_flags"])
+                        self.assertIn("--protected-zone-policy deny", image_context_pack["opt_in_flags"])
+                        self.assertIn("deterministic plan command", image_context_pack["config_effect"])
+                        self.assertIn("does not add an emit/record/serve runtime", image_context_pack["config_effect"])
+                        self.assertIn("render images", image_context_pack["config_effect"])
+                        self.assertIn("proxy traffic", image_context_pack["config_effect"])
+                        self.assertIn("visual-crop-ocr", image_context_pack["evidence_contract"])
+                        self.assertIn("verified exact text artifact fallback", image_context_pack["evidence_contract"])
+                        self.assertIn("provider/model measured matched-task", image_context_pack["evidence_contract"])
+                        self.assertNotIn("emit image-context-pack", " ".join(image_context_pack["commands"]))
+                        self.assertNotIn("record image-context-pack", " ".join(image_context_pack["commands"]))
+                        self.assertNotIn("serve image-context-pack", " ".join(image_context_pack["commands"]))
+
                         learned = experiments["learned-compression"]
                         self.assertEqual(learned["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan learned-compression", learned["commands"])
@@ -2794,13 +2813,179 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIsNone(payload["candidate_replacement"])
 
         package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
-        for name in ("context-guard-ocr", "context-guard-crop", "context-guard-visual-token"):
+        for name in (
+            "context-guard-ocr",
+            "context-guard-crop",
+            "context-guard-visual-token",
+            "context-guard-image-context-pack",
+            "context-guard-image-pack",
+            "context-guard-image-renderer",
+            "context-guard-image-parser",
+            "context-guard-proxy",
+        ):
             self.assertNotIn(name, package["bin"])
             self.assertFalse((PLUGIN_BIN / name).exists())
         source = (KIT_DIR / "experimental_registry.py").read_text(encoding="utf-8")
         for forbidden in ("import requests", "urllib.request", "import subprocess"):
             self.assertNotIn(forbidden, source)
         self.assertIn("LOCAL_PROXY_FORWARD_SCHEMA_VERSION", source)
+
+    def test_experimental_image_context_pack_plan_only_contract(self):
+        receipt = "0123456789abcdef"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "image-context-pack",
+                        "--exact-text-fallback-receipt",
+                        receipt,
+                        "--reexpand-command",
+                        f"context-guard-artifact get {receipt} --full",
+                        "--provider-boundary-ack",
+                        "--missed-context-note",
+                        "summary table footer remains available through exact text fallback",
+                        "--image-size",
+                        "800,600",
+                        "--packed-image-size",
+                        "400,300",
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["plan_schema_version"], "contextguard.experiments.image-context-pack-plan.v1")
+                self.assertEqual(payload["experiment_id"], "image-context-pack")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertTrue(payload["plan_only"]["command_advertised"])
+                self.assertFalse(payload["plan_only"]["emit_command_available"])
+                self.assertFalse(payload["plan_only"]["record_command_available"])
+                self.assertFalse(payload["plan_only"]["serve_command_available"])
+                self.assertFalse(payload["plan_only"]["replacement_or_visual_evidence_emitted"])
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertFalse(payload["external_services"]["network"])
+                self.assertFalse(payload["external_services"]["model_calls"])
+                self.assertFalse(payload["external_services"]["proxy_forwarding"])
+                self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(payload["runtime_side_effects"]["image_rendering"])
+                self.assertFalse(payload["runtime_side_effects"]["ocr_execution"])
+                self.assertFalse(payload["runtime_side_effects"]["image_parsing"])
+                self.assertFalse(payload["runtime_side_effects"]["binary_artifacts_written"])
+                self.assertFalse(payload["runtime_side_effects"]["proxy_forwarding"])
+                self.assertTrue(payload["text_fallback"]["required"])
+                self.assertTrue(payload["text_fallback"]["available"])
+                self.assertFalse(payload["text_fallback"]["verified"])
+                self.assertTrue(payload["text_fallback"]["must_be_verified_before_omitted_text_is_used"])
+                self.assertEqual(payload["protected_zones"]["policy"], "deny")
+                self.assertFalse(payload["protected_zones"]["override_allowed"])
+                for protected_class in ("code", "diffs", "identifiers", "hashes", "paths", "numeric_constants", "json_keys", "stack_frames", "secrets", "prompt_like_instructions"):
+                    self.assertIn(protected_class, payload["protected_zones"]["denied_classes"])
+                self.assertTrue(payload["measurement_boundary"]["provider_boundary_acknowledged"])
+                self.assertTrue(payload["measurement_boundary"]["provider_measured_matched_tasks_required_for_hosted_claims"])
+                self.assertFalse(payload["measurement_boundary"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(payload["measurement_boundary"]["hosted_api_cost_savings_claim_allowed"])
+                self.assertTrue(payload["image_pack_plan"]["image_or_request_byte_reductions_are_proxy_evidence_only"])
+                self.assertEqual(payload["image_pack_plan"]["source_area"], 480000)
+                self.assertEqual(payload["image_pack_plan"]["packed_area"], 120000)
+                self.assertEqual(payload["image_pack_plan"]["area_delta"], 360000)
+                relation = payload["relation_to_visual_crop_ocr"]
+                self.assertTrue(relation["visual_crop_ocr_is_existing_surface"])
+                self.assertTrue(relation["visual_crop_ocr_remains_caller_supplied_visual_evidence_pack"])
+                self.assertTrue(relation["image_context_pack_is_planning_gate_not_duplicate_emitter"])
+                self.assertFalse(relation["verified_exact_binary_or_image_fallback_claimed"])
+                self.assertIn("proxy evidence", payload["claim_boundary"])
+                self.assertIsNone(payload["candidate_replacement"])
+
+    def test_experimental_image_context_pack_blocks_missing_or_unsafe_gates(self):
+        receipt = "0123456789abcdef"
+        cases = [
+            (
+                "missing-provider-boundary",
+                [
+                    "--exact-text-fallback-receipt",
+                    receipt,
+                    "--reexpand-command",
+                    f"context-guard-artifact get {receipt} --full",
+                    "--missed-context-note",
+                    "footer omitted",
+                ],
+                "missing_provider_measurement_boundary",
+            ),
+            (
+                "protected-zone-override",
+                [
+                    "--exact-text-fallback-receipt",
+                    receipt,
+                    "--reexpand-command",
+                    f"context-guard-artifact get {receipt} --full",
+                    "--provider-boundary-ack",
+                    "--missed-context-note",
+                    "footer omitted",
+                    "--protected-zone-policy",
+                    "allow",
+                ],
+                "protected_zone_denial_required",
+            ),
+            (
+                "malformed-image-size",
+                [
+                    "--exact-text-fallback-receipt",
+                    receipt,
+                    "--reexpand-command",
+                    f"context-guard-artifact get {receipt} --full",
+                    "--provider-boundary-ack",
+                    "--missed-context-note",
+                    "footer omitted",
+                    "--image-size",
+                    "-1,600",
+                ],
+                "invalid_image_size",
+            ),
+            (
+                "missing-exact-text-fallback",
+                [
+                    "--provider-boundary-ack",
+                    "--missed-context-note",
+                    "footer omitted",
+                ],
+                "missing_exact_text_fallback",
+            ),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, args, expected_blocker in cases:
+                with self.subTest(script=script, case=name):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "plan", "image-context-pack", *args, "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "image-context-pack")
+                    self.assertEqual(payload["status"], "blocked_until_image_context_pack_gate_ready")
+                    self.assertIn(expected_blocker, payload["review_plan"]["readiness_blockers"])
+                    self.assertFalse(payload["external_services"]["called"])
+                    self.assertFalse(payload["runtime_side_effects"]["files_written"])
+
+    def test_experimental_image_context_pack_emit_is_unavailable(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "emit", "image-context-pack", "--json"],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("invalid choice", proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
