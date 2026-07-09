@@ -99,6 +99,12 @@ Broader context-diff compaction remains gated if it would automatically generate
 
 Broader visual-token reduction remains gated if it would generate crops, invoke OCR/image models, prune visual tokens inside model architectures, replace full evidence without review, or claim provider savings.
 
+## Graduated plan-only experiment — pxpipe-inspired image-context-pack gate
+
+`context-guard experiments plan image-context-pack --explicit-opt-in ...` is a pxpipe-inspired dry-run planning gate for future image/context packing evaluation. It emits deterministic JSON metadata only: no image rendering, screenshot capture, image parsing, OCR execution, binary image artifact storage, replacement text, provider/model call, proxy forwarding, or hosted savings claim.
+
+The gate requires explicit opt-in, protected-zone denial for code/diffs/identifiers/hashes/paths/numeric constants/JSON keys/stack frames/secrets/prompt-like instructions, missed-context guardrails, a provider/model measurement boundary, and an exact text fallback receipt/re-expand handle that must be verified before omitted exact text is relied on. Image/request byte reductions are proxy evidence only until matched successful tasks include provider-measured token/cost fields. `visual-crop-ocr` remains the caller-supplied visual evidence-pack surface and is not a verified exact binary/image fallback; `image-context-pack` is not a duplicate emitter.
+
 ## Graduated local experiment — learned-compression candidate emitter
 
 `context-guard experiments emit learned-compression --exact-fallback-receipt ... --reexpand-command ...` is the explicit local runtime promoted from the learned-compression gate. It does not run learned compressors, embeddings, rerankers, model calls, subprocesses, or external services; the compact prose candidate must be supplied by the caller, both original and candidate text must pass the deny-by-default protected-signal scan, and the exact local fallback artifact content must match the input. The emitted byte reduction is proxy evidence only and cannot support hosted API token/cost savings claims without the shared promotion gate.
@@ -131,17 +137,17 @@ Recommended first experiment: run a learned compressor only on already-sanitized
 
 ## Lane 2 — Multimodal crop, OCR, and visual-token reduction
 
-Candidate methods include screenshot cropping before upload, local OCR to replace screenshots with text when fidelity is sufficient, image tiling policies, visual-token pruning methods such as diversity or language-guided pruning, and task-specific region selection.
+Candidate methods include screenshot cropping before upload, local OCR to replace screenshots with text when fidelity is sufficient, pxpipe-inspired image/context packing plans, image tiling policies, visual-token pruning methods such as diversity or language-guided pruning, and task-specific region selection.
 
 | Question | Gate |
 | --- | --- |
 | Why it could help | Many UI/debugging tasks need one region, one error message, or OCR text rather than a full high-resolution screenshot. |
-| What it does not prove | Cropping/OCR can lose visual context; visual-token pruning usually applies inside specific multimodal model architectures. |
+| What it does not prove | Cropping/OCR/image-context packing can lose visual or exact text context; visual-token pruning usually applies inside specific multimodal model architectures. |
 | Hosted API claim boundary | Claim hosted API savings only with provider-measured image/text token or cost evidence for matched successful tasks. |
-| Minimum telemetry | image dimensions, crop area, OCR confidence/error notes, provider image/text token fields when available, success, corrections. |
+| Minimum telemetry | image dimensions, crop area or planned pack dimensions, OCR confidence/error notes when applicable, exact text fallback receipt verification, provider image/text token fields when available, success, corrections. |
 | Promotion path | Start with local crop/OCR advice and benchmark fixtures; promote only when missed-visual-context regressions are bounded. |
 
-Recommended first experiment: add a benchmark fixture comparing full screenshot review versus cropped/OCR evidence on tasks with known visual answers.
+Recommended first experiments: keep `image-context-pack` as plan-only metadata until exact text fallback verification and provider-measured matched-task fields exist; separately add benchmark fixtures comparing full screenshot review versus cropped/OCR evidence on tasks with known visual answers.
 
 ## Lane 3 — Self-hosted KV-cache, attention, and latent inference optimizations
 
@@ -168,5 +174,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated plan-only image-context-pack planner, local context-diff emitter, visual crop/OCR evidence-pack emitter, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.
