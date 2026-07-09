@@ -264,10 +264,10 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     ),
     Experiment(
         id="image-context-pack",
-        name="Image context pack planning gate",
+        name="Pxpipe-inspired image context pack planning gate",
         summary=(
-            "Plan-only pxpipe-inspired evaluation gate for future image/context packing; it never renders images, "
-            "runs OCR, stores binaries, calls models/providers, or emits replacement evidence."
+            "Plan-only evaluation gate for pxpipe-inspired image/context packing without rendering images, "
+            "emitting visual artifacts, or changing runtime behavior."
         ),
         stability="experimental",
         default_enabled=False,
@@ -278,29 +278,28 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         ),
         gate_requirements=(
             "explicit opt-in",
-            "verified exact text artifact fallback before omitted text is relied on",
+            "verified exact text artifact fallback before omitted text is used",
             "protected-zone denial",
             "provider/model measurement boundary",
             "missed-context guardrails",
-            "relation to visual-crop-ocr documented",
+            "relation to visual-crop-ocr",
         ),
         runtime_status="available-plan-only",
         commands=("context-guard experiments plan image-context-pack",),
         opt_in_flags=(
             "plan image-context-pack",
-            "--evaluation-intent-ack",
-            "--exact-text-fallback-ack",
-            "--text-fallback-receipt",
+            "--exact-text-fallback-receipt",
             "--reexpand-command",
-            "--protected-zone-deny-ack",
-            "--provider-measurement-boundary-ack",
-            "--missed-context-guardrail-ack",
-            "--visual-crop-ocr-relation-ack",
-            "--proposed-image-size",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+            "--missed-context-note",
+            "--image-size",
+            "--packed-image-size",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; image-context-pack remains a deterministic "
-            "plan-only dry-run gate with no emit/record/serve runtime and no stable behavior change."
+            "Registry enablement records project-local intent only; image-context-pack exposes only a deterministic "
+            "plan command. It does not add an emit/record/serve runtime, render images, run OCR, call models, proxy "
+            "traffic, write binary artifacts, or duplicate the caller-supplied visual-crop-ocr evidence-pack emitter."
         ),
         evidence_contract=(
             "The planner requires acknowledgements for explicit evaluation intent, exact text artifact fallback, "
@@ -1785,157 +1784,148 @@ def command_plan_visual_crop_ocr(args: argparse.Namespace) -> int:
     return 0
 
 
+def image_context_pack_size_payload(raw: str | None) -> tuple[dict[str, Any] | None, bool]:
+    size = parse_int_tuple(raw, count=2)
+    if raw is None or not str(raw).strip():
+        return None, True
+    if size is None:
+        return None, False
+    width, height = size
+    if width <= 0 or height <= 0:
+        return {"width": width, "height": height}, False
+    return {"width": width, "height": height}, True
+
+
 def image_context_pack_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
-    receipt_id = args.text_fallback_receipt.strip() if args.text_fallback_receipt else None
+    receipt_id = args.exact_text_fallback_receipt.strip() if args.exact_text_fallback_receipt else None
     reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
     reexpand_valid, fallback_blocker = valid_learned_reexpand_command(receipt_id, reexpand_command)
-    proposed_image_size = parse_int_tuple(args.proposed_image_size, count=2)
-    image_payload = None
-    image_size_valid = args.proposed_image_size is None
-    if proposed_image_size is not None:
-        width, height = proposed_image_size
-        image_size_valid = (
-            0 < width <= IMAGE_CONTEXT_PACK_MAX_DIMENSION
-            and 0 < height <= IMAGE_CONTEXT_PACK_MAX_DIMENSION
-        )
-        image_payload = {"width": width, "height": height}
-    elif args.proposed_image_size is not None:
-        image_size_valid = False
+    fallback_blocker_map = {
+        "missing_exact_fallback": "missing_exact_text_fallback",
+        "invalid_reexpand_command": "invalid_exact_text_reexpand_command",
+    }
+    source_size, source_size_valid = image_context_pack_size_payload(args.image_size)
+    packed_size, packed_size_valid = image_context_pack_size_payload(args.packed_image_size)
+    missed_context_notes = clean_values(args.missed_context_note)
+    protected_policy = (args.protected_zone_policy or "deny").strip().lower()
 
     blockers: list[str] = []
-    if not args.evaluation_intent_ack:
-        blockers.append("missing_evaluation_intent_ack")
-    if not args.exact_text_fallback_ack:
-        blockers.append("missing_exact_text_fallback_ack")
     if fallback_blocker:
-        blockers.append(fallback_blocker)
-    if not args.protected_zone_deny_ack:
-        blockers.append("missing_protected_zone_deny_ack")
-    if not args.provider_measurement_boundary_ack:
-        blockers.append("missing_provider_measurement_boundary_ack")
-    if not args.missed_context_guardrail_ack:
-        blockers.append("missing_missed_context_guardrail_ack")
-    if not args.visual_crop_ocr_relation_ack:
-        blockers.append("missing_visual_crop_ocr_relation_ack")
-    if not image_size_valid:
-        blockers.append("invalid_proposed_image_size")
+        blockers.append(fallback_blocker_map.get(fallback_blocker, fallback_blocker))
+    if not args.provider_boundary_ack:
+        blockers.append("missing_provider_measurement_boundary")
+    if not missed_context_notes:
+        blockers.append("missing_missed_context_note")
+    if protected_policy != "deny":
+        blockers.append("protected_zone_denial_required")
+    if not source_size_valid:
+        blockers.append("invalid_image_size")
+    if not packed_size_valid:
+        blockers.append("invalid_packed_image_size")
     blockers = list(dict.fromkeys(blockers))
+
+    source_area = source_size["width"] * source_size["height"] if source_size and source_size_valid else None
+    packed_area = packed_size["width"] * packed_size["height"] if packed_size and packed_size_valid else None
+    area_delta = source_area - packed_area if source_area is not None and packed_area is not None else None
     ready = not blockers
 
-    protected_classes = [
-        "code",
-        "diffs",
-        "identifiers",
-        "hashes",
-        "paths",
-        "numeric constants",
-        "JSON keys",
-        "stack frames",
-        "secrets",
-        "prompt-like instructions",
-    ]
     return {
         "tool": TOOL_NAME,
         "schema_version": CONFIG_SCHEMA_VERSION,
+        "plan_schema_version": IMAGE_CONTEXT_PACK_PLAN_SCHEMA_VERSION,
         "experiment_id": "image-context-pack",
         "mode": "dry_run",
-        "status": "ready_for_experiment_design_review" if ready else "blocked_until_plan_constraints",
-        "policy": {
-            "default_off": True,
-            "plan_only": True,
-            "explicit_opt_in_required": True,
-            "emit_runtime_implemented": False,
-            "record_runtime_implemented": False,
-            "serve_runtime_implemented": False,
-            "image_rendering_allowed": False,
-            "ocr_allowed": False,
-            "image_parsing_allowed": False,
-            "model_call_allowed": False,
-            "provider_call_allowed": False,
-            "proxy_forwarding_allowed": False,
-            "binary_artifact_storage_allowed": False,
-            "replacement_emitted": False,
-            "stable_runtime_behavior_changed": False,
-            "hosted_api_token_savings_claim_allowed": False,
-            "hosted_api_cost_savings_claim_allowed": False,
+        "status": "ready_for_plan_review" if ready else "blocked_until_image_context_pack_gate_ready",
+        "plan_only": {
+            "command_advertised": True,
+            "emit_command_available": False,
+            "record_command_available": False,
+            "serve_command_available": False,
+            "runtime_behavior_changed": False,
+            "replacement_or_visual_evidence_emitted": False,
         },
         "external_services": {
             "called": False,
             "network": False,
+            "model_calls": False,
             "ocr_service": None,
             "image_service": None,
-            "model_provider": None,
+            "proxy_forwarding": False,
         },
-        "network_actions": {
-            "listener_started": False,
-            "traffic_forwarded": False,
-            "dns_lookup_attempted": False,
-            "external_services_called": False,
-        },
-        "file_system_actions": {
+        "runtime_side_effects": {
             "files_written": False,
+            "image_rendering": False,
+            "ocr_execution": False,
+            "image_parsing": False,
             "binary_artifacts_written": False,
-            "image_artifacts_written": False,
+            "proxy_forwarding": False,
+            "stable_runtime_behavior_changed": False,
         },
-        "exact_text_fallback": {
+        "text_fallback": {
             "required": True,
-            "caller_acknowledged": bool(args.exact_text_fallback_ack),
-            "available": bool(receipt_id and reexpand_command and reexpand_valid),
+            "available": bool(reexpand_valid),
             "receipt_id": receipt_id,
-            "cli": reexpand_command,
+            "reexpand_command": reexpand_command,
             "verified": False,
-            "verified_before_use_required": True,
-            "note": "Only exact sanitized text artifact fallback may support omitted text; binary/image handles are not verified exact fallback.",
+            "must_be_verified_before_omitted_text_is_used": True,
+            "note": (
+                "This dry-run validates only local receipt/re-expand shape. A future runtime must verify exact "
+                "text artifact content before relying on omitted exact text."
+            ),
         },
-        "protected_zone_policy": {
-            "deny_required": True,
-            "caller_acknowledged": bool(args.protected_zone_deny_ack),
+        "protected_zones": {
+            "policy": protected_policy,
             "override_allowed": False,
-            "denied_classes": protected_classes,
+            "denied_classes": [
+                "code",
+                "diffs",
+                "identifiers",
+                "hashes",
+                "paths",
+                "numeric_constants",
+                "json_keys",
+                "stack_frames",
+                "secrets",
+                "prompt_like_instructions",
+            ],
         },
-        "provider_measurement_boundary": {
-            "caller_acknowledged": bool(args.provider_measurement_boundary_ack),
-            "image_request_byte_reductions_proxy_only": True,
-            "provider_model_measurement_required_for_claims": True,
-            "matched_successful_tasks_required": True,
+        "image_pack_plan": {
+            "source_label": sanitize_self_hosted_text(args.source_label) if args.source_label else "manual-plan",
+            "source_image_size": source_size,
+            "packed_image_size": packed_size,
+            "source_area": source_area,
+            "packed_area": packed_area,
+            "area_delta": area_delta,
+            "area_reduction_is_proxy_only": area_delta is not None,
+            "image_or_request_byte_reductions_are_proxy_evidence_only": True,
+        },
+        "measurement_boundary": {
+            "provider_boundary_acknowledged": bool(args.provider_boundary_ack),
+            "provider_boundary_policy": IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY,
+            "provider_measured_matched_tasks_required_for_hosted_claims": True,
+            "provider_model_specific": True,
             "hosted_api_token_savings_claim_allowed": False,
             "hosted_api_cost_savings_claim_allowed": False,
         },
-        "missed_context_guardrail": {
-            "caller_acknowledged": bool(args.missed_context_guardrail_ack),
-            "required_before_promotion": True,
-            "human_review_required": True,
-        },
         "relation_to_visual_crop_ocr": {
-            "visual_crop_ocr_surface": "existing caller-supplied visual evidence-pack emitter",
-            "image_context_pack_surface": "pxpipe-inspired plan-only evaluation gate",
-            "duplicate_emitter": False,
-            "visual_handles_verified_exact_binary_fallback": False,
-            "note": (
-                "visual-crop-ocr remains the explicit caller-supplied visual evidence-pack runtime; "
-                "image-context-pack does not emit images, OCR, replacement evidence, or verified binary fallback."
-            ),
-        },
-        "proposed_image_context_pack": {
-            "image_size": image_payload,
-            "image_size_valid": image_size_valid,
-            "max_dimension": IMAGE_CONTEXT_PACK_MAX_DIMENSION,
-            "render_performed": False,
-            "image_bytes_computed": False,
-            "binary_receipt_created": False,
+            "visual_crop_ocr_is_existing_surface": True,
+            "visual_crop_ocr_remains_caller_supplied_visual_evidence_pack": True,
+            "image_context_pack_is_planning_gate_not_duplicate_emitter": True,
+            "verified_exact_binary_or_image_fallback_claimed": False,
         },
         "review_plan": {
             "readiness_blockers": blockers,
+            "missed_context_notes": missed_context_notes,
             "next_steps": [
-                "Keep this lane plan-only until a future PR supplies benchmark evidence and a separate runtime threat model.",
-                "Require verified exact sanitized text artifact fallback before relying on any omitted text.",
-                "Deny protected zones and prompt-like instructions before considering any future image/context packing.",
-                "Use provider-measured matched successful tasks before any hosted token/cost savings claim.",
+                "Keep exact text artifact fallback verified before any future image/context packing omits source text.",
+                "Deny protected evidence zones before any future lossy visual packing is considered.",
+                "Measure provider/model token and cost fields on matched successful tasks before any hosted savings claim.",
+                "Use visual-crop-ocr only for caller-supplied visual evidence packs; this gate emits no images or evidence.",
             ],
         },
         "claim_boundary": (
-            "Dry-run image-context-pack planning gate only; no image rendering, OCR, image parsing, model/provider call, "
-            "proxy forwarding, binary artifact storage, replacement emission, or hosted token/cost savings claim is performed."
+            "Dry-run image-context-pack planning only; image/request byte reductions are proxy evidence and no hosted "
+            "token/cost savings claim is allowed without provider-measured matched successful tasks."
         ),
         "candidate_replacement": None,
     }
@@ -1946,8 +1936,8 @@ def command_plan_image_context_pack(args: argparse.Namespace) -> int:
     if args.json:
         emit_json(payload)
     else:
-        print("ContextGuard image-context-pack planning gate (dry-run only)")
-        print("No image rendering, OCR, model/provider call, proxy forwarding, file write, or replacement emission was performed.")
+        print("ContextGuard image-context-pack plan (dry-run only)")
+        print("No image rendering, OCR/image service, model call, proxy forwarding, binary artifact, or replacement was emitted.")
         print(f"Status: {payload['status']}")
         if payload["review_plan"]["readiness_blockers"]:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
@@ -4689,41 +4679,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     image_context_pack = plan_sub.add_parser(
         "image-context-pack",
-        help="Dry-run a plan-only image/context packing evaluation gate without rendering images or emitting replacements.",
+        help="Dry-run a plan-only pxpipe-inspired image/context packing gate without rendering images.",
+    )
+    image_context_pack.add_argument("--source-label", help="Safe label for this image/context packing plan.")
+    image_context_pack.add_argument("--image-size", help="Optional source image/context canvas size as width,height integers.")
+    image_context_pack.add_argument("--packed-image-size", help="Optional planned packed image size as width,height integers.")
+    image_context_pack.add_argument("--exact-text-fallback-receipt", help="Local exact text artifact receipt id for omitted source text.")
+    image_context_pack.add_argument("--reexpand-command", help="Local exact text re-expand command bound to the receipt id.")
+    image_context_pack.add_argument(
+        "--provider-boundary-ack",
+        action="store_true",
+        help="Acknowledge hosted claims require provider-measured matched successful tasks for the target model.",
     )
     image_context_pack.add_argument(
-        "--evaluation-intent-ack",
-        action="store_true",
-        help="Acknowledge this is explicit future-evaluation planning only, not a runtime feature.",
+        "--protected-zone-policy",
+        default="deny",
+        choices=("deny", "allow"),
+        help="Protected evidence handling; only deny can pass the plan gate.",
     )
-    image_context_pack.add_argument(
-        "--exact-text-fallback-ack",
-        action="store_true",
-        help="Acknowledge verified exact text artifact fallback is required before omitted text is relied on.",
-    )
-    image_context_pack.add_argument("--text-fallback-receipt", help="Local exact text artifact receipt id for future fallback review.")
-    image_context_pack.add_argument("--reexpand-command", help="Local exact text artifact re-expand command bound to the receipt id.")
-    image_context_pack.add_argument(
-        "--protected-zone-deny-ack",
-        action="store_true",
-        help="Acknowledge protected code/diff/path/hash/identifier/JSON/numeric/prompt-like zones must be denied.",
-    )
-    image_context_pack.add_argument(
-        "--provider-measurement-boundary-ack",
-        action="store_true",
-        help="Acknowledge hosted claims require provider-measured matched successful tasks.",
-    )
-    image_context_pack.add_argument(
-        "--missed-context-guardrail-ack",
-        action="store_true",
-        help="Acknowledge missed-context guardrails and human review are required before promotion.",
-    )
-    image_context_pack.add_argument(
-        "--visual-crop-ocr-relation-ack",
-        action="store_true",
-        help="Acknowledge visual-crop-ocr is the existing caller-supplied visual evidence-pack runtime, not a verified binary fallback.",
-    )
-    image_context_pack.add_argument("--proposed-image-size", help="Optional future image size as width,height; dry-run validation only.")
+    image_context_pack.add_argument("--missed-context-note", action="append", help="Potential context omitted by a future pack. Repeatable.")
     image_context_pack.add_argument("--json", action="store_true", help="Emit JSON output.")
     image_context_pack.set_defaults(func=command_plan_image_context_pack)
 
