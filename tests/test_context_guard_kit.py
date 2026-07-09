@@ -6890,7 +6890,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"exact text fallback|verified exact text|exact fallback")
                 self.assertRegex(text, r"provider-measured|provider measured")
                 self.assertRegex(text, r"visual-crop-ocr")
-                self.assertRegex(text, r"no image|does not render|does not capture|no screenshot|이미지")
+                self.assertRegex(text, r"no image|does not render|image rendering|does not capture|no screenshot|이미지")
                 self.assertRegex(text, r"no hosted|hosted .*savings|hosted api")
                 self.assertNotIn("image-context-pack emit", text)
                 self.assertNotIn("emit image-context-pack", text)
