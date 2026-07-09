@@ -69,6 +69,7 @@ LOCAL_PROXY_READY_SCHEMA_VERSION = "contextguard.experiments.local-proxy-ready.v
 LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION = "contextguard.experiments.local-proxy-external-forwarding-design.v1"
 LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION = "contextguard.experiments.local-proxy-response-sandbox.v1"
 IMAGE_CONTEXT_PACK_PLAN_SCHEMA_VERSION = "contextguard.experiments.image-context-pack-plan.v1"
+SEMANTIC_CHECKPOINT_PLAN_SCHEMA_VERSION = "contextguard.experiments.semantic-checkpoint-plan.v1"
 IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY = "provider-measured-matched-tasks-required"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
@@ -306,6 +307,57 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "protected-zone denial, provider/model measured matched-task boundaries, missed-context review, and the fact that "
             "visual-crop-ocr is the existing caller-supplied visual evidence-pack surface, not a verified "
             "exact binary/image fallback."
+        ),
+    ),
+
+    Experiment(
+        id="semantic-checkpoint",
+        name="Semantic checkpoint planning gate",
+        summary=(
+            "Plan-only evaluation gate for semantic checkpoint metadata and provenance readiness without "
+            "emitting replacement context or changing runtime behavior."
+        ),
+        stability="experimental",
+        default_enabled=False,
+        risk_level="high",
+        claim_boundary=(
+            "Semantic checkpoint metadata is dry-run planning evidence only; it cannot replace raw context or "
+            "claim hosted token/cost savings without future provider-measured matched successful tasks."
+        ),
+        gate_requirements=(
+            "explicit planning goal",
+            "verified exact context fallback before checkpoint metadata is used",
+            "provider/model measurement boundary",
+            "protected-zone denial",
+            "missed-context guardrails",
+            "provenance review acknowledgement",
+        ),
+        runtime_status="available-plan-only",
+        commands=("context-guard experiments plan semantic-checkpoint",),
+        opt_in_flags=(
+            "plan semantic-checkpoint",
+            "--goal",
+            "--constraint",
+            "--decision",
+            "--open-task",
+            "--evidence-handle",
+            "--missing-provenance-note",
+            "--unresolved-question",
+            "--exact-context-fallback-receipt",
+            "--reexpand-command",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+            "--missed-context-note",
+        ),
+        config_effect=(
+            "Registry enablement records project-local intent only; semantic-checkpoint exposes only a deterministic "
+            "plan command. It does not add an emit/record/serve runtime, call models/providers, proxy traffic, write "
+            "files, edit prompts/transcripts, replace context, or emit checkpoint candidates."
+        ),
+        evidence_contract=(
+            "The planner requires a goal, exact context artifact fallback, protected-zone denial, provider/model "
+            "measured matched-task boundary, missed-context notes, and provenance review notes before checkpoint metadata "
+            "is ready for plan review; raw context remains authoritative."
         ),
     ),
     Experiment(
@@ -1938,6 +1990,147 @@ def command_plan_image_context_pack(args: argparse.Namespace) -> int:
     else:
         print("ContextGuard image-context-pack plan (dry-run only)")
         print("No image rendering, OCR/image service, model call, proxy forwarding, binary artifact, or replacement was emitted.")
+        print(f"Status: {payload['status']}")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
+def semantic_checkpoint_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    goal = args.goal.strip() if args.goal else None
+    receipt_id = args.exact_context_fallback_receipt.strip() if args.exact_context_fallback_receipt else None
+    reexpand_command = args.reexpand_command.strip() if args.reexpand_command else None
+    reexpand_valid, fallback_blocker = valid_learned_reexpand_command(receipt_id, reexpand_command)
+    fallback_blocker_map = {
+        "missing_exact_fallback": "missing_exact_context_fallback",
+        "invalid_reexpand_command": "invalid_exact_context_reexpand_command",
+    }
+    protected_policy = (args.protected_zone_policy or "deny").strip().lower()
+    missed_context_notes = clean_values(args.missed_context_note)
+    missing_provenance_notes = clean_values(args.missing_provenance_note)
+
+    blockers: list[str] = []
+    if not goal:
+        blockers.append("missing_goal")
+    if fallback_blocker:
+        blockers.append(fallback_blocker_map.get(fallback_blocker, fallback_blocker))
+    if not args.provider_boundary_ack:
+        blockers.append("missing_provider_measurement_boundary")
+    if protected_policy != "deny":
+        blockers.append("protected_zone_denial_required")
+    if not missed_context_notes:
+        blockers.append("missing_missed_context_note")
+    if not missing_provenance_notes:
+        blockers.append("missing_provenance_review")
+    blockers = list(dict.fromkeys(blockers))
+    ready = not blockers
+
+    return {
+        "tool": TOOL_NAME,
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "plan_schema_version": SEMANTIC_CHECKPOINT_PLAN_SCHEMA_VERSION,
+        "experiment_id": "semantic-checkpoint",
+        "mode": "dry_run",
+        "status": "ready_for_plan_review" if ready else "blocked_until_semantic_checkpoint_gate_ready",
+        "plan_only": {
+            "command_advertised": True,
+            "emit_command_available": False,
+            "record_command_available": False,
+            "serve_command_available": False,
+            "runtime_behavior_changed": False,
+            "replacement_context_emitted": False,
+        },
+        "external_services": {
+            "called": False,
+            "network": False,
+            "model_calls": False,
+            "provider_calls": False,
+            "proxy_forwarding": False,
+        },
+        "runtime_side_effects": {
+            "files_written": False,
+            "transcript_edited": False,
+            "prompt_edited": False,
+            "context_replaced": False,
+            "stable_runtime_behavior_changed": False,
+        },
+        "checkpoint_metadata": {
+            "goal": goal,
+            "constraints": clean_values(args.constraint),
+            "decisions": clean_values(args.decision),
+            "open_tasks": clean_values(args.open_task),
+            "evidence_provenance_handles": clean_values(args.evidence_handle),
+            "unresolved_questions": clean_values(args.unresolved_question),
+        },
+        "exact_context_fallback": {
+            "required": True,
+            "available": bool(reexpand_valid),
+            "receipt_id": receipt_id,
+            "reexpand_command": reexpand_command,
+            "verified": False,
+            "must_be_verified_before_checkpoint_metadata_is_used": True,
+            "allowed_reexpand_shapes": [
+                "context-guard-artifact get RECEIPT --full",
+                "context-guard artifact get RECEIPT --full",
+            ],
+        },
+        "protected_zones": {
+            "policy": protected_policy,
+            "override_allowed": False,
+            "denied_classes": [
+                "code",
+                "diffs",
+                "identifiers",
+                "hashes",
+                "paths",
+                "numeric_constants",
+                "json_keys",
+                "stack_frames",
+                "secrets",
+                "prompt_like_instructions",
+            ],
+        },
+        "measurement_boundary": {
+            "provider_boundary_acknowledged": bool(args.provider_boundary_ack),
+            "provider_boundary_policy": IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY,
+            "provider_measured_matched_tasks_required_for_hosted_claims": True,
+            "provider_model_specific": True,
+            "hosted_api_token_savings_claim_allowed": False,
+            "hosted_api_cost_savings_claim_allowed": False,
+        },
+        "provenance_review": {
+            "required": True,
+            "reviewed": bool(missing_provenance_notes),
+            "missing_provenance_notes": missing_provenance_notes,
+            "missing_provenance_warnings": [] if missing_provenance_notes else ["missing_provenance_review"],
+            "checkpoint_cannot_replace_raw_context_without_complete_provenance": True,
+        },
+        "review_plan": {
+            "readiness_blockers": blockers,
+            "missed_context_notes": missed_context_notes,
+            "next_steps": [
+                "Keep exact raw context fallback verified before checkpoint metadata is used.",
+                "Deny protected evidence zones before any semantic checkpoint summary is considered.",
+                "Keep provenance handles and missing-provenance review notes attached to checkpoint metadata.",
+                "Measure provider/model token and cost fields on matched successful tasks before any hosted savings claim.",
+            ],
+        },
+        "claim_boundary": (
+            "Dry-run semantic-checkpoint planning only; checkpoint metadata is not replacement context and no hosted "
+            "token/cost savings claim is allowed without provider-measured matched successful tasks."
+        ),
+        "candidate_replacement": None,
+    }
+
+
+def command_plan_semantic_checkpoint(args: argparse.Namespace) -> int:
+    payload = semantic_checkpoint_plan_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard semantic-checkpoint plan (dry-run only)")
+        print("No files, prompts, transcripts, model/provider calls, proxy forwarding, or replacement context were emitted.")
         print(f"Status: {payload['status']}")
         if payload["review_plan"]["readiness_blockers"]:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
@@ -4700,6 +4893,34 @@ def build_parser() -> argparse.ArgumentParser:
     image_context_pack.add_argument("--missed-context-note", action="append", help="Potential context omitted by a future pack. Repeatable.")
     image_context_pack.add_argument("--json", action="store_true", help="Emit JSON output.")
     image_context_pack.set_defaults(func=command_plan_image_context_pack)
+
+    semantic_checkpoint = plan_sub.add_parser(
+        "semantic-checkpoint",
+        help="Dry-run a plan-only semantic checkpoint metadata gate without replacing raw context.",
+    )
+    semantic_checkpoint.add_argument("--goal", help="Planning goal for the semantic checkpoint metadata.")
+    semantic_checkpoint.add_argument("--constraint", action="append", help="Constraint the checkpoint metadata must preserve. Repeatable.")
+    semantic_checkpoint.add_argument("--decision", action="append", help="Decision captured by the checkpoint metadata. Repeatable.")
+    semantic_checkpoint.add_argument("--open-task", action="append", help="Open task captured by the checkpoint metadata. Repeatable.")
+    semantic_checkpoint.add_argument("--evidence-handle", action="append", help="Evidence/provenance handle supporting the checkpoint. Repeatable.")
+    semantic_checkpoint.add_argument("--missing-provenance-note", action="append", help="Missing provenance review note or 'none known after review'. Repeatable.")
+    semantic_checkpoint.add_argument("--unresolved-question", action="append", help="Unresolved question for checkpoint review. Repeatable.")
+    semantic_checkpoint.add_argument("--exact-context-fallback-receipt", help="Local exact raw context artifact receipt id.")
+    semantic_checkpoint.add_argument("--reexpand-command", help="Local exact context re-expand command bound to the receipt id.")
+    semantic_checkpoint.add_argument(
+        "--provider-boundary-ack",
+        action="store_true",
+        help="Acknowledge hosted claims require provider-measured matched successful tasks for the target model.",
+    )
+    semantic_checkpoint.add_argument(
+        "--protected-zone-policy",
+        default="deny",
+        choices=("deny", "allow"),
+        help="Protected evidence handling; only deny can pass the plan gate.",
+    )
+    semantic_checkpoint.add_argument("--missed-context-note", action="append", help="Potential context missed by checkpoint metadata. Repeatable.")
+    semantic_checkpoint.add_argument("--json", action="store_true", help="Emit JSON output.")
+    semantic_checkpoint.set_defaults(func=command_plan_semantic_checkpoint)
 
     self_hosted = plan_sub.add_parser(
         "self-hosted-metrics-ledger",

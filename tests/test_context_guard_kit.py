@@ -1688,6 +1688,25 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn("record image-context-pack", " ".join(image_context_pack["commands"]))
                         self.assertNotIn("serve image-context-pack", " ".join(image_context_pack["commands"]))
 
+                        semantic_checkpoint = experiments["semantic-checkpoint"]
+                        self.assertFalse(semantic_checkpoint["default_enabled"])
+                        self.assertEqual(semantic_checkpoint["runtime_status"], "available-plan-only")
+                        self.assertEqual(semantic_checkpoint["commands"], ["context-guard experiments plan semantic-checkpoint"])
+                        self.assertIn("plan semantic-checkpoint", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("--goal", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("--exact-context-fallback-receipt", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("--provider-boundary-ack", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("--protected-zone-policy deny", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("--missing-provenance-note", semantic_checkpoint["opt_in_flags"])
+                        self.assertIn("deterministic plan command", semantic_checkpoint["config_effect"])
+                        self.assertIn("does not add an emit/record/serve runtime", semantic_checkpoint["config_effect"])
+                        self.assertIn("replace context", semantic_checkpoint["config_effect"])
+                        self.assertIn("exact context artifact fallback", semantic_checkpoint["evidence_contract"])
+                        self.assertIn("provenance review", semantic_checkpoint["evidence_contract"])
+                        self.assertNotIn("emit semantic-checkpoint", " ".join(semantic_checkpoint["commands"]))
+                        self.assertNotIn("record semantic-checkpoint", " ".join(semantic_checkpoint["commands"]))
+                        self.assertNotIn("serve semantic-checkpoint", " ".join(semantic_checkpoint["commands"]))
+
                         learned = experiments["learned-compression"]
                         self.assertEqual(learned["runtime_status"], "available-explicit-runtime")
                         self.assertIn("context-guard experiments plan learned-compression", learned["commands"])
@@ -2822,6 +2841,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "context-guard-image-renderer",
             "context-guard-image-parser",
             "context-guard-proxy",
+            "context-guard-semantic-checkpoint",
         ):
             self.assertNotIn(name, package["bin"])
             self.assertFalse((PLUGIN_BIN / name).exists())
@@ -3036,6 +3056,242 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2)
                 self.assertIn("invalid choice", proc.stderr)
                 self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_experimental_semantic_checkpoint_plan_only_contract(self):
+        receipt = "0123456789abcdef"
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "semantic-checkpoint",
+                        "--json",
+                        "--goal",
+                        "preserve current task state for review",
+                        "--constraint",
+                        "do not rewrite protected evidence",
+                        "--decision",
+                        "ship plan-only semantic-checkpoint gate first",
+                        "--open-task",
+                        "verify exact fallback before any checkpoint is used",
+                        "--evidence-handle",
+                        "roadmap=contextguard-artifact:0123456789abcdef",
+                        "--missing-provenance-note",
+                        "none known after review",
+                        "--unresolved-question",
+                        "which provenance handle fields become mandatory later",
+                        "--exact-context-fallback-receipt",
+                        receipt,
+                        "--reexpand-command",
+                        f"context-guard-artifact get {receipt} --full",
+                        "--provider-boundary-ack",
+                        "--protected-zone-policy",
+                        "deny",
+                        "--missed-context-note",
+                        "raw transcript remains retrievable before checkpoint metadata is used",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(
+                    set(payload),
+                    {
+                        "tool",
+                        "schema_version",
+                        "plan_schema_version",
+                        "experiment_id",
+                        "mode",
+                        "status",
+                        "plan_only",
+                        "external_services",
+                        "runtime_side_effects",
+                        "checkpoint_metadata",
+                        "exact_context_fallback",
+                        "protected_zones",
+                        "measurement_boundary",
+                        "provenance_review",
+                        "review_plan",
+                        "claim_boundary",
+                        "candidate_replacement",
+                    },
+                )
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(payload["plan_schema_version"], "contextguard.experiments.semantic-checkpoint-plan.v1")
+                self.assertEqual(payload["experiment_id"], "semantic-checkpoint")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertEqual(
+                    payload["checkpoint_metadata"],
+                    {
+                        "goal": "preserve current task state for review",
+                        "constraints": ["do not rewrite protected evidence"],
+                        "decisions": ["ship plan-only semantic-checkpoint gate first"],
+                        "open_tasks": ["verify exact fallback before any checkpoint is used"],
+                        "evidence_provenance_handles": ["roadmap=contextguard-artifact:0123456789abcdef"],
+                        "unresolved_questions": ["which provenance handle fields become mandatory later"],
+                    },
+                )
+                self.assertTrue(payload["plan_only"]["command_advertised"])
+                self.assertFalse(payload["plan_only"]["emit_command_available"])
+                self.assertFalse(payload["plan_only"]["record_command_available"])
+                self.assertFalse(payload["plan_only"]["serve_command_available"])
+                self.assertFalse(payload["plan_only"]["runtime_behavior_changed"])
+                self.assertFalse(payload["plan_only"]["replacement_context_emitted"])
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertFalse(payload["external_services"]["network"])
+                self.assertFalse(payload["external_services"]["model_calls"])
+                self.assertFalse(payload["external_services"]["provider_calls"])
+                self.assertFalse(payload["external_services"]["proxy_forwarding"])
+                self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(payload["runtime_side_effects"]["transcript_edited"])
+                self.assertFalse(payload["runtime_side_effects"]["prompt_edited"])
+                self.assertFalse(payload["runtime_side_effects"]["context_replaced"])
+                self.assertFalse(payload["runtime_side_effects"]["stable_runtime_behavior_changed"])
+                self.assertTrue(payload["exact_context_fallback"]["required"])
+                self.assertTrue(payload["exact_context_fallback"]["available"])
+                self.assertEqual(payload["exact_context_fallback"]["receipt_id"], receipt)
+                self.assertEqual(payload["exact_context_fallback"]["reexpand_command"], f"context-guard-artifact get {receipt} --full")
+                self.assertFalse(payload["exact_context_fallback"]["verified"])
+                self.assertTrue(payload["exact_context_fallback"]["must_be_verified_before_checkpoint_metadata_is_used"])
+                self.assertEqual(payload["protected_zones"]["policy"], "deny")
+                self.assertFalse(payload["protected_zones"]["override_allowed"])
+                for protected_class in ("code", "diffs", "identifiers", "hashes", "paths", "numeric_constants", "json_keys", "stack_frames", "secrets", "prompt_like_instructions"):
+                    self.assertIn(protected_class, payload["protected_zones"]["denied_classes"])
+                self.assertTrue(payload["measurement_boundary"]["provider_boundary_acknowledged"])
+                self.assertTrue(payload["measurement_boundary"]["provider_measured_matched_tasks_required_for_hosted_claims"])
+                self.assertFalse(payload["measurement_boundary"]["hosted_api_token_savings_claim_allowed"])
+                self.assertFalse(payload["measurement_boundary"]["hosted_api_cost_savings_claim_allowed"])
+                self.assertTrue(payload["provenance_review"]["required"])
+                self.assertTrue(payload["provenance_review"]["reviewed"])
+                self.assertEqual(payload["provenance_review"]["missing_provenance_notes"], ["none known after review"])
+                self.assertEqual(payload["provenance_review"]["missing_provenance_warnings"], [])
+                self.assertTrue(payload["provenance_review"]["checkpoint_cannot_replace_raw_context_without_complete_provenance"])
+                self.assertIn("not replacement context", payload["claim_boundary"])
+                self.assertIsNone(payload["candidate_replacement"])
+
+    def test_experimental_semantic_checkpoint_plan_is_deterministic_and_side_effect_free(self):
+        receipt = "0123456789abcdef"
+        args = [
+            "plan",
+            "semantic-checkpoint",
+            "--json",
+            "--goal",
+            "preserve current task state for review",
+            "--missing-provenance-note",
+            "none known after review",
+            "--exact-context-fallback-receipt",
+            receipt,
+            "--reexpand-command",
+            f"context-guard artifact get {receipt} --full",
+            "--provider-boundary-ack",
+            "--protected-zone-policy",
+            "deny",
+            "--missed-context-note",
+            "raw transcript remains retrievable",
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    first = subprocess.run([sys.executable, str(script), *args], text=True, capture_output=True, check=True, cwd=root)
+                    second = subprocess.run([sys.executable, str(script), *args], text=True, capture_output=True, check=True, cwd=root)
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                self.assertEqual(json.loads(first.stdout), json.loads(second.stdout))
+                payload = json.loads(first.stdout)
+                self.assertEqual(after, before)
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(payload["runtime_side_effects"]["prompt_edited"])
+                self.assertFalse(payload["runtime_side_effects"]["transcript_edited"])
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertIsNone(payload["candidate_replacement"])
+
+    def test_experimental_semantic_checkpoint_blocks_missing_or_unsafe_gates(self):
+        receipt = "0123456789abcdef"
+        base = [
+            "--goal",
+            "preserve current task state",
+            "--missing-provenance-note",
+            "none known after review",
+            "--exact-context-fallback-receipt",
+            receipt,
+            "--reexpand-command",
+            f"context-guard-artifact get {receipt} --full",
+            "--provider-boundary-ack",
+            "--protected-zone-policy",
+            "deny",
+            "--missed-context-note",
+            "raw transcript remains retrievable",
+        ]
+        cases = [
+            ("missing_goal", base[2:], "missing_goal"),
+            (
+                "missing_exact_context_fallback",
+                ["--goal", "preserve current task state", "--missing-provenance-note", "none known after review", "--provider-boundary-ack", "--missed-context-note", "raw transcript remains retrievable"],
+                "missing_exact_context_fallback",
+            ),
+            (
+                "invalid_exact_context_reexpand_command",
+                ["--goal", "preserve current task state", "--missing-provenance-note", "none known after review", "--exact-context-fallback-receipt", receipt, "--reexpand-command", f"context-guard-artifact get {receipt} --compact", "--provider-boundary-ack", "--missed-context-note", "raw transcript remains retrievable"],
+                "invalid_exact_context_reexpand_command",
+            ),
+            (
+                "missing_provider_measurement_boundary",
+                ["--goal", "preserve current task state", "--missing-provenance-note", "none known after review", "--exact-context-fallback-receipt", receipt, "--reexpand-command", f"context-guard-artifact get {receipt} --full", "--missed-context-note", "raw transcript remains retrievable"],
+                "missing_provider_measurement_boundary",
+            ),
+            (
+                "protected_zone_denial_required",
+                ["--goal", "preserve current task state", "--missing-provenance-note", "none known after review", "--exact-context-fallback-receipt", receipt, "--reexpand-command", f"context-guard-artifact get {receipt} --full", "--provider-boundary-ack", "--protected-zone-policy", "allow", "--missed-context-note", "raw transcript remains retrievable"],
+                "protected_zone_denial_required",
+            ),
+            (
+                "missing_missed_context_note",
+                base[:-2],
+                "missing_missed_context_note",
+            ),
+            (
+                "missing_provenance_review",
+                ["--goal", "preserve current task state", "--exact-context-fallback-receipt", receipt, "--reexpand-command", f"context-guard-artifact get {receipt} --full", "--provider-boundary-ack", "--missed-context-note", "raw transcript remains retrievable"],
+                "missing_provenance_review",
+            ),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, args, expected_blocker in cases:
+                with self.subTest(script=script, case=name):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), "plan", "semantic-checkpoint", *args, "--json"],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    payload = json.loads(proc.stdout)
+                    self.assertEqual(payload["experiment_id"], "semantic-checkpoint")
+                    self.assertEqual(payload["status"], "blocked_until_semantic_checkpoint_gate_ready")
+                    self.assertIn(expected_blocker, payload["review_plan"]["readiness_blockers"])
+                    self.assertFalse(payload["external_services"]["called"])
+                    self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                    self.assertIsNone(payload["candidate_replacement"])
+
+    def test_experimental_semantic_checkpoint_runtime_commands_are_unavailable(self):
+        for script in EXPERIMENT_SCRIPTS:
+            for runtime_command in ("emit", "record", "serve"):
+                with self.subTest(script=script, runtime_command=runtime_command):
+                    proc = subprocess.run(
+                        [sys.executable, str(script), runtime_command, "semantic-checkpoint", "--json"],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("invalid choice", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
@@ -6975,6 +7231,68 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     )
                 payload = json.loads(proc.stdout)
                 self.assertEqual(payload["experiment_id"], "image-context-pack")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+
+    def test_experimental_semantic_checkpoint_docs_examples_match_cli(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
+        canonical_flags = (
+            "--goal",
+            "--exact-context-fallback-receipt",
+            "--reexpand-command",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+            "--missing-provenance-note",
+            "--missed-context-note",
+        )
+        forbidden_snippets = (
+            "emit semantic-checkpoint",
+            "record semantic-checkpoint",
+            "serve semantic-checkpoint",
+        )
+        receipt = "0123456789abcdef"
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                lower_text = text.lower()
+                self.assertIn("semantic-checkpoint", lower_text)
+                self.assertRegex(lower_text, r"plan-only|plan only|dry-run|드라이런|plan 전용")
+                self.assertRegex(lower_text, r"provenance|프로비넌스|출처")
+                self.assertRegex(lower_text, r"exact context|exact .*context|정확한 context|정확한 컨텍스트")
+                self.assertRegex(lower_text, r"protected-zone|protected zone|보호")
+                self.assertRegex(lower_text, r"does not (?:replace|write|call|proxy)|no .*replacement|대체하지|호출하지|쓰지")
+                for snippet in forbidden_snippets:
+                    self.assertNotIn(snippet, lower_text)
+
+                example_lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip().startswith("context-guard experiments plan semantic-checkpoint")
+                ]
+                self.assertEqual(len(example_lines), 1)
+                example = example_lines[0]
+                for flag in canonical_flags:
+                    self.assertIn(flag, example)
+
+                argv = [token.replace("<id>", receipt) for token in shlex.split(example)]
+                self.assertEqual(argv[:3], ["context-guard", "experiments", "plan"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(PLUGIN_BIN / "context-guard-experiments"), *argv[2:]],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=tmp,
+                    )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "semantic-checkpoint")
                 self.assertEqual(payload["status"], "ready_for_plan_review")
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
 
