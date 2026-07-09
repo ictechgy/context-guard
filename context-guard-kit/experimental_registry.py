@@ -302,11 +302,10 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "traffic, write binary artifacts, or duplicate the caller-supplied visual-crop-ocr evidence-pack emitter."
         ),
         evidence_contract=(
-            "Plans require explicit opt-in, exact text fallback receipt/re-expand metadata before omitted exact text "
-            "is used, protected-zone denial for code/diffs/identifiers/hashes/paths/numeric constants/JSON keys/"
-            "stack frames/secrets/prompt-like instructions, provider/model measured matched-task boundaries, "
-            "missed-context guardrails, and an explicit relation_to_visual_crop_ocr statement: visual-crop-ocr "
-            "remains caller-supplied visual evidence only and is not a verified exact binary/image fallback."
+            "The planner requires acknowledgements for explicit evaluation intent, exact text artifact fallback, "
+            "protected-zone denial, provider/model measurement boundaries, missed-context review, and the fact that "
+            "visual-crop-ocr is the existing caller-supplied visual evidence-pack surface, not a verified "
+            "exact binary/image fallback."
         ),
     ),
     Experiment(
