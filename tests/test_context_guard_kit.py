@@ -25240,37 +25240,23 @@ for malformed in malformed_values:
             self.assertEqual(diet.format_os_error(error), "Permission denied (errno 13)")
             self.assertNotIn(str(root), diet.format_os_error(error))
 
-    def test_project_settings_denies_context_guard_state(self):
+    def test_project_settings_stays_local_ignored_and_denies_context_guard_state(self):
         settings_path = ROOT / ".claude" / "settings.json"
-        self.assertTrue(settings_path.is_file())
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        denies = settings["permissions"]["deny"]
-        self.assertIn("Read(./.context-guard/**)", denies)
-        for existing in (
-            "Read(./node_modules/**)",
-            "Read(./dist/**)",
-            "Read(./build/**)",
-            "Read(./coverage/**)",
-            "Read(./logs/**)",
-            "Read(./tmp/**)",
-            "Read(./target/**)",
-            "Read(./.next/**)",
-            "Read(./.venv/**)",
-            "Read(./vendor/**)",
-            "Read(./.claude-token-optimizer/**)",
-            "Read(./.env)",
-            "Read(./.env.*)",
-            "Read(./.npmrc)",
-            "Read(./.pypirc)",
-            "Read(./.netrc)",
-            "Read(~/.ssh/**)",
-            "Read(~/.aws/**)",
-            "Read(~/.gnupg/**)",
-            "Read(~/.kube/**)",
-            "Read(~/.docker/**)",
-        ):
-            with self.subTest(existing=existing):
-                self.assertIn(existing, denies)
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(".claude/", gitignore.splitlines())
+
+        tracked = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "--", ".claude/settings.json"],
+            text=True,
+            capture_output=True,
+        )
+        if tracked.returncode == 0:
+            self.assertEqual(tracked.stdout.strip(), "")
+
+        if settings_path.is_file():
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            denies = settings["permissions"]["deny"]
+            self.assertIn("Read(./.context-guard/**)", denies)
 
     def test_settings_examples_deny_private_optimizer_state(self):
         for example_path in [
