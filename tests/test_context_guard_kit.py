@@ -6873,6 +6873,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn("self-hosted kv/latent runtime optimization is shipped", text)
                 self.assertNotIn("hosted api token/cost savings claim is allowed", text)
 
+    def test_experimental_image_context_pack_docs_examples_match_cli(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+        )
+        canonical_flags = (
+            "--exact-text-fallback-receipt",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+            "--missed-context-note",
+        )
+        forbidden_flags = (
+            "--explicit-opt-in",
+            "--exact-text-receipt",
+            "--provider-measurement-boundary",
+            "--evaluation-intent-ack",
+            "--exact-text-fallback-ack",
+            "--text-fallback-receipt",
+            "--protected-zone-deny-ack",
+            "--provider-measurement-boundary-ack",
+            "--missed-context-guardrail-ack",
+            "--visual-crop-ocr-relation-ack",
+        )
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                example_lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if "context-guard experiments plan image-context-pack" in line
+                ]
+                self.assertEqual(len(example_lines), 1)
+                example = example_lines[0]
+                for flag in canonical_flags:
+                    self.assertIn(flag, example)
+                for flag in forbidden_flags:
+                    self.assertNotIn(flag, example)
+
     def test_experimental_image_context_pack_docs_surface_boundary(self):
         docs = (
             ROOT / "README.md",
@@ -6938,6 +6977,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"successful .*forwarded|successful-forward|successful forwarded request|성공")
                 self.assertRegex(text, r"raw headers?|raw bodies|raw header/body|request bodies|response bodies|원문 header|원문 body")
                 self.assertRegex(text, r"hosted.*savings|hosted api 절감")
+
+    def test_experimental_image_context_pack_docs_examples_match_cli(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+        )
+        canonical_flags = (
+            "--exact-text-fallback-receipt",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+            "--missed-context-note",
+        )
+        forbidden_flags = (
+            "--explicit-opt-in",
+            "--exact-text-receipt",
+            "--provider-measurement-boundary",
+            "--evaluation-intent-ack",
+            "--exact-text-fallback-ack",
+            "--text-fallback-receipt",
+            "--protected-zone-deny-ack",
+            "--provider-measurement-boundary-ack",
+            "--missed-context-guardrail-ack",
+            "--visual-crop-ocr-relation-ack",
+        )
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                example_lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if "context-guard experiments plan image-context-pack" in line
+                ]
+                self.assertEqual(len(example_lines), 1)
+                example = example_lines[0]
+                for flag in canonical_flags:
+                    self.assertIn(flag, example)
+                for flag in forbidden_flags:
+                    self.assertNotIn(flag, example)
 
     def test_experimental_image_context_pack_docs_surface_boundary(self):
         docs = (
