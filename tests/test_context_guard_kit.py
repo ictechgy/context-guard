@@ -2904,6 +2904,56 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("proxy evidence", payload["claim_boundary"])
                 self.assertIsNone(payload["candidate_replacement"])
 
+    def test_experimental_image_context_pack_plan_is_deterministic_and_side_effect_free(self):
+        receipt = "0123456789abcdef"
+        args = [
+            "plan",
+            "image-context-pack",
+            "--exact-text-fallback-receipt",
+            receipt,
+            "--reexpand-command",
+            f"context-guard-artifact get {receipt} --full",
+            "--provider-boundary-ack",
+            "--protected-zone-policy",
+            "deny",
+            "--missed-context-note",
+            "summary table footer remains available through exact text fallback",
+            "--image-size",
+            "800,600",
+            "--packed-image-size",
+            "400,300",
+            "--json",
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                    first = subprocess.run(
+                        [sys.executable, str(script), *args],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    second = subprocess.run(
+                        [sys.executable, str(script), *args],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=root,
+                    )
+                    after = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+                first_payload = json.loads(first.stdout)
+                second_payload = json.loads(second.stdout)
+                self.assertEqual(first_payload, second_payload)
+                self.assertEqual(after, before)
+                self.assertEqual(first_payload["status"], "ready_for_plan_review")
+                self.assertFalse(first_payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(first_payload["runtime_side_effects"]["image_rendering"])
+                self.assertFalse(first_payload["runtime_side_effects"]["binary_artifacts_written"])
+                self.assertFalse(first_payload["external_services"]["called"])
+
     def test_experimental_image_context_pack_blocks_missing_or_unsafe_gates(self):
         receipt = "0123456789abcdef"
         cases = [
@@ -6897,6 +6947,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "--missed-context-guardrail-ack",
             "--visual-crop-ocr-relation-ack",
         )
+        receipt = "0123456789abcdef"
         for doc in docs:
             with self.subTest(doc=doc):
                 text = doc.read_text(encoding="utf-8")
@@ -6912,28 +6963,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 for flag in forbidden_flags:
                     self.assertNotIn(flag, example)
 
-    def test_experimental_image_context_pack_docs_surface_boundary(self):
-        docs = (
-            ROOT / "README.md",
-            PLUGIN_DIR / "README.md",
-            KIT_DIR / "README.md",
-            ROOT / "research" / "experimental-token-reduction-radar.md",
-        )
-        for doc in docs:
-            with self.subTest(doc=doc):
-                text = doc.read_text(encoding="utf-8").lower()
-                self.assertIn("image-context-pack", text)
-                self.assertRegex(text, r"plan[- ]only|planning gate|dry-run")
-                self.assertRegex(text, r"pxpipe[- ]inspired|pxpipe")
-                self.assertRegex(text, r"exact text fallback|verified exact text|exact fallback")
-                self.assertRegex(text, r"provider-measured|provider measured")
-                self.assertRegex(text, r"visual-crop-ocr")
-                self.assertRegex(text, r"no image|does not render|image rendering|does not capture|no screenshot|이미지")
-                self.assertRegex(text, r"no hosted|hosted .*savings|hosted api")
-                self.assertNotIn("image-context-pack emit", text)
-                self.assertNotIn("emit image-context-pack", text)
-                self.assertNotIn("image-context-pack runtime is shipped", text)
-                self.assertNotIn("guaranteed hosted", text)
+                argv = [token.replace("<id>", receipt) for token in shlex.split(example)]
+                self.assertEqual(argv[:3], ["context-guard", "experiments", "plan"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [sys.executable, str(PLUGIN_BIN / "context-guard-experiments"), *argv[2:]],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=tmp,
+                    )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "image-context-pack")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
 
     def test_experimental_local_proxy_docs_surface_boundary(self):
         docs = (
@@ -6977,45 +7020,6 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertRegex(text, r"successful .*forwarded|successful-forward|successful forwarded request|성공")
                 self.assertRegex(text, r"raw headers?|raw bodies|raw header/body|request bodies|response bodies|원문 header|원문 body")
                 self.assertRegex(text, r"hosted.*savings|hosted api 절감")
-
-    def test_experimental_image_context_pack_docs_examples_match_cli(self):
-        docs = (
-            ROOT / "README.md",
-            ROOT / "README.ko.md",
-            PLUGIN_DIR / "README.md",
-        )
-        canonical_flags = (
-            "--exact-text-fallback-receipt",
-            "--provider-boundary-ack",
-            "--protected-zone-policy deny",
-            "--missed-context-note",
-        )
-        forbidden_flags = (
-            "--explicit-opt-in",
-            "--exact-text-receipt",
-            "--provider-measurement-boundary",
-            "--evaluation-intent-ack",
-            "--exact-text-fallback-ack",
-            "--text-fallback-receipt",
-            "--protected-zone-deny-ack",
-            "--provider-measurement-boundary-ack",
-            "--missed-context-guardrail-ack",
-            "--visual-crop-ocr-relation-ack",
-        )
-        for doc in docs:
-            with self.subTest(doc=doc):
-                text = doc.read_text(encoding="utf-8")
-                example_lines = [
-                    line.strip()
-                    for line in text.splitlines()
-                    if "context-guard experiments plan image-context-pack" in line
-                ]
-                self.assertEqual(len(example_lines), 1)
-                example = example_lines[0]
-                for flag in canonical_flags:
-                    self.assertIn(flag, example)
-                for flag in forbidden_flags:
-                    self.assertNotIn(flag, example)
 
     def test_experimental_image_context_pack_docs_surface_boundary(self):
         docs = (

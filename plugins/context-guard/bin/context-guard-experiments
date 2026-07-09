@@ -302,8 +302,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "traffic, write binary artifacts, or duplicate the caller-supplied visual-crop-ocr evidence-pack emitter."
         ),
         evidence_contract=(
-            "The planner requires acknowledgements for explicit evaluation intent, exact text artifact fallback, "
-            "protected-zone denial, provider/model measurement boundaries, missed-context review, and the fact that "
+            "The planner requires acknowledgements for explicit evaluation intent, verified exact text artifact fallback, "
+            "protected-zone denial, provider/model measured matched-task boundaries, missed-context review, and the fact that "
             "visual-crop-ocr is the existing caller-supplied visual evidence-pack surface, not a verified "
             "exact binary/image fallback."
         ),
