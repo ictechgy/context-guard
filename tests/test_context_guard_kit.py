@@ -105,6 +105,63 @@ COST_GUARD_SCRIPTS = [KIT_DIR / "cost_guard.py", PLUGIN_BIN / "context-guard-cos
 CACHE_SCORE_SCRIPTS = [KIT_DIR / "cache_score.py", PLUGIN_BIN / "context-guard-cache-score"]
 LOCAL_PROXY_NONCE_HEADER = "X-ContextGuard-Proxy-Nonce"
 LOCAL_PROXY_NONCES_BY_PORT: dict[int, str] = {}
+PROOF_CARRYING_CONTEXT_RECEIPT = "0123456789abcdef"
+PROOF_CARRYING_CONTEXT_HASH = "a" * 64
+PROOF_CARRYING_CONTEXT_TIMESTAMP = "2026-07-10T04:11:12Z"
+
+
+def proof_carrying_context_unit(**overrides) -> dict[str, object]:
+    unit: dict[str, object] = {
+        "source_label": "context-filesystem-roadmap",
+        "receipt_id": PROOF_CARRYING_CONTEXT_RECEIPT,
+        "content_sha256": PROOF_CARRYING_CONTEXT_HASH,
+        "safe_range": {"kind": "lines", "start": 82, "end": 85},
+        "captured_at": PROOF_CARRYING_CONTEXT_TIMESTAMP,
+        "transform_policy": "safe_range_extract",
+        "rehydrate_command": (
+            f"context-guard-artifact get {PROOF_CARRYING_CONTEXT_RECEIPT} --full"
+        ),
+    }
+    unit.update(overrides)
+    return unit
+
+
+def proof_carrying_context_args(
+    raw_units: list[str] | None = None,
+    *,
+    provider_boundary_ack: bool = True,
+    protected_zone_policy: str = "deny",
+) -> list[str]:
+    args = ["plan", "proof-carrying-context", "--json"]
+    for raw in raw_units if raw_units is not None else [json.dumps(proof_carrying_context_unit())]:
+        args.extend(["--proof-unit-json", raw])
+    if provider_boundary_ack:
+        args.append("--provider-boundary-ack")
+    args.extend(["--protected-zone-policy", protected_zone_policy])
+    return args
+
+
+def run_proof_carrying_context_plan(
+    script: Path,
+    raw_units: list[str] | None = None,
+    *,
+    provider_boundary_ack: bool = True,
+    protected_zone_policy: str = "deny",
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            *proof_carrying_context_args(
+                raw_units,
+                provider_boundary_ack=provider_boundary_ack,
+                protected_zone_policy=protected_zone_policy,
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
 
 
 def reserve_loopback_port() -> int:
@@ -3292,6 +3349,731 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertEqual(proc.returncode, 2)
                     self.assertIn("invalid choice", proc.stderr)
                     self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_experimental_proof_carrying_context_registry_and_no_runtime_surface(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.run(
+                    [sys.executable, str(script), "list", "--root", tmp, "--json"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                experiment = {
+                    item["id"]: item for item in json.loads(proc.stdout)["experiments"]
+                }["proof-carrying-context"]
+                self.assertFalse(experiment["default_enabled"])
+                self.assertEqual(experiment["risk_level"], "high")
+                self.assertEqual(experiment["runtime_status"], "available-plan-only")
+                self.assertEqual(
+                    experiment["commands"],
+                    ["context-guard experiments plan proof-carrying-context"],
+                )
+                self.assertEqual(
+                    set(experiment["opt_in_flags"]),
+                    {
+                        "plan proof-carrying-context",
+                        "--proof-unit-json",
+                        "--provider-boundary-ack",
+                        "--protected-zone-policy deny",
+                    },
+                )
+                combined = " ".join(experiment["commands"] + [experiment["config_effect"]])
+                for runtime_command in ("emit", "record", "serve"):
+                    self.assertNotIn(f"{runtime_command} proof-carrying-context", combined)
+
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        for name in (
+            "context-guard-proof-carrying-context",
+            "context-guard-proof-context",
+            "context-guard-proof-unit",
+        ):
+            self.assertNotIn(name, package["bin"])
+            self.assertFalse((PLUGIN_BIN / name).exists())
+
+    def test_experimental_proof_carrying_context_ready_contract(self):
+        expected_top_keys = {
+            "candidate_replacement",
+            "claim_boundary",
+            "experiment_id",
+            "external_services",
+            "measurement_boundary",
+            "mode",
+            "plan_only",
+            "plan_schema_version",
+            "proof_contract",
+            "proof_unit_schema_version",
+            "proof_units",
+            "protected_zones",
+            "review_plan",
+            "runtime_side_effects",
+            "schema_version",
+            "status",
+            "tool",
+        }
+        expected_verification_scope = {
+            "content_hash_verified": False,
+            "cross_field_consistency_checked": True,
+            "cross_unit_receipt_hash_consistency_checked": True,
+            "decoded_number_finiteness_checked": True,
+            "decoded_unicode_checked": True,
+            "duplicate_json_keys_checked": True,
+            "field_syntax_checked": True,
+            "json_depth_checked": True,
+            "json_syntax_checked": True,
+            "protected_zone_compliance_checked": False,
+            "receipt_content_read": False,
+            "receipt_storage_checked": False,
+            "rehydration_executed": False,
+            "safe_range_bounds_checked": False,
+            "semantics": "validator_capability_invariant",
+            "source_content_read": False,
+        }
+        expected_row_warnings = [
+            "protected_zone_compliance_not_checked",
+            "safe_range_bounds_not_checked",
+            "receipt_storage_not_checked",
+            "content_hash_not_verified",
+            "rehydrate_command_not_executed",
+            "timestamp_freshness_not_checked",
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                first = run_proof_carrying_context_plan(script)
+                second = run_proof_carrying_context_plan(script)
+                payload = json.loads(first.stdout)
+                self.assertEqual(first.stdout, second.stdout)
+                self.assertEqual(
+                    first.stdout,
+                    json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                )
+                self.assertEqual(set(payload), expected_top_keys)
+                self.assertEqual(payload["tool"], "context-guard-experiments")
+                self.assertEqual(payload["schema_version"], "contextguard.experiments.v1")
+                self.assertEqual(
+                    payload["plan_schema_version"],
+                    "contextguard.experiments.proof-carrying-context-plan.v1",
+                )
+                self.assertEqual(payload["proof_unit_schema_version"], "contextguard.proof-unit.v1")
+                self.assertEqual(payload["experiment_id"], "proof-carrying-context")
+                self.assertEqual(payload["mode"], "dry_run")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertIsNone(payload["candidate_replacement"])
+                self.assertEqual(
+                    payload["proof_contract"]["verification_scope"],
+                    expected_verification_scope,
+                )
+                self.assertEqual(
+                    payload["review_plan"] | {"next_steps": []},
+                    {
+                        "detailed_proof_unit_count": 1,
+                        "invalid_detailed_proof_unit_count": 0,
+                        "next_steps": [],
+                        "overflow_proof_unit_count": 0,
+                        "readiness_blocker_order": payload["review_plan"]["readiness_blocker_order"],
+                        "readiness_blockers": [],
+                        "supplied_proof_unit_count": 1,
+                        "valid_detailed_proof_unit_count": 1,
+                        "warning_order": payload["review_plan"]["warning_order"],
+                        "warnings": expected_row_warnings,
+                    },
+                )
+                row = payload["proof_units"][0]
+                self.assertEqual(
+                    set(row),
+                    {
+                        "captured_at",
+                        "content_hash",
+                        "receipt",
+                        "rehydration",
+                        "safe_range",
+                        "source_label",
+                        "syntax_and_consistency_valid",
+                        "transform_policy",
+                        "unit_index",
+                        "validation_issues",
+                        "warnings",
+                    },
+                )
+                self.assertEqual(row["warnings"], expected_row_warnings)
+                self.assertEqual(row["validation_issues"], [])
+                self.assertTrue(row["syntax_and_consistency_valid"])
+                self.assertEqual(
+                    row["safe_range"],
+                    {
+                        "coordinate_system": "one_based_inclusive",
+                        "end": 85,
+                        "kind": "lines",
+                        "start": 82,
+                    },
+                )
+                self.assertEqual(
+                    row["rehydration"],
+                    {
+                        "command": (
+                            "context-guard-artifact get "
+                            f"{PROOF_CARRYING_CONTEXT_RECEIPT} --full"
+                        ),
+                        "executed": False,
+                        "receipt_bound": True,
+                        "syntax_valid": True,
+                    },
+                )
+                self.assertFalse(payload["protected_zones"]["compliance_checked"])
+                self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(payload["external_services"]["called"])
+                self.assertFalse(
+                    payload["measurement_boundary"]["hosted_api_token_savings_claim_allowed"]
+                )
+
+    def test_experimental_proof_carrying_context_strict_json_terminal_precedence(self):
+        valid = proof_carrying_context_unit()
+
+        def nested_unknown(levels: int) -> str:
+            nested: object = 0
+            for _ in range(levels):
+                nested = [nested]
+            return json.dumps(valid | {"extra": nested})
+
+        duplicate = json.dumps(valid)[:-1] + ',"source_label":"duplicate"}'
+        duplicate_with_other_terminal_signals = (
+            json.dumps(valid | {"extra": [[float("nan")]], "unicode": "\ud800"})[:-1]
+            + ',"source_label":"duplicate"}'
+        )
+        cases = [
+            ("too-large", '{"padding":"' + ("x" * 8180) + '"}', "proof_unit_json_too_large"),
+            ("malformed", "{", "invalid_proof_unit_json"),
+            ("duplicate", duplicate, "duplicate_proof_unit_keys"),
+            (
+                "duplicate-precedence",
+                duplicate_with_other_terminal_signals,
+                "duplicate_proof_unit_keys",
+            ),
+            ("depth-101", nested_unknown(100), "proof_unit_json_nesting_too_deep"),
+            ("nan", json.dumps(valid | {"extra": float("nan")}), "nonfinite_proof_unit_number"),
+            ("positive-exponent-overflow", json.dumps(valid)[:-1] + ',"extra":1e9999}', "nonfinite_proof_unit_number"),
+            ("negative-exponent-overflow", json.dumps(valid)[:-1] + ',"extra":-1e9999}', "nonfinite_proof_unit_number"),
+            ("escaped-surrogate", json.dumps(valid | {"extra": "\ud800"}), "invalid_proof_unit_unicode"),
+            ("non-object", "[]", "proof_unit_not_object"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, raw, expected in cases:
+                with self.subTest(script=script, case=name):
+                    payload = json.loads(
+                        run_proof_carrying_context_plan(script, [raw]).stdout
+                    )
+                    self.assertEqual(
+                        payload["status"],
+                        "blocked_until_proof_carrying_context_gate_ready",
+                    )
+                    self.assertEqual(payload["proof_units"][0]["validation_issues"], [expected])
+                    self.assertEqual(payload["proof_units"][0]["warnings"], [])
+                    self.assertIsNone(payload["candidate_replacement"])
+
+            with self.subTest(script=script, case="depth-100-accepted"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(script, [nested_unknown(99)]).stdout
+                )
+                self.assertIn(
+                    "unknown_proof_unit_fields",
+                    payload["proof_units"][0]["validation_issues"],
+                )
+                self.assertNotIn(
+                    "proof_unit_json_nesting_too_deep",
+                    payload["proof_units"][0]["validation_issues"],
+                )
+
+            with self.subTest(script=script, case="8192-byte-boundary"):
+                prefix = '{"padding":"'
+                suffix = '"}'
+                raw = prefix + ("x" * (8192 - len(prefix) - len(suffix))) + suffix
+                self.assertEqual(len(raw.encode("utf-8")), 8192)
+                payload = json.loads(
+                    run_proof_carrying_context_plan(script, [raw]).stdout
+                )
+                self.assertNotIn(
+                    "proof_unit_json_too_large",
+                    payload["proof_units"][0]["validation_issues"],
+                )
+
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script, case="raw-unicode-direct-module"):
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_raw_unicode_{index}",
+                )
+                payload = module.proof_carrying_context_plan_payload(
+                    argparse.Namespace(
+                        proof_unit_json=["\ud800"],
+                        provider_boundary_ack=True,
+                        protected_zone_policy="deny",
+                    )
+                )
+                self.assertEqual(
+                    payload["proof_units"][0]["validation_issues"],
+                    ["invalid_proof_unit_unicode"],
+                )
+            with self.subTest(script=script, case="decoder-recursion-fallback"):
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_decoder_recursion_{index}",
+                )
+                with mock.patch.object(module.json, "loads", side_effect=RecursionError):
+                    payload = module.proof_carrying_context_plan_payload(
+                        argparse.Namespace(
+                            proof_unit_json=[json.dumps(valid)],
+                            provider_boundary_ack=True,
+                            protected_zone_policy="deny",
+                        )
+                    )
+                self.assertEqual(
+                    payload["proof_units"][0]["validation_issues"],
+                    ["proof_unit_json_nesting_too_deep"],
+                )
+
+    def test_experimental_proof_carrying_context_field_rules_and_non_echo(self):
+        mismatch_receipt = "fedcba9876543210"
+        mismatched_command = f"context-guard-artifact get {mismatch_receipt} --full"
+        cases = [
+            ("missing-source", {"source_label": None}, "missing_source_label"),
+            ("invalid-source", {"source_label": "unsafe source prose"}, "invalid_source_label"),
+            ("non-ascii-source", {"source_label": "roadmap-한글"}, "invalid_source_label"),
+            ("long-source", {"source_label": "a" * 121}, "invalid_source_label"),
+            ("invalid-receipt", {"receipt_id": "ABCDEF0123456789"}, "invalid_receipt"),
+            ("short-receipt", {"receipt_id": "a" * 15}, "invalid_receipt"),
+            ("invalid-hash", {"content_sha256": "sha256:" + ("a" * 64)}, "invalid_content_sha256"),
+            ("uppercase-hash", {"content_sha256": "A" * 64}, "invalid_content_sha256"),
+            ("invalid-timestamp", {"captured_at": "2026-07-10T04:11:12.000Z"}, "invalid_timestamp"),
+            ("invalid-calendar", {"captured_at": "2026-02-30T04:11:12Z"}, "invalid_timestamp"),
+            ("invalid-policy", {"transform_policy": "semantic_rewrite"}, "invalid_transform_policy"),
+            ("whitespace-policy", {"transform_policy": " identity "}, "invalid_transform_policy"),
+            ("invalid-range-bool", {"safe_range": {"kind": "lines", "start": True, "end": 2}}, "invalid_safe_range"),
+            ("invalid-line-origin", {"safe_range": {"kind": "lines", "start": 0, "end": 2}}, "invalid_safe_range"),
+            ("invalid-empty-byte-range", {"safe_range": {"kind": "bytes", "start": 2, "end": 2}}, "invalid_safe_range"),
+            ("invalid-range-max", {"safe_range": {"kind": "bytes", "start": 0, "end": 2**53}}, "invalid_safe_range"),
+            ("missing-required-range", {"safe_range": None}, "missing_safe_range_for_transform_policy"),
+            ("invalid-command", {"rehydrate_command": "echo secret-value; true"}, "invalid_rehydrate_command"),
+            ("leading-newline-command", {"rehydrate_command": f"\ncontext-guard-artifact get {PROOF_CARRYING_CONTEXT_RECEIPT} --full"}, "invalid_rehydrate_command"),
+            ("trailing-newline-command", {"rehydrate_command": f"context-guard-artifact get {PROOF_CARRYING_CONTEXT_RECEIPT} --full\n"}, "invalid_rehydrate_command"),
+            ("leading-carriage-return-command", {"rehydrate_command": f"\rcontext-guard-artifact get {PROOF_CARRYING_CONTEXT_RECEIPT} --full"}, "invalid_rehydrate_command"),
+            ("mismatched-command", {"rehydrate_command": mismatched_command}, "rehydrate_receipt_mismatch"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for name, overrides, expected in cases:
+                with self.subTest(script=script, case=name):
+                    raw = json.dumps(proof_carrying_context_unit(**overrides))
+                    proc = run_proof_carrying_context_plan(script, [raw])
+                    payload = json.loads(proc.stdout)
+                    row = payload["proof_units"][0]
+                    self.assertIn(expected, row["validation_issues"])
+                    self.assertFalse(row["syntax_and_consistency_valid"])
+                    self.assertEqual(row["warnings"], [])
+                    if expected in {
+                        "missing_rehydrate_command",
+                        "invalid_rehydrate_command",
+                        "rehydrate_receipt_mismatch",
+                    }:
+                        self.assertIsNone(row["rehydration"]["command"])
+                    if name == "invalid-command":
+                        self.assertNotIn("secret-value", proc.stdout)
+                    if name == "mismatched-command":
+                        self.assertTrue(row["rehydration"]["syntax_valid"])
+                        self.assertFalse(row["rehydration"]["receipt_bound"])
+                        self.assertNotIn(mismatched_command, proc.stdout)
+
+            unknown_secret = "UNKNOWN_SECRET_VALUE"
+            proc = run_proof_carrying_context_plan(
+                script,
+                [json.dumps(proof_carrying_context_unit(secret_unknown=unknown_secret))],
+            )
+            payload = json.loads(proc.stdout)
+            self.assertIn(
+                "unknown_proof_unit_fields",
+                payload["proof_units"][0]["validation_issues"],
+            )
+            self.assertNotIn("secret_unknown", proc.stdout)
+            self.assertNotIn(unknown_secret, proc.stdout)
+
+            missing_receipt = proof_carrying_context_unit(
+                receipt_id=None,
+                rehydrate_command=mismatched_command,
+            )
+            payload = json.loads(
+                run_proof_carrying_context_plan(
+                    script,
+                    [json.dumps(missing_receipt)],
+                ).stdout
+            )
+            issues = payload["proof_units"][0]["validation_issues"]
+            self.assertIn("missing_receipt", issues)
+            self.assertNotIn("rehydrate_receipt_mismatch", issues)
+            self.assertTrue(payload["proof_units"][0]["rehydration"]["syntax_valid"])
+            self.assertIsNone(payload["proof_units"][0]["rehydration"]["command"])
+
+            invalid_range_with_extract = proof_carrying_context_unit(
+                safe_range={"kind": "lines", "start": 3, "end": 2},
+            )
+            payload = json.loads(
+                run_proof_carrying_context_plan(
+                    script,
+                    [json.dumps(invalid_range_with_extract)],
+                ).stdout
+            )
+            issues = payload["proof_units"][0]["validation_issues"]
+            self.assertIn("invalid_safe_range", issues)
+            self.assertNotIn("missing_safe_range_for_transform_policy", issues)
+
+            unknown_and_invalid = proof_carrying_context_unit(
+                source_label="bad label",
+                extra_secret="do-not-echo",
+            )
+            proc = run_proof_carrying_context_plan(
+                script,
+                [json.dumps(unknown_and_invalid)],
+            )
+            issues = json.loads(proc.stdout)["proof_units"][0]["validation_issues"]
+            self.assertEqual(
+                issues,
+                ["unknown_proof_unit_fields", "invalid_source_label"],
+            )
+            self.assertNotIn("do-not-echo", proc.stdout)
+
+    def test_experimental_proof_carrying_context_multi_unit_domains_and_counts(self):
+        same_receipt_other_hash = proof_carrying_context_unit(content_sha256="b" * 64)
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script, case="receipt-hash-conflict"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(
+                        script,
+                        [
+                            json.dumps(proof_carrying_context_unit()),
+                            json.dumps(same_receipt_other_hash),
+                        ],
+                    ).stdout
+                )
+                self.assertEqual(
+                    [row["validation_issues"] for row in payload["proof_units"]],
+                    [["receipt_hash_conflict"], ["receipt_hash_conflict"]],
+                )
+                self.assertEqual(payload["review_plan"]["valid_detailed_proof_unit_count"], 0)
+
+            with self.subTest(script=script, case="exact-duplicates"):
+                duplicate = json.dumps(proof_carrying_context_unit())
+                payload = json.loads(
+                    run_proof_carrying_context_plan(script, [duplicate, duplicate]).stdout
+                )
+                for row in payload["proof_units"]:
+                    self.assertEqual(row["validation_issues"], [])
+                    self.assertIn("duplicate_proof_unit", row["warnings"])
+                self.assertEqual(payload["review_plan"]["valid_detailed_proof_unit_count"], 2)
+                self.assertIn("duplicate_proof_unit", payload["review_plan"]["warnings"])
+
+            with self.subTest(script=script, case="missing-unit"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(script, []).stdout
+                )
+                self.assertEqual(payload["proof_units"], [])
+                self.assertEqual(payload["review_plan"]["supplied_proof_unit_count"], 0)
+                self.assertEqual(payload["review_plan"]["detailed_proof_unit_count"], 0)
+                self.assertEqual(payload["review_plan"]["overflow_proof_unit_count"], 0)
+                self.assertEqual(payload["review_plan"]["valid_detailed_proof_unit_count"], 0)
+                self.assertEqual(payload["review_plan"]["invalid_detailed_proof_unit_count"], 0)
+                self.assertEqual(payload["review_plan"]["readiness_blockers"][0], "missing_proof_unit")
+                self.assertEqual(
+                    payload["review_plan"]["warnings"],
+                    [
+                        "protected_zone_compliance_not_checked",
+                        "safe_range_bounds_not_checked",
+                    ],
+                )
+
+    def test_experimental_proof_carrying_context_global_gates_and_optional_range(self):
+        raw = json.dumps(proof_carrying_context_unit())
+        identity_without_range = json.dumps(
+            proof_carrying_context_unit(
+                safe_range=None,
+                transform_policy="identity",
+            )
+        )
+        alternate_command = json.dumps(
+            proof_carrying_context_unit(
+                safe_range={
+                    "kind": "bytes",
+                    "start": 0,
+                    "end": 9_007_199_254_740_991,
+                },
+                rehydrate_command=(
+                    "context-guard artifact get "
+                    f"{PROOF_CARRYING_CONTEXT_RECEIPT} --full"
+                ),
+            )
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script, case="provider-boundary"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(
+                        script,
+                        [raw],
+                        provider_boundary_ack=False,
+                    ).stdout
+                )
+                self.assertEqual(
+                    payload["review_plan"]["readiness_blockers"],
+                    ["missing_provider_measurement_boundary"],
+                )
+                self.assertFalse(
+                    payload["measurement_boundary"]["provider_boundary_acknowledged"]
+                )
+                self.assertFalse(
+                    payload["measurement_boundary"]["hosted_api_cost_savings_claim_allowed"]
+                )
+                self.assertTrue(payload["proof_units"][0]["syntax_and_consistency_valid"])
+
+            with self.subTest(script=script, case="declared-policy-only"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(
+                        script,
+                        [raw],
+                        protected_zone_policy="allow",
+                    ).stdout
+                )
+                self.assertEqual(
+                    payload["review_plan"]["readiness_blockers"],
+                    ["protected_zone_denial_required"],
+                )
+                self.assertEqual(payload["protected_zones"]["declared_policy"], "allow")
+                self.assertTrue(payload["protected_zones"]["declared_policy_only"])
+                self.assertFalse(payload["protected_zones"]["compliance_checked"])
+                self.assertIn(
+                    "protected_zone_compliance_not_checked",
+                    payload["review_plan"]["warnings"],
+                )
+
+            with self.subTest(script=script, case="optional-range"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(
+                        script,
+                        [identity_without_range],
+                    ).stdout
+                )
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertIsNone(payload["proof_units"][0]["safe_range"])
+                self.assertIn(
+                    "safe_range_omitted",
+                    payload["proof_units"][0]["warnings"],
+                )
+
+            with self.subTest(script=script, case="alternate-command-and-max-range"):
+                payload = json.loads(
+                    run_proof_carrying_context_plan(
+                        script,
+                        [alternate_command],
+                    ).stdout
+                )
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(
+                    payload["proof_units"][0]["safe_range"],
+                    {
+                        "coordinate_system": "zero_based_half_open",
+                        "end": 9_007_199_254_740_991,
+                        "kind": "bytes",
+                        "start": 0,
+                    },
+                )
+                self.assertTrue(payload["proof_units"][0]["rehydration"]["receipt_bound"])
+
+    def test_experimental_proof_carrying_context_overflow_never_touches_sentinel(self):
+        class ExplodingOverflowValue:
+            def _explode(self, *_args, **_kwargs):
+                raise AssertionError("overflow proof unit was touched")
+
+            __str__ = _explode
+            __repr__ = _explode
+            __eq__ = _explode
+            __hash__ = _explode
+            encode = _explode
+
+        raw = json.dumps(proof_carrying_context_unit())
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_overflow_{index}",
+                )
+                args = argparse.Namespace(
+                    proof_unit_json=[raw] * 64 + [ExplodingOverflowValue()],
+                    provider_boundary_ack=True,
+                    protected_zone_policy="deny",
+                )
+                payload = module.proof_carrying_context_plan_payload(args)
+                self.assertEqual(len(payload["proof_units"]), 64)
+                self.assertEqual(payload["review_plan"]["supplied_proof_unit_count"], 65)
+                self.assertEqual(payload["review_plan"]["detailed_proof_unit_count"], 64)
+                self.assertEqual(payload["review_plan"]["overflow_proof_unit_count"], 1)
+                self.assertIn("too_many_proof_units", payload["review_plan"]["readiness_blockers"])
+
+    def test_experimental_proof_carrying_context_capabilities_are_invariant(self):
+        fixtures = [
+            [],
+            ["{"],
+            [json.dumps(proof_carrying_context_unit(source_label="bad label"))],
+            [json.dumps(proof_carrying_context_unit())] * 65,
+            [json.dumps(proof_carrying_context_unit())],
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            scopes = []
+            for raw_units in fixtures:
+                payload = json.loads(
+                    run_proof_carrying_context_plan(script, raw_units).stdout
+                )
+                scopes.append(payload["proof_contract"]["verification_scope"])
+            self.assertTrue(all(scope == scopes[0] for scope in scopes[1:]))
+
+    def test_experimental_proof_carrying_context_payload_is_side_effect_free(self):
+        raw = json.dumps(proof_carrying_context_unit())
+
+        def forbidden(name):
+            def raise_forbidden(*_args, **_kwargs):
+                raise AssertionError(f"forbidden side effect: {name}")
+
+            return raise_forbidden
+
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_side_effects_{index}",
+                )
+                real_datetime = module.datetime
+
+                class GuardedDatetime:
+                    @classmethod
+                    def strptime(cls, value, format_string):
+                        return real_datetime.strptime(value, format_string)
+
+                    now = classmethod(forbidden("datetime.now"))
+                    utcnow = classmethod(forbidden("datetime.utcnow"))
+
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(mock.patch("builtins.open", side_effect=forbidden("open")))
+                    for name in ("open", "read_text", "read_bytes", "write_text", "write_bytes"):
+                        stack.enter_context(mock.patch.object(Path, name, side_effect=forbidden(f"Path.{name}")))
+                    for name in (
+                        "open",
+                        "read",
+                        "write",
+                        "mkdir",
+                        "makedirs",
+                        "replace",
+                        "rename",
+                        "unlink",
+                        "remove",
+                        "system",
+                        "popen",
+                    ):
+                        stack.enter_context(mock.patch.object(module.os, name, side_effect=forbidden(f"os.{name}")))
+                    stack.enter_context(mock.patch.object(module, "datetime", GuardedDatetime))
+                    for name in ("time", "monotonic", "perf_counter", "sleep"):
+                        stack.enter_context(mock.patch.object(module.time, name, side_effect=forbidden(f"time.{name}")))
+                    for name in (
+                        "socket",
+                        "create_connection",
+                        "getaddrinfo",
+                        "gethostbyname",
+                        "gethostbyname_ex",
+                        "getnameinfo",
+                    ):
+                        stack.enter_context(mock.patch.object(module.socket, name, side_effect=forbidden(f"socket.{name}")))
+                    stack.enter_context(mock.patch.object(module.http.client, "HTTPConnection", side_effect=forbidden("HTTPConnection")))
+                    stack.enter_context(mock.patch.object(module.http.client, "HTTPSConnection", side_effect=forbidden("HTTPSConnection")))
+                    for name in ("run", "Popen", "call", "check_call", "check_output"):
+                        stack.enter_context(mock.patch.object(subprocess, name, side_effect=forbidden(f"subprocess.{name}")))
+
+                    payload = module.proof_carrying_context_plan_payload(
+                        argparse.Namespace(
+                            proof_unit_json=[raw],
+                            provider_boundary_ack=True,
+                            protected_zone_policy="deny",
+                        )
+                    )
+
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertFalse(payload["runtime_side_effects"]["files_written"])
+                self.assertFalse(payload["external_services"]["called"])
+
+    def test_experimental_proof_carrying_context_runtime_commands_are_unavailable(self):
+        for script in EXPERIMENT_SCRIPTS:
+            for runtime_command in ("emit", "record", "serve"):
+                with self.subTest(script=script, runtime_command=runtime_command):
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            runtime_command,
+                            "proof-carrying-context",
+                            "--json",
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("invalid choice", proc.stderr)
+                    self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+
+    def test_experimental_proof_carrying_context_parser_and_human_surface_are_narrow(self):
+        expected_options = {
+            "--proof-unit-json",
+            "--provider-boundary-ack",
+            "--protected-zone-policy",
+            "--json",
+        }
+        raw = json.dumps(proof_carrying_context_unit())
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_parser_{index}",
+                )
+                parser = module.build_parser()
+                root_subparsers = next(
+                    action
+                    for action in parser._actions
+                    if isinstance(action, argparse._SubParsersAction)
+                )
+                plan_parser = root_subparsers.choices["plan"]
+                plan_subparsers = next(
+                    action
+                    for action in plan_parser._actions
+                    if isinstance(action, argparse._SubParsersAction)
+                )
+                proof_parser = plan_subparsers.choices["proof-carrying-context"]
+                options = {
+                    option
+                    for action in proof_parser._actions
+                    for option in action.option_strings
+                    if option not in {"-h", "--help"}
+                }
+                self.assertEqual(options, expected_options)
+
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        "plan",
+                        "proof-carrying-context",
+                        "--proof-unit-json",
+                        raw,
+                        "--provider-boundary-ack",
+                        "--protected-zone-policy",
+                        "deny",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertIn("dry-run metadata readiness only", proc.stdout)
+                self.assertIn("No source/artifact/config/stdin content was read", proc.stdout)
+                self.assertIn("no context was generated or replaced", proc.stdout)
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
@@ -7295,6 +8077,81 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["experiment_id"], "semantic-checkpoint")
                 self.assertEqual(payload["status"], "ready_for_plan_review")
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+
+    def test_experimental_proof_carrying_context_docs_examples_match_cli(self):
+        docs = (
+            ROOT / "README.md",
+            ROOT / "README.ko.md",
+            PLUGIN_DIR / "README.md",
+            PLUGIN_DIR / "README.ko.md",
+            KIT_DIR / "README.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
+        canonical_flags = (
+            "--json",
+            "--proof-unit-json",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+        )
+        forbidden_snippets = (
+            "emit proof-carrying-context",
+            "record proof-carrying-context",
+            "serve proof-carrying-context",
+        )
+        expected_warnings = [
+            "protected_zone_compliance_not_checked",
+            "safe_range_bounds_not_checked",
+            "receipt_storage_not_checked",
+            "content_hash_not_verified",
+            "rehydrate_command_not_executed",
+            "timestamp_freshness_not_checked",
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc):
+                text = doc.read_text(encoding="utf-8")
+                lower_text = text.lower()
+                self.assertIn("proof-carrying-context", lower_text)
+                self.assertRegex(lower_text, r"plan-only|plan only|dry-run|plan 전용")
+                self.assertRegex(lower_text, r"syntax|구문")
+                self.assertRegex(lower_text, r"declared-only|declared only|선언 전용")
+                self.assertIn("timestamp", lower_text)
+                self.assertIn("runtime", lower_text)
+                self.assertRegex(lower_text, r"hosted.*(?:token|cost|savings|절감)")
+                for snippet in forbidden_snippets:
+                    self.assertNotIn(snippet, lower_text)
+
+                example_lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip().startswith(
+                        "context-guard experiments plan proof-carrying-context"
+                    )
+                ]
+                self.assertEqual(len(example_lines), 1)
+                example = example_lines[0]
+                for flag in canonical_flags:
+                    self.assertIn(flag, example)
+
+                argv = shlex.split(example)
+                self.assertEqual(argv[:3], ["context-guard", "experiments", "plan"])
+                with tempfile.TemporaryDirectory() as tmp:
+                    proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(PLUGIN_BIN / "context-guard-experiments"),
+                            *argv[2:],
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        cwd=tmp,
+                    )
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["experiment_id"], "proof-carrying-context")
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
+                self.assertEqual(payload["review_plan"]["warnings"], expected_warnings)
+                self.assertIsNone(payload["candidate_replacement"])
 
     def test_experimental_local_proxy_docs_surface_boundary(self):
         docs = (
