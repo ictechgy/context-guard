@@ -5158,7 +5158,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_experimental_local_proxy_runtime_gate_record(self):
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
+                with local_proxy_safe_temp_directory("runtime-gate-record") as tmp:
                     root = Path(tmp)
                     ledger = root / ".context-guard" / "local-proxy-gates.jsonl"
                     proc = subprocess.run(
@@ -5213,7 +5213,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
         for dispatcher in (KIT_DIR / "context_guard_cli.py", PLUGIN_BIN / "context-guard"):
             with self.subTest(dispatcher=dispatcher):
-                with tempfile.TemporaryDirectory() as tmp:
+                with local_proxy_safe_temp_directory(f"runtime-gate-dispatcher-{dispatcher.name}") as tmp:
                     ledger = Path(tmp) / "gates.jsonl"
                     proc = subprocess.run(
                         [
@@ -5305,7 +5305,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_experimental_local_proxy_runtime_gate_blocks_false_ack_from_input_json(self):
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
+                with local_proxy_safe_temp_directory("runtime-gate-false-ack") as tmp:
                     root = Path(tmp)
                     input_json = root / "local-proxy.json"
                     input_json.write_text(
@@ -5346,7 +5346,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_experimental_local_proxy_runtime_gate_rejects_symlink_ledger(self):
         for script in EXPERIMENT_SCRIPTS:
             with self.subTest(script=script):
-                with tempfile.TemporaryDirectory() as tmp:
+                with local_proxy_safe_temp_directory("runtime-gate-symlink") as tmp:
                     root = Path(tmp)
                     target = root / "target.jsonl"
                     target.write_text("", encoding="utf-8")
@@ -5435,7 +5435,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for script in EXPERIMENT_SCRIPTS:
             for name, args, blocker, secret_fragments in cases:
                 with self.subTest(script=script, case=name):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory(f"runtime-gate-unsafe-{name}") as tmp:
                         ledger = Path(tmp) / "gates.jsonl"
                         proc = subprocess.run(
                             [
@@ -6898,7 +6898,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         try:
             for script in EXPERIMENT_SCRIPTS:
                 with self.subTest(script=script, case="success_row"):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory("diagnostic-ledger") as tmp:
                         long_name = "diagnostics-" + ("x" * 130) + ".jsonl"
                         ledger = Path(tmp) / long_name
                         target_path = "/diagnostic-row?marker=raw-target"
@@ -6984,7 +6984,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn(getattr(proc, "_context_guard_proxy_nonce"), stdout + stderr)
 
                 with self.subTest(script=script, case="blocked_request_no_row"):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory("diagnostic-ledger-blocked-request") as tmp:
                         ledger = Path(tmp) / "diagnostics.jsonl"
                         proxy_port = reserve_loopback_port()
                         proc = popen_local_proxy_with_ready(
@@ -7031,7 +7031,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertNotIn("sk-ant-secret", stdout + stderr)
 
                 with self.subTest(script=script, case="startup_blocked_no_row"):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory("diagnostic-ledger-startup-blocked") as tmp:
                         ledger = Path(tmp) / "diagnostics.jsonl"
                         proc = subprocess.run(
                             [
@@ -7065,7 +7065,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertFalse(ledger.exists())
 
                 with self.subTest(script=script, case="symlink_ledger_rejected"):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory("diagnostic-ledger-symlink") as tmp:
                         root = Path(tmp)
                         target = root / "target.jsonl"
                         ledger = root / "diagnostics.jsonl"
@@ -7111,7 +7111,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                         self.assertRegex(proc.stdout + proc.stderr, r"must not be a symlink|must be a regular file")
 
                 with self.subTest(script=script, case="directory_ledger_rejected"):
-                    with tempfile.TemporaryDirectory() as tmp:
+                    with local_proxy_safe_temp_directory("diagnostic-ledger-directory") as tmp:
                         ledger = Path(tmp) / "ledger-dir"
                         ready_file = Path(tmp) / "ready.json"
                         ledger.mkdir()
