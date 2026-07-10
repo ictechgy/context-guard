@@ -1,6 +1,6 @@
 # Experimental Token-Reduction Radar
 
-ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** plus narrow **graduated local experiments** such as the explicit context-diff, visual evidence-pack, learned-candidate, self-hosted metrics, local proxy gate-record, and one-shot loopback local proxy forwarding runtimes. Later-roadmap lanes are not shipped runtime features, and nothing here is a hosted API savings claim.
+ContextGuard's shipped helpers reduce avoidable local context bloat before an AI coding agent sees it. This radar tracks **optional future experiments** plus narrow **graduated local experiments** such as the explicit context-diff, visual evidence-pack, plan-only image-context-pack and semantic-checkpoint gates, learned-candidate, self-hosted metrics, local proxy gate-record, and one-shot loopback local proxy forwarding runtimes. Later-roadmap lanes are not shipped runtime features, and nothing here is a hosted API savings claim.
 
 ## Non-claims
 
@@ -64,6 +64,20 @@ Future PR checklist:
 - [ ] Show bounded-loss disclosure whenever lossy replacement is allowed.
 - [ ] Make no hosted token/cost savings claim from a smaller local diff alone.
 
+
+### Image-context-pack plan-only gate
+
+`context-guard experiments plan image-context-pack` is a pxpipe-inspired, plan-only dry-run gate for evaluating whether future image/context packing is even safe to study. It is not a runtime feature: ContextGuard does not render images, run OCR, parse images, call models or providers, proxy traffic, store binary artifacts, write replacement evidence, or make hosted token/cost savings claims from this gate.
+
+The gate requires explicit evaluation intent, exact text artifact fallback before any omitted text is relied on, protected-zone denial for code, diffs, identifiers, hashes, paths, numeric constants, JSON keys, stack frames, secrets, and prompt-like instructions, missed-context guardrails, and provider-measured matched successful tasks before any hosted savings claim. `visual-crop-ocr` remains the existing caller-supplied visual evidence-pack surface; its visual handles are not a verified exact binary/image fallback, and `image-context-pack` is not a duplicate visual evidence emitter.
+
+Future PR checklist:
+- [ ] Keep the lane plan-only and default off until a separate future runtime plan is approved.
+- [ ] Require verified exact text fallback before any future image/context pack can replace omitted text.
+- [ ] Deny protected-zone and prompt-like content rather than rendering or transforming it.
+- [ ] Track missed-context review and human-correction evidence before promotion.
+- [ ] Treat image/request byte reductions as proxy evidence until provider-measured matched tasks prove token/cost deltas.
+
 ### Opt-in local proxy constraints gate
 
 Local proxy constraints are opt-in and local-only. The shipped gate recorder is record-only, and the shipped forwarding MVP is one-shot literal-loopback HTTP forwarding only; any broader proxy behavior must require explicit user enablement, document the local service boundary, state **no hidden external forwarding**, and record shifted-cost accounting for local services, subagents, model servers, or proxy infrastructure. Proxy byte reductions, cache hits, or local latency changes are diagnostic evidence only.
@@ -99,6 +113,24 @@ Broader context-diff compaction remains gated if it would automatically generate
 
 Broader visual-token reduction remains gated if it would generate crops, invoke OCR/image models, prune visual tokens inside model architectures, replace full evidence without review, or claim provider savings.
 
+## Plan-only local experiment — image-context-pack gate
+
+`context-guard experiments plan image-context-pack --json` is the plan-only control-plane marker for pxpipe-inspired image/context packing evaluation. It requires explicit provider-boundary acknowledgement, exact text fallback receipt/re-expand metadata, missed-context notes, and protected-zone denial before it can report `ready_for_plan_review`. It does not emit images, pack context, render PNGs, store binary/image artifacts, run OCR/image parsing/model calls, proxy traffic, write files, or change stable runtime behavior. Area or byte reductions in the plan are proxy-only diagnostics, not hosted token/cost savings evidence.
+
+Future runtime work remains gated by verified exact text fallback, protected-zone denial, missed-context review, and provider-measured matched successful tasks. The existing `visual-crop-ocr` lane remains the caller-supplied visual evidence-pack surface and is not a verified exact binary/image fallback.
+
+## Plan-only local experiment — semantic-checkpoint gate
+
+`context-guard experiments plan semantic-checkpoint --json` is the plan-only/eval-only control-plane marker for reviewable task-state checkpoint planning. The canonical ready-state example is:
+
+```bash
+context-guard experiments plan semantic-checkpoint --json --goal "preserve current task state for review" --constraint "do not rewrite protected evidence" --decision "ship plan-only semantic-checkpoint gate first" --open-task "verify exact fallback before any checkpoint is used" --evidence-handle "roadmap=contextguard-artifact:0123456789abcdef" --missing-provenance-note "none known after review" --unresolved-question "which provenance handle fields become mandatory later" --exact-context-fallback-receipt 0123456789abcdef --reexpand-command "context-guard-artifact get 0123456789abcdef --full" --provider-boundary-ack --protected-zone-policy deny --missed-context-note "raw transcript remains retrievable before checkpoint metadata is used"
+```
+
+The CLI accepts these fields as optional so incomplete dry runs can still return reviewer JSON, but the JSON payload blocks readiness until the plan includes a goal, exact context fallback receipt, local re-expand command, provider-boundary acknowledgement, protected-zone policy `deny`, missed-context note, and provenance review note. `--missing-provenance-note` can be a review acknowledgement such as `none known after review`. Exact context fallback is required before any checkpoint metadata is used; allowed local artifact retrieval shapes are `context-guard-artifact get <id> --full` and `context-guard artifact get <id> --full`.
+
+This gate has no `emit`, `record`, or `serve` runtime, no new `context-guard-semantic-checkpoint` binary, writes no files, edits no transcript or prompt, calls no model/provider/network, emits no replacement context, and makes no hosted token/cost savings claim. Future runtime work remains gated by complete provenance, exact fallback/re-expand verification, protected-zone denial, missed-context review, and provider-measured matched successful tasks.
+
 ## Graduated local experiment — learned-compression candidate emitter
 
 `context-guard experiments emit learned-compression --exact-fallback-receipt ... --reexpand-command ...` is the explicit local runtime promoted from the learned-compression gate. It does not run learned compressors, embeddings, rerankers, model calls, subprocesses, or external services; the compact prose candidate must be supplied by the caller, both original and candidate text must pass the deny-by-default protected-signal scan, and the exact local fallback artifact content must match the input. The emitted byte reduction is proxy evidence only and cannot support hosted API token/cost savings claims without the shared promotion gate.
@@ -131,17 +163,17 @@ Recommended first experiment: run a learned compressor only on already-sanitized
 
 ## Lane 2 — Multimodal crop, OCR, and visual-token reduction
 
-Candidate methods include screenshot cropping before upload, local OCR to replace screenshots with text when fidelity is sufficient, image tiling policies, visual-token pruning methods such as diversity or language-guided pruning, and task-specific region selection.
+Candidate methods include screenshot cropping before upload, local OCR to replace screenshots with text when fidelity is sufficient, pxpipe-inspired image/context packing plans, image tiling policies, visual-token pruning methods such as diversity or language-guided pruning, and task-specific region selection.
 
 | Question | Gate |
 | --- | --- |
 | Why it could help | Many UI/debugging tasks need one region, one error message, or OCR text rather than a full high-resolution screenshot. |
-| What it does not prove | Cropping/OCR can lose visual context; visual-token pruning usually applies inside specific multimodal model architectures. |
+| What it does not prove | Cropping/OCR/image-context packing can lose visual or exact text context; visual-token pruning usually applies inside specific multimodal model architectures. |
 | Hosted API claim boundary | Claim hosted API savings only with provider-measured image/text token or cost evidence for matched successful tasks. |
-| Minimum telemetry | image dimensions, crop area, OCR confidence/error notes, provider image/text token fields when available, success, corrections. |
+| Minimum telemetry | image dimensions, crop area or planned pack dimensions, OCR confidence/error notes when applicable, exact text fallback receipt verification, provider image/text token fields when available, success, corrections. |
 | Promotion path | Start with local crop/OCR advice and benchmark fixtures; promote only when missed-visual-context regressions are bounded. |
 
-Recommended first experiment: add a benchmark fixture comparing full screenshot review versus cropped/OCR evidence on tasks with known visual answers.
+Recommended first experiments: keep `image-context-pack` as plan-only metadata until exact text fallback verification and provider-measured matched-task fields exist; separately add benchmark fixtures comparing full screenshot review versus cropped/OCR evidence on tasks with known visual answers.
 
 ## Lane 3 — Self-hosted KV-cache, attention, and latent inference optimizations
 
@@ -168,5 +200,5 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 
 ## Current status
 
-This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
+This radar is intentionally conservative. The shipped ContextGuard tools remain local context hygiene, artifact receipts, context packing, tool-schema pruning, transcript audit, statusline visibility, benchmark evidence, plus the explicitly gated local context-diff emitter, visual crop/OCR evidence-pack emitter, plan-only image-context-pack dry-run gate, plan-only/eval-only semantic-checkpoint gate, learned-compression candidate emitter, and self-hosted metrics sidecar recorder described above. Package-visible starter scaffolds live in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). They are fixture-only synthetic task/variant examples and dry-run-only starters until prompts and success checks are replaced for a real experiment; they are not shipped runtime helpers, benchmark results, or hosted API savings evidence.
 Future experiments must pass the gates above before becoming product features.
