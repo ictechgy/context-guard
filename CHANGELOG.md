@@ -4,6 +4,12 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-07-10
+
+- Added the default-off `semantic-checkpoint` experimental planning gate with deterministic readiness payloads, explicit scope/metric/rollback validation, prompt-cache caveats, and hosted-savings claim boundaries.
+- Documented semantic-checkpoint as a plan-only roadmap lane across README/plugin materials and updated the experimental token-reduction radar.
+- Expanded regression coverage for semantic-checkpoint validation, preview truncation, config isolation, and plugin copy synchronization.
+
 ## [0.4.13] - 2026-06-22
 
 - Kept the Bash rewrite hook stdout JSON-parseable while routing sanitizer-worthy read-only pipelines through `context-guard-sanitize-output`.
