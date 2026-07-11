@@ -4210,6 +4210,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertIsNone(payload["candidates"][0]["content_sha256"])
             self.assertIn("invalid_content_sha256", payload["blockers"])
             self.assertIn("missing_provenance", payload["blockers"])
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["human_review_performed"])
+            self.assertFalse(payload["omission_authorized"])
+            self.assertFalse(payload["runtime_action_allowed"])
 
     def test_experimental_semantic_gc_counts_and_audit(self):
         graph = [
@@ -4322,6 +4326,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 payload = json.loads(run_semantic_gc_plan(script, [semantic_gc_unit("root", is_root=True), semantic_gc_candidate(**overrides)]).stdout)
                 self.assertIn(blocker, payload["blockers"])
                 self.assertEqual(payload["candidate_count"], 1)
+                self.assertEqual(payload["candidate_safety_invalid_count"], 1)
+                self.assertEqual(payload["status"], "blocked")
+                self.assertFalse(payload["human_review_performed"])
+                self.assertFalse(payload["omission_authorized"])
+                self.assertFalse(payload["runtime_action_allowed"])
                 self.assertNotIn("BADSECRET", payload["candidates"][0].__repr__())
                 self.assertNotIn("SECRET", json.dumps(payload))
 
