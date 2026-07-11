@@ -70,6 +70,65 @@ LOCAL_PROXY_EXTERNAL_DESIGN_SCHEMA_VERSION = "contextguard.experiments.local-pro
 LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION = "contextguard.experiments.local-proxy-response-sandbox.v1"
 IMAGE_CONTEXT_PACK_PLAN_SCHEMA_VERSION = "contextguard.experiments.image-context-pack-plan.v1"
 SEMANTIC_CHECKPOINT_PLAN_SCHEMA_VERSION = "contextguard.experiments.semantic-checkpoint-plan.v1"
+PROOF_CARRYING_CONTEXT_PLAN_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-plan.v1"
+PROOF_CARRYING_CONTEXT_UNIT_SCHEMA_VERSION = "contextguard.proof-unit.v1"
+PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP = 64
+PROOF_CARRYING_CONTEXT_UNIT_JSON_BYTE_CAP = 8192
+PROOF_UNIT_JSON_MAX_DEPTH = 100
+JSON_SAFE_INTEGER_MAX = 9_007_199_254_740_991
+PROOF_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
+PROOF_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
+PROOF_CONTENT_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+PROOF_CAPTURED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+PROOF_UNIT_ALLOWED_FIELDS = frozenset({
+    "source_label",
+    "receipt_id",
+    "content_sha256",
+    "safe_range",
+    "captured_at",
+    "transform_policy",
+    "rehydrate_command",
+})
+PROOF_READINESS_BLOCKER_ORDER = (
+    "missing_proof_unit",
+    "too_many_proof_units",
+    "proof_unit_json_too_large",
+    "invalid_proof_unit_unicode",
+    "invalid_proof_unit_json",
+    "duplicate_proof_unit_keys",
+    "proof_unit_json_nesting_too_deep",
+    "nonfinite_proof_unit_number",
+    "proof_unit_not_object",
+    "unknown_proof_unit_fields",
+    "missing_source_label",
+    "invalid_source_label",
+    "missing_receipt",
+    "invalid_receipt",
+    "missing_content_sha256",
+    "invalid_content_sha256",
+    "missing_timestamp",
+    "invalid_timestamp",
+    "missing_transform_policy",
+    "invalid_transform_policy",
+    "invalid_safe_range",
+    "missing_safe_range_for_transform_policy",
+    "missing_rehydrate_command",
+    "invalid_rehydrate_command",
+    "rehydrate_receipt_mismatch",
+    "receipt_hash_conflict",
+    "protected_zone_denial_required",
+    "missing_provider_measurement_boundary",
+)
+PROOF_WARNING_ORDER = (
+    "protected_zone_compliance_not_checked",
+    "safe_range_bounds_not_checked",
+    "receipt_storage_not_checked",
+    "content_hash_not_verified",
+    "rehydrate_command_not_executed",
+    "timestamp_freshness_not_checked",
+    "safe_range_omitted",
+    "duplicate_proof_unit",
+)
 IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY = "provider-measured-matched-tasks-required"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
 LOCAL_PROXY_DEFAULT_BIND_PORT = 0
@@ -358,6 +417,45 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "The planner requires a goal, exact context artifact fallback, protected-zone denial, provider/model "
             "measured matched-task boundary, missed-context notes, and provenance review notes before checkpoint metadata "
             "is ready for plan review; raw context remains authoritative."
+        ),
+    ),
+    Experiment(
+        id="proof-carrying-context",
+        name="Proof-carrying context metadata planning gate",
+        summary=(
+            "Plan-only proof-envelope metadata syntax and consistency readiness without reading source content, "
+            "verifying receipts, or emitting compact context."
+        ),
+        stability="experimental",
+        default_enabled=False,
+        risk_level="high",
+        claim_boundary=(
+            "Proof-envelope metadata readiness is not verified proof or hosted savings evidence; actual receipt, "
+            "content, range, protected-zone, and rehydration checks require a separately approved consumer."
+        ),
+        gate_requirements=(
+            "at least one bounded inline proof-unit JSON object",
+            "caller-declared protected-zone denial",
+            "provider/model measurement boundary acknowledgement",
+            "syntax-only proof metadata and exact rehydration binding",
+        ),
+        runtime_status="available-plan-only",
+        commands=("context-guard experiments plan proof-carrying-context",),
+        opt_in_flags=(
+            "plan proof-carrying-context",
+            "--proof-unit-json",
+            "--provider-boundary-ack",
+            "--protected-zone-policy deny",
+        ),
+        config_effect=(
+            "Registry enablement records project-local intent only; proof-carrying-context exposes one deterministic "
+            "plan command. It does not add an emit/record/serve runtime, read source/artifact/config/stdin content, "
+            "execute rehydration, write files, edit prompts/transcripts, generate compact context, or replace context."
+        ),
+        evidence_contract=(
+            "The planner validates bounded inline proof-envelope metadata syntax and defined cross-unit consistency "
+            "only. Protected-zone compliance, range bounds, receipt storage, content hashes, timestamp freshness, "
+            "and rehydration remain explicitly unchecked."
         ),
     ),
     Experiment(
@@ -2134,6 +2232,625 @@ def command_plan_semantic_checkpoint(args: argparse.Namespace) -> int:
         print(f"Status: {payload['status']}")
         if payload["review_plan"]["readiness_blockers"]:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(payload["claim_boundary"])
+    return 0
+
+
+_PROOF_NONFINITE_SENTINEL = object()
+
+
+def ordered_proof_taxonomy(values: list[str] | set[str], order: tuple[str, ...]) -> list[str]:
+    selected = set(values)
+    return [value for value in order if value in selected]
+
+
+def empty_proof_unit_row(unit_index: int, issue: str) -> dict[str, Any]:
+    return {
+        "captured_at": None,
+        "content_hash": {
+            "algorithm": "sha256",
+            "content_verified": False,
+            "syntax_valid": False,
+            "value": None,
+        },
+        "receipt": {
+            "id": None,
+            "storage_checked": False,
+            "syntax_valid": False,
+        },
+        "rehydration": {
+            "command": None,
+            "executed": False,
+            "receipt_bound": False,
+            "syntax_valid": False,
+        },
+        "safe_range": None,
+        "source_label": None,
+        "syntax_and_consistency_valid": False,
+        "transform_policy": None,
+        "unit_index": unit_index,
+        "validation_issues": [issue],
+        "warnings": [],
+    }
+
+
+def decode_proof_unit_json(raw: Any, unit_index: int) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(raw, str):
+        return None, empty_proof_unit_row(unit_index, "invalid_proof_unit_json")
+    try:
+        encoded = raw.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return None, empty_proof_unit_row(unit_index, "invalid_proof_unit_unicode")
+    if len(encoded) > PROOF_CARRYING_CONTEXT_UNIT_JSON_BYTE_CAP:
+        return None, empty_proof_unit_row(unit_index, "proof_unit_json_too_large")
+
+    duplicate_keys = False
+
+    def proof_object_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal duplicate_keys
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_keys = True
+            result[key] = value
+        return result
+
+    try:
+        decoded = json.loads(
+            raw,
+            object_pairs_hook=proof_object_pairs_hook,
+            parse_constant=lambda _value: _PROOF_NONFINITE_SENTINEL,
+        )
+    except RecursionError:
+        return None, empty_proof_unit_row(unit_index, "proof_unit_json_nesting_too_deep")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None, empty_proof_unit_row(unit_index, "invalid_proof_unit_json")
+
+    depth_exceeded = False
+    decoded_unicode_invalid = False
+    nonfinite_number = False
+    stack: list[tuple[Any, int]] = [(decoded, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > PROOF_UNIT_JSON_MAX_DEPTH:
+            depth_exceeded = True
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                decoded_unicode_invalid = True
+        elif value is _PROOF_NONFINITE_SENTINEL:
+            nonfinite_number = True
+        elif type(value) is float and not math.isfinite(value):
+            nonfinite_number = True
+
+        if depth > PROOF_UNIT_JSON_MAX_DEPTH:
+            continue
+        if isinstance(value, dict):
+            next_depth = depth + 1
+            for key, child in value.items():
+                stack.append((key, next_depth))
+                stack.append((child, next_depth))
+        elif isinstance(value, list):
+            next_depth = depth + 1
+            for child in value:
+                stack.append((child, next_depth))
+
+    if duplicate_keys:
+        return None, empty_proof_unit_row(unit_index, "duplicate_proof_unit_keys")
+    if depth_exceeded:
+        return None, empty_proof_unit_row(unit_index, "proof_unit_json_nesting_too_deep")
+    if nonfinite_number:
+        return None, empty_proof_unit_row(unit_index, "nonfinite_proof_unit_number")
+    if decoded_unicode_invalid:
+        return None, empty_proof_unit_row(unit_index, "invalid_proof_unit_unicode")
+    if not isinstance(decoded, dict):
+        return None, empty_proof_unit_row(unit_index, "proof_unit_not_object")
+    return decoded, None
+
+
+def normalize_required_proof_string(
+    obj: dict[str, Any],
+    field: str,
+    missing_issue: str,
+    invalid_issue: str,
+    validator: Any,
+    issues: list[str],
+) -> str | None:
+    raw = obj.get(field)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        issues.append(missing_issue)
+        return None
+    if not isinstance(raw, str):
+        issues.append(invalid_issue)
+        return None
+    value = raw.strip()
+    if not validator(value):
+        issues.append(invalid_issue)
+        return None
+    return value
+
+
+def valid_proof_timestamp(value: str) -> bool:
+    if PROOF_CAPTURED_AT_RE.fullmatch(value) is None:
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def normalize_proof_safe_range(
+    obj: dict[str, Any],
+    issues: list[str],
+) -> tuple[dict[str, Any] | None, bool, bool]:
+    if "safe_range" not in obj or obj.get("safe_range") is None:
+        return None, False, False
+    raw = obj.get("safe_range")
+    if not isinstance(raw, dict) or set(raw) != {"kind", "start", "end"}:
+        issues.append("invalid_safe_range")
+        return None, True, True
+    kind = raw.get("kind")
+    start = raw.get("start")
+    end = raw.get("end")
+    if type(start) is not int or type(end) is not int:
+        issues.append("invalid_safe_range")
+        return None, True, True
+    if kind == "lines":
+        valid = 1 <= start <= end <= JSON_SAFE_INTEGER_MAX
+        coordinate_system = "one_based_inclusive"
+    elif kind == "bytes":
+        valid = 0 <= start < end <= JSON_SAFE_INTEGER_MAX
+        coordinate_system = "zero_based_half_open"
+    else:
+        valid = False
+        coordinate_system = ""
+    if not valid:
+        issues.append("invalid_safe_range")
+        return None, True, True
+    return {
+        "coordinate_system": coordinate_system,
+        "end": end,
+        "kind": kind,
+        "start": start,
+    }, True, False
+
+
+def parse_proof_rehydrate_command(command: str) -> tuple[bool, str | None]:
+    if any(character in command for character in ";|&><`$\\\n\r"):
+        return False, None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False, None
+    receipt: str | None = None
+    if len(argv) == 4 and argv[0:2] == ["context-guard-artifact", "get"] and argv[3] == "--full":
+        receipt = argv[2]
+    elif len(argv) == 5 and argv[0:3] == ["context-guard", "artifact", "get"] and argv[4] == "--full":
+        receipt = argv[3]
+    if receipt is None or PROOF_RECEIPT_ID_RE.fullmatch(receipt) is None:
+        return False, None
+    return True, receipt
+
+
+def normalize_proof_unit(obj: dict[str, Any], unit_index: int) -> tuple[dict[str, Any], str | None, str | None]:
+    issues: list[str] = []
+    if set(obj) - PROOF_UNIT_ALLOWED_FIELDS:
+        issues.append("unknown_proof_unit_fields")
+
+    source_label = normalize_required_proof_string(
+        obj,
+        "source_label",
+        "missing_source_label",
+        "invalid_source_label",
+        lambda value: PROOF_SOURCE_LABEL_RE.fullmatch(value) is not None,
+        issues,
+    )
+    receipt_id = normalize_required_proof_string(
+        obj,
+        "receipt_id",
+        "missing_receipt",
+        "invalid_receipt",
+        lambda value: PROOF_RECEIPT_ID_RE.fullmatch(value) is not None,
+        issues,
+    )
+    content_sha256 = normalize_required_proof_string(
+        obj,
+        "content_sha256",
+        "missing_content_sha256",
+        "invalid_content_sha256",
+        lambda value: PROOF_CONTENT_SHA256_RE.fullmatch(value) is not None,
+        issues,
+    )
+    captured_at = normalize_required_proof_string(
+        obj,
+        "captured_at",
+        "missing_timestamp",
+        "invalid_timestamp",
+        valid_proof_timestamp,
+        issues,
+    )
+    raw_transform_policy = obj.get("transform_policy")
+    transform_policy: str | None = None
+    if raw_transform_policy is None or (
+        isinstance(raw_transform_policy, str) and not raw_transform_policy.strip()
+    ):
+        issues.append("missing_transform_policy")
+    elif not isinstance(raw_transform_policy, str) or raw_transform_policy not in {
+        "identity",
+        "safe_range_extract",
+    }:
+        issues.append("invalid_transform_policy")
+    else:
+        transform_policy = raw_transform_policy
+    safe_range, safe_range_supplied, safe_range_invalid = normalize_proof_safe_range(obj, issues)
+    if transform_policy == "safe_range_extract" and not safe_range_supplied and not safe_range_invalid:
+        issues.append("missing_safe_range_for_transform_policy")
+
+    raw_command = obj.get("rehydrate_command")
+    command_value: str | None = None
+    command_syntax_valid = False
+    command_receipt: str | None = None
+    if raw_command is None or (isinstance(raw_command, str) and not raw_command.strip()):
+        issues.append("missing_rehydrate_command")
+    elif not isinstance(raw_command, str):
+        issues.append("invalid_rehydrate_command")
+    else:
+        command_syntax_valid, command_receipt = parse_proof_rehydrate_command(raw_command)
+        if not command_syntax_valid:
+            issues.append("invalid_rehydrate_command")
+
+    receipt_bound = bool(
+        command_syntax_valid
+        and receipt_id is not None
+        and command_receipt == receipt_id
+    )
+    if command_syntax_valid and receipt_id is not None and command_receipt != receipt_id:
+        issues.append("rehydrate_receipt_mismatch")
+    if receipt_bound and isinstance(raw_command, str):
+        command_value = raw_command.strip()
+
+    ordered_issues = ordered_proof_taxonomy(issues, PROOF_READINESS_BLOCKER_ORDER)
+    row = {
+        "captured_at": captured_at,
+        "content_hash": {
+            "algorithm": "sha256",
+            "content_verified": False,
+            "syntax_valid": content_sha256 is not None,
+            "value": content_sha256,
+        },
+        "receipt": {
+            "id": receipt_id,
+            "storage_checked": False,
+            "syntax_valid": receipt_id is not None,
+        },
+        "rehydration": {
+            "command": command_value,
+            "executed": False,
+            "receipt_bound": receipt_bound,
+            "syntax_valid": command_syntax_valid,
+        },
+        "safe_range": safe_range,
+        "source_label": source_label,
+        "syntax_and_consistency_valid": not ordered_issues,
+        "transform_policy": transform_policy,
+        "unit_index": unit_index,
+        "validation_issues": ordered_issues,
+        "warnings": [],
+    }
+    return row, receipt_id, content_sha256
+
+
+def proof_duplicate_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    safe_range = row["safe_range"]
+    normalized_range = None if safe_range is None else (
+        safe_range["kind"],
+        safe_range["start"],
+        safe_range["end"],
+    )
+    return (
+        row["source_label"],
+        row["receipt"]["id"],
+        row["content_hash"]["value"],
+        normalized_range,
+        row["captured_at"],
+        row["transform_policy"],
+        row["rehydration"]["command"],
+    )
+
+
+def proof_verification_scope() -> dict[str, Any]:
+    return {
+        "content_hash_verified": False,
+        "cross_field_consistency_checked": True,
+        "cross_unit_receipt_hash_consistency_checked": True,
+        "decoded_number_finiteness_checked": True,
+        "decoded_unicode_checked": True,
+        "duplicate_json_keys_checked": True,
+        "field_syntax_checked": True,
+        "json_depth_checked": True,
+        "json_syntax_checked": True,
+        "protected_zone_compliance_checked": False,
+        "receipt_content_read": False,
+        "receipt_storage_checked": False,
+        "rehydration_executed": False,
+        "safe_range_bounds_checked": False,
+        "semantics": "validator_capability_invariant",
+        "source_content_read": False,
+    }
+
+
+def proof_carrying_context_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    raw_units = args.proof_unit_json or []
+    supplied_count = len(raw_units)
+    detailed_count = min(supplied_count, PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP)
+    overflow_count = max(supplied_count - PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP, 0)
+    detailed_raw_units = raw_units[:PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP]
+
+    rows: list[dict[str, Any]] = []
+    conflict_inputs: list[tuple[str | None, str | None]] = []
+    for unit_index, raw in enumerate(detailed_raw_units):
+        decoded, terminal_row = decode_proof_unit_json(raw, unit_index)
+        if terminal_row is not None:
+            rows.append(terminal_row)
+            conflict_inputs.append((None, None))
+            continue
+        assert decoded is not None
+        row, receipt_id, content_sha256 = normalize_proof_unit(decoded, unit_index)
+        rows.append(row)
+        conflict_inputs.append((receipt_id, content_sha256))
+
+    hashes_by_receipt: dict[str, set[str]] = {}
+    for receipt_id, content_sha256 in conflict_inputs:
+        if receipt_id is not None and content_sha256 is not None:
+            hashes_by_receipt.setdefault(receipt_id, set()).add(content_sha256)
+    conflicted_receipts = {
+        receipt_id for receipt_id, hashes in hashes_by_receipt.items() if len(hashes) > 1
+    }
+    for row, (receipt_id, _content_sha256) in zip(rows, conflict_inputs):
+        if receipt_id in conflicted_receipts:
+            row["validation_issues"] = ordered_proof_taxonomy(
+                [*row["validation_issues"], "receipt_hash_conflict"],
+                PROOF_READINESS_BLOCKER_ORDER,
+            )
+
+    duplicate_groups: dict[tuple[Any, ...], list[int]] = {}
+    for row in rows:
+        if not row["validation_issues"]:
+            duplicate_groups.setdefault(proof_duplicate_key(row), []).append(row["unit_index"])
+    duplicate_indexes = {
+        unit_index
+        for indexes in duplicate_groups.values()
+        if len(indexes) > 1
+        for unit_index in indexes
+    }
+
+    valid_count = 0
+    for row in rows:
+        row_valid = not row["validation_issues"]
+        row["syntax_and_consistency_valid"] = row_valid
+        if not row_valid:
+            row["warnings"] = []
+            continue
+        valid_count += 1
+        warnings = list(PROOF_WARNING_ORDER[:6])
+        if row["safe_range"] is None:
+            warnings.append("safe_range_omitted")
+        if row["unit_index"] in duplicate_indexes:
+            warnings.append("duplicate_proof_unit")
+        row["warnings"] = ordered_proof_taxonomy(warnings, PROOF_WARNING_ORDER)
+
+    protected_policy = (args.protected_zone_policy or "deny").strip().lower()
+    blockers: list[str] = []
+    if supplied_count == 0:
+        blockers.append("missing_proof_unit")
+    if overflow_count:
+        blockers.append("too_many_proof_units")
+    for row in rows:
+        blockers.extend(row["validation_issues"])
+    if protected_policy != "deny":
+        blockers.append("protected_zone_denial_required")
+    if not args.provider_boundary_ack:
+        blockers.append("missing_provider_measurement_boundary")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_READINESS_BLOCKER_ORDER)
+
+    top_warnings = list(PROOF_WARNING_ORDER[:2])
+    for row in rows:
+        top_warnings.extend(row["warnings"])
+    top_warnings = ordered_proof_taxonomy(top_warnings, PROOF_WARNING_ORDER)
+    ready = not blockers
+
+    return {
+        "candidate_replacement": None,
+        "claim_boundary": (
+            "Dry-run proof-carrying-context metadata validation only; protected-zone compliance, safe-range bounds, "
+            "receipt storage, source content, SHA-256, timestamp freshness, and rehydration were not checked, no "
+            "context was generated or replaced, and no hosted token/cost savings claim is allowed without "
+            "provider-measured matched successful tasks."
+        ),
+        "experiment_id": "proof-carrying-context",
+        "external_services": {
+            "called": False,
+            "dns_lookup": False,
+            "model_calls": False,
+            "network": False,
+            "provider_calls": False,
+            "proxy_forwarding": False,
+        },
+        "measurement_boundary": {
+            "hosted_api_cost_savings_claim_allowed": False,
+            "hosted_api_token_savings_claim_allowed": False,
+            "local_metadata_readiness_is_not_hosted_savings_evidence": True,
+            "provider_boundary_acknowledged": bool(args.provider_boundary_ack),
+            "provider_boundary_policy": IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY,
+            "provider_measured_matched_successful_tasks_required_for_hosted_claims": True,
+            "provider_model_specific": True,
+        },
+        "mode": "dry_run",
+        "plan_only": {
+            "command_advertised": True,
+            "compact_context_generated": False,
+            "emit_command_available": False,
+            "evaluation_only": True,
+            "record_command_available": False,
+            "replacement_context_emitted": False,
+            "runtime_behavior_changed": False,
+            "serve_command_available": False,
+        },
+        "plan_schema_version": PROOF_CARRYING_CONTEXT_PLAN_SCHEMA_VERSION,
+        "proof_contract": {
+            "detailed_unit_cap": PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP,
+            "hash_policy": {
+                "algorithm": "sha256",
+                "content_read": False,
+                "content_verified": False,
+                "input_format": "64_lowercase_hex",
+            },
+            "optional_input_fields": ["safe_range"],
+            "overflow_policy": {
+                "detailed_rows_emitted": False,
+                "overflow_values_echoed": False,
+                "overflow_values_encoded": False,
+                "overflow_values_parsed": False,
+            },
+            "proof_unit_input_flag": "--proof-unit-json",
+            "proof_unit_input_repeatable": True,
+            "rehydration_policy": {
+                "allowed_command_shapes": [
+                    "context-guard-artifact get RECEIPT --full",
+                    "context-guard artifact get RECEIPT --full",
+                ],
+                "command_executed": False,
+                "receipt_bound_command_required": True,
+                "receipt_storage_checked": False,
+            },
+            "required_input_fields": [
+                "source_label",
+                "receipt_id",
+                "content_sha256",
+                "captured_at",
+                "transform_policy",
+                "rehydrate_command",
+            ],
+            "safe_range_policy": {
+                "bounds_checked": False,
+                "byte_coordinate_system": "zero_based_half_open",
+                "json_safe_integer_max": JSON_SAFE_INTEGER_MAX,
+                "kinds": ["lines", "bytes"],
+                "line_coordinate_system": "one_based_inclusive",
+                "required_by_default": False,
+                "semantic_safety_checked": False,
+            },
+            "source_label_policy": {
+                "max_characters": 120,
+                "profile": "ascii-identifier-v1",
+                "raw_content_allowed": False,
+                "regex": "^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$",
+                "safety_checked": False,
+                "secrecy_checked": False,
+            },
+            "strict_json_policy": {
+                "decoded_unicode_must_encode_utf8": True,
+                "depth_root": 0,
+                "duplicate_keys_allowed": False,
+                "float_finiteness_check": "math.isfinite",
+                "max_depth": PROOF_UNIT_JSON_MAX_DEPTH,
+                "non_finite_numbers_allowed": False,
+                "post_decode_walk": "iterative_container_keys_and_values",
+                "raw_unicode_must_encode_utf8": True,
+                "root_must_be_object": True,
+            },
+            "timestamp_policy": {
+                "caller_supplied_only": True,
+                "current_time_generated": False,
+                "freshness_checked": False,
+                "input_format": "YYYY-MM-DDTHH:MM:SSZ",
+                "required": True,
+            },
+            "transform_policy": {
+                "allowed": ["identity", "safe_range_extract"],
+                "automatic_deletion_allowed": False,
+                "lossy_transform_allowed": False,
+                "semantic_rewrite_allowed": False,
+            },
+            "unit_json_byte_cap": PROOF_CARRYING_CONTEXT_UNIT_JSON_BYTE_CAP,
+            "verification_scope": proof_verification_scope(),
+        },
+        "proof_unit_schema_version": PROOF_CARRYING_CONTEXT_UNIT_SCHEMA_VERSION,
+        "proof_units": rows,
+        "protected_zones": {
+            "compliance_checked": False,
+            "content_inspected": False,
+            "declared_policy": protected_policy,
+            "declared_policy_only": True,
+            "denied_classes": [
+                "code",
+                "diffs",
+                "identifiers",
+                "hashes",
+                "paths",
+                "numeric_constants",
+                "json_keys",
+                "stack_frames",
+                "secrets",
+                "prompt_like_instructions",
+            ],
+            "override_allowed": False,
+            "prompt_like_instruction_compliance_checked": False,
+            "semantic_transform_permitted_by_gate": False,
+        },
+        "review_plan": {
+            "detailed_proof_unit_count": detailed_count,
+            "invalid_detailed_proof_unit_count": detailed_count - valid_count,
+            "next_steps": [
+                "Treat this result as proof-envelope metadata syntax and consistency review only.",
+                "Verify protected-zone compliance, range bounds, receipt storage, source content, SHA-256, and rehydration only in a separately approved future consumer/runtime.",
+                "Keep protected evidence and prompt-like instructions out of transformation paths.",
+                "Measure provider/model token and cost fields on matched successful tasks before any hosted savings claim.",
+            ],
+            "overflow_proof_unit_count": overflow_count,
+            "readiness_blocker_order": list(PROOF_READINESS_BLOCKER_ORDER),
+            "readiness_blockers": blockers,
+            "supplied_proof_unit_count": supplied_count,
+            "valid_detailed_proof_unit_count": valid_count,
+            "warning_order": list(PROOF_WARNING_ORDER),
+            "warnings": top_warnings,
+        },
+        "runtime_side_effects": {
+            "artifact_files_read": False,
+            "config_files_read": False,
+            "current_time_generated": False,
+            "files_written": False,
+            "prompt_edited": False,
+            "rehydrate_command_executed": False,
+            "source_files_read": False,
+            "stable_runtime_behavior_changed": False,
+            "stdin_content_read": False,
+            "subprocesses_executed": False,
+            "transcript_edited": False,
+        },
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "status": (
+            "ready_for_plan_review"
+            if ready
+            else "blocked_until_proof_carrying_context_gate_ready"
+        ),
+        "tool": TOOL_NAME,
+    }
+
+
+def command_plan_proof_carrying_context(args: argparse.Namespace) -> int:
+    payload = proof_carrying_context_plan_payload(args)
+    if args.json:
+        emit_json(payload)
+    else:
+        print("ContextGuard proof-carrying-context plan (dry-run metadata readiness only)")
+        print("No source/artifact/config/stdin content was read; no verification, context generation, replacement, network, subprocess, or file write occurred.")
+        print(f"Status: {payload['status']}")
+        if payload["review_plan"]["readiness_blockers"]:
+            print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
+        print(f"Warnings: {', '.join(payload['review_plan']['warnings'])}")
         print(payload["claim_boundary"])
     return 0
 
@@ -4921,6 +5638,29 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_checkpoint.add_argument("--missed-context-note", action="append", help="Potential context missed by checkpoint metadata. Repeatable.")
     semantic_checkpoint.add_argument("--json", action="store_true", help="Emit JSON output.")
     semantic_checkpoint.set_defaults(func=command_plan_semantic_checkpoint)
+
+    proof_carrying_context = plan_sub.add_parser(
+        "proof-carrying-context",
+        help="Dry-run bounded proof-envelope metadata readiness without reading or verifying content.",
+    )
+    proof_carrying_context.add_argument(
+        "--proof-unit-json",
+        action="append",
+        help="Inline literal proof-unit JSON object. Repeatable; never treated as a path.",
+    )
+    proof_carrying_context.add_argument(
+        "--provider-boundary-ack",
+        action="store_true",
+        help="Acknowledge hosted claims require provider-measured matched successful tasks for the target model.",
+    )
+    proof_carrying_context.add_argument(
+        "--protected-zone-policy",
+        default="deny",
+        choices=("deny", "allow"),
+        help="Caller-declared protected evidence policy; only deny can pass and compliance remains unchecked.",
+    )
+    proof_carrying_context.add_argument("--json", action="store_true", help="Emit JSON output.")
+    proof_carrying_context.set_defaults(func=command_plan_proof_carrying_context)
 
     self_hosted = plan_sub.add_parser(
         "self-hosted-metrics-ledger",

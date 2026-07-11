@@ -131,6 +131,18 @@ The CLI accepts these fields as optional so incomplete dry runs can still return
 
 This gate has no `emit`, `record`, or `serve` runtime, no new `context-guard-semantic-checkpoint` binary, writes no files, edits no transcript or prompt, calls no model/provider/network, emits no replacement context, and makes no hosted token/cost savings claim. Future runtime work remains gated by complete provenance, exact fallback/re-expand verification, protected-zone denial, missed-context review, and provider-measured matched successful tasks.
 
+## Plan-only local experiment — proof-carrying-context gate
+
+`context-guard experiments plan proof-carrying-context --json` is a default-off proof-envelope metadata readiness gate. The canonical ready-state example is:
+
+```bash
+context-guard experiments plan proof-carrying-context --json --proof-unit-json '{"source_label":"context-filesystem-roadmap","receipt_id":"0123456789abcdef","content_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","safe_range":{"kind":"lines","start":82,"end":85},"captured_at":"2026-07-10T04:11:12Z","transform_policy":"safe_range_extract","rehydrate_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --protected-zone-policy deny
+```
+
+The gate accepts bounded repeatable inline JSON and validates metadata syntax plus defined cross-field/cross-unit consistency only. It preserves the caller-supplied timestamp without generating current time or checking freshness. Protected-zone policy is declared-only; range bounds, receipt storage, source content, SHA-256, timestamp freshness, and rehydration remain unchecked and are mandatory warnings rather than proof claims.
+
+It reads no source/artifact/config/stdin content, writes no files, edits no prompt/transcript, calls no model/provider/network/subprocess, generates or replaces no context, always emits `candidate_replacement: null`, exposes no `emit`/`record`/`serve` runtime or new binary, and makes no hosted token/cost savings claim without provider-measured matched successful tasks. Actual proof verification or consumption requires a separate future plan and authorization.
+
 ## Graduated local experiment — learned-compression candidate emitter
 
 `context-guard experiments emit learned-compression --exact-fallback-receipt ... --reexpand-command ...` is the explicit local runtime promoted from the learned-compression gate. It does not run learned compressors, embeddings, rerankers, model calls, subprocesses, or external services; the compact prose candidate must be supplied by the caller, both original and candidate text must pass the deny-by-default protected-signal scan, and the exact local fallback artifact content must match the input. The emitted byte reduction is proxy evidence only and cannot support hosted API token/cost savings claims without the shared promotion gate.
