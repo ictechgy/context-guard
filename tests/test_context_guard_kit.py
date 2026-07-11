@@ -4198,11 +4198,14 @@ class ClaudeTokenKitTests(unittest.TestCase):
             ([semantic_gc_unit("root", is_root=True, references=["missing"])], "unknown_reference"),
             ([semantic_gc_unit("dup", is_root=True), semantic_gc_unit("dup")], "duplicate_unit_id"),
             ([semantic_gc_unit("root", is_root="yes")], "invalid_root_flag"),
+            ([semantic_gc_unit("root", is_root=True, protected_zone="yes")], "invalid_protected_zone_flag"),
             ([semantic_gc_unit("lonely")], "no_declared_root"),
         ]
         for script in EXPERIMENT_SCRIPTS:
             for units, issue in fixtures:
-                payload = json.loads(run_semantic_gc_plan(script, units).stdout)
+                proc = run_semantic_gc_plan(script, units)
+                self.assertEqual(proc.returncode, 2)
+                payload = json.loads(proc.stdout)
                 self.assertIn(issue, payload["blockers"])
                 self.assertIn("graph_evaluation_suppressed", payload["blockers"])
                 self.assertFalse(payload["graph_integrity_complete"])
@@ -4216,7 +4219,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
         bad = semantic_gc_candidate(content_sha256="BAD", provenance=None, missed_context_note=None, exact_fallback_command=None)
         graph = [semantic_gc_unit("root", is_root=True, references=["live"]), semantic_gc_unit("live"), bad]
         for script in EXPERIMENT_SCRIPTS:
-            payload = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            proc = run_semantic_gc_plan(script, graph)
+            self.assertEqual(proc.returncode, 2)
+            payload = json.loads(proc.stdout)
             self.assertTrue(payload["graph_evaluation_performed"])
             self.assertEqual(payload["marked_unit_ids"], ["live", "root"])
             self.assertEqual(payload["candidate_count"], 1)
@@ -4332,13 +4337,19 @@ class ClaudeTokenKitTests(unittest.TestCase):
             ({"content_sha256": "A" * 64}, "invalid_content_sha256"),
             ({"provenance": {"source_label": " bad ", "receipt_id": SEMANTIC_GC_RECEIPT}}, "invalid_source_label"),
             ({"provenance": {"source_label": "ok", "receipt_id": "BADSECRET"}}, "invalid_receipt_id"),
+            ({"provenance": {"source_label": "ok", "receipt_id": "a" * 65},
+              "exact_fallback_command": f"context-guard-artifact get {'a' * 65} --full"}, "invalid_receipt_id"),
             ({"missed_context_note": invalid_note}, "invalid_missed_context_note"),
+            ({"missed_context_note": "SAFE\u2028SECRET"}, "invalid_missed_context_note"),
+            ({"missed_context_note": "SAFE\u202eSECRET"}, "invalid_missed_context_note"),
             ({"exact_fallback_command": "context-guard-artifact get deadbeefdeadbeef --full"}, "fallback_receipt_mismatch"),
             ({"exact_fallback_command": f"context-guard-artifact get {SEMANTIC_GC_RECEIPT} --full; echo SECRET"}, "invalid_exact_fallback"),
         ]
         for script in EXPERIMENT_SCRIPTS:
             for overrides, blocker in cases:
-                payload = json.loads(run_semantic_gc_plan(script, [semantic_gc_unit("root", is_root=True), semantic_gc_candidate(**overrides)]).stdout)
+                proc = run_semantic_gc_plan(script, [semantic_gc_unit("root", is_root=True), semantic_gc_candidate(**overrides)])
+                self.assertEqual(proc.returncode, 2)
+                payload = json.loads(proc.stdout)
                 self.assertIn(blocker, payload["blockers"])
                 self.assertEqual(payload["candidate_count"], 1)
                 self.assertEqual(payload["candidate_safety_invalid_count"], 1)
@@ -4382,13 +4393,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_experimental_semantic_gc_omitted_protected_policy(self):
         graph = [semantic_gc_unit("root", is_root=True), semantic_gc_candidate("orphan"), semantic_gc_unit("protected", protected_zone=True)]
         for script in EXPERIMENT_SCRIPTS:
-            payload = json.loads(run_semantic_gc_plan(script, graph, protected_zone_policy=None).stdout)
+            proc = run_semantic_gc_plan(script, graph, protected_zone_policy=None)
+            self.assertEqual(proc.returncode, 2)
+            payload = json.loads(proc.stdout)
             self.assertIsNone(payload["protected_zone_policy"])
             self.assertEqual(payload["effective_protected_zone_policy"], "deny")
             self.assertTrue(payload["graph_evaluation_performed"])
             self.assertEqual(payload["protected_unreachable_count"], 1)
             self.assertEqual(payload["candidate_count"], 1)
             self.assertIn("protected_zone_policy_required", payload["blockers"])
+            self.assertEqual(payload["status"], "blocked")
+            self.assertFalse(payload["omission_authorized"])
+            self.assertFalse(payload["runtime_action_allowed"])
+
+            unprotected_only = run_semantic_gc_plan(
+                script,
+                [semantic_gc_unit("root", is_root=True)],
+                protected_zone_policy=None,
+            )
+            self.assertEqual(unprotected_only.returncode, 2)
+            unprotected_payload = json.loads(unprotected_only.stdout)
+            self.assertEqual(unprotected_payload["blockers"], ["protected_zone_policy_required"])
+            self.assertEqual(unprotected_payload["status"], "blocked")
 
     def test_experimental_semantic_gc_direct_invalid_protected_policy_fails_closed(self):
         raw_root = json.dumps(semantic_gc_unit("root", is_root=True))
@@ -4407,6 +4433,27 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     self.assertIn("protected_zone_policy_required", payload["blockers"])
                     self.assertEqual(payload["status"], "blocked")
 
+                    cli = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            "plan",
+                            "semantic-gc",
+                            "--json",
+                            "--context-unit-json",
+                            raw_root,
+                            "--provider-boundary-ack",
+                            "--human-review-ack",
+                            "--protected-zone-policy",
+                            invalid_policy,
+                        ],
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(cli.returncode, 2)
+                    self.assertEqual(cli.stdout, "")
+                    self.assertIn("invalid choice", cli.stderr)
+
     def test_experimental_semantic_gc_mixed_reference_defects_are_all_reported(self):
         graph = [
             semantic_gc_unit(
@@ -4421,6 +4468,21 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertEqual(payload["unit_validation"][0]["structural_issues"], expected)
             for issue in expected:
                 self.assertIn(issue, payload["blockers"])
+            self.assertFalse(payload["graph_evaluation_performed"])
+
+    def test_experimental_semantic_gc_duplicate_target_is_ambiguous_not_unknown(self):
+        graph = [
+            semantic_gc_unit("root", is_root=True, references=["dup"]),
+            semantic_gc_unit("dup"),
+            semantic_gc_unit("dup"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            proc = run_semantic_gc_plan(script, graph)
+            self.assertEqual(proc.returncode, 2)
+            payload = json.loads(proc.stdout)
+            self.assertIn("duplicate_unit_id", payload["blockers"])
+            self.assertIn("ambiguous_reference", payload["blockers"])
+            self.assertNotIn("unknown_reference", payload["unit_validation"][0]["structural_issues"])
             self.assertFalse(payload["graph_evaluation_performed"])
 
     def test_experimental_semantic_gc_rejects_argparse_prefix_abbreviations(self):
@@ -8640,6 +8702,9 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertRegex(lower, r"untrusted|신뢰되지")
             self.assertRegex(lower, r"deny.only|deny 전용")
             self.assertRegex(lower, r"does not (?:read|verify)|읽지 않|검증하지 않")
+            self.assertIn("registry intent", lower)
+            self.assertIn("exit 0", lower)
+            self.assertRegex(lower, r"never delete/omit authority|delete/omit 권한이 아")
             line = next(line.strip() for line in text.splitlines() if line.strip().startswith("context-guard experiments plan semantic-gc"))
             argv = shlex.split(line)
             proc = subprocess.run([sys.executable, str(PLUGIN_BIN / "context-guard-experiments"), *argv[2:]], text=True, capture_output=True, check=True)

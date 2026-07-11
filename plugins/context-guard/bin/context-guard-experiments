@@ -26,6 +26,7 @@ import shlex
 import socket
 from socketserver import TCPServer
 from pathlib import Path
+import unicodedata
 import stat
 import sys
 import time
@@ -139,7 +140,7 @@ PROOF_WARNING_ORDER = (
 )
 SEMANTIC_GC_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 SEMANTIC_GC_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9._:/ -]{1,128}$")
-SEMANTIC_GC_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,128}$")
+SEMANTIC_GC_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
 SEMANTIC_GC_CONTENT_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 SEMANTIC_GC_ALLOWED_FIELDS = frozenset({
     "schema", "unit_id", "references", "is_root", "protected_zone",
@@ -151,6 +152,7 @@ SEMANTIC_GC_BLOCKER_ORDER = (
     "invalid_unicode_scalar", "decoder_recursion_limit", "invalid_context_unit_schema",
     "unknown_context_unit_field", "missing_unit_id", "invalid_unit_id",
     "duplicate_unit_id", "invalid_references", "duplicate_reference", "unknown_reference",
+    "ambiguous_reference",
     "invalid_root_flag", "invalid_protected_zone_flag", "no_declared_root",
     "graph_evaluation_suppressed", "protected_zone_policy_required",
     "invalid_content_sha256", "missing_provenance", "invalid_provenance",
@@ -3046,18 +3048,26 @@ def normalize_semantic_gc_structure(obj: dict[str, Any], row: dict[str, Any]) ->
 
     raw_references = obj.get("references")
     references: list[str] = []
+    reference_targets: list[str] = []
     if not isinstance(raw_references, list) or len(raw_references) > 64:
         issues.append("invalid_references")
     else:
         seen: set[str] = set()
+        reference_issue = False
         for reference in raw_references:
             if not isinstance(reference, str) or SEMANTIC_GC_UNIT_ID_RE.fullmatch(reference) is None:
                 issues.append("invalid_references")
+                reference_issue = True
                 continue
-            references.append(reference)
             if reference in seen:
                 issues.append("duplicate_reference")
+                reference_issue = True
+                continue
+            references.append(reference)
+            reference_targets.append(reference)
             seen.add(reference)
+        if reference_issue:
+            references = []
 
     is_root = obj.get("is_root")
     if type(is_root) is not bool:
@@ -3073,6 +3083,7 @@ def normalize_semantic_gc_structure(obj: dict[str, Any], row: dict[str, Any]) ->
         "row": row,
         "unit_id": unit_id,
         "references": references,
+        "reference_targets": reference_targets,
         "is_root": is_root,
         "protected_zone": protected,
     }
@@ -3081,7 +3092,7 @@ def normalize_semantic_gc_structure(obj: dict[str, Any], row: dict[str, Any]) ->
 def valid_semantic_gc_note(value: Any) -> bool:
     if not isinstance(value, str) or not (1 <= len(value) <= 512) or value != value.strip():
         return False
-    return not any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
+    return not any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in value)
 
 
 def normalize_semantic_gc_candidate(unit: dict[str, Any]) -> tuple[dict[str, Any], list[str], str | None, str | None]:
@@ -3185,8 +3196,10 @@ def semantic_gc_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         structural = list(unit["row"]["structural_issues"])
         if unit["unit_id"] in duplicate_ids:
             structural.append("duplicate_unit_id")
-        if any(reference not in by_id or reference in duplicate_ids for reference in unit["references"]):
+        if any(reference not in by_id for reference in unit["reference_targets"]):
             structural.append("unknown_reference")
+        if any(reference in duplicate_ids for reference in unit["reference_targets"]):
+            structural.append("ambiguous_reference")
         unit["row"]["structural_issues"] = ordered_semantic_gc_taxonomy(structural, SEMANTIC_GC_BLOCKER_ORDER)
 
     declared_roots = sorted(
