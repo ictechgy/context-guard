@@ -4138,6 +4138,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "human-review acknowledgement when unprotected sweep candidates exist",
                     row["gate_requirements"],
                 )
+                self.assertIn(
+                    "Plan emission uses exit code 0; consumers must inspect status and blockers for readiness.",
+                    row["evidence_contract"],
+                )
                 module = load_python_script_module(script, f"_semantic_gc_parser_{script.name.replace('-', '_')}")
                 parser = module.build_parser()
                 root_sub = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
@@ -4180,6 +4184,10 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertFalse(payload["human_review_performed"])
             self.assertFalse(payload["omission_authorized"])
             self.assertFalse(payload["runtime_action_allowed"])
+            self.assertEqual(
+                payload["process_exit_contract"],
+                "exit code 0 means a plan was emitted; inspect status and blockers for readiness",
+            )
             self.assertEqual(first.stdout, json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
 
     def test_experimental_semantic_gc_graph_integrity_suppression(self):
@@ -4342,9 +4350,15 @@ class ClaudeTokenKitTests(unittest.TestCase):
     def test_experimental_semantic_gc_acknowledgement_invariants(self):
         for script in EXPERIMENT_SCRIPTS:
             for provider, human, blocker in ((False, True, "provider_boundary_ack_required"), (True, False, "human_review_ack_required")):
-                payload = json.loads(run_semantic_gc_plan(script, provider_boundary_ack=provider, human_review_ack=human).stdout)
+                proc = run_semantic_gc_plan(script, provider_boundary_ack=provider, human_review_ack=human)
+                self.assertEqual(proc.returncode, 0)
+                payload = json.loads(proc.stdout)
                 self.assertIn(blocker, payload["blockers"])
                 self.assertEqual(payload["status"], "blocked")
+                self.assertEqual(
+                    payload["process_exit_contract"],
+                    "exit code 0 means a plan was emitted; inspect status and blockers for readiness",
+                )
                 self.assertFalse(payload["human_review_performed"])
                 self.assertFalse(payload["omission_authorized"])
                 self.assertFalse(payload["runtime_action_allowed"])

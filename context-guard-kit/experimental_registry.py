@@ -80,6 +80,9 @@ SEMANTIC_GC_UNIT_SCHEMA_VERSION = "contextguard.semantic-gc-unit.v1"
 SEMANTIC_GC_DETAILED_UNIT_CAP = 64
 SEMANTIC_GC_UNIT_JSON_BYTE_CAP = 8192
 SEMANTIC_GC_JSON_MAX_DEPTH = 100
+SEMANTIC_GC_PROCESS_EXIT_CONTRACT = (
+    "exit code 0 means a plan was emitted; inspect status and blockers for readiness"
+)
 JSON_SAFE_INTEGER_MAX = 9_007_199_254_740_991
 PROOF_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
 PROOF_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
@@ -528,7 +531,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "The complete caller-declared graph must pass strict structural validation before iterative reachability. "
             "Unprotected unreachable candidates require sanitized provenance, content hash, exact fallback, and an "
             "untrusted missed-context note plus human-review acknowledgement before the plan is ready for review. "
-            "A complete graph with no unprotected sweep candidates does not require that acknowledgement."
+            "A complete graph with no unprotected sweep candidates does not require that acknowledgement. "
+            "Plan emission uses exit code 0; consumers must inspect status and blockers for readiness."
         ),
     ),
     Experiment(
@@ -3305,6 +3309,7 @@ def semantic_gc_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "omission_authorized": False,
         "overflow_unit_count": overflow_count,
         "plan_only": True,
+        "process_exit_contract": SEMANTIC_GC_PROCESS_EXIT_CONTRACT,
         "protected_unreachable_count": protected_unreachable_count,
         "protected_zone_policy": protected_policy,
         "provider_boundary_acknowledged": bool(args.provider_boundary_ack),
@@ -3330,6 +3335,7 @@ def command_plan_semantic_gc(args: argparse.Namespace) -> int:
         print(f"Graph complete: {payload['graph_integrity_complete']}; candidates: {payload['candidate_count']}")
         if payload["blockers"]:
             print(f"Blockers: {', '.join(payload['blockers'])}")
+        print(f"Exit contract: {payload['process_exit_contract']}.")
         print("semantic-gc is plan-only; no context was deleted, omitted, read, replaced, or authorized for runtime action.")
     return 0
 
