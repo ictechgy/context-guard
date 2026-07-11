@@ -4133,6 +4133,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(row["risk_level"], "high")
                 self.assertEqual(row["runtime_status"], "available-plan-only")
                 self.assertEqual(row["commands"], ["context-guard experiments plan semantic-gc"])
+                self.assertIn(
+                    "provider-boundary acknowledgement for every complete graph; "
+                    "human-review acknowledgement when unprotected sweep candidates exist",
+                    row["gate_requirements"],
+                )
                 module = load_python_script_module(script, f"_semantic_gc_parser_{script.name.replace('-', '_')}")
                 parser = module.build_parser()
                 root_sub = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
@@ -4343,6 +4348,20 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertFalse(payload["human_review_performed"])
                 self.assertFalse(payload["omission_authorized"])
                 self.assertFalse(payload["runtime_action_allowed"])
+
+            no_candidate = json.loads(run_semantic_gc_plan(
+                script,
+                [semantic_gc_unit("root", is_root=True)],
+                provider_boundary_ack=True,
+                human_review_ack=False,
+            ).stdout)
+            self.assertEqual(no_candidate["candidate_count"], 0)
+            self.assertNotIn("human_review_ack_required", no_candidate["blockers"])
+            self.assertEqual(no_candidate["status"], "ready_for_plan_review")
+            self.assertFalse(no_candidate["human_review_acknowledged"])
+            self.assertFalse(no_candidate["human_review_performed"])
+            self.assertFalse(no_candidate["omission_authorized"])
+            self.assertFalse(no_candidate["runtime_action_allowed"])
 
     def test_experimental_semantic_gc_omitted_protected_policy(self):
         graph = [semantic_gc_unit("root", is_root=True), semantic_gc_candidate("orphan"), semantic_gc_unit("protected", protected_zone=True)]

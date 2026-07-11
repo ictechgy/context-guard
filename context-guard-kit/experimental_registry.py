@@ -510,7 +510,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "complete unambiguous caller-declared graph",
             "deny-only protected-zone declaration",
             "candidate recovery evidence and missed-context note",
-            "provider-boundary and human-review acknowledgements",
+            "provider-boundary acknowledgement for every complete graph; "
+            "human-review acknowledgement when unprotected sweep candidates exist",
         ),
         runtime_status="available-plan-only",
         commands=("context-guard experiments plan semantic-gc",),
@@ -526,7 +527,8 @@ EXPERIMENTS: tuple[Experiment, ...] = (
         evidence_contract=(
             "The complete caller-declared graph must pass strict structural validation before iterative reachability. "
             "Unprotected unreachable candidates require sanitized provenance, content hash, exact fallback, and an "
-            "untrusted missed-context note before the plan is ready for human review."
+            "untrusted missed-context note plus human-review acknowledgement before the plan is ready for review. "
+            "A complete graph with no unprotected sweep candidates does not require that acknowledgement."
         ),
     ),
     Experiment(
