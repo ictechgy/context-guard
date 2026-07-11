@@ -75,6 +75,11 @@ PROOF_CARRYING_CONTEXT_UNIT_SCHEMA_VERSION = "contextguard.proof-unit.v1"
 PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP = 64
 PROOF_CARRYING_CONTEXT_UNIT_JSON_BYTE_CAP = 8192
 PROOF_UNIT_JSON_MAX_DEPTH = 100
+SEMANTIC_GC_PLAN_SCHEMA_VERSION = "contextguard.experiments.semantic-gc-plan.v1"
+SEMANTIC_GC_UNIT_SCHEMA_VERSION = "contextguard.semantic-gc-unit.v1"
+SEMANTIC_GC_DETAILED_UNIT_CAP = 64
+SEMANTIC_GC_UNIT_JSON_BYTE_CAP = 8192
+SEMANTIC_GC_JSON_MAX_DEPTH = 100
 JSON_SAFE_INTEGER_MAX = 9_007_199_254_740_991
 PROOF_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
 PROOF_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
@@ -128,6 +133,35 @@ PROOF_WARNING_ORDER = (
     "timestamp_freshness_not_checked",
     "safe_range_omitted",
     "duplicate_proof_unit",
+)
+SEMANTIC_GC_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+SEMANTIC_GC_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9._:/ -]{1,128}$")
+SEMANTIC_GC_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,128}$")
+SEMANTIC_GC_CONTENT_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+SEMANTIC_GC_ALLOWED_FIELDS = frozenset({
+    "schema", "unit_id", "references", "is_root", "protected_zone",
+    "content_sha256", "provenance", "missed_context_note", "exact_fallback_command",
+})
+SEMANTIC_GC_BLOCKER_ORDER = (
+    "no_context_units", "unit_limit_exceeded", "invalid_context_unit_json",
+    "duplicate_json_key", "context_unit_depth_exceeded", "nonfinite_json_number",
+    "invalid_unicode_scalar", "decoder_recursion_limit", "invalid_context_unit_schema",
+    "unknown_context_unit_field", "missing_unit_id", "invalid_unit_id",
+    "duplicate_unit_id", "invalid_references", "duplicate_reference", "unknown_reference",
+    "invalid_root_flag", "invalid_protected_zone_flag", "no_declared_root",
+    "graph_evaluation_suppressed", "protected_zone_policy_required",
+    "invalid_content_sha256", "missing_provenance", "invalid_provenance",
+    "invalid_source_label", "invalid_receipt_id", "missing_missed_context_note",
+    "invalid_missed_context_note", "missing_exact_fallback", "invalid_exact_fallback",
+    "fallback_receipt_mismatch", "provider_boundary_ack_required", "human_review_ack_required",
+)
+SEMANTIC_GC_WARNING_ORDER = (
+    "plan_only_no_omission", "caller_declared_graph_unverified",
+    "semantic_relevance_not_evaluated", "provider_boundary_not_verified",
+    "provenance_not_verified_externally", "fallback_not_executed",
+    "human_review_still_required", "accepted_notes_are_untrusted",
+    "duplicate_content_sha256", "duplicate_receipt_id",
+    "protected_unreachable_excluded", "no_sweep_candidates",
 )
 IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY = "provider-measured-matched-tasks-required"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
@@ -456,6 +490,43 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "The planner validates bounded inline proof-envelope metadata syntax and defined cross-unit consistency "
             "only. Protected-zone compliance, range bounds, receipt storage, content hashes, timestamp freshness, "
             "and rehydration remain explicitly unchecked."
+        ),
+    ),
+    Experiment(
+        id="semantic-gc",
+        name="Semantic graph garbage-collection planning gate",
+        summary=(
+            "Plan-only caller-declared mark-and-sweep classification with strict graph-integrity suppression "
+            "and recovery-evidence gates for human review."
+        ),
+        stability="experimental",
+        default_enabled=False,
+        risk_level="high",
+        claim_boundary=(
+            "Unreachable graph nodes are plan-review candidates, not proof of irrelevance or authorization to omit; "
+            "the planner does not read content, verify provenance, execute fallback, or call providers."
+        ),
+        gate_requirements=(
+            "complete unambiguous caller-declared graph",
+            "deny-only protected-zone declaration",
+            "candidate recovery evidence and missed-context note",
+            "provider-boundary and human-review acknowledgements",
+        ),
+        runtime_status="available-plan-only",
+        commands=("context-guard experiments plan semantic-gc",),
+        opt_in_flags=(
+            "plan semantic-gc", "--context-unit-json", "--provider-boundary-ack",
+            "--human-review-ack", "--protected-zone-policy deny",
+        ),
+        config_effect=(
+            "Registry enablement records project-local intent only; semantic-gc exposes one deterministic plan command. "
+            "It does not add an emit/record/serve/apply/delete/omit runtime, read context or artifacts, write files, "
+            "call models/providers/network, execute fallback, replace context, or authorize omission."
+        ),
+        evidence_contract=(
+            "The complete caller-declared graph must pass strict structural validation before iterative reachability. "
+            "Unprotected unreachable candidates require sanitized provenance, content hash, exact fallback, and an "
+            "untrusted missed-context note before the plan is ready for human review."
         ),
     ),
     Experiment(
@@ -2852,6 +2923,412 @@ def command_plan_proof_carrying_context(args: argparse.Namespace) -> int:
             print(f"Readiness blockers: {', '.join(payload['review_plan']['readiness_blockers'])}")
         print(f"Warnings: {', '.join(payload['review_plan']['warnings'])}")
         print(payload["claim_boundary"])
+    return 0
+
+
+_SEMANTIC_GC_NONFINITE_SENTINEL = object()
+
+
+def ordered_semantic_gc_taxonomy(values: list[str] | set[str], order: tuple[str, ...]) -> list[str]:
+    selected = set(values)
+    return [value for value in order if value in selected]
+
+
+def semantic_gc_validation_row(index: int, issue: str | None = None) -> dict[str, Any]:
+    return {
+        "candidate_safety_applicable": None,
+        "candidate_safety_issues": [],
+        "input_index": index,
+        "structural_issues": [issue] if issue else [],
+        "unit_id": None,
+    }
+
+
+def decode_semantic_gc_unit(raw: Any, index: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    row = semantic_gc_validation_row(index)
+    if not isinstance(raw, str):
+        row["structural_issues"] = ["invalid_context_unit_json"]
+        return None, row
+    try:
+        encoded = raw.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        row["structural_issues"] = ["invalid_unicode_scalar"]
+        return None, row
+    if len(encoded) > SEMANTIC_GC_UNIT_JSON_BYTE_CAP:
+        row["structural_issues"] = ["invalid_context_unit_json"]
+        return None, row
+
+    duplicate_key = False
+
+    def pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal duplicate_key
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_key = True
+            result[key] = value
+        return result
+
+    try:
+        decoded = json.loads(
+            raw,
+            object_pairs_hook=pairs_hook,
+            parse_constant=lambda _value: _SEMANTIC_GC_NONFINITE_SENTINEL,
+        )
+    except RecursionError:
+        row["structural_issues"] = ["decoder_recursion_limit"]
+        return None, row
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+        row["structural_issues"] = ["invalid_context_unit_json"]
+        return None, row
+
+    depth_exceeded = False
+    nonfinite = False
+    invalid_unicode = False
+    stack: list[tuple[Any, int]] = [(decoded, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > SEMANTIC_GC_JSON_MAX_DEPTH:
+            depth_exceeded = True
+            continue
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                invalid_unicode = True
+        elif value is _SEMANTIC_GC_NONFINITE_SENTINEL or (type(value) is float and not math.isfinite(value)):
+            nonfinite = True
+        if isinstance(value, dict):
+            for key, child in value.items():
+                stack.append((key, depth + 1))
+                stack.append((child, depth + 1))
+        elif isinstance(value, list):
+            for child in value:
+                stack.append((child, depth + 1))
+
+    issue = None
+    if duplicate_key:
+        issue = "duplicate_json_key"
+    elif depth_exceeded:
+        issue = "context_unit_depth_exceeded"
+    elif nonfinite:
+        issue = "nonfinite_json_number"
+    elif invalid_unicode:
+        issue = "invalid_unicode_scalar"
+    elif not isinstance(decoded, dict):
+        issue = "invalid_context_unit_json"
+    if issue:
+        row["structural_issues"] = [issue]
+        return None, row
+    return decoded, row
+
+
+def normalize_semantic_gc_structure(obj: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    issues: list[str] = []
+    if obj.get("schema") != SEMANTIC_GC_UNIT_SCHEMA_VERSION:
+        issues.append("invalid_context_unit_schema")
+    if set(obj) - SEMANTIC_GC_ALLOWED_FIELDS:
+        issues.append("unknown_context_unit_field")
+
+    raw_id = obj.get("unit_id")
+    unit_id = raw_id if isinstance(raw_id, str) and SEMANTIC_GC_UNIT_ID_RE.fullmatch(raw_id) else None
+    if raw_id is None or raw_id == "":
+        issues.append("missing_unit_id")
+    elif unit_id is None:
+        issues.append("invalid_unit_id")
+    row["unit_id"] = unit_id
+
+    raw_references = obj.get("references")
+    references: list[str] = []
+    if not isinstance(raw_references, list) or len(raw_references) > 64:
+        issues.append("invalid_references")
+    else:
+        seen: set[str] = set()
+        for reference in raw_references:
+            if not isinstance(reference, str) or SEMANTIC_GC_UNIT_ID_RE.fullmatch(reference) is None:
+                issues.append("invalid_references")
+                continue
+            references.append(reference)
+            if reference in seen:
+                issues.append("duplicate_reference")
+            seen.add(reference)
+
+    is_root = obj.get("is_root")
+    if type(is_root) is not bool:
+        issues.append("invalid_root_flag")
+        is_root = None
+    protected = obj.get("protected_zone")
+    if type(protected) is not bool:
+        issues.append("invalid_protected_zone_flag")
+        protected = None
+    row["structural_issues"] = ordered_semantic_gc_taxonomy(issues, SEMANTIC_GC_BLOCKER_ORDER)
+    return {
+        "object": obj,
+        "row": row,
+        "unit_id": unit_id,
+        "references": references,
+        "is_root": is_root,
+        "protected_zone": protected,
+    }
+
+
+def valid_semantic_gc_note(value: Any) -> bool:
+    if not isinstance(value, str) or not (1 <= len(value) <= 512) or value != value.strip():
+        return False
+    return not any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
+
+
+def normalize_semantic_gc_candidate(unit: dict[str, Any]) -> tuple[dict[str, Any], list[str], str | None, str | None]:
+    obj = unit["object"]
+    issues: list[str] = []
+    raw_hash = obj.get("content_sha256")
+    content_hash = raw_hash if isinstance(raw_hash, str) and SEMANTIC_GC_CONTENT_SHA256_RE.fullmatch(raw_hash) else None
+    if content_hash is None:
+        issues.append("invalid_content_sha256")
+
+    raw_provenance = obj.get("provenance")
+    source_label = None
+    receipt_id = None
+    if raw_provenance is None:
+        issues.append("missing_provenance")
+    elif not isinstance(raw_provenance, dict) or set(raw_provenance) != {"source_label", "receipt_id"}:
+        issues.append("invalid_provenance")
+    else:
+        raw_label = raw_provenance.get("source_label")
+        if (
+            isinstance(raw_label, str)
+            and raw_label == raw_label.strip()
+            and SEMANTIC_GC_SOURCE_LABEL_RE.fullmatch(raw_label) is not None
+        ):
+            source_label = raw_label
+        else:
+            issues.append("invalid_source_label")
+        raw_receipt = raw_provenance.get("receipt_id")
+        if isinstance(raw_receipt, str) and SEMANTIC_GC_RECEIPT_ID_RE.fullmatch(raw_receipt):
+            receipt_id = raw_receipt
+        else:
+            issues.append("invalid_receipt_id")
+
+    raw_note = obj.get("missed_context_note")
+    note = raw_note if valid_semantic_gc_note(raw_note) else None
+    if raw_note is None or raw_note == "":
+        issues.append("missing_missed_context_note")
+    elif note is None:
+        issues.append("invalid_missed_context_note")
+
+    raw_fallback = obj.get("exact_fallback_command")
+    fallback = None
+    if raw_fallback is None or raw_fallback == "":
+        issues.append("missing_exact_fallback")
+    elif not isinstance(raw_fallback, str):
+        issues.append("invalid_exact_fallback")
+    else:
+        forbidden = (';', '|', '&', '>', '<', '`', '$', '\\', '\n', '\r', '"', "'")
+        if any(token in raw_fallback for token in forbidden) or raw_fallback != raw_fallback.strip():
+            issues.append("invalid_exact_fallback")
+        else:
+            parts = raw_fallback.split(" ")
+            if len(parts) != 4 or parts[0] != "context-guard-artifact" or parts[1] != "get" or parts[3] != "--full":
+                issues.append("invalid_exact_fallback")
+            elif SEMANTIC_GC_RECEIPT_ID_RE.fullmatch(parts[2]) is None:
+                issues.append("invalid_exact_fallback")
+            elif receipt_id is not None and parts[2] != receipt_id:
+                issues.append("fallback_receipt_mismatch")
+            elif receipt_id is None:
+                issues.append("invalid_exact_fallback")
+            else:
+                fallback = raw_fallback
+
+    issues = ordered_semantic_gc_taxonomy(issues, SEMANTIC_GC_BLOCKER_ORDER)
+    return ({
+        "candidate_replacement": None,
+        "candidate_safety_issues": issues,
+        "content_sha256": content_hash,
+        "exact_fallback_command": fallback,
+        "human_review_required": True,
+        "missed_context_note": note,
+        "protected_zone": False,
+        "provenance": {"receipt_id": receipt_id, "source_label": source_label},
+        "reason": "unreachable_from_declared_roots",
+        "unit_id": unit["unit_id"],
+    }, issues, content_hash, receipt_id)
+
+
+def semantic_gc_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    raw_units = args.context_unit_json or []
+    total_count = len(raw_units)
+    detailed_count = min(total_count, SEMANTIC_GC_DETAILED_UNIT_CAP)
+    overflow_count = max(total_count - SEMANTIC_GC_DETAILED_UNIT_CAP, 0)
+    units: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    decoded_count = 0
+    for index, raw in enumerate(raw_units[:SEMANTIC_GC_DETAILED_UNIT_CAP]):
+        decoded, row = decode_semantic_gc_unit(raw, index)
+        rows.append(row)
+        if decoded is None:
+            continue
+        decoded_count += 1
+        units.append(normalize_semantic_gc_structure(decoded, row))
+
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for unit in units:
+        if unit["unit_id"] is not None:
+            by_id.setdefault(unit["unit_id"], []).append(unit)
+    duplicate_ids = {unit_id for unit_id, matches in by_id.items() if len(matches) > 1}
+    for unit in units:
+        structural = list(unit["row"]["structural_issues"])
+        if unit["unit_id"] in duplicate_ids:
+            structural.append("duplicate_unit_id")
+        if any(reference not in by_id or reference in duplicate_ids for reference in unit["references"]):
+            structural.append("unknown_reference")
+        unit["row"]["structural_issues"] = ordered_semantic_gc_taxonomy(structural, SEMANTIC_GC_BLOCKER_ORDER)
+
+    declared_roots = sorted(
+        unit_id for unit_id, matches in by_id.items()
+        if unit_id not in duplicate_ids and len(matches) == 1 and matches[0]["is_root"] is True
+    )
+    structural_blockers: list[str] = []
+    if total_count == 0:
+        structural_blockers.append("no_context_units")
+    if overflow_count:
+        structural_blockers.append("unit_limit_exceeded")
+    for row in rows:
+        structural_blockers.extend(row["structural_issues"])
+    if not declared_roots:
+        structural_blockers.append("no_declared_root")
+    graph_complete = not structural_blockers
+
+    marked_ids: list[str] = []
+    candidates: list[dict[str, Any]] = []
+    unreachable_count = 0
+    protected_unreachable_count = 0
+    safety_valid_count = 0
+    safety_invalid_count = 0
+    safety_blockers: list[str] = []
+    candidate_hashes: list[str] = []
+    candidate_receipts: list[str] = []
+    if graph_complete:
+        marked: set[str] = set()
+        pending = list(declared_roots)
+        while pending:
+            unit_id = pending.pop()
+            if unit_id in marked:
+                continue
+            marked.add(unit_id)
+            pending.extend(by_id[unit_id][0]["references"])
+        marked_ids = sorted(marked)
+        for unit in units:
+            unit_id = unit["unit_id"]
+            assert unit_id is not None
+            row = unit["row"]
+            if unit_id in marked:
+                row["candidate_safety_applicable"] = False
+                continue
+            unreachable_count += 1
+            if unit["protected_zone"] is True:
+                protected_unreachable_count += 1
+                row["candidate_safety_applicable"] = False
+                continue
+            row["candidate_safety_applicable"] = True
+            candidate, issues, content_hash, receipt_id = normalize_semantic_gc_candidate(unit)
+            row["candidate_safety_issues"] = issues
+            candidates.append(candidate)
+            safety_blockers.extend(issues)
+            if issues:
+                safety_invalid_count += 1
+            else:
+                safety_valid_count += 1
+            if content_hash is not None:
+                candidate_hashes.append(content_hash)
+            if receipt_id is not None:
+                candidate_receipts.append(receipt_id)
+        candidates.sort(key=lambda item: item["unit_id"])
+
+    blockers = list(structural_blockers)
+    if not graph_complete:
+        blockers.append("graph_evaluation_suppressed")
+    protected_policy = "deny" if getattr(args, "protected_zone_policy", None) == "deny" else None
+    if protected_policy is None:
+        blockers.append("protected_zone_policy_required")
+    blockers.extend(safety_blockers)
+    if graph_complete and not args.provider_boundary_ack:
+        blockers.append("provider_boundary_ack_required")
+    if graph_complete and candidates and not args.human_review_ack:
+        blockers.append("human_review_ack_required")
+    blockers = ordered_semantic_gc_taxonomy(blockers, SEMANTIC_GC_BLOCKER_ORDER)
+
+    warnings = list(SEMANTIC_GC_WARNING_ORDER[:6])
+    if candidates:
+        warnings.extend(("human_review_still_required", "accepted_notes_are_untrusted"))
+    if len(candidate_hashes) != len(set(candidate_hashes)):
+        warnings.append("duplicate_content_sha256")
+    if len(candidate_receipts) != len(set(candidate_receipts)):
+        warnings.append("duplicate_receipt_id")
+    if protected_unreachable_count:
+        warnings.append("protected_unreachable_excluded")
+    if graph_complete and not candidates:
+        warnings.append("no_sweep_candidates")
+    warnings = ordered_semantic_gc_taxonomy(warnings, SEMANTIC_GC_WARNING_ORDER)
+
+    verification_scope = {
+        "artifact_content_read": False,
+        "context_content_read": False,
+        "deletion_or_omission_performed": False,
+        "exact_fallback_executed": False,
+        "files_written": False,
+        "model_or_provider_called": False,
+        "network_called": False,
+        "provenance_verified_externally": False,
+        "subprocess_started": False,
+    }
+    return {
+        "blockers": blockers,
+        "candidate_count": len(candidates),
+        "candidate_replacement": None,
+        "candidate_safety_invalid_count": safety_invalid_count,
+        "candidate_safety_valid_count": safety_valid_count,
+        "candidates": candidates,
+        "declared_root_count": len(declared_roots),
+        "declared_root_ids": declared_roots,
+        "decoded_unit_count": decoded_count,
+        "detailed_unit_count": detailed_count,
+        "effective_protected_zone_policy": "deny",
+        "experiment": "semantic-gc",
+        "graph_evaluation_performed": graph_complete,
+        "graph_integrity_complete": graph_complete,
+        "human_review_acknowledged": bool(args.human_review_ack),
+        "human_review_performed": False,
+        "marked_unit_count": len(marked_ids),
+        "marked_unit_ids": marked_ids,
+        "omission_authorized": False,
+        "overflow_unit_count": overflow_count,
+        "plan_only": True,
+        "protected_unreachable_count": protected_unreachable_count,
+        "protected_zone_policy": protected_policy,
+        "provider_boundary_acknowledged": bool(args.provider_boundary_ack),
+        "runtime_action_allowed": False,
+        "schema": SEMANTIC_GC_PLAN_SCHEMA_VERSION,
+        "status": "ready_for_plan_review" if not blockers else "blocked",
+        "structurally_valid_unit_count": sum(not row["structural_issues"] for row in rows),
+        "total_unit_count": total_count,
+        "unit_validation": rows,
+        "unreachable_unit_count": unreachable_count,
+        "verification_scope": verification_scope,
+        "warnings": warnings,
+    }
+
+
+def command_plan_semantic_gc(args: argparse.Namespace) -> int:
+    payload = semantic_gc_plan_payload(args)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    else:
+        print("ContextGuard semantic-gc plan")
+        print(f"Status: {payload['status']}")
+        print(f"Graph complete: {payload['graph_integrity_complete']}; candidates: {payload['candidate_count']}")
+        if payload["blockers"]:
+            print(f"Blockers: {', '.join(payload['blockers'])}")
+        print("semantic-gc is plan-only; no context was deleted, omitted, read, replaced, or authorized for runtime action.")
     return 0
 
 
@@ -5661,6 +6138,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     proof_carrying_context.add_argument("--json", action="store_true", help="Emit JSON output.")
     proof_carrying_context.set_defaults(func=command_plan_proof_carrying_context)
+
+    semantic_gc = plan_sub.add_parser(
+        "semantic-gc",
+        allow_abbrev=False,
+        help="Plan caller-declared graph reachability candidates without reading or omitting context.",
+    )
+    semantic_gc.add_argument(
+        "--context-unit-json",
+        action="append",
+        help="Inline literal semantic-GC unit JSON object. Repeatable; never treated as a path.",
+    )
+    semantic_gc.add_argument(
+        "--provider-boundary-ack",
+        action="store_true",
+        help="Acknowledge that provider behavior and hosted savings remain unverified.",
+    )
+    semantic_gc.add_argument(
+        "--human-review-ack",
+        action="store_true",
+        help="Acknowledge that candidate review remains required; this does not perform review.",
+    )
+    semantic_gc.add_argument(
+        "--protected-zone-policy",
+        choices=("deny",),
+        default=None,
+        help="Explicit deny-only protected-zone declaration; omitted remains effective deny but blocks readiness.",
+    )
+    semantic_gc.add_argument("--json", action="store_true", help="Emit JSON output.")
+    semantic_gc.set_defaults(func=command_plan_semantic_gc)
 
     self_hosted = plan_sub.add_parser(
         "self-hosted-metrics-ledger",

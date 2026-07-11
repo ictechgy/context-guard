@@ -557,3 +557,9 @@ Versioned release notes live in [CHANGELOG.md](CHANGELOG.md); the prepublish gat
 ## License
 
 Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Experimental semantic-GC plan gate
+
+`semantic-gc` is a default-off, deny-only, plan-review gate over a caller-declared graph. Graph evaluation is suppressed when the complete envelope or topology is ambiguous. Unreachable nodes are review candidates, not proof of semantic irrelevance: omission and runtime action remain unauthorized. Candidate missed-context notes are untrusted. The planner does not read context/artifact content or verify provenance, fallback, providers, or hosted savings.
+
+context-guard experiments plan semantic-gc --json --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false}' --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"orphan","references":[],"is_root":false,"protected_zone":false,"content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","provenance":{"source_label":"canonical-example","receipt_id":"0123456789abcdef"},"missed_context_note":"A reviewer could lose the orphaned rationale.","exact_fallback_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --human-review-ack --protected-zone-policy deny

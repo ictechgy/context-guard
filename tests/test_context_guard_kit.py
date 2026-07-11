@@ -108,6 +108,8 @@ LOCAL_PROXY_NONCES_BY_PORT: dict[int, str] = {}
 PROOF_CARRYING_CONTEXT_RECEIPT = "0123456789abcdef"
 PROOF_CARRYING_CONTEXT_HASH = "a" * 64
 PROOF_CARRYING_CONTEXT_TIMESTAMP = "2026-07-10T04:11:12Z"
+SEMANTIC_GC_RECEIPT = "0123456789abcdef"
+SEMANTIC_GC_HASH = "b" * 64
 
 
 def proof_carrying_context_unit(**overrides) -> dict[str, object]:
@@ -162,6 +164,50 @@ def run_proof_carrying_context_plan(
         capture_output=True,
         check=True,
     )
+
+
+def semantic_gc_unit(unit_id: str, **overrides) -> dict[str, object]:
+    unit: dict[str, object] = {
+        "schema": "contextguard.semantic-gc-unit.v1",
+        "unit_id": unit_id,
+        "references": [],
+        "is_root": False,
+        "protected_zone": False,
+    }
+    unit.update(overrides)
+    return unit
+
+
+def semantic_gc_candidate(unit_id: str = "orphan", **overrides) -> dict[str, object]:
+    unit = semantic_gc_unit(
+        unit_id,
+        content_sha256=SEMANTIC_GC_HASH,
+        provenance={"source_label": "canonical-example", "receipt_id": SEMANTIC_GC_RECEIPT},
+        missed_context_note="A reviewer could lose the orphaned rationale.",
+        exact_fallback_command=f"context-guard-artifact get {SEMANTIC_GC_RECEIPT} --full",
+    )
+    unit.update(overrides)
+    return unit
+
+
+def run_semantic_gc_plan(
+    script: Path,
+    units: list[object] | None = None,
+    *,
+    provider_boundary_ack: bool = True,
+    human_review_ack: bool = True,
+    protected_zone_policy: str | None = "deny",
+) -> subprocess.CompletedProcess[str]:
+    argv = [sys.executable, str(script), "plan", "semantic-gc", "--json"]
+    for unit in units if units is not None else [semantic_gc_unit("root", is_root=True), semantic_gc_candidate()]:
+        argv.extend(["--context-unit-json", unit if isinstance(unit, str) else json.dumps(unit)])
+    if provider_boundary_ack:
+        argv.append("--provider-boundary-ack")
+    if human_review_ack:
+        argv.append("--human-review-ack")
+    if protected_zone_policy is not None:
+        argv.extend(["--protected-zone-policy", protected_zone_policy])
+    return subprocess.run(argv, text=True, capture_output=True, check=True)
 
 
 def reserve_loopback_port() -> int:
@@ -4074,6 +4120,387 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("dry-run metadata readiness only", proc.stdout)
                 self.assertIn("No source/artifact/config/stdin content was read", proc.stdout)
                 self.assertIn("no context was generated or replaced", proc.stdout)
+
+    def test_experimental_semantic_gc_registry_and_surface(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                registry = json.loads(subprocess.run(
+                    [sys.executable, str(script), "list", "--json"],
+                    text=True, capture_output=True, check=True,
+                ).stdout)
+                row = next(item for item in registry["experiments"] if item["id"] == "semantic-gc")
+                self.assertFalse(row["default_enabled"])
+                self.assertEqual(row["risk_level"], "high")
+                self.assertEqual(row["runtime_status"], "available-plan-only")
+                self.assertEqual(row["commands"], ["context-guard experiments plan semantic-gc"])
+                module = load_python_script_module(script, f"_semantic_gc_parser_{script.name.replace('-', '_')}")
+                parser = module.build_parser()
+                root_sub = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+                plan = root_sub.choices["plan"]
+                plan_sub = next(action for action in plan._actions if isinstance(action, argparse._SubParsersAction))
+                semantic = plan_sub.choices["semantic-gc"]
+                self.assertEqual(
+                    {option for action in semantic._actions for option in action.option_strings if option not in {"-h", "--help"}},
+                    {"--context-unit-json", "--provider-boundary-ack", "--human-review-ack", "--protected-zone-policy", "--json"},
+                )
+                payload = json.loads(run_semantic_gc_plan(script).stdout)
+                self.assertEqual(payload["experiment"], "semantic-gc")
+                for verb in ("emit", "record", "serve", "apply", "delete", "omit"):
+                    proc = subprocess.run([sys.executable, str(script), verb, "semantic-gc"], text=True, capture_output=True)
+                    self.assertEqual(proc.returncode, 2)
+
+    def test_experimental_semantic_gc_ready_for_plan_review_contract(self):
+        expected_warnings = [
+            "plan_only_no_omission", "caller_declared_graph_unverified",
+            "semantic_relevance_not_evaluated", "provider_boundary_not_verified",
+            "provenance_not_verified_externally", "fallback_not_executed",
+            "human_review_still_required", "accepted_notes_are_untrusted",
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            first = run_semantic_gc_plan(script)
+            second = run_semantic_gc_plan(script)
+            self.assertEqual(first.stdout, second.stdout)
+            payload = json.loads(first.stdout)
+            self.assertEqual(payload["schema"], "contextguard.experiments.semantic-gc-plan.v1")
+            self.assertEqual(payload["status"], "ready_for_plan_review")
+            self.assertTrue(payload["graph_integrity_complete"])
+            self.assertTrue(payload["graph_evaluation_performed"])
+            self.assertEqual(payload["declared_root_ids"], ["root"])
+            self.assertEqual(payload["marked_unit_ids"], ["root"])
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertEqual(payload["candidates"][0]["unit_id"], "orphan")
+            self.assertEqual(payload["warnings"], expected_warnings)
+            self.assertEqual(payload["blockers"], [])
+            self.assertIsNone(payload["candidate_replacement"])
+            self.assertFalse(payload["human_review_performed"])
+            self.assertFalse(payload["omission_authorized"])
+            self.assertFalse(payload["runtime_action_allowed"])
+            self.assertEqual(first.stdout, json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+    def test_experimental_semantic_gc_graph_integrity_suppression(self):
+        fixtures = [
+            ([], "no_context_units"),
+            ([semantic_gc_unit("root", is_root=True, references=["missing"])], "unknown_reference"),
+            ([semantic_gc_unit("dup", is_root=True), semantic_gc_unit("dup")], "duplicate_unit_id"),
+            ([semantic_gc_unit("root", is_root="yes")], "invalid_root_flag"),
+            ([semantic_gc_unit("lonely")], "no_declared_root"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for units, issue in fixtures:
+                payload = json.loads(run_semantic_gc_plan(script, units).stdout)
+                self.assertIn(issue, payload["blockers"])
+                self.assertIn("graph_evaluation_suppressed", payload["blockers"])
+                self.assertFalse(payload["graph_integrity_complete"])
+                self.assertFalse(payload["graph_evaluation_performed"])
+                self.assertEqual(payload["marked_unit_ids"], [])
+                self.assertEqual(payload["candidates"], [])
+                self.assertEqual(payload["candidate_count"], 0)
+                self.assertTrue(all(row["candidate_safety_applicable"] is None for row in payload["unit_validation"]))
+
+    def test_experimental_semantic_gc_two_phase_validation(self):
+        bad = semantic_gc_candidate(content_sha256="BAD", provenance=None, missed_context_note=None, exact_fallback_command=None)
+        graph = [semantic_gc_unit("root", is_root=True, references=["live"]), semantic_gc_unit("live"), bad]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            self.assertTrue(payload["graph_evaluation_performed"])
+            self.assertEqual(payload["marked_unit_ids"], ["live", "root"])
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertEqual(payload["candidates"][0]["unit_id"], "orphan")
+            self.assertEqual(payload["candidate_safety_invalid_count"], 1)
+            self.assertIsNone(payload["candidates"][0]["content_sha256"])
+            self.assertIn("invalid_content_sha256", payload["blockers"])
+            self.assertIn("missing_provenance", payload["blockers"])
+
+    def test_experimental_semantic_gc_counts_and_audit(self):
+        graph = [
+            semantic_gc_unit("root", is_root=True, references=["a"]),
+            semantic_gc_unit("a", references=["root"]),
+            semantic_gc_candidate("z"),
+            semantic_gc_candidate("p", protected_zone=True),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            self.assertEqual(payload["total_unit_count"], 4)
+            self.assertEqual(payload["decoded_unit_count"], 4)
+            self.assertEqual(payload["structurally_valid_unit_count"], 4)
+            self.assertEqual(payload["marked_unit_ids"], ["a", "root"])
+            self.assertEqual(payload["unreachable_unit_count"], 2)
+            self.assertEqual(payload["protected_unreachable_count"], 1)
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertEqual([row["input_index"] for row in payload["unit_validation"]], [0, 1, 2, 3])
+            self.assertIn("protected_unreachable_excluded", payload["warnings"])
+
+    def test_experimental_semantic_gc_unreachable_cycle_becomes_candidates(self):
+        graph = [
+            semantic_gc_unit("root", is_root=True),
+            semantic_gc_candidate("cycle-a", references=["cycle-b"]),
+            semantic_gc_candidate("cycle-b", references=["cycle-a"], content_sha256="c" * 64,
+                                  provenance={"source_label": "cycle-b", "receipt_id": "abcdef0123456789"},
+                                  exact_fallback_command="context-guard-artifact get abcdef0123456789 --full"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            self.assertTrue(payload["graph_evaluation_performed"])
+            self.assertEqual(payload["marked_unit_ids"], ["root"])
+            self.assertEqual(payload["unreachable_unit_count"], 2)
+            self.assertEqual(payload["candidate_count"], 2)
+            self.assertEqual([row["unit_id"] for row in payload["candidates"]], ["cycle-a", "cycle-b"])
+            self.assertEqual(payload["candidate_safety_valid_count"], 2)
+            self.assertEqual(payload["status"], "ready_for_plan_review")
+
+    def test_experimental_semantic_gc_input_permutation_preserves_canonical_graph_contract(self):
+        graph = [
+            semantic_gc_unit("root", is_root=True, references=["live"]),
+            semantic_gc_unit("live"),
+            semantic_gc_candidate("z-candidate", content_sha256="c" * 64,
+                                  provenance={"source_label": "z", "receipt_id": "abcdef0123456789"},
+                                  exact_fallback_command="context-guard-artifact get abcdef0123456789 --full"),
+            semantic_gc_candidate("a-candidate"),
+        ]
+
+        def normalized(payload):
+            result = dict(payload)
+            result["unit_validation"] = sorted(
+                ({key: value for key, value in row.items() if key != "input_index"}
+                 for row in payload["unit_validation"]),
+                key=lambda row: row["unit_id"],
+            )
+            return result
+
+        for script in EXPERIMENT_SCRIPTS:
+            forward = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            reverse = json.loads(run_semantic_gc_plan(script, list(reversed(graph))).stdout)
+            self.assertEqual(normalized(forward), normalized(reverse))
+            self.assertNotEqual(
+                [row["unit_id"] for row in forward["unit_validation"]],
+                [row["unit_id"] for row in reverse["unit_validation"]],
+            )
+
+    def test_experimental_semantic_gc_protected_only_omitted_policy_still_evaluates(self):
+        graph = [
+            semantic_gc_unit("root", is_root=True),
+            semantic_gc_unit("protected", protected_zone=True),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph, protected_zone_policy=None).stdout)
+            self.assertTrue(payload["graph_integrity_complete"])
+            self.assertTrue(payload["graph_evaluation_performed"])
+            self.assertEqual(payload["candidate_count"], 0)
+            self.assertEqual(payload["protected_unreachable_count"], 1)
+            self.assertIsNone(payload["protected_zone_policy"])
+            self.assertEqual(payload["effective_protected_zone_policy"], "deny")
+            self.assertEqual(payload["blockers"], ["protected_zone_policy_required"])
+            self.assertEqual(payload["status"], "blocked")
+
+    def test_experimental_semantic_gc_depth_100_allowed_and_101_rejected(self):
+        def raw_with_max_depth(max_depth):
+            nested: object = 0
+            for _ in range(max_depth - 1):
+                nested = {"x": nested}
+            return json.dumps(semantic_gc_unit("root", is_root=True, provenance=nested))
+
+        for script in EXPERIMENT_SCRIPTS:
+            allowed = json.loads(run_semantic_gc_plan(script, [raw_with_max_depth(100)]).stdout)
+            self.assertNotIn("context_unit_depth_exceeded", allowed["blockers"])
+            self.assertTrue(allowed["graph_evaluation_performed"])
+            rejected = json.loads(run_semantic_gc_plan(script, [raw_with_max_depth(101)]).stdout)
+            self.assertIn("context_unit_depth_exceeded", rejected["blockers"])
+            self.assertFalse(rejected["graph_evaluation_performed"])
+
+    def test_experimental_semantic_gc_candidate_safety(self):
+        invalid_note = " SECRET\n"
+        cases = [
+            ({"content_sha256": "A" * 64}, "invalid_content_sha256"),
+            ({"provenance": {"source_label": " bad ", "receipt_id": SEMANTIC_GC_RECEIPT}}, "invalid_source_label"),
+            ({"provenance": {"source_label": "ok", "receipt_id": "BADSECRET"}}, "invalid_receipt_id"),
+            ({"missed_context_note": invalid_note}, "invalid_missed_context_note"),
+            ({"exact_fallback_command": "context-guard-artifact get deadbeefdeadbeef --full"}, "fallback_receipt_mismatch"),
+            ({"exact_fallback_command": f"context-guard-artifact get {SEMANTIC_GC_RECEIPT} --full; echo SECRET"}, "invalid_exact_fallback"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for overrides, blocker in cases:
+                payload = json.loads(run_semantic_gc_plan(script, [semantic_gc_unit("root", is_root=True), semantic_gc_candidate(**overrides)]).stdout)
+                self.assertIn(blocker, payload["blockers"])
+                self.assertEqual(payload["candidate_count"], 1)
+                self.assertNotIn("BADSECRET", payload["candidates"][0].__repr__())
+                self.assertNotIn("SECRET", json.dumps(payload))
+
+    def test_experimental_semantic_gc_acknowledgement_invariants(self):
+        for script in EXPERIMENT_SCRIPTS:
+            for provider, human, blocker in ((False, True, "provider_boundary_ack_required"), (True, False, "human_review_ack_required")):
+                payload = json.loads(run_semantic_gc_plan(script, provider_boundary_ack=provider, human_review_ack=human).stdout)
+                self.assertIn(blocker, payload["blockers"])
+                self.assertEqual(payload["status"], "blocked")
+                self.assertFalse(payload["human_review_performed"])
+                self.assertFalse(payload["omission_authorized"])
+                self.assertFalse(payload["runtime_action_allowed"])
+
+    def test_experimental_semantic_gc_omitted_protected_policy(self):
+        graph = [semantic_gc_unit("root", is_root=True), semantic_gc_candidate("orphan"), semantic_gc_unit("protected", protected_zone=True)]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph, protected_zone_policy=None).stdout)
+            self.assertIsNone(payload["protected_zone_policy"])
+            self.assertEqual(payload["effective_protected_zone_policy"], "deny")
+            self.assertTrue(payload["graph_evaluation_performed"])
+            self.assertEqual(payload["protected_unreachable_count"], 1)
+            self.assertEqual(payload["candidate_count"], 1)
+            self.assertIn("protected_zone_policy_required", payload["blockers"])
+
+    def test_experimental_semantic_gc_direct_invalid_protected_policy_fails_closed(self):
+        raw_root = json.dumps(semantic_gc_unit("root", is_root=True))
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            module = load_python_script_module(script, f"_semantic_gc_policy_{index}")
+            for invalid_policy in ("allow", "DENY", " deny ", ""):
+                with self.subTest(script=script, policy=invalid_policy):
+                    payload = module.semantic_gc_plan_payload(argparse.Namespace(
+                        context_unit_json=[raw_root],
+                        provider_boundary_ack=True,
+                        human_review_ack=True,
+                        protected_zone_policy=invalid_policy,
+                    ))
+                    self.assertIsNone(payload["protected_zone_policy"])
+                    self.assertEqual(payload["effective_protected_zone_policy"], "deny")
+                    self.assertIn("protected_zone_policy_required", payload["blockers"])
+                    self.assertEqual(payload["status"], "blocked")
+
+    def test_experimental_semantic_gc_mixed_reference_defects_are_all_reported(self):
+        graph = [
+            semantic_gc_unit(
+                "root",
+                is_root=True,
+                references=["missing", "missing", 42],
+            )
+        ]
+        expected = ["invalid_references", "duplicate_reference", "unknown_reference"]
+        for script in EXPERIMENT_SCRIPTS:
+            payload = json.loads(run_semantic_gc_plan(script, graph).stdout)
+            self.assertEqual(payload["unit_validation"][0]["structural_issues"], expected)
+            for issue in expected:
+                self.assertIn(issue, payload["blockers"])
+            self.assertFalse(payload["graph_evaluation_performed"])
+
+    def test_experimental_semantic_gc_rejects_argparse_prefix_abbreviations(self):
+        root = json.dumps(semantic_gc_unit("root", is_root=True))
+        abbreviated_flags = (
+            ("--context-unit-j", root),
+            ("--provider-boundary-a", None),
+            ("--human-review-a", None),
+            ("--protected-zone-p", "deny"),
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            for flag, value in abbreviated_flags:
+                with self.subTest(script=script, flag=flag):
+                    argv = [sys.executable, str(script), "plan", "semantic-gc", flag]
+                    if value is not None:
+                        argv.append(value)
+                    proc = subprocess.run(argv, text=True, capture_output=True)
+                    self.assertEqual(proc.returncode, 2)
+                    self.assertIn("unrecognized arguments", proc.stderr)
+
+    def test_experimental_semantic_gc_strict_envelope_ambiguity(self):
+        marked = '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false,"provenance":{"source_label":"a","source_label":"b","receipt_id":"0123456789abcdef"}}'
+        protected = '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"protected","references":[],"is_root":false,"protected_zone":true,"provenance":{"source_label":"a","source_label":"b","receipt_id":"0123456789abcdef"}}'
+        for script in EXPERIMENT_SCRIPTS:
+            for units in ([marked], [json.dumps(semantic_gc_unit("root", is_root=True)), protected]):
+                payload = json.loads(run_semantic_gc_plan(script, units).stdout)
+                self.assertIn("duplicate_json_key", payload["blockers"])
+                self.assertFalse(payload["graph_evaluation_performed"])
+                self.assertEqual(payload["candidates"], [])
+
+    def test_experimental_semantic_gc_strict_json_and_non_echo(self):
+        def nested(depth):
+            value: object = 0
+            for _ in range(depth):
+                value = {"x": value}
+            return json.dumps(value)
+        fixtures = [
+            ("{", "invalid_context_unit_json"),
+            ('{"schema":"contextguard.semantic-gc-unit.v1","schema":"SECRET"}', "duplicate_json_key"),
+            (nested(101), "context_unit_depth_exceeded"),
+            ('{"x":NaN}', "nonfinite_json_number"),
+            (json.dumps({"x": "\ud800"}), "invalid_unicode_scalar"),
+            ('{"x":"' + ("a" * 8190) + '"}', "invalid_context_unit_json"),
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            for raw, blocker in fixtures:
+                payload = json.loads(run_semantic_gc_plan(script, [raw]).stdout)
+                self.assertIn(blocker, payload["blockers"])
+                self.assertNotIn("SECRET", json.dumps(payload))
+            exact = '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false,"extra":"' + ("a" * 8060) + '"}'
+            exact = exact[:-2] + ("a" * (8192 - len(exact.encode("utf-8")))) + '"}'
+            self.assertEqual(len(exact.encode("utf-8")), 8192)
+            payload = json.loads(run_semantic_gc_plan(script, [exact]).stdout)
+            self.assertIn("unknown_context_unit_field", payload["blockers"])
+            payload = json.loads(run_semantic_gc_plan(script, [exact + " "]).stdout)
+            self.assertIn("invalid_context_unit_json", payload["blockers"])
+            safe_raw = json.dumps(semantic_gc_unit("root", is_root=True))
+            deep_100 = nested(100)
+            module = load_python_script_module(script, f"_semantic_gc_recursion_{script.name.replace('-', '_')}")
+            with mock.patch.object(module.json, "loads", side_effect=RecursionError):
+                payload = module.semantic_gc_plan_payload(argparse.Namespace(
+                    context_unit_json=[safe_raw], provider_boundary_ack=True,
+                    human_review_ack=True, protected_zone_policy="deny",
+                ))
+            self.assertIn("decoder_recursion_limit", payload["blockers"])
+            duplicate_precedence = '{"x":' + deep_100 + ',"x":NaN}'
+            payload = json.loads(run_semantic_gc_plan(script, [duplicate_precedence]).stdout)
+            self.assertIn("duplicate_json_key", payload["blockers"])
+            self.assertNotIn("nonfinite_json_number", payload["blockers"])
+
+            secret = "DO_NOT_ECHO_SEMANTIC_GC_SECRET"
+            proc = run_semantic_gc_plan(script, [json.dumps(semantic_gc_unit("root", is_root=True, extra=secret))])
+            self.assertNotIn(secret, proc.stdout + proc.stderr)
+
+            human = subprocess.run(
+                [sys.executable, str(script), "plan", "semantic-gc",
+                 "--context-unit-json", json.dumps(semantic_gc_unit("root", is_root=True)),
+                 "--context-unit-json", json.dumps(semantic_gc_candidate(missed_context_note=secret)),
+                 "--provider-boundary-ack", "--human-review-ack", "--protected-zone-policy", "deny"],
+                text=True, capture_output=True, check=True,
+            )
+            self.assertNotIn(secret, human.stdout + human.stderr)
+
+    def test_experimental_semantic_gc_overflow_and_side_effects(self):
+        class Exploding:
+            def boom(self, *_args, **_kwargs): raise AssertionError("overflow touched")
+            __str__ = __repr__ = __eq__ = __hash__ = boom
+            encode = boom
+        raw = json.dumps(semantic_gc_unit("root", is_root=True))
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            module = load_python_script_module(script, f"_semantic_gc_{index}")
+            payload = module.semantic_gc_plan_payload(argparse.Namespace(
+                context_unit_json=[raw] * 64 + [Exploding()], provider_boundary_ack=True,
+                human_review_ack=True, protected_zone_policy="deny",
+            ))
+            self.assertEqual(payload["total_unit_count"], 65)
+            self.assertEqual(payload["overflow_unit_count"], 1)
+            self.assertIn("unit_limit_exceeded", payload["blockers"])
+            scope = payload["verification_scope"]
+            self.assertTrue(all(value is False for value in scope.values()))
+            candidate_raw = json.dumps(semantic_gc_candidate())
+
+            def forbidden(name):
+                def fail(*_args, **_kwargs):
+                    raise AssertionError(f"forbidden semantic-gc side effect: {name}")
+                return fail
+
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch("builtins.open", side_effect=forbidden("open")))
+                for name in ("open", "read_text", "read_bytes", "write_text", "write_bytes"):
+                    stack.enter_context(mock.patch.object(Path, name, side_effect=forbidden(f"Path.{name}")))
+                for name in ("system", "popen", "mkdir", "makedirs", "remove", "unlink", "rename", "replace"):
+                    stack.enter_context(mock.patch.object(module.os, name, side_effect=forbidden(f"os.{name}")))
+                for name in ("time", "monotonic", "perf_counter", "sleep"):
+                    stack.enter_context(mock.patch.object(module.time, name, side_effect=forbidden(f"time.{name}")))
+                for name in ("socket", "create_connection", "getaddrinfo", "gethostbyname"):
+                    stack.enter_context(mock.patch.object(module.socket, name, side_effect=forbidden(f"socket.{name}")))
+                for name in ("run", "Popen", "call", "check_call", "check_output"):
+                    stack.enter_context(mock.patch.object(subprocess, name, side_effect=forbidden(f"subprocess.{name}")))
+                ready = module.semantic_gc_plan_payload(argparse.Namespace(
+                    context_unit_json=[raw, candidate_raw], provider_boundary_ack=True,
+                    human_review_ack=True, protected_zone_policy="deny",
+                ))
+            self.assertEqual(ready["status"], "ready_for_plan_review")
 
     def test_experimental_visual_crop_ocr_emit_runtime(self):
         for script in EXPERIMENT_SCRIPTS:
@@ -8152,6 +8579,28 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
                 self.assertEqual(payload["review_plan"]["warnings"], expected_warnings)
                 self.assertIsNone(payload["candidate_replacement"])
+
+    def test_experimental_semantic_gc_docs_parity(self):
+        docs = (
+            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            lower = text.lower()
+            self.assertEqual(sum(line.strip().startswith("context-guard experiments plan semantic-gc") for line in text.splitlines()), 1)
+            self.assertIn("graph", lower)
+            self.assertRegex(lower, r"suppress|억제")
+            self.assertRegex(lower, r"plan.review|계획 검토")
+            self.assertRegex(lower, r"untrusted|신뢰되지")
+            self.assertRegex(lower, r"deny.only|deny 전용")
+            self.assertRegex(lower, r"does not (?:read|verify)|읽지 않|검증하지 않")
+            line = next(line.strip() for line in text.splitlines() if line.strip().startswith("context-guard experiments plan semantic-gc"))
+            argv = shlex.split(line)
+            proc = subprocess.run([sys.executable, str(PLUGIN_BIN / "context-guard-experiments"), *argv[2:]], text=True, capture_output=True, check=True)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["status"], "ready_for_plan_review")
 
     def test_experimental_local_proxy_docs_surface_boundary(self):
         docs = (

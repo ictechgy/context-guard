@@ -154,3 +154,9 @@ claude --plugin-dir ./plugins/context-guard
 ## 라이선스
 
 Copyright 2026 jinhongan. Apache License 2.0으로 배포됩니다. [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 참고하세요.
+
+### 실험적 semantic-GC plan gate
+
+`semantic-gc`는 기본 비활성화된 deny 전용 계획 검토 gate입니다. 전체 envelope나 graph topology가 모호하면 graph evaluation을 억제합니다. 도달할 수 없는 node는 semantic irrelevance의 증명이 아니라 검토 후보일 뿐이며 omission과 runtime action은 승인되지 않습니다. missed-context note는 신뢰되지 않은 입력입니다. 이 planner는 context/artifact 내용을 읽지 않고 provenance, fallback, provider, hosted 절감을 검증하지 않습니다.
+
+context-guard experiments plan semantic-gc --json --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false}' --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"orphan","references":[],"is_root":false,"protected_zone":false,"content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","provenance":{"source_label":"canonical-example","receipt_id":"0123456789abcdef"},"missed_context_note":"A reviewer could lose the orphaned rationale.","exact_fallback_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --human-review-ack --protected-zone-policy deny
