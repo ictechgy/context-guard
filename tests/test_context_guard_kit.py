@@ -207,7 +207,7 @@ def run_semantic_gc_plan(
         argv.append("--human-review-ack")
     if protected_zone_policy is not None:
         argv.extend(["--protected-zone-policy", protected_zone_policy])
-    return subprocess.run(argv, text=True, capture_output=True, check=True)
+    return subprocess.run(argv, text=True, capture_output=True)
 
 
 def reserve_loopback_port() -> int:
@@ -4139,7 +4139,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     row["gate_requirements"],
                 )
                 self.assertIn(
-                    "Plan emission uses exit code 0; consumers must inspect status and blockers for readiness.",
+                    "Ready plans exit 0; blocked plans still emit their envelope and exit 2.",
                     row["evidence_contract"],
                 )
                 module = load_python_script_module(script, f"_semantic_gc_parser_{script.name.replace('-', '_')}")
@@ -4168,6 +4168,8 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for script in EXPERIMENT_SCRIPTS:
             first = run_semantic_gc_plan(script)
             second = run_semantic_gc_plan(script)
+            self.assertEqual(first.returncode, 0)
+            self.assertEqual(second.returncode, 0)
             self.assertEqual(first.stdout, second.stdout)
             payload = json.loads(first.stdout)
             self.assertEqual(payload["schema"], "contextguard.experiments.semantic-gc-plan.v1")
@@ -4186,7 +4188,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             self.assertFalse(payload["runtime_action_allowed"])
             self.assertEqual(
                 payload["process_exit_contract"],
-                "exit code 0 means a plan was emitted; inspect status and blockers for readiness",
+                "exit code 0 means ready_for_plan_review; exit code 2 means a blocked plan was emitted",
             )
             self.assertEqual(first.stdout, json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
 
@@ -4351,13 +4353,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
         for script in EXPERIMENT_SCRIPTS:
             for provider, human, blocker in ((False, True, "provider_boundary_ack_required"), (True, False, "human_review_ack_required")):
                 proc = run_semantic_gc_plan(script, provider_boundary_ack=provider, human_review_ack=human)
-                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(proc.returncode, 2)
                 payload = json.loads(proc.stdout)
                 self.assertIn(blocker, payload["blockers"])
                 self.assertEqual(payload["status"], "blocked")
                 self.assertEqual(
                     payload["process_exit_contract"],
-                    "exit code 0 means a plan was emitted; inspect status and blockers for readiness",
+                    "exit code 0 means ready_for_plan_review; exit code 2 means a blocked plan was emitted",
                 )
                 self.assertFalse(payload["human_review_performed"])
                 self.assertFalse(payload["omission_authorized"])

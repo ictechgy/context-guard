@@ -81,7 +81,7 @@ SEMANTIC_GC_DETAILED_UNIT_CAP = 64
 SEMANTIC_GC_UNIT_JSON_BYTE_CAP = 8192
 SEMANTIC_GC_JSON_MAX_DEPTH = 100
 SEMANTIC_GC_PROCESS_EXIT_CONTRACT = (
-    "exit code 0 means a plan was emitted; inspect status and blockers for readiness"
+    "exit code 0 means ready_for_plan_review; exit code 2 means a blocked plan was emitted"
 )
 JSON_SAFE_INTEGER_MAX = 9_007_199_254_740_991
 PROOF_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
@@ -532,7 +532,7 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "Unprotected unreachable candidates require sanitized provenance, content hash, exact fallback, and an "
             "untrusted missed-context note plus human-review acknowledgement before the plan is ready for review. "
             "A complete graph with no unprotected sweep candidates does not require that acknowledgement. "
-            "Plan emission uses exit code 0; consumers must inspect status and blockers for readiness."
+            "Ready plans exit 0; blocked plans still emit their envelope and exit 2."
         ),
     ),
     Experiment(
@@ -3337,7 +3337,7 @@ def command_plan_semantic_gc(args: argparse.Namespace) -> int:
             print(f"Blockers: {', '.join(payload['blockers'])}")
         print(f"Exit contract: {payload['process_exit_contract']}.")
         print("semantic-gc is plan-only; no context was deleted, omitted, read, replaced, or authorized for runtime action.")
-    return 0
+    return 0 if payload["status"] == "ready_for_plan_review" else 2
 
 
 def visual_crop_ocr_evidence_pack_payload(args: argparse.Namespace) -> dict[str, Any]:
