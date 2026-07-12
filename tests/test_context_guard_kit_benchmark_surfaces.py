@@ -3299,14 +3299,16 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertFalse(row[flag])
             for value in ("cost_usd", "external_tokens", "external_cost_usd", "provider_cached_tokens"):
                 self.assertEqual(row[value], 0)
-            self.assertGreaterEqual(row["bytes_before"], row["bytes_after"])
-
         baseline = by_variant["baseline_full_evidence_fixture"]
+        full_prompt_bytes = len(full_prompt_path.read_bytes())
+        packed_prompt_bytes = len(packed_prompt_path.read_bytes())
+        self.assertEqual((baseline["bytes_before"], baseline["bytes_after"]), (full_prompt_bytes, full_prompt_bytes))
         self.assertEqual(baseline["artifacts_used"], 0)
         self.assertEqual(baseline["human_correction"], {"count": 0, "performed": False, "source": "synthetic_fixture", "reason": "none"})
         self.assertEqual(baseline["missed_context"], {"present": False, "summary": "none", "human_correction_required": False, "exact_text_fallback_available": True, "exact_text_fallback_verified": False})
 
         packed = by_variant["fixture_only_image_context_pack"]
+        self.assertEqual((packed["bytes_before"], packed["bytes_after"]), (full_prompt_bytes, packed_prompt_bytes))
         self.assertEqual(packed["artifacts_used"], 1)
         self.assertEqual(packed["corrections"], 1)
         self.assertEqual(
@@ -3331,6 +3333,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertTrue(packed["missed_context"]["summary"].strip())
         self.assertIn("declaration only", packed["notes"].lower())
         self.assertIn("no artifact read", packed["notes"].lower())
+        self.assertIn("omitted the owner acknowledgement", packed["notes"].lower())
+        self.assertIn("required one correction", packed["notes"].lower())
 
         full_prompt = full_prompt_path.read_text(encoding="utf-8").lower()
         packed_prompt = packed_prompt_path.read_text(encoding="utf-8").lower()
@@ -3374,10 +3378,15 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 )
                 self.assertNotIn("fixture-only placeholder", proc.stderr)
                 with csv_path.open(newline="", encoding="utf-8") as handle:
-                    self.assertEqual(len(list(csv.reader(handle))), 3)
-                outputs.append((csv_path.read_bytes(), json.loads(report_path.read_text(encoding="utf-8")), dashboard_path.read_bytes()))
+                    csv_rows = list(csv.DictReader(handle))
+                self.assertEqual(len(csv_rows), 2)
+                normalized_csv_rows = [
+                    {key: value for key, value in row.items() if key != "date"}
+                    for row in csv_rows
+                ]
+                outputs.append((normalized_csv_rows, report_path.read_bytes(), dashboard_path.read_bytes()))
             self.assertEqual(outputs[0], outputs[1])
-            report = outputs[0][1]
+            report = json.loads(outputs[0][1])
             self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
             self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
             self.assertEqual(len(report["matched_pair_evidence"]), 1)
