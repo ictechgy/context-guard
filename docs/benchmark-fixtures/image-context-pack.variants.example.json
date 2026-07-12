@@ -1,0 +1,10 @@
+[
+  {
+    "name": "baseline_full_evidence_fixture",
+    "extra_args": []
+  },
+  {
+    "name": "fixture_only_image_context_pack",
+    "extra_args": []
+  }
+]

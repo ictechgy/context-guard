@@ -1,0 +1,17 @@
+[
+  {
+    "id": "image_context_pack_matched_correction_fixture",
+    "prompt": "Fixture-only synthetic image-context-pack matched task. Compare caller-supplied sanitized textual evidence for one review decision. This is plan-only scaffolding with protected-zone deny, exact full-text fallback narrative, missed-context review, and no hosted claim. It ships no replacement or runtime and performs no renderer, OCR, image-parser, provider, model, network, or subprocess call.",
+    "model": "sonnet",
+    "effort": "medium",
+    "max_turns": 3,
+    "max_budget_usd": 1.0,
+    "allowed_tools": [],
+    "success_command": "python3 -c \"raise SystemExit('fixture-only placeholder: replace success_command before real benchmark runs')\"",
+    "success_cwd": ".",
+    "variant_prompt_files": {
+      "baseline_full_evidence_fixture": "image-context-pack-full-evidence.prompt.example.md",
+      "fixture_only_image_context_pack": "image-context-pack-packed-evidence.prompt.example.md"
+    }
+  }
+]
