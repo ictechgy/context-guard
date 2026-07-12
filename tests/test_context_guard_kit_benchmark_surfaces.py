@@ -110,15 +110,15 @@ import tests
 assert getattr(tests, {package_name.rsplit('.', 1)[1]!r}) is sys.modules[{package_name!r}]
 base_suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_context_guard_kit.BenchmarkRunnerTests')
 split_suite = unittest.defaultTestLoader.loadTestsFromName('tests.test_context_guard_kit_benchmark_surfaces.BenchmarkRunnerTests')
-assert base_suite.countTestCases() == 74, base_suite
-assert split_suite.countTestCases() == 74, split_suite
+assert base_suite.countTestCases() == 75, base_suite
+assert split_suite.countTestCases() == 75, split_suite
 """
                 subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, check=True, text=True, capture_output=True)
 
     def test_legacy_dotted_test_paths_resolve_without_discovery_aliases(self):
         self.assertNotIn("BenchmarkRunnerTests", dir(base))
         suite = unittest.defaultTestLoader.loadTestsFromName(f"{BASE_TOPLEVEL_MODULE}.BenchmarkRunnerTests")
-        self.assertEqual(suite.countTestCases(), 74)
+        self.assertEqual(suite.countTestCases(), 75)
         statusline_suite = unittest.defaultTestLoader.loadTestsFromName(f"{BASE_TOPLEVEL_MODULE}.StatuslineMergedWrapperTests")
         self.assertEqual(statusline_suite.countTestCases(), 10)
 
@@ -2988,6 +2988,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
         fixture_dir = ROOT / "docs" / "benchmark-fixtures"
         guide = ROOT / "docs" / "experimental-benchmark-fixtures.md"
         fixture_pairs = {
+            "image_context_pack": (
+                fixture_dir / "image-context-pack.tasks.example.json",
+                fixture_dir / "image-context-pack.variants.example.json",
+            ),
             "visual_ocr": (
                 fixture_dir / "visual-ocr.tasks.example.json",
                 fixture_dir / "visual-ocr.variants.example.json",
@@ -3009,6 +3013,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
     def _experimental_benchmark_prompt_fixture_names(self):
         return {
+            "image-context-pack-full-evidence.prompt.example.md",
+            "image-context-pack-packed-evidence.prompt.example.md",
             "learned-compression-baseline-context-pack.prompt.example.md",
             "learned-compression-candidate-digest.prompt.example.md",
             "output-transform-baseline-raw-output.prompt.example.md",
@@ -3021,6 +3027,10 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
     def _experimental_benchmark_expected_prompt_fragments(self):
         return {
+            "image_context_pack": {
+                "baseline_full_evidence_fixture": "Full sanitized textual evidence",
+                "fixture_only_image_context_pack": "Packed sanitized textual evidence",
+            },
             "visual_ocr": {
                 "baseline_full_visual_fixture": "Full visual evidence",
                 "fixture_only_cropped_or_ocr_evidence": "Cropped or OCR-derived evidence",
@@ -3084,6 +3094,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
         prepublish = (ROOT / "scripts" / "prepublish_check.py").read_text(encoding="utf-8")
         for expected in (
             "docs/experimental-benchmark-fixtures.md",
+            "docs/benchmark-fixtures/image-context-pack.tasks.example.json",
+            "docs/benchmark-fixtures/image-context-pack.variants.example.json",
+            "docs/benchmark-fixtures/image-context-pack.evidence.example.jsonl",
+            "docs/benchmark-fixtures/image-context-pack-full-evidence.prompt.example.md",
+            "docs/benchmark-fixtures/image-context-pack-packed-evidence.prompt.example.md",
             "docs/benchmark-fixtures/learned-compression.tasks.example.json",
             "docs/benchmark-fixtures/learned-compression.variants.example.json",
             "docs/benchmark-fixtures/learned-compression-baseline-context-pack.prompt.example.md",
@@ -3132,6 +3147,24 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertIsInstance(variant_raw, list)
                 self.assertTrue(task_raw)
                 self.assertTrue(variant_raw)
+                if lane == "image_context_pack":
+                    self.assertEqual(len(task_raw), 1)
+                    self.assertEqual(task_raw[0]["id"], "image_context_pack_matched_correction_fixture")
+                    self.assertEqual(task_raw[0]["allowed_tools"], [])
+                    self.assertEqual(
+                        task_raw[0]["variant_prompt_files"],
+                        {
+                            "baseline_full_evidence_fixture": "image-context-pack-full-evidence.prompt.example.md",
+                            "fixture_only_image_context_pack": "image-context-pack-packed-evidence.prompt.example.md",
+                        },
+                    )
+                    self.assertEqual(
+                        variant_raw,
+                        [
+                            {"name": "baseline_full_evidence_fixture", "extra_args": []},
+                            {"name": "fixture_only_image_context_pack", "extra_args": []},
+                        ],
+                    )
                 for item in task_raw:
                     self.assertIn("id", item)
                     self.assertIn("prompt", item)
@@ -3183,6 +3216,173 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
                         for variant in parsed_variants:
                             self.assertEqual(variant.extra_args, [])
+
+    def test_image_context_pack_fixture_replays_matched_claim_safe_evidence(self):
+        fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
+        task_path, variant_path = fixture_pairs["image_context_pack"]
+        evidence_path = fixture_dir / "image-context-pack.evidence.example.jsonl"
+        full_prompt_path = fixture_dir / "image-context-pack-full-evidence.prompt.example.md"
+        packed_prompt_path = fixture_dir / "image-context-pack-packed-evidence.prompt.example.md"
+
+        expected_top_level_keys = {
+            "artifacts_used", "byte_metrics", "bytes_after", "bytes_before", "claim_boundary",
+            "corrections", "cost_measured", "cost_usd", "effort", "external_cost_measured",
+            "external_cost_usd", "external_tokens", "external_tokens_measured", "hook_triggers",
+            "human_correction", "missed_context", "model", "notes", "primary_tokens_measured",
+            "provenance", "provider_cached_tokens", "provider_cached_tokens_measured",
+            "provider_usage", "schema_version", "shifted_cost", "success", "task_id", "tokens",
+            "turns", "variant", "wall_time_seconds",
+        }
+        rows = [
+            json.loads(line)
+            for line in evidence_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {(row["task_id"], row["variant"]) for row in rows},
+            {
+                ("image_context_pack_matched_correction_fixture", "baseline_full_evidence_fixture"),
+                ("image_context_pack_matched_correction_fixture", "fixture_only_image_context_pack"),
+            },
+        )
+        by_variant = {row["variant"]: row for row in rows}
+        for row in rows:
+            self.assertEqual(set(row), expected_top_level_keys)
+            self.assertEqual(row["schema_version"], "contextguard.bench.run-evidence.v1")
+            self.assertEqual(row["task_id"], "image_context_pack_matched_correction_fixture")
+            self.assertTrue(row["success"])
+            self.assertEqual(row["model"], "fixture-only")
+            self.assertEqual(row["effort"], "medium")
+            self.assertEqual((row["turns"], row["hook_triggers"], row["wall_time_seconds"]), (0, 0, 0))
+            self.assertEqual(
+                row["provenance"],
+                {
+                    "evidence_source_type": "synthetic_fixture",
+                    "claim_scope": "local_replay_fixture_not_public_claim",
+                    "capture_command_or_export_id": "docs/benchmark-fixtures/image-context-pack.evidence.example.jsonl",
+                },
+            )
+            self.assertEqual(row["tokens"], {"input_tokens": 0, "output_tokens": 0, "cache_creation": 0, "cache_read": 0})
+            self.assertEqual(set(row["human_correction"]), {"count", "performed", "source", "reason"})
+            self.assertEqual(row["human_correction"]["source"], "synthetic_fixture")
+            self.assertEqual(set(row["missed_context"]), {"present", "summary", "human_correction_required", "exact_text_fallback_available", "exact_text_fallback_verified"})
+            self.assertEqual(
+                row["provider_usage"],
+                {
+                    "provider_called": False,
+                    "source": "synthetic_fixture",
+                    "primary_tokens_measured": False,
+                    "primary_cost_measured": False,
+                    "provider_cached_tokens_measured": False,
+                },
+            )
+            self.assertEqual(
+                row["shifted_cost"],
+                {"status": "unmeasured", "external_tokens_measured": False, "external_cost_measured": False, "claim_allowed": False},
+            )
+            self.assertEqual(
+                row["claim_boundary"],
+                {
+                    "hosted_api_token_savings_claim_allowed": False,
+                    "hosted_api_cost_savings_claim_allowed": False,
+                    "quality_non_inferiority_claim_allowed": False,
+                    "reason": "synthetic_fixture_only_no_provider_measurement",
+                },
+            )
+            self.assertEqual(
+                row["byte_metrics"],
+                {"source": "sanitized_textual_fixture", "unit": "utf8_bytes", "image_bytes": False, "provider_tokens": False, "proxy_only": True},
+            )
+            self.assertEqual(row["corrections"], row["human_correction"]["count"])
+            for flag in ("primary_tokens_measured", "cost_measured", "provider_cached_tokens_measured", "external_tokens_measured", "external_cost_measured"):
+                self.assertFalse(row[flag])
+            for value in ("cost_usd", "external_tokens", "external_cost_usd", "provider_cached_tokens"):
+                self.assertEqual(row[value], 0)
+            self.assertGreaterEqual(row["bytes_before"], row["bytes_after"])
+
+        baseline = by_variant["baseline_full_evidence_fixture"]
+        self.assertEqual(baseline["artifacts_used"], 0)
+        self.assertEqual(baseline["human_correction"], {"count": 0, "performed": False, "source": "synthetic_fixture", "reason": "none"})
+        self.assertEqual(baseline["missed_context"], {"present": False, "summary": "none", "human_correction_required": False, "exact_text_fallback_available": True, "exact_text_fallback_verified": False})
+
+        packed = by_variant["fixture_only_image_context_pack"]
+        self.assertEqual(packed["artifacts_used"], 1)
+        self.assertEqual(packed["corrections"], 1)
+        self.assertEqual(
+            packed["human_correction"],
+            {
+                "count": 1,
+                "performed": True,
+                "source": "synthetic_fixture",
+                "reason": "initial pack omitted the qualifying owner acknowledgement context and required full-text fallback review",
+            },
+        )
+        self.assertEqual(
+            packed["missed_context"],
+            {
+                "present": True,
+                "summary": "initial packed evidence omitted the qualifying owner acknowledgement requirement and value",
+                "human_correction_required": True,
+                "exact_text_fallback_available": True,
+                "exact_text_fallback_verified": False,
+            },
+        )
+        self.assertTrue(packed["missed_context"]["summary"].strip())
+        self.assertIn("declaration only", packed["notes"].lower())
+        self.assertIn("no artifact read", packed["notes"].lower())
+
+        full_prompt = full_prompt_path.read_text(encoding="utf-8").lower()
+        packed_prompt = packed_prompt_path.read_text(encoding="utf-8").lower()
+        common_prompt_boundaries = (
+            "sanitized textual", "plan-only", "protected-zone deny", "verified=false", "no replacement",
+            "no runtime", "no hosted claim", "full-text fallback", "no renderer call", "no ocr call",
+            "no image-parser call", "no provider call", "no model call", "no network call", "no subprocess call",
+            "not establish token savings", "cost savings", "quality non-inferiority",
+        )
+        for prompt_name, prompt_text in (("full", full_prompt), ("packed", packed_prompt)):
+            for required in common_prompt_boundaries:
+                with self.subTest(prompt=prompt_name, required=required):
+                    self.assertIn(required, prompt_text)
+        self.assertIn("missed context: none", full_prompt)
+        self.assertIn("synthetic human correction", packed_prompt)
+        self.assertIn("omitted qualifying context at first", packed_prompt)
+        self.assertIn("missed context remains recorded", packed_prompt)
+        self.assertIn("declaration only with no artifact read", packed_prompt)
+
+        combined = "\n".join(path.read_text(encoding="utf-8").lower() for path in (task_path, variant_path, evidence_path, full_prompt_path, packed_prompt_path))
+        for forbidden in ("http://", "https://", str(Path.home()).lower(), "provider endpoint", "model endpoint"):
+            self.assertNotIn(forbidden, combined)
+        binary_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".tiff", ".bmp", ".pdf"}
+        self.assertFalse(any(path.suffix.lower() in binary_suffixes for path in fixture_dir.iterdir()))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = []
+            for script in BENCH_SCRIPTS:
+                stem = "kit" if script == BENCH_SCRIPTS[0] else "plugin"
+                csv_path = Path(tmp) / f"{stem}.csv"
+                report_path = Path(tmp) / f"{stem}.report.json"
+                dashboard_path = Path(tmp) / f"{stem}.dashboard.md"
+                proc = subprocess.run(
+                    [
+                        sys.executable, str(script), "--tasks", str(task_path), "--variants", str(variant_path),
+                        "--evidence-jsonl", str(evidence_path), "--baseline-variant", "baseline_full_evidence_fixture",
+                        "--claude-bin", "/definitely/missing/contextguard-claude", "--csv", str(csv_path),
+                        "--report-json", str(report_path), "--dashboard-md", str(dashboard_path),
+                    ],
+                    cwd=ROOT, text=True, capture_output=True, check=True,
+                )
+                self.assertNotIn("fixture-only placeholder", proc.stderr)
+                with csv_path.open(newline="", encoding="utf-8") as handle:
+                    self.assertEqual(len(list(csv.reader(handle))), 3)
+                outputs.append((csv_path.read_bytes(), json.loads(report_path.read_text(encoding="utf-8")), dashboard_path.read_bytes()))
+            self.assertEqual(outputs[0], outputs[1])
+            report = outputs[0][1]
+            self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+            self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
+            self.assertEqual(len(report["matched_pair_evidence"]), 1)
+            blockers = set(report["public_claim_readiness"]["blocking_gate_ids"])
+            self.assertTrue({"provider_measured_token_cost", "quality_non_inferiority", "shifted_cost_accounting", "provider_export_provenance"}.issubset(blockers))
 
     def test_token_savings_12task_fixture_parses_and_generates_claim_safe_report(self):
         fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
@@ -3538,7 +3738,14 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 check=True,
                             )
                             dry_runs[variant_name] = variant_proc.stdout
-                        if lane == "visual_ocr":
+                        if lane == "image_context_pack":
+                            self.assertIn("Full sanitized textual evidence", dry_runs["baseline_full_evidence_fixture"])
+                            self.assertIn("Packed sanitized textual evidence", dry_runs["fixture_only_image_context_pack"])
+                            self.assertNotEqual(
+                                dry_runs["baseline_full_evidence_fixture"],
+                                dry_runs["fixture_only_image_context_pack"],
+                            )
+                        elif lane == "visual_ocr":
                             self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
                             self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
                             self.assertNotEqual(

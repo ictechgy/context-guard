@@ -1,6 +1,6 @@
 # Experimental benchmark fixtures
 
-These fixtures are **fixture-only** starter scaffolds for future visual/OCR, learned-compression, reversible output-transform, and token-savings roadmap experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not shipped benchmark results**, not OCR/compression implementations, not cache/tool-deferral implementations, and not hosted API savings claims.
+These fixtures are **fixture-only** starter scaffolds for future image-context-pack, visual/OCR, learned-compression, reversible output-transform, and token-savings roadmap experiments. They are **synthetic**, package-visible examples for `context-guard-bench` task and variant shapes; they are **not shipped benchmark results**, not image packing/OCR/compression implementations, not cache/tool-deferral implementations, and not hosted API savings claims.
 
 Use them when designing an experiment that starts from ContextGuard's existing benchmark discipline:
 
@@ -39,10 +39,17 @@ This runner-native swap only proves command shape and prompt selection until the
 
 | Fixture set | Task file | Variant file | Evidence replay file | Intended future experiment |
 | --- | --- | --- | --- | --- |
+| Matched image-context-pack correction | [`benchmark-fixtures/image-context-pack.tasks.example.json`](benchmark-fixtures/image-context-pack.tasks.example.json) | [`benchmark-fixtures/image-context-pack.variants.example.json`](benchmark-fixtures/image-context-pack.variants.example.json) | [`benchmark-fixtures/image-context-pack.evidence.example.jsonl`](benchmark-fixtures/image-context-pack.evidence.example.jsonl) | Replay one full sanitized textual baseline against one synthetic packed textual variant that succeeds only after one recorded human correction, without turning byte proxies into a hosted claim. |
 | Visual/OCR evidence | [`benchmark-fixtures/visual-ocr.tasks.example.json`](benchmark-fixtures/visual-ocr.tasks.example.json) | [`benchmark-fixtures/visual-ocr.variants.example.json`](benchmark-fixtures/visual-ocr.variants.example.json) | n/a | Compare full visual evidence against cropped or OCR-derived evidence after the user supplies sanitized textual evidence, missed-context notes, crop/OCR telemetry, and provider telemetry. |
 | Learned compression | [`benchmark-fixtures/learned-compression.tasks.example.json`](benchmark-fixtures/learned-compression.tasks.example.json) | [`benchmark-fixtures/learned-compression.variants.example.json`](benchmark-fixtures/learned-compression.variants.example.json) | n/a | Compare sanitized baseline context packs against a fixture-only compressed digest candidate after exact retrieval or receipt fallback, quality gates, and shifted costs are measured. |
 | Reversible output transform | [`benchmark-fixtures/output-transform.tasks.example.json`](benchmark-fixtures/output-transform.tasks.example.json) | [`benchmark-fixtures/output-transform.variants.example.json`](benchmark-fixtures/output-transform.variants.example.json) | n/a | Compare raw sanitized command output against a digest plus artifact receipt after variant prompt files, success checks, and provider telemetry are supplied. |
 | Token-savings 12-task roadmap | [`benchmark-fixtures/token-savings-12task.tasks.example.json`](benchmark-fixtures/token-savings-12task.tasks.example.json) | [`benchmark-fixtures/token-savings-12task.variants.example.json`](benchmark-fixtures/token-savings-12task.variants.example.json) | [`benchmark-fixtures/token-savings-12task.evidence.example.jsonl`](benchmark-fixtures/token-savings-12task.evidence.example.jsonl) | Exercise a canonical 12-task spread for bugfix, exploration, review, log analysis, migration, docs, refactor, performance, telemetry, cache layout, tool-schema deferral, and artifact receipt experiments after real success commands and provider telemetry are supplied. |
+
+## Matched image-context-pack correction fixture notes
+
+The image-context-pack fixture is a deterministic replay over one task and two variants. The baseline supplies full sanitized textual evidence. The packed variant explicitly records that qualifying context was omitted at first, then records one **synthetic human correction** and retains the missed-context disclosure. Its full-text fallback is narrative/shape only and remains `verified=false`; the fixture does not retrieve an artifact or prove that the initial pack was complete.
+
+Both rows are plan-only, use protected-zone deny, and describe byte counts only as sanitized textual UTF-8 proxies—not image bytes or provider tokens. The fixture performs no renderer, OCR, image-parser, provider, model, network, or subprocess call; ships no replacement or runtime; and makes no hosted claim. A successful synthetic replay after one correction does not establish quality non-inferiority, token savings, or cost savings.
 
 ## Visual/OCR fixture notes
 

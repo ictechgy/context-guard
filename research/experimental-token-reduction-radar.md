@@ -210,6 +210,12 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 - Does it preserve exact retrieval or clearly label lossy transforms?
 - Does it keep local/private data local unless the user explicitly opts into a provider call?
 
+### Matched image-context-pack correction benchmark fixture
+
+The package-visible image-context-pack benchmark fixture adds one deterministic matched task with a full sanitized textual baseline and a synthetic packed textual variant. The packed row admits that one qualifying context item was omitted initially, records one synthetic human correction, and keeps the missed-context disclosure plus an unverified full-text fallback narrative (`verified=false`). It does not treat successful completion after correction as proof that the initial pack was complete or quality-non-inferior.
+
+The two replay rows label byte counts as sanitized textual UTF-8 proxies only, never image bytes or provider tokens. They use synthetic fixture provenance, unmeasured provider and shifted-cost fields, and explicit claim denial. No renderer/OCR/image-parser/provider/model/network/subprocess call, artifact read, replacement, or runtime is introduced; no hosted token/cost claim is allowed. Future promotion still requires verified exact fallback, protected-zone denial, matched successful provider measurements, correction and failure-rate guardrails, and shifted-cost accounting.
+
 ### Experimental semantic-GC plan gate
 
 `semantic-gc` is a default-off, deny-only, plan-review gate over a caller-declared graph. Default-off describes registry intent; the explicit plan CLI remains invocable and never enables omission or runtime action. Graph evaluation is suppressed when the complete envelope or topology is ambiguous. Unreachable nodes are review candidates, not proof of semantic irrelevance: omission and runtime action remain unauthorized. Candidate missed-context notes are untrusted. The planner does not read context/artifact content or verify provenance, fallback, providers, or hosted savings. Exit 0 means only `ready_for_plan_review`; it is never delete/omit authority.
