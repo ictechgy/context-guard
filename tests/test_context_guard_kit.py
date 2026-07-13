@@ -14,8 +14,10 @@ import importlib.util
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -28871,6 +28873,22 @@ class ContextGuardMcpTests(unittest.TestCase):
             input=wire, capture_output=True, timeout=20,
         )
 
+    def _interactive_response(
+        self,
+        proc: subprocess.Popen[str],
+        message: dict[str, object],
+        *,
+        timeout: float = 5.0,
+    ) -> dict[str, object]:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+        self.assertTrue(ready, "MCP response was not flushed while stdin remained open")
+        line = proc.stdout.readline()
+        self.assertTrue(line, "MCP process closed stdout before returning a response")
+        return json.loads(line)
+
     def _assert_exact_tools(self, actual: object) -> None:
         base = {"type": "object", "additionalProperties": False}
         expected = [
@@ -29001,6 +29019,44 @@ class ContextGuardMcpTests(unittest.TestCase):
                 for flag in ("--max-message-bytes", "--max-content-bytes", "--max-calls", "--max-artifacts", "--timeout"):
                     rejected = subprocess.run([sys.executable, str(script), flag, "1"], text=True, capture_output=True, timeout=20)
                     self.assertEqual(rejected.returncode, 2, (flag, rejected.stderr))
+
+    def test_mcp_flushes_live_responses_and_counts_invalid_initialized_notifications(self):
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "live", "version": "1"}},
+        }
+        for script in self._mcp_scripts():
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.Popen(
+                    [sys.executable, str(script), "--root", tmp, "--namespace", "live"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1,
+                )
+                try:
+                    initialized = self._interactive_response(proc, initialize)
+                    self.assertEqual(initialized["id"], 1)
+                    assert proc.stdin is not None
+                    proc.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{"bad":true}}\n')
+                    proc.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+                    proc.stdin.flush()
+                    stats = self._interactive_response(proc, {
+                        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "context_guard_stats", "arguments": {}},
+                    })
+                    self.assertEqual(stats["id"], 2)
+                    self.assertEqual(stats["result"]["structuredContent"]["session"]["protocol_errors"], 1)
+                    self.assertIsNone(proc.poll())
+                finally:
+                    if proc.stdin is not None and not proc.stdin.closed:
+                        proc.stdin.close()
+                    proc.wait(timeout=20)
+                    stderr = proc.stderr.read() if proc.stderr is not None else ""
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                    if proc.stderr is not None:
+                        proc.stderr.close()
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(stderr, "")
 
     def test_mcp_argument_boundaries_artifact_tamper_and_unicode_caps_on_both_entrypoints(self):
         initialize = {
@@ -29288,7 +29344,11 @@ class ContextGuardMcpTests(unittest.TestCase):
                 argv = [sys.executable, str(script), "--root", tmp, "--namespace", "lock-test"]
                 first = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
-                    time.sleep(0.15)
+                    response = self._interactive_response(first, {
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "lock", "version": "1"}},
+                    })
+                    self.assertEqual(response["id"], 1)
                     second = subprocess.run(argv, text=True, capture_output=True, timeout=20)
                     self.assertEqual(second.returncode, 2)
                     self.assertEqual(second.stderr, "context-guard-mcp: startup failed\n")
@@ -29301,6 +29361,49 @@ class ContextGuardMcpTests(unittest.TestCase):
                             stream.close()
                 recovered = subprocess.run(argv, text=True, capture_output=True, timeout=20)
                 self.assertEqual(recovered.returncode, 0, recovered.stderr)
+
+    def test_mcp_helper_timeout_kills_term_ignoring_descendant_group(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_descendant_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / "forking_helper.py"
+            helper.write_text(
+                "import os, signal, time\n"
+                "child = os.fork()\n"
+                "if child == 0:\n"
+                "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "    time.sleep(0.8)\n"
+                "    open('descendant-survived', 'w').write('yes')\n"
+                "    time.sleep(60)\n"
+                "else:\n"
+                "    open('descendant.pid', 'w').write(str(child))\n"
+                "    time.sleep(60)\n",
+                encoding="utf-8",
+            )
+            server = module.Server(root, "descendant")
+            old_timeout = module.HELPER_TIMEOUT
+            module.HELPER_TIMEOUT = 0.25
+            child_pid = None
+            try:
+                started = time.monotonic()
+                self.assertIsNone(server.run_helper([str(helper)], b"", 1024))
+                self.assertLess(time.monotonic() - started, 2.0)
+                pid_file = root / "descendant.pid"
+                if pid_file.exists():
+                    child_pid = int(pid_file.read_text(encoding="utf-8"))
+                time.sleep(0.9)
+                self.assertFalse((root / "descendant-survived").exists())
+            finally:
+                module.HELPER_TIMEOUT = old_timeout
+                if child_pid is not None:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                server.close()
 
     def test_mcp_helper_delivery_is_concurrent_and_deadline_bounded(self):
         # Exercise the runner directly with a child that never consumes 768 KiB.

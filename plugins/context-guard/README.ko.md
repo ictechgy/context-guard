@@ -138,11 +138,11 @@ context-guard experiments verify proof-carrying-context --artifact-dir ./artifac
 
 교차 에이전트 규칙 스니펫은 안내용입니다. 대상 에이전트가 반드시 따른다고 보장할 수 없으므로, 절감 주장이 필요하면 실제 전후 동작을 직접 측정하세요.
 
-## 로컬 배포 테스트
-
 ## 로컬 MCP 어댑터
 
 `context-guard mcp`와 `context-guard-mcp`는 의존성 없는 로컬 stdio MCP 자식 프로세스를 실행합니다. 프로세스는 root와 namespace 하나로 격리되고 sanitization된 compression, 정확한 sanitization artifact fallback, 로컬 통계만 제공합니다. HTTP, 네트워크, provider, model, proxy 통합이나 client 설정 변경은 없습니다. artifact는 namespace 사이에서 접근할 수 없고 hosted token/cost 절감도 주장하지 않습니다.
+
+## 로컬 배포 테스트
 
 마켓플레이스 저장소 루트에서 실행합니다.
 

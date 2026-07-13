@@ -436,25 +436,52 @@ class Server:
         writer = threading.Thread(target=write_stdin)
         writer.start()
         failed = False
-        terminated = False
+        termination_started = False
 
         def terminate_group() -> None:
-            nonlocal terminated
-            if terminated:
+            nonlocal termination_started
+            if termination_started:
                 return
-            terminated = True
+            termination_started = True
+            pgid = proc.pid
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                os.killpg(pgid, signal.SIGTERM)
             except OSError:
                 try:
                     proc.terminate()
                 except OSError:
                     pass
+
+            # The direct helper may exit while a forked descendant keeps the
+            # process group and inherited pipes alive. Give the whole group a
+            # bounded TERM grace period, then escalate the group independently
+            # of the direct child's return code.
+            grace_deadline = time.monotonic() + 0.5
+            group_exists = True
+            while time.monotonic() < grace_deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    group_exists = False
+                    break
+                except OSError:
+                    break
+                time.sleep(min(0.01, max(0.0, grace_deadline - time.monotonic())))
+            if group_exists:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
             try:
                 proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
                 except OSError:
                     try:
                         proc.kill()
@@ -853,7 +880,9 @@ def handle(server: Server, request: dict[str, object], notification: bool) -> di
         server.state = "WAIT_INITIALIZED"
         return response({"protocolVersion": negotiated, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "context-guard-mcp", "version": "1.0.0"}})
     if method == "notifications/initialized":
-        if notification and server.state == "WAIT_INITIALIZED" and params_only_meta(params):
+        if notification and not params_only_meta(params):
+            return failure(-32602, "Invalid params")
+        if notification and server.state == "WAIT_INITIALIZED":
             server.state = "READY"
         if notification:
             return None
