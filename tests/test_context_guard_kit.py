@@ -1,5 +1,6 @@
 import argparse
 import base64
+import builtins
 import csv
 import contextlib
 import errno
@@ -4237,6 +4238,16 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 self.assertEqual(payload["mode"], "verify")
                 self.assertEqual(payload["status"], "verified")
+                self.assertEqual(
+                    payload["process_exit_contract"],
+                    "exit code 0 means all supplied proof units passed bounded local "
+                    "verification only; exit code 2 means verification_failed",
+                )
+                self.assertEqual(
+                    payload["claim_boundary"],
+                    "Local receipt/hash/range/command binding only; no semantic-safety, "
+                    "protected-zone, freshness, replacement, omission, or hosted-savings authority.",
+                )
                 self.assertEqual(payload["summary"]["verified_unit_count"], 1)
                 self.assertIsNone(payload["candidate_replacement"])
                 self.assertEqual(payload["proof_units"][0]["status"], "verified")
@@ -4651,6 +4662,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(duplicate_payload["summary"]["verified_unit_count"], 2)
 
                 leaf_events = []
+                leaf_open_details = []
                 file_fds: dict[int, str] = {}
                 real_stat = module.os.stat
                 real_fstat = module.os.fstat
@@ -4671,6 +4683,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     }:
                         file_fds[fd] = name
                         leaf_events.append(("open", name))
+                        leaf_open_details.append((name, flags, kwargs.get("dir_fd")))
                     return fd
 
                 def counted_fstat(fd):
@@ -4699,6 +4712,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     [event for event in leaf_events if event[0] == "open"],
                     [("open", metadata_name), ("open", content_name)],
                 )
+                self.assertEqual(len(leaf_open_details), 2)
+                for _name, flags, dir_fd in leaf_open_details:
+                    self.assertEqual(flags & os.O_ACCMODE, os.O_RDONLY)
+                    self.assertTrue(flags & os.O_NOFOLLOW)
+                    self.assertIsInstance(dir_fd, int)
                 self.assertEqual(
                     [event for event in leaf_events if event == ("fstat", metadata_name)],
                     [("fstat", metadata_name), ("fstat", metadata_name)],
@@ -4778,6 +4796,151 @@ class ClaudeTokenKitTests(unittest.TestCase):
                     "CG_PRIVATE_CONTENT_EXCEPTION", json.dumps(content_read_failure)
                 )
 
+    def test_experimental_proof_carrying_context_verifier_adversarial_leaf_and_pair_races(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                identity = proof_carrying_context_unit(
+                    content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                    safe_range=None,
+                    transform_policy="identity",
+                )
+                raw_identity = json.dumps(identity)
+
+                cases: list[tuple[str, callable, str]] = []
+
+                def leaf_symlink(artifact_dir: Path) -> None:
+                    content_path = artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt"
+                    target = root / "outside-content.txt"
+                    target.write_bytes(PROOF_CARRYING_CONTEXT_FIXTURE)
+                    os.chmod(target, 0o600)
+                    content_path.unlink()
+                    content_path.symlink_to(target)
+
+                def leaf_fifo(artifact_dir: Path) -> None:
+                    content_path = artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt"
+                    content_path.unlink()
+                    os.mkfifo(content_path, 0o600)
+
+                def public_metadata(artifact_dir: Path) -> None:
+                    os.chmod(
+                        artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json",
+                        0o644,
+                    )
+
+                def hardlinked_content(artifact_dir: Path) -> None:
+                    os.link(
+                        artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt",
+                        root / "second-content-link.txt",
+                    )
+
+                def tampered_content(artifact_dir: Path) -> None:
+                    content_path = artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt"
+                    content_path.write_bytes(b"contextGuard proof fixture\n")
+                    os.chmod(content_path, 0o600)
+
+                def oversized_content(artifact_dir: Path) -> None:
+                    os.truncate(
+                        artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt",
+                        100_000_001,
+                    )
+
+                cases.extend((
+                    ("leaf-symlink", leaf_symlink, "receipt_content_symlink_rejected"),
+                    ("leaf-fifo", leaf_fifo, "receipt_content_not_regular"),
+                    ("public-metadata", public_metadata, "receipt_metadata_mode_not_private"),
+                    ("hardlinked-content", hardlinked_content, "receipt_content_multiple_links"),
+                    ("tampered-content", tampered_content, "receipt_content_hash_mismatch"),
+                    ("oversized-content", oversized_content, "receipt_content_too_large"),
+                ))
+                for case_name, mutate, blocker in cases:
+                    with self.subTest(case=case_name):
+                        artifact_dir = root / case_name
+                        write_proof_carrying_context_receipt(artifact_dir)
+                        mutate(artifact_dir)
+                        proc = run_proof_carrying_context_verify(
+                            script, artifact_dir, [raw_identity]
+                        )
+                        self.assertEqual(proc.returncode, 2, proc.stderr)
+                        self.assertIn(
+                            blocker,
+                            json.loads(proc.stdout)["proof_units"][0]["blockers"],
+                        )
+
+                artifact_dir = root / "torn-pair"
+                write_proof_carrying_context_receipt(artifact_dir)
+                module = load_python_script_module(script, f"_proof_torn_pair_{index}")
+                metadata_path = artifact_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json"
+                content_name = f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt"
+                real_open = module.os.open
+                real_read = module.os.read
+                content_fds: set[int] = set()
+                mutated = False
+
+                def race_open(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == content_name:
+                        content_fds.add(fd)
+                    return fd
+
+                def race_read(fd, size):
+                    nonlocal mutated
+                    if fd in content_fds and not mutated:
+                        mutated = True
+                        mutation_fd = real_open(metadata_path, os.O_WRONLY | os.O_APPEND)
+                        try:
+                            os.write(mutation_fd, b" ")
+                        finally:
+                            os.close(mutation_fd)
+                    return real_read(fd, size)
+
+                with mock.patch.object(module.os, "open", side_effect=race_open), \
+                     mock.patch.object(module.os, "read", side_effect=race_read):
+                    payload = module.proof_carrying_context_verify_payload(
+                        argparse.Namespace(
+                            artifact_dir=str(artifact_dir),
+                            proof_unit_json=[raw_identity],
+                            json=True,
+                        )
+                    )
+                self.assertTrue(mutated)
+                self.assertEqual(payload["status"], "verification_failed")
+                self.assertIn(
+                    "artifact_changed_during_read",
+                    payload["proof_units"][0]["blockers"],
+                )
+
+    def test_experimental_proof_carrying_context_real_artifact_producer_to_verifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact_dir = Path(tmp) / "artifacts"
+            produced = subprocess.run(
+                [
+                    str(PLUGIN_BIN / "context-guard-artifact"),
+                    "--dir", str(artifact_dir),
+                    "store", "--json",
+                ],
+                input=PROOF_CARRYING_CONTEXT_FIXTURE,
+                capture_output=True,
+            )
+            self.assertEqual(produced.returncode, 0, produced.stderr.decode())
+            producer_payload = json.loads(produced.stdout)
+            receipt = producer_payload["artifact_id"]
+            unit = proof_carrying_context_unit(
+                receipt_id=receipt,
+                content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                safe_range={"kind": "lines", "start": 1, "end": 1},
+                rehydrate_command=f"context-guard-artifact get {receipt} --full",
+            )
+            for script in EXPERIMENT_SCRIPTS:
+                with self.subTest(script=script):
+                    verified = run_proof_carrying_context_verify(
+                        script, artifact_dir, [json.dumps(unit)]
+                    )
+                    self.assertEqual(verified.returncode, 0, verified.stderr)
+                    payload = json.loads(verified.stdout)
+                    self.assertEqual(payload["status"], "verified")
+                    self.assertEqual(payload["summary"]["verified_unit_count"], 1)
+
     def test_experimental_proof_carrying_context_verifier_no_follow_privacy_and_non_echo(self):
         secret = b"CG_PRIVATE_SECRET_SHOULD_NOT_ECHO\n"
         secret_hash = hashlib.sha256(secret).hexdigest()
@@ -4803,6 +4966,22 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertNotIn(secret_hash, combined)
                 self.assertNotIn(str(artifact_dir), combined)
                 self.assertNotIn(unit["rehydrate_command"], combined)
+
+                success_unit = proof_carrying_context_unit(
+                    content_sha256=secret_hash,
+                    safe_range={"kind": "lines", "start": 1, "end": 1},
+                )
+                human = run_proof_carrying_context_verify(
+                    script,
+                    artifact_dir,
+                    [json.dumps(success_unit)],
+                    json_output=False,
+                )
+                human_output = human.stdout + human.stderr
+                self.assertEqual(human.returncode, 0, human.stderr)
+                self.assertNotIn(secret.decode().strip(), human_output)
+                self.assertNotIn(str(artifact_dir), human_output)
+                self.assertNotIn(success_unit["rehydrate_command"], human_output)
 
                 link_dir = Path(tmp) / "linked-artifacts"
                 link_dir.symlink_to(artifact_dir, target_is_directory=True)
@@ -4832,9 +5011,56 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 forbidden = lambda name: mock.Mock(
                     side_effect=AssertionError(f"forbidden verifier side effect: {name}")
                 )
+                real_builtin_open = builtins.open
+                real_io_open = io.open
+                real_os_open = module.os.open
+                write_open_flags = (
+                    os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+                )
+
+                def guard_builtin_open(real_open, label):
+                    def guarded(file, mode="r", *args, **kwargs):
+                        if any(flag in mode for flag in ("w", "a", "x", "+")):
+                            raise AssertionError(f"forbidden verifier side effect: {label}")
+                        return real_open(file, mode, *args, **kwargs)
+                    return guarded
+
+                def guarded_os_open(path, flags, *args, **kwargs):
+                    if flags & write_open_flags:
+                        raise AssertionError("forbidden verifier side effect: os.open(write)")
+                    return real_os_open(path, flags, *args, **kwargs)
+
                 with contextlib.ExitStack() as stack:
                     stack.enter_context(
                         mock.patch.object(subprocess, "run", forbidden("subprocess.run"))
+                    )
+                    stack.enter_context(
+                        mock.patch.object(subprocess, "Popen", forbidden("subprocess.Popen"))
+                    )
+                    for name in (
+                        "execl", "execle", "execlp", "execlpe", "execv", "execve",
+                        "execvp", "execvpe", "posix_spawn", "posix_spawnp",
+                    ):
+                        if hasattr(module.os, name):
+                            stack.enter_context(
+                                mock.patch.object(module.os, name, forbidden(f"os.{name}"))
+                            )
+                    stack.enter_context(
+                        mock.patch.object(
+                            builtins,
+                            "open",
+                            side_effect=guard_builtin_open(real_builtin_open, "builtins.open(write)"),
+                        )
+                    )
+                    stack.enter_context(
+                        mock.patch.object(
+                            io,
+                            "open",
+                            side_effect=guard_builtin_open(real_io_open, "io.open(write)"),
+                        )
+                    )
+                    stack.enter_context(
+                        mock.patch.object(module.os, "open", side_effect=guarded_os_open)
                     )
                     for name in (
                         "socket", "create_connection", "getaddrinfo", "gethostbyname",
@@ -9439,8 +9665,17 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("timestamp", lower_text)
                 self.assertIn("runtime", lower_text)
                 self.assertRegex(lower_text, r"hosted.*(?:token|cost|savings|절감)")
-                self.assertRegex(lower_text, r"no fallback|fallback search")
-                self.assertRegex(lower_text, r"no symlink|symlink follow")
+                self.assertRegex(
+                    lower_text,
+                    r"(?:searches no fallback|performs no fallback search|"
+                    r"does not (?:perform )?fallback search|"
+                    r"fallback search(?:를)? 수행하지|fallback search 없이)",
+                )
+                self.assertRegex(
+                    lower_text,
+                    r"(?:follows no symlink|does not follow (?:any )?symlink|"
+                    r"symlink(?:를)? follow하지|symlink follow 없이)",
+                )
                 self.assertIn("0700", lower_text)
                 self.assertIn("0600", lower_text)
                 self.assertIn("exit `0`", lower_text)

@@ -3252,12 +3252,20 @@ def proof_leaf_precheck(
     return info, False, proof_leaf_stat_blockers(info, leaf_kind)
 
 
-def proof_stat_identity(info: Any) -> tuple[int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size
-
-
-def proof_stat_stability(info: Any) -> tuple[int, int, int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+def proof_stat_stability(info: Any) -> tuple[int, ...]:
+    """Return every identity, mutation, and leaf-policy field used by verification."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_uid,
+        info.st_gid,
+        stat.S_IFMT(info.st_mode),
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+    )
 
 
 _PROOF_METADATA_NONFINITE_SENTINEL = object()
@@ -3354,146 +3362,118 @@ def decode_proof_receipt_metadata(raw: bytes, receipt: str) -> tuple[dict[str, A
     return decoded, []
 
 
-def read_proof_metadata_leaf(
+def open_proof_leaf(
     artifact_fd: int,
     name: str,
     precheck: Any,
-) -> tuple[bytes | None, list[str]]:
+    leaf_kind: str,
+) -> tuple[int | None, Any | None, list[str]]:
     try:
-        fd = os.open(name, _file_open_flags(label="proof receipt metadata"), dir_fd=artifact_fd)
+        fd = os.open(
+            name,
+            _file_open_flags(label=f"proof receipt {leaf_kind}"),
+            dir_fd=artifact_fd,
+        )
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            return None, ["receipt_metadata_symlink_rejected"]
-        return None, ["artifact_read_failed"]
+            return None, None, [f"receipt_{leaf_kind}_symlink_rejected"]
+        return None, None, ["artifact_read_failed"]
     try:
-        try:
-            opened = os.fstat(fd)
-        except OSError:
-            return None, ["artifact_read_failed"]
-        blockers = proof_leaf_stat_blockers(opened, "metadata")
-        if proof_stat_identity(opened) != proof_stat_identity(precheck):
+        opened = os.fstat(fd)
+        blockers = proof_leaf_stat_blockers(opened, leaf_kind)
+        if proof_stat_stability(opened) != proof_stat_stability(precheck):
             blockers.append("artifact_changed_during_read")
-        if opened.st_size > PROOF_RECEIPT_METADATA_BYTE_CAP:
-            blockers.append("receipt_metadata_too_large")
+        cap = (
+            PROOF_RECEIPT_METADATA_BYTE_CAP
+            if leaf_kind == "metadata"
+            else PROOF_RECEIPT_CONTENT_BYTE_CAP
+        )
+        if opened.st_size > cap:
+            blockers.append(f"receipt_{leaf_kind}_too_large")
         blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
         if blockers:
-            return None, blockers
-
-        expected_size = opened.st_size
-        accumulated = bytearray()
-        first_read = True
-        eof = False
-        try:
-            while first_read or len(accumulated) != expected_size:
-                first_read = False
-                if len(accumulated) >= PROOF_RECEIPT_METADATA_BYTE_CAP + 1:
-                    break
-                chunk = os.read(
-                    fd,
-                    PROOF_RECEIPT_METADATA_BYTE_CAP + 1 - len(accumulated),
-                )
-                if not chunk:
-                    eof = True
-                    break
-                accumulated.extend(chunk)
-                if len(accumulated) == expected_size:
-                    break
-        except OSError:
-            return None, ["artifact_read_failed"]
-
-        try:
-            after = os.fstat(fd)
-        except OSError:
-            return None, ["artifact_read_failed"]
-        blockers = []
-        if len(accumulated) > PROOF_RECEIPT_METADATA_BYTE_CAP or after.st_size > PROOF_RECEIPT_METADATA_BYTE_CAP:
-            blockers.append("receipt_metadata_too_large")
-        if (
-            proof_stat_stability(after) != proof_stat_stability(opened)
-            or len(accumulated) != expected_size
-            or (eof and len(accumulated) < expected_size)
-        ):
-            blockers.append("artifact_changed_during_read")
-        blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
-        if blockers:
-            return None, blockers
-        return bytes(accumulated), []
-    finally:
+            os.close(fd)
+            return None, None, blockers
+        return fd, opened, []
+    except OSError:
         try:
             os.close(fd)
         except OSError:
             pass
+        return None, None, ["artifact_read_failed"]
+
+
+def read_proof_metadata_leaf(fd: int, opened: Any) -> tuple[bytes | None, list[str]]:
+    if opened.st_size > PROOF_RECEIPT_METADATA_BYTE_CAP:
+        return None, ["receipt_metadata_too_large"]
+    expected_size = opened.st_size
+    accumulated = bytearray()
+    first_read = True
+    eof = False
+    try:
+        while first_read or len(accumulated) != expected_size:
+            first_read = False
+            if len(accumulated) >= PROOF_RECEIPT_METADATA_BYTE_CAP + 1:
+                break
+            chunk = os.read(
+                fd,
+                PROOF_RECEIPT_METADATA_BYTE_CAP + 1 - len(accumulated),
+            )
+            if not chunk:
+                eof = True
+                break
+            accumulated.extend(chunk)
+            if len(accumulated) == expected_size:
+                break
+    except OSError:
+        return None, ["artifact_read_failed"]
+    blockers = []
+    if len(accumulated) > PROOF_RECEIPT_METADATA_BYTE_CAP:
+        blockers.append("receipt_metadata_too_large")
+    if len(accumulated) != expected_size or (eof and len(accumulated) < expected_size):
+        blockers.append("artifact_changed_during_read")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    return (None, blockers) if blockers else (bytes(accumulated), [])
 
 
 def read_proof_content_leaf(
-    artifact_fd: int,
-    name: str,
-    precheck: Any,
+    fd: int,
+    opened: Any,
     declared_bytes: int,
     runtime_boundaries: dict[str, Any],
 ) -> tuple[bytes | None, list[str]]:
+    blockers = []
+    if opened.st_size > PROOF_RECEIPT_CONTENT_BYTE_CAP:
+        blockers.append("receipt_content_too_large")
+    if opened.st_size != declared_bytes:
+        blockers.append("receipt_content_size_mismatch")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    if blockers:
+        return None, blockers
+    accumulated = bytearray()
+    early_eof = False
+    extra_data = False
     try:
-        fd = os.open(name, _file_open_flags(label="proof receipt content"), dir_fd=artifact_fd)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            return None, ["receipt_content_symlink_rejected"]
+        while len(accumulated) < declared_bytes:
+            runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
+            chunk = os.read(
+                fd,
+                min(PROOF_RECEIPT_CONTENT_READ_CHUNK, declared_bytes - len(accumulated)),
+            )
+            if not chunk:
+                early_eof = True
+                break
+            accumulated.extend(chunk)
+        if not early_eof:
+            runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
+            extra_data = bool(os.read(fd, 1))
+    except OSError:
         return None, ["artifact_read_failed"]
-    try:
-        try:
-            opened = os.fstat(fd)
-        except OSError:
-            return None, ["artifact_read_failed"]
-        blockers = proof_leaf_stat_blockers(opened, "content")
-        if proof_stat_identity(opened) != proof_stat_identity(precheck):
-            blockers.append("artifact_changed_during_read")
-        if opened.st_size > PROOF_RECEIPT_CONTENT_BYTE_CAP:
-            blockers.append("receipt_content_too_large")
-        if opened.st_size != declared_bytes:
-            blockers.append("receipt_content_size_mismatch")
-        blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
-        if blockers:
-            return None, blockers
-
-        accumulated = bytearray()
-        read_failed = False
-        early_eof = False
-        extra_data = False
-        try:
-            while len(accumulated) < declared_bytes:
-                runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
-                chunk = os.read(
-                    fd,
-                    min(PROOF_RECEIPT_CONTENT_READ_CHUNK, declared_bytes - len(accumulated)),
-                )
-                if not chunk:
-                    early_eof = True
-                    break
-                accumulated.extend(chunk)
-            if not early_eof:
-                runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
-                extra_data = bool(os.read(fd, 1))
-        except OSError:
-            read_failed = True
-        if read_failed:
-            return None, ["artifact_read_failed"]
-        try:
-            after = os.fstat(fd)
-        except OSError:
-            return None, ["artifact_read_failed"]
-        blockers = []
-        if early_eof or extra_data or len(accumulated) != declared_bytes:
-            blockers.extend(["receipt_content_size_mismatch", "artifact_changed_during_read"])
-        if proof_stat_stability(after) != proof_stat_stability(opened):
-            blockers.append("artifact_changed_during_read")
-        blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
-        if blockers:
-            return None, blockers
-        return bytes(accumulated), []
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    blockers = []
+    if early_eof or extra_data or len(accumulated) != declared_bytes:
+        blockers.extend(["receipt_content_size_mismatch", "artifact_changed_during_read"])
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    return (None, blockers) if blockers else (bytes(accumulated), [])
 
 
 def verify_proof_receipt(
@@ -3527,50 +3507,92 @@ def verify_proof_receipt(
     if blockers or metadata_precheck is None or content_precheck is None:
         return result
 
-    metadata_raw, blockers = read_proof_metadata_leaf(
-        artifact_fd, metadata_name, metadata_precheck
-    )
-    if blockers or metadata_raw is None:
-        result["blockers"] = blockers
-        return result
-    metadata, blockers = decode_proof_receipt_metadata(metadata_raw, receipt)
-    if blockers or metadata is None:
-        result["blockers"] = blockers
-        return result
-    stored = metadata["stored_output"]
-    result.update({
-        "metadata_file_verified": True,
-        "metadata_verified": True,
-        "stored_bytes": stored["bytes"],
-        "stored_lines": stored["lines"],
-    })
+    metadata_fd: int | None = None
+    content_fd: int | None = None
+    metadata_opened: Any | None = None
+    content_opened: Any | None = None
+    try:
+        metadata_fd, metadata_opened, blockers = open_proof_leaf(
+            artifact_fd, metadata_name, metadata_precheck, "metadata"
+        )
+        if blockers or metadata_fd is None or metadata_opened is None:
+            result["blockers"] = blockers
+            return result
+        content_fd, content_opened, blockers = open_proof_leaf(
+            artifact_fd, content_name, content_precheck, "content"
+        )
+        if blockers or content_fd is None or content_opened is None:
+            result["blockers"] = blockers
+            return result
 
-    content_raw, blockers = read_proof_content_leaf(
-        artifact_fd,
-        content_name,
-        content_precheck,
-        stored["bytes"],
-        runtime_boundaries,
-    )
-    if blockers or content_raw is None:
-        result["blockers"] = blockers
+        metadata_raw, blockers = read_proof_metadata_leaf(metadata_fd, metadata_opened)
+        if blockers or metadata_raw is None:
+            result["blockers"] = blockers
+            return result
+        metadata, blockers = decode_proof_receipt_metadata(metadata_raw, receipt)
+        if blockers or metadata is None:
+            result["blockers"] = blockers
+            return result
+        stored = metadata["stored_output"]
+        result.update({
+            "metadata_file_verified": True,
+            "metadata_verified": True,
+            "stored_bytes": stored["bytes"],
+            "stored_lines": stored["lines"],
+        })
+
+        content_raw, blockers = read_proof_content_leaf(
+            content_fd,
+            content_opened,
+            stored["bytes"],
+            runtime_boundaries,
+        )
+        if blockers or content_raw is None:
+            result["blockers"] = blockers
+            return result
+        actual_sha256 = hashlib.sha256(content_raw).hexdigest()
+        actual_lines = content_raw.count(b"\n") + int(
+            bool(content_raw and not content_raw.endswith(b"\n"))
+        )
+        result["actual_sha256"] = actual_sha256
+        result["actual_lines"] = actual_lines
+        result["matches_receipt_metadata"] = actual_sha256 == stored["sha256"]
+        if not result["matches_receipt_metadata"]:
+            blockers.append("receipt_content_hash_mismatch")
+        if actual_lines != stored["lines"]:
+            blockers.append("receipt_line_count_mismatch")
+        result["content_file_verified"] = not blockers
+        result["blockers"] = ordered_proof_taxonomy(
+            blockers, PROOF_VERIFICATION_BLOCKER_ORDER
+        )
         return result
-    actual_sha256 = hashlib.sha256(content_raw).hexdigest()
-    actual_lines = content_raw.count(b"\n") + int(
-        bool(content_raw and not content_raw.endswith(b"\n"))
-    )
-    result["actual_sha256"] = actual_sha256
-    result["actual_lines"] = actual_lines
-    result["matches_receipt_metadata"] = actual_sha256 == stored["sha256"]
-    if not result["matches_receipt_metadata"]:
-        blockers.append("receipt_content_hash_mismatch")
-    if actual_lines != stored["lines"]:
-        blockers.append("receipt_line_count_mismatch")
-    result["content_file_verified"] = not blockers
-    result["blockers"] = ordered_proof_taxonomy(
-        blockers, PROOF_VERIFICATION_BLOCKER_ORDER
-    )
-    return result
+    finally:
+        stability_blockers: list[str] = []
+        for fd, opened in (
+            (metadata_fd, metadata_opened),
+            (content_fd, content_opened),
+        ):
+            if fd is None:
+                continue
+            try:
+                after = os.fstat(fd)
+                if opened is None or proof_stat_stability(after) != proof_stat_stability(opened):
+                    stability_blockers.append("artifact_changed_during_read")
+            except OSError:
+                stability_blockers.append("artifact_read_failed")
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if stability_blockers:
+            result["blockers"] = ordered_proof_taxonomy(
+                [*result["blockers"], *stability_blockers],
+                PROOF_VERIFICATION_BLOCKER_ORDER,
+            )
+            result["content_file_verified"] = False
+            result["matches_receipt_metadata"] = False
+            result["metadata_file_verified"] = False
+            result["metadata_verified"] = False
 
 
 def verify_proof_range_bounds(row: dict[str, Any], stored_bytes: int, stored_lines: int) -> bool:
