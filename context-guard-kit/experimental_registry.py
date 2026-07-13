@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import errno
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import hashlib
@@ -72,10 +73,14 @@ LOCAL_PROXY_RESPONSE_SANDBOX_SCHEMA_VERSION = "contextguard.experiments.local-pr
 IMAGE_CONTEXT_PACK_PLAN_SCHEMA_VERSION = "contextguard.experiments.image-context-pack-plan.v1"
 SEMANTIC_CHECKPOINT_PLAN_SCHEMA_VERSION = "contextguard.experiments.semantic-checkpoint-plan.v1"
 PROOF_CARRYING_CONTEXT_PLAN_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-plan.v1"
+PROOF_CARRYING_CONTEXT_VERIFY_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
 PROOF_CARRYING_CONTEXT_UNIT_SCHEMA_VERSION = "contextguard.proof-unit.v1"
 PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP = 64
 PROOF_CARRYING_CONTEXT_UNIT_JSON_BYTE_CAP = 8192
 PROOF_UNIT_JSON_MAX_DEPTH = 100
+PROOF_RECEIPT_METADATA_BYTE_CAP = 64_000
+PROOF_RECEIPT_CONTENT_BYTE_CAP = 100_000_000
+PROOF_RECEIPT_CONTENT_READ_CHUNK = 1_048_576
 SEMANTIC_GC_PLAN_SCHEMA_VERSION = "contextguard.experiments.semantic-gc-plan.v1"
 SEMANTIC_GC_UNIT_SCHEMA_VERSION = "contextguard.semantic-gc-unit.v1"
 SEMANTIC_GC_DETAILED_UNIT_CAP = 64
@@ -137,6 +142,87 @@ PROOF_WARNING_ORDER = (
     "timestamp_freshness_not_checked",
     "safe_range_omitted",
     "duplicate_proof_unit",
+)
+PROOF_VERIFICATION_BLOCKER_ORDER = (
+    "missing_proof_unit",
+    "too_many_proof_units",
+    "proof_unit_json_too_large",
+    "invalid_proof_unit_unicode",
+    "invalid_proof_unit_json",
+    "duplicate_proof_unit_keys",
+    "proof_unit_json_nesting_too_deep",
+    "nonfinite_proof_unit_number",
+    "proof_unit_not_object",
+    "unknown_proof_unit_fields",
+    "missing_source_label",
+    "invalid_source_label",
+    "missing_receipt",
+    "invalid_receipt",
+    "missing_content_sha256",
+    "invalid_content_sha256",
+    "missing_timestamp",
+    "invalid_timestamp",
+    "missing_transform_policy",
+    "invalid_transform_policy",
+    "invalid_safe_range",
+    "missing_safe_range_for_transform_policy",
+    "missing_rehydrate_command",
+    "invalid_rehydrate_command",
+    "rehydrate_receipt_mismatch",
+    "receipt_hash_conflict",
+    "invalid_artifact_directory",
+    "artifact_io_capability_unavailable",
+    "artifact_directory_not_found",
+    "artifact_directory_symlink_rejected",
+    "artifact_directory_not_regular",
+    "artifact_directory_owner_mismatch",
+    "artifact_directory_mode_not_private",
+    "artifact_directory_access_failed",
+    "request_preflight_aborted",
+    "receipt_pair_incomplete",
+    "receipt_metadata_symlink_rejected",
+    "receipt_metadata_not_regular",
+    "receipt_metadata_owner_mismatch",
+    "receipt_metadata_mode_not_private",
+    "receipt_metadata_multiple_links",
+    "receipt_metadata_too_large",
+    "receipt_metadata_invalid_unicode",
+    "receipt_metadata_invalid_json",
+    "receipt_metadata_duplicate_keys",
+    "receipt_metadata_nesting_too_deep",
+    "receipt_metadata_nonfinite_number",
+    "receipt_metadata_not_object",
+    "receipt_metadata_id_mismatch",
+    "receipt_metadata_stored_output_invalid",
+    "receipt_metadata_file_binding_mismatch",
+    "receipt_content_symlink_rejected",
+    "receipt_content_not_regular",
+    "receipt_content_owner_mismatch",
+    "receipt_content_mode_not_private",
+    "receipt_content_multiple_links",
+    "receipt_content_too_large",
+    "receipt_content_size_mismatch",
+    "receipt_content_hash_mismatch",
+    "receipt_line_count_mismatch",
+    "proof_content_hash_mismatch",
+    "safe_range_out_of_bounds",
+    "artifact_changed_during_read",
+    "artifact_read_failed",
+)
+PROOF_VERIFICATION_WARNING_ORDER = (
+    "timestamp_freshness_not_checked",
+    "protected_zone_compliance_not_checked",
+    "rehydrate_command_not_executed",
+    "safe_range_not_supplied",
+    "duplicate_proof_unit",
+)
+PROOF_VERIFICATION_CLAIM_BOUNDARY = (
+    "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "
+    "omission, or hosted-savings authority."
+)
+PROOF_VERIFICATION_PROCESS_EXIT_CONTRACT = (
+    "exit code 0 means all supplied proof units passed bounded local verification only; exit code 2 means "
+    "verification_failed"
 )
 SEMANTIC_GC_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 SEMANTIC_GC_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9._:/ -]{1,128}$")
@@ -460,41 +546,47 @@ EXPERIMENTS: tuple[Experiment, ...] = (
     ),
     Experiment(
         id="proof-carrying-context",
-        name="Proof-carrying context metadata planning gate",
+        name="Proof-carrying context metadata planning and local verification gate",
         summary=(
-            "Plan-only proof-envelope metadata syntax and consistency readiness without reading source content, "
-            "verifying receipts, or emitting compact context."
+            "Plan proof-envelope metadata readiness or read-only verify explicit private local receipts without "
+            "executing rehydration or emitting compact context."
         ),
         stability="experimental",
         default_enabled=False,
         risk_level="high",
         claim_boundary=(
-            "Proof-envelope metadata readiness is not verified proof or hosted savings evidence; actual receipt, "
-            "content, range, protected-zone, and rehydration checks require a separately approved consumer."
+            "Local verification covers receipt/content/hash/range bounds and command binding only; it grants no "
+            "semantic-safety, freshness, protected-zone, replacement, omission, or hosted-savings authority."
         ),
         gate_requirements=(
             "at least one bounded inline proof-unit JSON object",
             "caller-declared protected-zone denial",
             "provider/model measurement boundary acknowledgement",
             "syntax-only proof metadata and exact rehydration binding",
+            "one explicit private no-follow artifact directory for read-only verification",
         ),
-        runtime_status="available-plan-only",
-        commands=("context-guard experiments plan proof-carrying-context",),
+        runtime_status="available-plan-and-read-only-verify",
+        commands=(
+            "context-guard experiments plan proof-carrying-context",
+            "context-guard experiments verify proof-carrying-context",
+        ),
         opt_in_flags=(
             "plan proof-carrying-context",
+            "verify proof-carrying-context",
+            "--artifact-dir",
             "--proof-unit-json",
             "--provider-boundary-ack",
             "--protected-zone-policy deny",
         ),
         config_effect=(
-            "Registry enablement records project-local intent only; proof-carrying-context exposes one deterministic "
-            "plan command. It does not add an emit/record/serve runtime, read source/artifact/config/stdin content, "
-            "execute rehydration, write files, edit prompts/transcripts, generate compact context, or replace context."
+            "Registry enablement records project-local intent only; proof-carrying-context exposes deterministic plan "
+            "and read-only local verify commands. Verify reads only explicit receipt leaves; neither command adds an "
+            "emit/record/serve runtime, executes rehydration, writes, generates compact context, or replaces context."
         ),
         evidence_contract=(
-            "The planner validates bounded inline proof-envelope metadata syntax and defined cross-unit consistency "
-            "only. Protected-zone compliance, range bounds, receipt storage, content hashes, timestamp freshness, "
-            "and rehydration remain explicitly unchecked."
+            "The planner validates bounded inline proof metadata only. Verify additionally checks explicit private "
+            "receipt storage, full-content bindings, range bounds, and command syntax without executing it; timestamp "
+            "freshness, protected-zone semantics, replacement safety, and hosted savings remain unchecked."
         ),
     ),
     Experiment(
@@ -671,6 +763,15 @@ REGISTRY = {experiment.id: experiment for experiment in EXPERIMENTS}
 
 class RegistryError(RuntimeError):
     pass
+
+
+class StoreOnceAction(argparse.Action):
+    """Store a sensitive option once without echoing either supplied value."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(self, "--artifact-dir may be specified only once")
+        setattr(namespace, self.dest, values)
 
 
 def fail(message: str, code: int = 2) -> NoReturn:
@@ -2932,6 +3033,824 @@ def command_plan_proof_carrying_context(args: argparse.Namespace) -> int:
         print(f"Warnings: {', '.join(payload['review_plan']['warnings'])}")
         print(payload["claim_boundary"])
     return 0
+
+
+def proof_verification_row(unit_index: int, blockers: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "blockers": list(blockers or []),
+        "content_hash": {
+            "algorithm": "sha256",
+            "declared_value": None,
+            "matches_proof_unit": False,
+            "matches_receipt_metadata": False,
+            "verified": False,
+        },
+        "preflight_valid": False,
+        "protected_zone": {"compliance_checked": False, "status": "unchecked"},
+        "receipt": {
+            "content_file_verified": False,
+            "id": None,
+            "metadata_file_verified": False,
+            "metadata_verified": False,
+            "stored_bytes": None,
+            "stored_lines": None,
+            "verified": False,
+        },
+        "rehydration": {
+            "executed": False,
+            "receipt_bound": False,
+            "syntax_valid": False,
+            "verified": False,
+        },
+        "safe_range": None,
+        "source_label": None,
+        "status": "verification_failed",
+        "timestamp": {
+            "format_valid": False,
+            "freshness_checked": False,
+            "status": "invalid_or_unavailable",
+        },
+        "transform_policy": None,
+        "unit_index": unit_index,
+        "warnings": [],
+    }
+
+
+def normalized_proof_verification_row(plan_row: dict[str, Any]) -> dict[str, Any]:
+    row = proof_verification_row(plan_row["unit_index"])
+    safe_range = plan_row["safe_range"]
+    row.update({
+        "preflight_valid": True,
+        "source_label": plan_row["source_label"],
+        "transform_policy": plan_row["transform_policy"],
+        "timestamp": {
+            "format_valid": True,
+            "freshness_checked": False,
+            "status": "format_valid_semantics_unchecked",
+        },
+    })
+    row["receipt"]["id"] = plan_row["receipt"]["id"]
+    row["content_hash"]["declared_value"] = plan_row["content_hash"]["value"]
+    row["rehydration"] = {
+        "executed": False,
+        "receipt_bound": True,
+        "syntax_valid": True,
+        "verified": True,
+    }
+    if safe_range is not None:
+        row["safe_range"] = {
+            "bounds_checked": False,
+            "coordinate_system": safe_range["coordinate_system"],
+            "end": safe_range["end"],
+            "kind": safe_range["kind"],
+            "range_content_retrieved": False,
+            "start": safe_range["start"],
+            "status": "not_checked",
+        }
+    return row
+
+
+def proof_artifact_io_capabilities_available() -> bool:
+    return bool(
+        NO_FOLLOW_SUPPORTED
+        and hasattr(os, "O_NOFOLLOW")
+        and DIR_FD_OPEN_SUPPORTED
+        and DIR_FD_STAT_NOFOLLOW_SUPPORTED
+        and callable(getattr(os, "open", None))
+        and callable(getattr(os, "stat", None))
+        and callable(getattr(os, "fstat", None))
+        and callable(getattr(os, "geteuid", None))
+        and callable(getattr(os, "read", None))
+        and callable(getattr(os, "close", None))
+    )
+
+
+def validate_proof_artifact_dir_arg(raw: Any) -> tuple[str | None, str | None]:
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        return None, "invalid_artifact_directory"
+    components = raw.split("/")
+    if ".." in components:
+        return None, "invalid_artifact_directory"
+    if not raw.startswith("/"):
+        first = next((component for component in components if component), "")
+        if first == "~" or first.startswith("~"):
+            return None, "invalid_artifact_directory"
+    normalized = os.path.normpath(raw)
+    if normalized.startswith("//"):
+        normalized = "/" + normalized.lstrip("/")
+    if not os.path.isabs(normalized):
+        normalized = os.path.normpath(os.path.join(os.getcwd(), normalized))
+    return normalized, None
+
+
+def normalize_proof_allowed_macos_alias(path: str) -> str:
+    parts = Path(path).parts
+    if len(parts) < 2 or parts[1] not in {"tmp", "var"}:
+        return path
+    alias = "/" + parts[1]
+    expected = "/private/" + parts[1]
+    try:
+        info = os.stat(alias, follow_symlinks=False)
+        if (
+            stat.S_ISLNK(info.st_mode)
+            and str(_normalized_link_target(Path("/"), os.readlink(alias))) == expected
+        ):
+            return os.path.join(expected, *parts[2:])
+    except OSError:
+        pass
+    return path
+
+
+def map_proof_directory_error(exc: OSError, parent_fd: int | None, component: str | None) -> str:
+    if exc.errno == errno.ENOENT:
+        return "artifact_directory_not_found"
+    if exc.errno == errno.ELOOP:
+        return "artifact_directory_symlink_rejected"
+    if exc.errno == errno.ENOTDIR:
+        if parent_fd is not None and component is not None:
+            try:
+                info = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    return "artifact_directory_symlink_rejected"
+            except OSError:
+                pass
+        return "artifact_directory_not_regular"
+    if exc.errno in {errno.EACCES, errno.EPERM}:
+        return "artifact_directory_access_failed"
+    return "artifact_directory_access_failed"
+
+
+def open_proof_artifact_directory(path: str) -> tuple[int | None, str | None]:
+    path = normalize_proof_allowed_macos_alias(path)
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    current_fd: int | None = None
+    try:
+        current_fd = os.open("/", flags)
+        for component in (part for part in Path(path).parts[1:] if part not in {"", "."}):
+            try:
+                next_fd = os.open(component, flags, dir_fd=current_fd)
+            except OSError as exc:
+                return None, map_proof_directory_error(exc, current_fd, component)
+            os.close(current_fd)
+            current_fd = next_fd
+        try:
+            info = os.fstat(current_fd)
+        except OSError:
+            return None, "artifact_directory_access_failed"
+        if not stat.S_ISDIR(info.st_mode):
+            return None, "artifact_directory_not_regular"
+        if info.st_uid != os.geteuid():
+            return None, "artifact_directory_owner_mismatch"
+        if stat.S_IMODE(info.st_mode) != 0o700:
+            return None, "artifact_directory_mode_not_private"
+        result = current_fd
+        current_fd = None
+        return result, None
+    except OSError as exc:
+        return None, map_proof_directory_error(exc, None, None)
+    finally:
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+
+def proof_leaf_stat_blockers(info: Any, leaf_kind: str) -> list[str]:
+    prefix = f"receipt_{leaf_kind}"
+    if stat.S_ISLNK(info.st_mode):
+        return [f"{prefix}_symlink_rejected"]
+    if not stat.S_ISREG(info.st_mode):
+        return [f"{prefix}_not_regular"]
+    blockers: list[str] = []
+    if info.st_uid != os.geteuid():
+        blockers.append(f"{prefix}_owner_mismatch")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        blockers.append(f"{prefix}_mode_not_private")
+    if info.st_nlink != 1:
+        blockers.append(f"{prefix}_multiple_links")
+    return blockers
+
+
+def proof_leaf_precheck(
+    artifact_fd: int,
+    name: str,
+    leaf_kind: str,
+) -> tuple[Any | None, bool, list[str]]:
+    try:
+        info = os.stat(name, dir_fd=artifact_fd, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None, True, []
+        if exc.errno == errno.ELOOP:
+            return None, False, [f"receipt_{leaf_kind}_symlink_rejected"]
+        return None, False, ["artifact_read_failed"]
+    return info, False, proof_leaf_stat_blockers(info, leaf_kind)
+
+
+def proof_stat_stability(info: Any) -> tuple[int, ...]:
+    """Return every identity, mutation, and leaf-policy field used by verification."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_uid,
+        info.st_gid,
+        stat.S_IFMT(info.st_mode),
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+    )
+
+
+_PROOF_METADATA_NONFINITE_SENTINEL = object()
+
+
+def decode_proof_receipt_metadata(raw: bytes, receipt: str) -> tuple[dict[str, Any] | None, list[str]]:
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None, ["receipt_metadata_invalid_unicode"]
+    duplicate_keys = False
+
+    def pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal duplicate_keys
+        obj: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in obj:
+                duplicate_keys = True
+            obj[key] = value
+        return obj
+
+    try:
+        decoded = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=lambda _value: _PROOF_METADATA_NONFINITE_SENTINEL,
+        )
+    except RecursionError:
+        return None, ["receipt_metadata_nesting_too_deep"]
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None, ["receipt_metadata_invalid_json"]
+
+    depth_exceeded = False
+    decoded_unicode_invalid = False
+    nonfinite = False
+    stack: list[tuple[Any, int]] = [(decoded, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > PROOF_UNIT_JSON_MAX_DEPTH:
+            depth_exceeded = True
+            continue
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8", errors="strict")
+            except UnicodeEncodeError:
+                decoded_unicode_invalid = True
+        if value is _PROOF_METADATA_NONFINITE_SENTINEL or (
+            type(value) is float and not math.isfinite(value)
+        ):
+            nonfinite = True
+        if isinstance(value, dict):
+            for key, child in value.items():
+                stack.append((key, depth + 1))
+                stack.append((child, depth + 1))
+        elif isinstance(value, list):
+            for child in value:
+                stack.append((child, depth + 1))
+    if duplicate_keys:
+        return None, ["receipt_metadata_duplicate_keys"]
+    if depth_exceeded:
+        return None, ["receipt_metadata_nesting_too_deep"]
+    if nonfinite:
+        return None, ["receipt_metadata_nonfinite_number"]
+    if decoded_unicode_invalid:
+        return None, ["receipt_metadata_invalid_unicode"]
+    if not isinstance(decoded, dict):
+        return None, ["receipt_metadata_not_object"]
+    if decoded.get("artifact_id") != receipt:
+        return None, ["receipt_metadata_id_mismatch"]
+    stored = decoded.get("stored_output")
+    if not isinstance(stored, dict):
+        return None, ["receipt_metadata_stored_output_invalid"]
+    sha256 = stored.get("sha256")
+    byte_count = stored.get("bytes")
+    line_count = stored.get("lines")
+    stored_valid = bool(
+        isinstance(sha256, str)
+        and PROOF_CONTENT_SHA256_RE.fullmatch(sha256)
+        and type(byte_count) is int
+        and 0 <= byte_count <= PROOF_RECEIPT_CONTENT_BYTE_CAP
+        and type(line_count) is int
+        and (
+            (byte_count == 0 and line_count == 0)
+            or (byte_count > 0 and 1 <= line_count <= byte_count)
+        )
+    )
+    if not stored_valid:
+        return None, ["receipt_metadata_stored_output_invalid"]
+    if (
+        stored.get("content_file") != f"{receipt}.txt"
+        or stored.get("metadata_file") != f"{receipt}.json"
+    ):
+        return None, ["receipt_metadata_file_binding_mismatch"]
+    return decoded, []
+
+
+def open_proof_leaf(
+    artifact_fd: int,
+    name: str,
+    precheck: Any,
+    leaf_kind: str,
+) -> tuple[int | None, Any | None, list[str]]:
+    try:
+        fd = os.open(
+            name,
+            _file_open_flags(label=f"proof receipt {leaf_kind}"),
+            dir_fd=artifact_fd,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None, None, [f"receipt_{leaf_kind}_symlink_rejected"]
+        return None, None, ["artifact_read_failed"]
+    try:
+        opened = os.fstat(fd)
+        blockers = proof_leaf_stat_blockers(opened, leaf_kind)
+        if proof_stat_stability(opened) != proof_stat_stability(precheck):
+            blockers.append("artifact_changed_during_read")
+        cap = (
+            PROOF_RECEIPT_METADATA_BYTE_CAP
+            if leaf_kind == "metadata"
+            else PROOF_RECEIPT_CONTENT_BYTE_CAP
+        )
+        if opened.st_size > cap:
+            blockers.append(f"receipt_{leaf_kind}_too_large")
+        blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+        if blockers:
+            os.close(fd)
+            return None, None, blockers
+        return fd, opened, []
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None, None, ["artifact_read_failed"]
+
+
+def read_proof_metadata_leaf(fd: int, opened: Any) -> tuple[bytes | None, list[str]]:
+    if opened.st_size > PROOF_RECEIPT_METADATA_BYTE_CAP:
+        return None, ["receipt_metadata_too_large"]
+    expected_size = opened.st_size
+    accumulated = bytearray()
+    first_read = True
+    eof = False
+    try:
+        while first_read or len(accumulated) != expected_size:
+            first_read = False
+            if len(accumulated) >= PROOF_RECEIPT_METADATA_BYTE_CAP + 1:
+                break
+            chunk = os.read(
+                fd,
+                PROOF_RECEIPT_METADATA_BYTE_CAP + 1 - len(accumulated),
+            )
+            if not chunk:
+                eof = True
+                break
+            accumulated.extend(chunk)
+            if len(accumulated) == expected_size:
+                break
+    except OSError:
+        return None, ["artifact_read_failed"]
+    blockers = []
+    if len(accumulated) > PROOF_RECEIPT_METADATA_BYTE_CAP:
+        blockers.append("receipt_metadata_too_large")
+    if len(accumulated) != expected_size or (eof and len(accumulated) < expected_size):
+        blockers.append("artifact_changed_during_read")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    return (None, blockers) if blockers else (bytes(accumulated), [])
+
+
+def read_proof_content_leaf(
+    fd: int,
+    opened: Any,
+    declared_bytes: int,
+    runtime_boundaries: dict[str, Any],
+) -> tuple[bytes | None, list[str]]:
+    blockers = []
+    if opened.st_size > PROOF_RECEIPT_CONTENT_BYTE_CAP:
+        blockers.append("receipt_content_too_large")
+    if opened.st_size != declared_bytes:
+        blockers.append("receipt_content_size_mismatch")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    if blockers:
+        return None, blockers
+    accumulated = bytearray()
+    early_eof = False
+    extra_data = False
+    try:
+        while len(accumulated) < declared_bytes:
+            runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
+            chunk = os.read(
+                fd,
+                min(PROOF_RECEIPT_CONTENT_READ_CHUNK, declared_bytes - len(accumulated)),
+            )
+            if not chunk:
+                early_eof = True
+                break
+            accumulated.extend(chunk)
+        if not early_eof:
+            runtime_boundaries["artifact_content_read_for_whole_file_verification"] = True
+            extra_data = bool(os.read(fd, 1))
+    except OSError:
+        return None, ["artifact_read_failed"]
+    blockers = []
+    if early_eof or extra_data or len(accumulated) != declared_bytes:
+        blockers.extend(["receipt_content_size_mismatch", "artifact_changed_during_read"])
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    return (None, blockers) if blockers else (bytes(accumulated), [])
+
+
+def verify_proof_receipt(
+    artifact_fd: int,
+    receipt: str,
+    runtime_boundaries: dict[str, Any],
+) -> dict[str, Any]:
+    metadata_name = f"{receipt}.json"
+    content_name = f"{receipt}.txt"
+    metadata_precheck, metadata_missing, metadata_blockers = proof_leaf_precheck(
+        artifact_fd, metadata_name, "metadata"
+    )
+    content_precheck, content_missing, content_blockers = proof_leaf_precheck(
+        artifact_fd, content_name, "content"
+    )
+    blockers = [*metadata_blockers, *content_blockers]
+    if metadata_missing or content_missing:
+        blockers.append("receipt_pair_incomplete")
+    blockers = ordered_proof_taxonomy(blockers, PROOF_VERIFICATION_BLOCKER_ORDER)
+    result: dict[str, Any] = {
+        "actual_lines": None,
+        "actual_sha256": None,
+        "blockers": blockers,
+        "content_file_verified": False,
+        "matches_receipt_metadata": False,
+        "metadata_file_verified": False,
+        "metadata_verified": False,
+        "stored_bytes": None,
+        "stored_lines": None,
+    }
+    if blockers or metadata_precheck is None or content_precheck is None:
+        return result
+
+    metadata_fd: int | None = None
+    content_fd: int | None = None
+    metadata_opened: Any | None = None
+    content_opened: Any | None = None
+    try:
+        metadata_fd, metadata_opened, blockers = open_proof_leaf(
+            artifact_fd, metadata_name, metadata_precheck, "metadata"
+        )
+        if blockers or metadata_fd is None or metadata_opened is None:
+            result["blockers"] = blockers
+            return result
+        content_fd, content_opened, blockers = open_proof_leaf(
+            artifact_fd, content_name, content_precheck, "content"
+        )
+        if blockers or content_fd is None or content_opened is None:
+            result["blockers"] = blockers
+            return result
+
+        metadata_raw, blockers = read_proof_metadata_leaf(metadata_fd, metadata_opened)
+        if blockers or metadata_raw is None:
+            result["blockers"] = blockers
+            return result
+        metadata, blockers = decode_proof_receipt_metadata(metadata_raw, receipt)
+        if blockers or metadata is None:
+            result["blockers"] = blockers
+            return result
+        stored = metadata["stored_output"]
+        result.update({
+            "metadata_file_verified": True,
+            "metadata_verified": True,
+            "stored_bytes": stored["bytes"],
+            "stored_lines": stored["lines"],
+        })
+
+        content_raw, blockers = read_proof_content_leaf(
+            content_fd,
+            content_opened,
+            stored["bytes"],
+            runtime_boundaries,
+        )
+        if blockers or content_raw is None:
+            result["blockers"] = blockers
+            return result
+        actual_sha256 = hashlib.sha256(content_raw).hexdigest()
+        actual_lines = content_raw.count(b"\n") + int(
+            bool(content_raw and not content_raw.endswith(b"\n"))
+        )
+        result["actual_sha256"] = actual_sha256
+        result["actual_lines"] = actual_lines
+        result["matches_receipt_metadata"] = actual_sha256 == stored["sha256"]
+        if not result["matches_receipt_metadata"]:
+            blockers.append("receipt_content_hash_mismatch")
+        if actual_lines != stored["lines"]:
+            blockers.append("receipt_line_count_mismatch")
+        result["content_file_verified"] = not blockers
+        result["blockers"] = ordered_proof_taxonomy(
+            blockers, PROOF_VERIFICATION_BLOCKER_ORDER
+        )
+        return result
+    finally:
+        stability_blockers: list[str] = []
+        for fd, opened in (
+            (metadata_fd, metadata_opened),
+            (content_fd, content_opened),
+        ):
+            if fd is None:
+                continue
+            try:
+                after = os.fstat(fd)
+                if opened is None or proof_stat_stability(after) != proof_stat_stability(opened):
+                    stability_blockers.append("artifact_changed_during_read")
+            except OSError:
+                stability_blockers.append("artifact_read_failed")
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if stability_blockers:
+            result["blockers"] = ordered_proof_taxonomy(
+                [*result["blockers"], *stability_blockers],
+                PROOF_VERIFICATION_BLOCKER_ORDER,
+            )
+            result["content_file_verified"] = False
+            result["matches_receipt_metadata"] = False
+            result["metadata_file_verified"] = False
+            result["metadata_verified"] = False
+
+
+def verify_proof_range_bounds(row: dict[str, Any], stored_bytes: int, stored_lines: int) -> bool:
+    safe_range = row["safe_range"]
+    if safe_range is None:
+        return True
+    if safe_range["kind"] == "lines":
+        passed = 1 <= safe_range["start"] <= safe_range["end"] <= stored_lines
+    else:
+        passed = 0 <= safe_range["start"] < safe_range["end"] <= stored_bytes
+    safe_range["bounds_checked"] = True
+    safe_range["status"] = "verified" if passed else "verification_failed"
+    return passed
+
+
+def proof_verification_runtime_boundaries() -> dict[str, Any]:
+    return {
+        "artifact_content_read_for_whole_file_verification": False,
+        "command_executed": False,
+        "config_read": False,
+        "content_echoed": False,
+        "current_time_generated": False,
+        "files_written": False,
+        "hosted_savings_claim_allowed": False,
+        "network_or_provider_called": False,
+        "range_content_retrieved": False,
+        "replacement_authorized": False,
+        "source_or_stdin_read": False,
+        "subprocess_started": False,
+    }
+
+
+def proof_carrying_context_verify_payload(args: argparse.Namespace) -> dict[str, Any]:
+    raw_units = args.proof_unit_json or []
+    supplied_count = len(raw_units)
+    detailed_count = min(supplied_count, PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP)
+    overflow_count = max(supplied_count - PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP, 0)
+    rows: list[dict[str, Any]] = []
+    plan_rows: list[dict[str, Any] | None] = []
+    conflict_inputs: list[tuple[str | None, str | None]] = []
+    preflight_issues: list[list[str]] = []
+    for unit_index, raw in enumerate(raw_units[:PROOF_CARRYING_CONTEXT_DETAILED_UNIT_CAP]):
+        decoded, terminal_row = decode_proof_unit_json(raw, unit_index)
+        if terminal_row is not None:
+            issues = list(terminal_row["validation_issues"])
+            rows.append(proof_verification_row(unit_index, issues))
+            plan_rows.append(None)
+            conflict_inputs.append((None, None))
+            preflight_issues.append(issues)
+            continue
+        assert decoded is not None
+        plan_row, receipt, declared_hash = normalize_proof_unit(decoded, unit_index)
+        issues = list(plan_row["validation_issues"])
+        rows.append(
+            proof_verification_row(unit_index, issues)
+            if issues
+            else normalized_proof_verification_row(plan_row)
+        )
+        plan_rows.append(plan_row)
+        conflict_inputs.append((receipt, declared_hash))
+        preflight_issues.append(issues)
+
+    hashes_by_receipt: dict[str, set[str]] = {}
+    for receipt, declared_hash in conflict_inputs:
+        if receipt is not None and declared_hash is not None:
+            hashes_by_receipt.setdefault(receipt, set()).add(declared_hash)
+    conflicted_receipts = {
+        receipt for receipt, hashes in hashes_by_receipt.items() if len(hashes) > 1
+    }
+    for index, (receipt, _declared_hash) in enumerate(conflict_inputs):
+        if receipt in conflicted_receipts:
+            issues = ordered_proof_taxonomy(
+                [*preflight_issues[index], "receipt_hash_conflict"],
+                PROOF_VERIFICATION_BLOCKER_ORDER,
+            )
+            preflight_issues[index] = issues
+            rows[index] = proof_verification_row(index, issues)
+
+    duplicate_groups: dict[tuple[Any, ...], list[int]] = {}
+    for index, plan_row in enumerate(plan_rows):
+        if plan_row is not None and not preflight_issues[index]:
+            duplicate_groups.setdefault(proof_duplicate_key(plan_row), []).append(index)
+    duplicate_indexes = {
+        index
+        for indexes in duplicate_groups.values()
+        if len(indexes) > 1
+        for index in indexes
+    }
+    for index, row in enumerate(rows):
+        if preflight_issues[index]:
+            continue
+        warnings = list(PROOF_VERIFICATION_WARNING_ORDER[:3])
+        if row["safe_range"] is None:
+            warnings.append("safe_range_not_supplied")
+        if index in duplicate_indexes:
+            warnings.append("duplicate_proof_unit")
+        row["warnings"] = ordered_proof_taxonomy(
+            warnings, PROOF_VERIFICATION_WARNING_ORDER
+        )
+
+    request_blockers: list[str] = []
+    if supplied_count == 0:
+        request_blockers.append("missing_proof_unit")
+    if overflow_count:
+        request_blockers.append("too_many_proof_units")
+    for issues in preflight_issues:
+        request_blockers.extend(issues)
+
+    normalized_dir, directory_issue = validate_proof_artifact_dir_arg(
+        getattr(args, "artifact_dir", None)
+    )
+    if directory_issue:
+        request_blockers.append(directory_issue)
+    if not proof_artifact_io_capabilities_available():
+        request_blockers.append("artifact_io_capability_unavailable")
+    preflight_aborted = bool(request_blockers)
+    if preflight_aborted:
+        for index, row in enumerate(rows):
+            if not preflight_issues[index]:
+                row["blockers"] = ["request_preflight_aborted"]
+        if rows and any(not issues for issues in preflight_issues):
+            request_blockers.append("request_preflight_aborted")
+
+    runtime_boundaries = proof_verification_runtime_boundaries()
+    artifact_fd: int | None = None
+    directory_stage_issue: str | None = None
+    if not preflight_aborted:
+        assert normalized_dir is not None
+        artifact_fd, directory_stage_issue = open_proof_artifact_directory(normalized_dir)
+        if directory_stage_issue:
+            for row in rows:
+                row["blockers"] = [directory_stage_issue]
+            request_blockers.append(directory_stage_issue)
+    try:
+        if artifact_fd is not None:
+            receipt_cache: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                receipt = row["receipt"]["id"]
+                assert isinstance(receipt, str)
+                if receipt not in receipt_cache:
+                    receipt_cache[receipt] = verify_proof_receipt(
+                        artifact_fd, receipt, runtime_boundaries
+                    )
+                result = receipt_cache[receipt]
+                row["blockers"] = list(result["blockers"])
+                row["receipt"].update({
+                    "content_file_verified": result["content_file_verified"],
+                    "metadata_file_verified": result["metadata_file_verified"],
+                    "metadata_verified": result["metadata_verified"],
+                    "stored_bytes": result["stored_bytes"],
+                    "stored_lines": result["stored_lines"],
+                    "verified": bool(
+                        result["metadata_verified"] and result["content_file_verified"]
+                    ),
+                })
+                if result["actual_sha256"] is not None:
+                    matches_proof = (
+                        result["actual_sha256"] == row["content_hash"]["declared_value"]
+                    )
+                    row["content_hash"].update({
+                        "matches_proof_unit": matches_proof,
+                        "matches_receipt_metadata": result["matches_receipt_metadata"],
+                        "verified": bool(matches_proof and result["matches_receipt_metadata"]),
+                    })
+                    if not matches_proof:
+                        row["blockers"].append("proof_content_hash_mismatch")
+                    if (
+                        row["receipt"]["verified"]
+                        and row["content_hash"]["verified"]
+                        and not verify_proof_range_bounds(
+                            row, result["stored_bytes"], result["stored_lines"]
+                        )
+                    ):
+                        row["blockers"].append("safe_range_out_of_bounds")
+                row["blockers"] = ordered_proof_taxonomy(
+                    row["blockers"], PROOF_VERIFICATION_BLOCKER_ORDER
+                )
+                if not row["blockers"]:
+                    row["status"] = "verified"
+    finally:
+        if artifact_fd is not None:
+            try:
+                os.close(artifact_fd)
+            except OSError:
+                pass
+
+    top_blockers = list(request_blockers)
+    for row in rows:
+        top_blockers.extend(row["blockers"])
+    top_blockers = ordered_proof_taxonomy(
+        top_blockers, PROOF_VERIFICATION_BLOCKER_ORDER
+    )
+    verified_count = sum(row["status"] == "verified" for row in rows)
+    failed_count = supplied_count - verified_count
+    unique_receipt_count = len({receipt for receipt, _hash in conflict_inputs if receipt})
+    status = (
+        "verified"
+        if supplied_count > 0
+        and overflow_count == 0
+        and verified_count == detailed_count
+        and not top_blockers
+        else "verification_failed"
+    )
+    return {
+        "artifact_scope": {
+            "content_byte_cap": PROOF_RECEIPT_CONTENT_BYTE_CAP,
+            "directory_echoed": False,
+            "exact_receipt_files_only": True,
+            "explicit_directory": True,
+            "fallback_directories_searched": False,
+            "metadata_byte_cap": PROOF_RECEIPT_METADATA_BYTE_CAP,
+            "posix_private_mode_required": True,
+            "same_effective_owner_required": True,
+            "symlinks_followed": False,
+        },
+        "blocker_order": list(PROOF_VERIFICATION_BLOCKER_ORDER),
+        "blockers": top_blockers,
+        "candidate_replacement": None,
+        "claim_boundary": PROOF_VERIFICATION_CLAIM_BOUNDARY,
+        "experiment_id": "proof-carrying-context",
+        "mode": "verify",
+        "process_exit_contract": PROOF_VERIFICATION_PROCESS_EXIT_CONTRACT,
+        "proof_unit_schema_version": PROOF_CARRYING_CONTEXT_UNIT_SCHEMA_VERSION,
+        "proof_units": rows,
+        "runtime_boundaries": runtime_boundaries,
+        "schema": PROOF_CARRYING_CONTEXT_VERIFY_SCHEMA_VERSION,
+        "status": status,
+        "summary": {
+            "detailed_unit_count": detailed_count,
+            "failed_unit_count": failed_count,
+            "overflow_unit_count": overflow_count,
+            "supplied_unit_count": supplied_count,
+            "unique_receipt_count": unique_receipt_count,
+            "verified_unit_count": verified_count,
+        },
+        "warning_order": list(PROOF_VERIFICATION_WARNING_ORDER),
+    }
+
+
+def command_verify_proof_carrying_context(args: argparse.Namespace) -> int:
+    payload = proof_carrying_context_verify_payload(args)
+    if args.json:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    else:
+        print("ContextGuard proof-carrying-context verification")
+        print(f"Status: {payload['status']}")
+        for key in (
+            "supplied_unit_count",
+            "detailed_unit_count",
+            "overflow_unit_count",
+            "unique_receipt_count",
+            "verified_unit_count",
+            "failed_unit_count",
+        ):
+            print(f"{key}: {payload['summary'][key]}")
+        print(f"Blockers: {', '.join(payload['blockers'])}")
+        print(payload["claim_boundary"])
+    return 0 if payload["status"] == "verified" else 2
 
 
 _SEMANTIC_GC_NONFINITE_SENTINEL = object()
@@ -6159,6 +7078,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     proof_carrying_context.add_argument("--json", action="store_true", help="Emit JSON output.")
     proof_carrying_context.set_defaults(func=command_plan_proof_carrying_context)
+
+    verify_parser = sub.add_parser(
+        "verify",
+        allow_abbrev=False,
+        help="Run bounded read-only local verifiers for experimental lanes.",
+    )
+    verify_sub = verify_parser.add_subparsers(dest="verify_command", required=True)
+    verify_proof = verify_sub.add_parser(
+        "proof-carrying-context",
+        allow_abbrev=False,
+        help="Verify explicit private receipt leaves without retrieval or execution.",
+    )
+    verify_proof.add_argument(
+        "--artifact-dir",
+        action=StoreOnceAction,
+        help="One explicit private local artifact directory; no fallback is searched.",
+    )
+    verify_proof.add_argument(
+        "--proof-unit-json",
+        action="append",
+        help="Inline literal proof-unit JSON object. Repeatable; never treated as a path.",
+    )
+    verify_proof.add_argument("--json", action="store_true", help="Emit JSON output.")
+    verify_proof.set_defaults(func=command_verify_proof_carrying_context)
 
     semantic_gc = plan_sub.add_parser(
         "semantic-gc",
