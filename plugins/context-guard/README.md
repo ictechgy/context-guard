@@ -176,6 +176,10 @@ Cross-agent rule snippets are advisory: the target agent may ignore them, so mea
 
 ## Local test before publishing
 
+## Local MCP adapter
+
+`context-guard mcp` and `context-guard-mcp` launch a dependency-free local stdio MCP child process. A process is isolated to one root and namespace and exposes only sanitized compression, sanitized exact artifact fallback, and local statistics. It has no HTTP, network, provider, model, or proxy integration and never mutates client configuration. Artifacts are inaccessible across namespaces; no hosted token/cost savings are claimed.
+
 From the marketplace repository root:
 
 ```bash

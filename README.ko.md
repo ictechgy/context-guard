@@ -496,6 +496,10 @@ context-guard-setup --plan
 
 생성되는 hook 명령은 기본적으로 `PATH` 조회에 의존하지 않습니다. setup 마법사는 명시적인 패키지/체크아웃 헬퍼 경로를 기록하며, `--allow-path-helper-fallback`은 신뢰한 외부 설치를 사용할 때만 canonical 경로·symlink 없음·bounded identity probe 검증 후 허용됩니다. macOS 앱 헬퍼도 같은 신뢰 모델을 따릅니다. launch CWD 탐색, 상대 override 경로, 필요한 allowlist 값을 넘어선 상위 셸 환경 상속을 사용하지 않습니다.
 
+## 로컬 MCP 어댑터
+
+`context-guard mcp`(또는 `context-guard-mcp`)는 의존성 없는 로컬 stdio MCP 서버입니다. 프로세스 하나는 root와 namespace 하나에 고정되며 compression, sanitization된 artifact 조회, 로컬 통계만 제공합니다. HTTP, SSE, 네트워크, provider, model, proxy, 자동 client 설정 기능은 없습니다. 저장되는 fallback은 원문이 아닌 정확한 sanitization 완료 사본이고 다른 namespace의 artifact는 조회할 수 없습니다. 이 로컬 어댑터는 hosted token/cost 절감을 주장하지 않습니다.
+
 ## 릴리스 확인
 
 릴리스에 민감한 변경을 배포하거나 머지하기 전에는 동기화 확인과 두 게이트를 모두 실행하세요.

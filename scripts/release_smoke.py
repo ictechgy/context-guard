@@ -929,6 +929,120 @@ def run_dispatcher_launch_smokes(
         )
 
 
+def run_mcp_namespace_smoke(
+    mcp: Path,
+    *,
+    project: Path,
+    env: dict[str, str],
+    timeout: float,
+    label: str,
+    trusted_root: Path | None = None,
+) -> None:
+    """Exercise two clean local MCP sessions and prove namespace separation."""
+    if trusted_root is not None:
+        require_path_inside(mcp, trusted_root, label=f"{label} MCP entrypoint")
+    argv_base = entrypoint_launch_argv(mcp, [], trusted_root=trusted_root)
+
+    raw_secret = "sk-proj-abcdefghijklmnopqrstuvwxyz"
+    sanitized_accepted_input = "release smoke secret=[REDACTED]"
+    expected_artifact_id = hashlib.sha256(json.dumps(
+        {
+            "content_sha256": hashlib.sha256(sanitized_accepted_input.encode("utf-8")).hexdigest(),
+            "command_preview": "context-guard-mcp compress",
+            "input_truncated": False,
+        },
+        sort_keys=True,
+    ).encode("utf-8")).hexdigest()[:20]
+    private_markers = (
+        raw_secret,
+        str(project),
+        str(project / ".context-guard" / "mcp"),
+        ".context-guard/mcp",
+    )
+
+    def session(namespace: str, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        wire = "".join(json.dumps(request, separators=(",", ":")) + "\n" for request in requests)
+        result = run_bounded_command(
+            [*argv_base, "--root", str(project), "--namespace", namespace],
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            input_text=wire,
+            max_output_bytes=COMMAND_OUTPUT_MAX_BYTES,
+        )
+        if result.timed_out or result.output_truncated or result.proc.returncode != 0:
+            fail(f"{label} MCP namespace {namespace} did not close cleanly")
+        if result.proc.stderr:
+            fail(f"{label} MCP namespace {namespace} emitted stderr")
+        transcript = result.proc.stdout + result.proc.stderr
+        if any(marker in transcript for marker in private_markers):
+            fail(f"{label} MCP namespace {namespace} leaked private input or paths")
+        response_lines = result.proc.stdout.splitlines()
+        if any(not line for line in response_lines):
+            fail(f"{label} MCP namespace {namespace} emitted a blank response")
+        try:
+            messages = [json.loads(line) for line in response_lines]
+        except json.JSONDecodeError as exc:
+            fail(f"{label} MCP emitted invalid JSON: {exc}")
+        expected_ids = [request["id"] for request in requests if "id" in request]
+        if len(messages) != len(expected_ids) or [message.get("id") for message in messages] != expected_ids:
+            fail(f"{label} MCP emitted an unexpected response count")
+        return messages
+
+    initialize = {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "release-smoke", "version": "1"}},
+    }
+    ready = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+    stored = session("A", [
+        initialize, ready,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": "release smoke secret=" + raw_secret}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": expected_artifact_id}}},
+        {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+    ])
+    try:
+        if stored[0]["result"]["protocolVersion"] != "2025-11-25":
+            fail(f"{label} MCP A did not initialize")
+        names_a = [tool["name"] for tool in stored[1]["result"]["tools"]]
+        if names_a != ["context_guard_compress", "context_guard_retrieve", "context_guard_stats"]:
+            fail(f"{label} MCP A exposed an unexpected tool set")
+        compressed = stored[2]["result"]["structuredContent"]
+        artifact_id = compressed["artifact"]["artifact_id"]
+        retrieved = stored[3]["result"]["structuredContent"]
+        stats_a = stored[4]["result"]["structuredContent"]
+    except (KeyError, TypeError):
+        fail(f"{label} MCP A did not return the expected tool results")
+    if not isinstance(artifact_id, str) or artifact_id != expected_artifact_id:
+        fail(f"{label} MCP A leaked a secret or omitted its artifact id")
+    if compressed["artifact"].get("exact_scope") != "sanitized_accepted_input":
+        fail(f"{label} MCP A artifact did not declare its sanitized accepted-input scope")
+    if retrieved.get("artifact_id") != artifact_id or retrieved.get("content") != sanitized_accepted_input:
+        fail(f"{label} MCP A did not retrieve its exact sanitized accepted input")
+    if stats_a.get("storage", {}).get("artifacts_observed") != 1:
+        fail(f"{label} MCP A did not observe its stored artifact")
+    checked = session("B", [
+        initialize, ready,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": artifact_id}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+    ])
+    try:
+        if checked[0]["result"]["protocolVersion"] != "2025-11-25":
+            fail(f"{label} MCP B did not initialize")
+        names_b = [tool["name"] for tool in checked[1]["result"]["tools"]]
+        if names_b != ["context_guard_compress", "context_guard_retrieve", "context_guard_stats"]:
+            fail(f"{label} MCP B exposed an unexpected tool set")
+        rejected = checked[2]["result"]
+        stats_b = checked[3]["result"]["structuredContent"]
+    except (KeyError, TypeError):
+        fail(f"{label} MCP B did not return the expected tool results")
+    if rejected.get("isError") is not True or rejected.get("structuredContent", {}).get("error", {}).get("code") != "artifact_not_found":
+        fail(f"{label} MCP namespace isolation did not reject A's artifact id")
+    if stats_b.get("storage", {}).get("artifacts_observed") != 0:
+        fail(f"{label} MCP B observed artifacts from namespace A")
+
+
 def run_smoke(plugin_bin: Path, timeout: float) -> None:
     plugin_bin = plugin_bin.resolve()
     commands = {name: command_path(plugin_bin, name) for name in REQUIRED_COMMANDS}
@@ -951,7 +1065,13 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             fail("approximate sketch smoke fixtures must have distinct bytes")
         (project / "smoke-pack.txt").write_text(sketch_original, encoding="utf-8")
         (project / "smoke-pack-copy.txt").write_text(sketch_variant, encoding="utf-8")
+        mcp_project = Path(td) / "mcp-project"
+        mcp_project.mkdir()
         env = smoke_environment(smoke_home, smoke_tmp)
+        run_mcp_namespace_smoke(
+            command_path(plugin_bin, "context-guard-mcp"), project=mcp_project, env=env,
+            timeout=timeout, label="staged plugin",
+        )
 
         pack_baseline: dict[str, Any] = {}
         run_command(
@@ -1264,6 +1384,8 @@ def run_npm_package_smoke(timeout: float) -> None:
         fake_bin = root / "fake-path-bin"
         pack_dir.mkdir()
         project.mkdir()
+        mcp_project = root / "mcp-project"
+        mcp_project.mkdir()
         home.mkdir()
         tmp.mkdir()
         write_fake_context_guard_shadow(fake_bin)
@@ -1322,6 +1444,13 @@ def run_npm_package_smoke(timeout: float) -> None:
         if not context_guard.is_file():
             fail(f"isolated npm install missing context-guard bin: {context_guard}")
         require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
+        npm_mcp = isolated_bin / "context-guard-mcp"
+        if not npm_mcp.is_file():
+            fail("isolated npm install missing context-guard-mcp bin")
+        run_mcp_namespace_smoke(
+            npm_mcp, project=mcp_project, env=env, timeout=timeout,
+            label="isolated npm", trusted_root=install_prefix,
+        )
 
         for wrapper in COMMAND_MANIFEST.LEGACY_WRAPPERS:
             packaged_wrapper = package_root / "plugins" / "context-guard" / "bin" / str(wrapper)

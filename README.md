@@ -549,6 +549,10 @@ context-guard-setup --plan
 
 Do not rely on `PATH` lookup for generated hooks by default. The setup wizard records explicit bundled or checkout-local helper paths; `--allow-path-helper-fallback` is only for trusted external installs and validates the resolved helper path, symlink state, and bounded identity probe before writing commands. The macOS app helper follows the same trust model: no launch-CWD discovery, no relative override paths, and no inherited ambient shell environment beyond the allowlisted values it needs to start.
 
+## Local MCP adapter
+
+`context-guard mcp` (or `context-guard-mcp`) is a dependency-free local stdio MCP server. Each process is fixed to one root and one namespace; it exposes only compression, sanitized artifact retrieval, and local statistics. It has no HTTP, SSE, network, provider, model, proxy, or automatic client-configuration surface. Stored fallback content is an exact sanitized copy, not raw input, and artifacts from another namespace are not retrievable. This local adapter makes no hosted token or cost-savings claim.
+
 ## Release checks
 
 Before publishing or merging release-sensitive changes, run the copy check and both gates:
