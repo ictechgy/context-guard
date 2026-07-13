@@ -101,6 +101,7 @@ context-guard experiments verify proof-carrying-context --artifact-dir ./artifac
 `../research/experimental-token-reduction-radar.md`는 learned compression, generated crop/OCR/visual-token pruning, self-hosted KV/latent inference optimization 같은 선택적 미래 실험을 문서화한 gate입니다. `../docs/experimental-benchmark-fixtures.md`에는 fixture-only task/variant 시작 예시가 있습니다. 이 radar와 fixture는 hosted API token/cost 절감을 보장하지 않습니다. 현재 제공되는 helper surface는 plan-only image-context-pack gate, plan-only/eval-only semantic-checkpoint gate, 명시적 local context-diff emit, visual evidence-pack emit, learned candidate emit, self-hosted metrics record, local proxy gate record, one-shot literal-loopback local proxy serve with optional response artifact envelope, design-only external-forwarding plan 같은 좁은 local surface뿐이며, hosted API token/cost 절감 주장은 provider가 측정한 matched-task 근거가 있을 때만 허용합니다. Radar의 later-roadmap gate는 neural/semantic compression, trust-tiered injection-aware compression, generated visual-token reduction, broader external/daemon/hostname-DNS/credential-bearing local proxy forwarding constraints를 별도 미래 PR이 gate를 통과하기 전까지 experimental/non-shipped로 유지합니다.
 
 `claude_transcript_cost_audit.py --recommend`의 기본 출력은 공유 시 안전하도록 transcript 경로를 `basename#hash`, 명령을 `command#hash` 형태로 익명화합니다. 로컬 원문 식별자가 꼭 필요할 때만 `--show-paths` 또는 `--show-commands`를 추가하세요.
+
 대용량/손상 transcript 방어를 위해 파일 단위 `--max-file-bytes`, JSONL record 단위 `--max-line-bytes` 제한도 기본 적용되며, 건너뛴 항목은 skip count와 warning으로 표시됩니다. JSON summary/feasibility 출력의 `cache_friendliness`는 제한된 정제 segment hash로 안정적인 prefix와 volatile prefix/tail 신호를 비교하는 휴리스틱입니다. `cache_layout_advice`는 그 신호를 긴 세션 분리, prefix 안정화, diet 점검 같은 순위화된 확인/실험으로 연결하지만, 관측 issue와 가설/입증 cause를 분리합니다. `--feasibility-json`은 macOS-visible prototype 같은 consumer가 안정적인 top-level field에만 바인딩하도록 `mac_visibility` 계약도 함께 제공합니다. 원문 prompt text는 출력하지 않고, provider cache token field와 historical token total은 ContextGuard가 만든 토큰 절감 또는 live headroom 증거가 아니라 별도 진단 텔레메트리로 해석하세요.
 
 `context_guard_diet.py scan`은 항상 로컬에서만 읽는 read-only 스캐너입니다. 기본 출력은 project root를 익명화하고 상대경로 중심으로 보고합니다. `--top`은 보고서의 context-like file 목록과 context-exclusion recommendation 목록에 공통으로 적용됩니다. `--show-paths`는 로컬/비공개 디버깅에서만 쓰세요.
@@ -118,6 +119,10 @@ context-guard experiments verify proof-carrying-context --artifact-dir ./artifac
 `sanitize_output.py`는 grep/diff output을 Claude에게 보여주기 전에 secret-like line, Authorization header, private key block, API token, credential URL을 `[REDACTED]`로 바꾸고, 긴 결과는 head / grep·diff·security anchor / tail만 남깁니다. 명령을 감싸는 wrapper mode는 원래 종료 코드를 보존합니다. stdin pipe도 지원하지만 producer exit code는 shell `pipefail` 없이는 알 수 없으므로 자동화에는 `python3 .../sanitize_output.py -- rg ...`처럼 wrapper mode를 선호하세요. 절대경로는 기본 익명화되고 로컬 디버깅에서만 `--show-paths`를 쓰세요. `rewrite_bash_for_token_budget.py` hook은 단일 argv 형태의 `rg`, `grep`, `git grep`, `git diff`, `git show`, `git log -p`를 자동으로 이 sanitizer에 감쌉니다.
 
 Claude Code에 적용하려면 `settings.example.json`을 `.claude/settings.json`으로 복사하되, 먼저 작은 repo에서 quoting/종료 코드를 확인하세요.
+
+### Local MCP adapter
+
+Run `python3 context_guard_mcp.py --root <project> --namespace <slug>` for a local newline-delimited stdio MCP process. It never opens HTTP/network/provider/model/proxy connections or edits client configuration. Its three tools only return sanitized compression, sanitized exact artifact fallback, and namespace-scoped local stats; a namespace cannot retrieve another namespace’s artifact. It does not claim hosted token or cost savings.
 
 ### Experimental semantic-GC plan gate
 

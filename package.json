@@ -25,6 +25,7 @@
     "context-guard-pack": "plugins/context-guard/bin/context-guard-pack",
     "context-guard-tool-prune": "plugins/context-guard/bin/context-guard-tool-prune",
     "context-guard-compress": "plugins/context-guard/bin/context-guard-compress",
+    "context-guard-mcp": "plugins/context-guard/bin/context-guard-mcp",
     "context-guard-bench": "plugins/context-guard/bin/context-guard-bench",
     "context-guard-read-symbol": "plugins/context-guard/bin/context-guard-read-symbol",
     "context-guard-rewrite-bash": "plugins/context-guard/bin/context-guard-rewrite-bash",

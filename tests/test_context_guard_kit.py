@@ -14,8 +14,10 @@ import importlib.util
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -28848,6 +28850,670 @@ for malformed in malformed_values:
         script_path = ROOT / post_hook_cmd.split(maxsplit=1)[1]
         self.assertTrue(script_path.exists())
         self.assertTrue(os.access(script_path, os.X_OK))
+
+class ContextGuardMcpTests(unittest.TestCase):
+    @staticmethod
+    def _mcp_scripts() -> tuple[Path, Path]:
+        return KIT_DIR / "context_guard_mcp.py", PLUGIN_BIN / "context-guard-mcp"
+
+    def _conversation(self, script: Path, root: Path, namespace: str, messages: list[dict[str, object]]) -> list[dict[str, object]]:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "--namespace", namespace],
+            input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return [json.loads(line) for line in proc.stdout.splitlines()]
+
+    def _mcp_raw(self, script: Path, root: Path, wire: bytes, namespace: str = "matrix") -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, str(script), "--root", str(root), "--namespace", namespace],
+            input=wire, capture_output=True, timeout=20,
+        )
+
+    def _interactive_response(
+        self,
+        proc: subprocess.Popen[str],
+        message: dict[str, object],
+        *,
+        timeout: float = 5.0,
+    ) -> dict[str, object]:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], timeout)
+        self.assertTrue(ready, "MCP response was not flushed while stdin remained open")
+        line = proc.stdout.readline()
+        self.assertTrue(line, "MCP process closed stdout before returning a response")
+        return json.loads(line)
+
+    def _assert_exact_tools(self, actual: object) -> None:
+        base = {"type": "object", "additionalProperties": False}
+        expected = [
+            {
+                "name": "context_guard_compress",
+                "description": "Sanitize, compress, and optionally retain local content.",
+                "inputSchema": {
+                    **base,
+                    "properties": {
+                        "content": {"type": "string", "maxLength": 786432, "description": "Content to sanitize and compress; UTF-8 bytes are capped at 786432."},
+                        "content_type": {"type": "string", "enum": ["json", "diff", "log", "search", "code", "prose"], "description": "Optional content classification override."},
+                        "mode": {"type": "string", "enum": ["conservative", "readable"], "default": "conservative", "description": "Compression mode; conservative preserves more structure."},
+                        "protected_policy": {"type": "boolean", "default": True, "description": "Preserve detected protected zones and require retrieval when needed."},
+                        "store": {"type": "boolean", "default": True, "description": "Store sanitized accepted input for namespace-scoped retrieval."},
+                    },
+                    "required": ["content"],
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "context_guard_retrieve",
+                "description": "Retrieve sanitized content from this local namespace.",
+                "inputSchema": {
+                    **base,
+                    "properties": {
+                        "artifact_id": {"type": "string", "pattern": "^[a-f0-9]{20}$", "description": "Namespace-scoped sanitized artifact identifier."},
+                        "lines": {"type": "string", "pattern": "^[1-9][0-9]{0,6}(?::[1-9][0-9]{0,6})?$", "description": "Optional inclusive one-based line or line range selector."},
+                        "pattern": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Optional literal UTF-8 pattern selector."},
+                        "max_lines": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500, "description": "Maximum returned lines, limited to 500."},
+                        "max_chars": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 20000, "description": "Maximum returned Unicode code points, limited to 20000."},
+                    },
+                    "required": ["artifact_id"],
+                    "allOf": [{"not": {"required": ["lines", "pattern"]}}],
+                },
+                "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "context_guard_stats",
+                "description": "Return local session and namespace statistics.",
+                "inputSchema": base,
+                "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+            },
+        ]
+        self.assertEqual(actual, expected)
+
+    def test_mcp_canonical_protocol_matrix_on_both_entrypoints(self):
+        latest = "2025-11-25"
+        initialize = lambda version, request_id=1: {
+            "jsonrpc": "2.0", "id": request_id, "method": "initialize",
+            "params": {"protocolVersion": version, "capabilities": {}, "clientInfo": {"name": "matrix", "version": "1"}},
+        }
+        initialized = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+        fixed_invalid = {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
+        for script in self._mcp_scripts():
+            with self.subTest(script=script, case="lifecycle-and-static-tools"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                replies = self._conversation(script, root, "lifecycle", [
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    initialize("2025-03-26", 2),
+                    {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {"_meta": {}}},
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/list"},
+                    initialized,
+                    {"jsonrpc": "2.0", "id": 5, "method": "ping"},
+                    {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {"cursor": None, "_meta": {}}},
+                    {"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": initialize(latest)["params"]},
+                ])
+                self.assertEqual([reply["id"] for reply in replies], list(range(1, 8)))
+                self.assertEqual(replies[0]["result"], {})
+                self.assertEqual(replies[1]["result"], {"protocolVersion": "2025-03-26", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "context-guard-mcp", "version": "1.0.0"}})
+                self.assertEqual(replies[2]["result"], {})
+                self.assertEqual(replies[3]["error"], {"code": -32002, "message": "Server not initialized"})
+                self.assertEqual(replies[4]["result"], {})
+                self._assert_exact_tools(replies[5]["result"]["tools"])
+                self.assertEqual(replies[6]["error"], {"code": -32600, "message": "Already initialized"})
+            with self.subTest(script=script, case="versions-and-notifications"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                replies = self._conversation(script, root, "versions", [
+                    initialize("unsupported", 1),
+                    {"jsonrpc": "2.0", "method": "ping", "params": {"bad": True}},
+                    initialized,
+                    {"jsonrpc": "2.0", "method": "unknown/notification", "params": {}},
+                    {"jsonrpc": "2.0", "method": "tools/list", "params": {"cursor": "not-null"}},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"cursor": "not-null"}},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "unknown", "arguments": {}}},
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {"bad": True}}},
+                ])
+                self.assertEqual(replies[0]["result"]["protocolVersion"], latest)
+                self.assertEqual([reply["id"] for reply in replies], [1, 2, 3, 4])
+                self.assertEqual(replies[1]["error"], {"code": -32602, "message": "Invalid params"})
+                self.assertEqual(replies[2]["error"], {"code": -32602, "message": "Invalid params"})
+                bad_stats = replies[3]["result"]
+                self.assertTrue(bad_stats["isError"])
+                self.assertEqual(bad_stats["structuredContent"], {"schema_version": "contextguard.mcp.tool-error.v1", "error": {"code": "invalid_arguments", "message": "Invalid tool arguments.", "retryable": False}})
+                self.assertEqual(bad_stats["content"], [{"type": "text", "text": json.dumps(bad_stats["structuredContent"], ensure_ascii=False, sort_keys=True, separators=(",", ":"))}])
+            with self.subTest(script=script, case="wire-rejections"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                deep_meta = "[" * 1500 + "]" * 1500
+                wire = (
+                    b'{"jsonrpc":"2.0","id":1,"method":"ping"}\r\n'
+                    b'{"jsonrpc":"2.0","id":2,"method":"ping"}\n'
+                    b'{"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":1,"x":2}}\n'
+                    b'{"jsonrpc":"2.0","id":4,"method":"ping","params":{"x":NaN}}\n'
+                    b'[{"jsonrpc":"2.0","id":5,"method":"ping"}]\n'
+                    b'{"jsonrpc":"2.0","id":true,"method":"ping"}\n'
+                    b'{"jsonrpc":"2.0","method":7}\n'
+                    + ('{"jsonrpc":"2.0","id":8,"method":"ping","params":{"_meta":' + deep_meta + '}}\n').encode()
+                    + b'\xff\nnot-json\n'
+                )
+                proc = self._mcp_raw(script, root, wire, "wire")
+                self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+                replies = [json.loads(line) for line in proc.stdout.splitlines()]
+                self.assertEqual(replies[0]["result"], {})
+                self.assertEqual(replies[1]["result"], {})
+                self.assertEqual(replies[2:8], [fixed_invalid] * 6)
+                self.assertEqual(replies[8:], [
+                    {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+                    {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+                ])
+                self.assertNotIn(b"Traceback", proc.stderr)
+            with self.subTest(script=script, case="fatal-framing-and-cli"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                partial = self._mcp_raw(script, root, b'{"jsonrpc":"2.0"}', "partial")
+                self.assertEqual(partial.returncode, 1)
+                self.assertEqual(json.loads(partial.stdout), {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+                overlong = self._mcp_raw(script, root, b" " * (1024 * 1024 + 1) + b"\n", "long")
+                self.assertEqual(overlong.returncode, 1)
+                self.assertEqual(json.loads(overlong.stdout), {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Message too large"}})
+                for flag in ("--max-message-bytes", "--max-content-bytes", "--max-calls", "--max-artifacts", "--timeout"):
+                    rejected = subprocess.run([sys.executable, str(script), flag, "1"], text=True, capture_output=True, timeout=20)
+                    self.assertEqual(rejected.returncode, 2, (flag, rejected.stderr))
+
+    def test_mcp_flushes_live_responses_and_counts_invalid_initialized_notifications(self):
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "live", "version": "1"}},
+        }
+        for script in self._mcp_scripts():
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.Popen(
+                    [sys.executable, str(script), "--root", tmp, "--namespace", "live"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1,
+                )
+                try:
+                    initialized = self._interactive_response(proc, initialize)
+                    self.assertEqual(initialized["id"], 1)
+                    assert proc.stdin is not None
+                    proc.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{"bad":true}}\n')
+                    proc.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+                    proc.stdin.flush()
+                    stats = self._interactive_response(proc, {
+                        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "context_guard_stats", "arguments": {}},
+                    })
+                    self.assertEqual(stats["id"], 2)
+                    self.assertEqual(stats["result"]["structuredContent"]["session"]["protocol_errors"], 1)
+                    self.assertIsNone(proc.poll())
+                finally:
+                    if proc.stdin is not None and not proc.stdin.closed:
+                        proc.stdin.close()
+                    proc.wait(timeout=20)
+                    stderr = proc.stderr.read() if proc.stderr is not None else ""
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                    if proc.stderr is not None:
+                        proc.stderr.close()
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(stderr, "")
+
+    def test_mcp_json_recursion_errors_are_version_stable_invalid_requests(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_recursion_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            server = module.Server(Path(tmp), "recursion")
+            stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"{}\n")})()
+            stdout = io.StringIO()
+            try:
+                with mock.patch.object(module.sys, "stdin", stdin), mock.patch.object(module.json, "loads", side_effect=RecursionError), contextlib.redirect_stdout(stdout):
+                    self.assertEqual(module.serve(server), 0)
+            finally:
+                server.close()
+            self.assertEqual(json.loads(stdout.getvalue()), {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            })
+
+    def test_mcp_argument_boundaries_artifact_tamper_and_unicode_caps_on_both_entrypoints(self):
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "bounds", "version": "1"}},
+        }
+        ready = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+        for script in self._mcp_scripts():
+            with self.subTest(script=script, case="argument-boundaries"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                replies = self._conversation(script, root, "arguments", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": "safe", "store": False}}},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": "x", "content_type": "bad"}}},
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 19}}},
+                    {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "A" * 20}}},
+                    {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 20, "lines": "0"}}},
+                    {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 20, "lines": "2:1"}}},
+                    {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 20, "pattern": "x" * 513}}},
+                    {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 20, "max_lines": 501}}},
+                    {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": "a" * 20, "max_chars": 20001}}},
+                ])
+                self.assertFalse(replies[1]["result"]["isError"])
+                for reply in replies[2:]:
+                    self.assertTrue(reply["result"]["isError"])
+                    self.assertEqual(reply["result"]["structuredContent"]["error"]["code"], "invalid_arguments")
+            with self.subTest(script=script, case="unicode-and-tamper"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                # max_chars is a code-point selector, then the independent 20 KiB
+                # wire cap trims this 20,000-code-point multibyte artifact.
+                unicode_content = "😀" * 20_000
+                stored = self._conversation(script, root, "tamper", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": unicode_content}}},
+                ])
+                artifact_id = stored[1]["result"]["structuredContent"]["artifact"]["artifact_id"]
+                retrieved = self._conversation(script, root, "tamper", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": artifact_id, "max_chars": 20_000}}},
+                ])[1]["result"]["structuredContent"]
+                self.assertEqual(len(retrieved["content"]), 5120)
+                self.assertEqual(len(retrieved["content"].encode("utf-8")), 20 * 1024)
+                self.assertTrue(retrieved["content_capped"])
+                digest = hashlib.sha256(b"contextguard.mcp.namespace.v1\0" + str(root.resolve()).encode("utf-8") + b"\0tamper").hexdigest()[:24]
+                txt = root / ".context-guard" / "mcp" / ("ns-" + digest) / (artifact_id + ".txt")
+                original = txt.read_bytes()
+                txt.write_bytes(b"x" * len(original))
+                same_size = self._conversation(script, root, "tamper", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": artifact_id}}},
+                ])
+                self.assertFalse(same_size[1]["result"]["structuredContent"]["storage"]["ambiguous"])
+                self.assertEqual(same_size[1]["result"]["structuredContent"]["storage"]["artifacts_observed"], 1)
+                self.assertEqual(same_size[2]["result"]["structuredContent"]["error"]["code"], "artifact_invalid")
+                txt.write_bytes(b"x" * (len(original) + 1))
+                mismatched = self._conversation(script, root, "tamper", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": "safe"}}},
+                ])
+                self.assertTrue(mismatched[1]["result"]["structuredContent"]["storage"]["ambiguous"])
+                self.assertEqual(mismatched[1]["result"]["structuredContent"]["storage"]["artifacts_observed"], 0)
+                self.assertEqual(mismatched[2]["result"]["structuredContent"]["error"]["code"], "namespace_ambiguous")
+
+    def test_mcp_internal_failure_and_lowered_quota_are_fixed(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_quota_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            server = module.Server(Path(tmp), "quota")
+            old_limit = module.MAX_CALLS
+            module.MAX_CALLS = 2
+            server.state = "READY"
+            request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}}
+            try:
+                first = module.handle(server, request, False)
+                second = module.handle(server, {**request, "id": 2}, False)
+                third = module.handle(server, {**request, "id": 3}, False)
+                self.assertFalse(first["result"]["isError"])
+                self.assertFalse(second["result"]["isError"])
+                self.assertEqual(third["result"]["structuredContent"]["error"]["code"], "rate_limit_reached")
+                self.assertEqual(server.calls["context_guard_stats"], 3)
+                self.assertEqual(server.attempts, 3)
+            finally:
+                module.MAX_CALLS = old_limit
+                server.close()
+        with mock.patch.object(module, "handle", side_effect=RuntimeError("private failure")):
+            server = mock.Mock(protocol_errors=0)
+            stdin = io.BytesIO(b'{"jsonrpc":"2.0","id":"safe","method":"ping"}\n')
+            stdout = io.StringIO()
+            with mock.patch.object(module.sys, "stdin", type("Input", (), {"buffer": stdin})()), contextlib.redirect_stdout(stdout):
+                self.assertEqual(module.serve(server), 0)
+            self.assertEqual(json.loads(stdout.getvalue()), {"jsonrpc": "2.0", "id": "safe", "error": {"code": -32603, "message": "Internal error"}})
+            self.assertEqual(server.protocol_errors, 1)
+
+    def test_mcp_scan_partial_malformed_symlink_and_artifact_cap_fail_closed(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_scan_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            server = module.Server(Path(tmp), "scan-fixtures")
+            try:
+                def write_pair(artifact_id: str, bytes_value: object = 0) -> None:
+                    (server.namespace_dir / (artifact_id + ".txt")).write_bytes(b"")
+                    (server.namespace_dir / (artifact_id + ".json")).write_text(json.dumps({
+                        "artifact_id": artifact_id,
+                        "stored_output": {"content_file": artifact_id + ".txt", "metadata_file": artifact_id + ".json", "bytes": bytes_value, "lines": 0, "sha256": "0" * 64},
+                    }), encoding="utf-8")
+                write_pair("a" * 20)
+                self.assertEqual(server.scan()["observed"], 1)
+                write_pair("b" * 20, True)
+                write_pair("e" * 20, module.MAX_CONTENT_BYTES + 1)
+                (server.namespace_dir / ("c" * 20 + ".txt")).write_bytes(b"")
+                try:
+                    (server.namespace_dir / ("d" * 20 + ".txt")).symlink_to(server.namespace_dir / ("a" * 20 + ".txt"))
+                except OSError:
+                    pass
+                scan = server.scan()
+                self.assertTrue(scan["ambiguous"])
+                self.assertEqual(scan["observed"], 1)
+                for name in ("b" * 20, "c" * 20, "d" * 20, "e" * 20):
+                    for suffix in (".txt", ".json"):
+                        try:
+                            (server.namespace_dir / (name + suffix)).unlink()
+                        except FileNotFoundError:
+                            pass
+                old_cap = module.MAX_ARTIFACTS
+                module.MAX_ARTIFACTS = 2
+                try:
+                    write_pair("b" * 20)
+                    write_pair("c" * 20)
+                    capped = server.scan()
+                    self.assertEqual(capped["observed"], 2)
+                    self.assertFalse(capped["ambiguous"])
+                    self.assertEqual(server.compress({"content": "safe"})["structuredContent"]["error"]["code"], "namespace_full")
+                finally:
+                    module.MAX_ARTIFACTS = old_cap
+            finally:
+                server.close()
+
+    def test_mcp_mixed_or_symlinked_helper_layout_fails_with_fixed_startup_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "fixture"
+            fixture.mkdir()
+            for name in ("context_guard_mcp.py", "context_compress.py", "context_escrow.py", "sanitize_output.py"):
+                shutil.copy2(KIT_DIR / name, fixture / name)
+            root = Path(tmp) / "root"
+            root.mkdir()
+            mixed = fixture / "context-guard-compress"
+            shutil.copy2(PLUGIN_BIN / "context-guard-compress", mixed)
+            for mutation in ("mixed", "symlink"):
+                if mutation == "symlink":
+                    mixed.unlink()
+                    (fixture / "context_compress.py").unlink()
+                    try:
+                        (fixture / "context_compress.py").symlink_to(KIT_DIR / "context_compress.py")
+                    except OSError as exc:
+                        self.skipTest(f"symlink unavailable: {exc}")
+                proc = subprocess.run([sys.executable, str(fixture / "context_guard_mcp.py"), "--root", str(root)], text=True, capture_output=True, timeout=20)
+                self.assertEqual(proc.returncode, 2)
+                self.assertEqual(proc.stdout, "")
+                self.assertEqual(proc.stderr, "context-guard-mcp: startup failed\n")
+                self.assertNotIn(str(fixture), proc.stderr)
+
+    def test_mcp_strict_lifecycle_sanitized_fallback_and_namespace_isolation(self):
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}},
+        }
+        ready = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+        raw_secret = "sk-proj-abcdefghijklmnopqrstuvwxyz"
+        sanitized_accepted_input = "token=[REDACTED]"
+        expected_tools = ["context_guard_compress", "context_guard_retrieve", "context_guard_stats"]
+        for script in (KIT_DIR / "context_guard_mcp.py", PLUGIN_BIN / "context-guard-mcp"):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                responses = self._conversation(script, root, "A", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_compress", "arguments": {"content": "token=" + raw_secret}}},
+                ])
+                self.assertEqual(len(responses), 3)
+                self.assertEqual(responses[0]["result"], {"protocolVersion": "2025-11-25", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "context-guard-mcp", "version": "1.0.0"}})
+                self.assertEqual([tool["name"] for tool in responses[1]["result"]["tools"]], expected_tools)
+                result = responses[2]["result"]
+                content = result["structuredContent"]
+                self.assertNotIn("abcdefghijklmnopqrstuvwxyz", json.dumps(result))
+                self.assertEqual(result["content"][0]["text"], json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+                artifact_id = content["artifact"]["artifact_id"]
+                self.assertEqual(content["artifact"]["exact_scope"], "sanitized_accepted_input")
+                retrieved = self._conversation(script, root, "A", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": artifact_id}}},
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+                ])
+                self.assertEqual([tool["name"] for tool in retrieved[1]["result"]["tools"]], expected_tools)
+                retrieved_content = retrieved[2]["result"]["structuredContent"]
+                self.assertEqual(retrieved_content["artifact_id"], artifact_id)
+                self.assertEqual(retrieved_content["content"], sanitized_accepted_input)
+                self.assertEqual(retrieved[3]["result"]["structuredContent"]["storage"]["artifacts_observed"], 1)
+                denied = self._conversation(script, root, "B", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_retrieve", "arguments": {"artifact_id": artifact_id}}},
+                    {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+                ])
+                self.assertEqual([tool["name"] for tool in denied[1]["result"]["tools"]], expected_tools)
+                self.assertEqual(denied[3]["result"]["structuredContent"]["storage"]["artifacts_observed"], 0)
+                denied = denied[2]["result"]
+                self.assertTrue(denied["isError"])
+                self.assertEqual(denied["structuredContent"]["error"]["code"], "artifact_not_found")
+
+    def test_mcp_invalid_no_id_shape_receives_invalid_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [sys.executable, str(KIT_DIR / "context_guard_mcp.py"), "--root", tmp],
+                input='{"jsonrpc":"2.0","method":7}\n', text=True, capture_output=True, timeout=20,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(json.loads(proc.stdout), {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}})
+
+    def test_mcp_startup_failures_and_surrogate_ids_are_fixed_and_redacted(self):
+        # Both distribution surfaces must turn setup and invalid-id failures into
+        # protocol-safe fixed output, never a Python traceback or local path.
+        for script in (KIT_DIR / "context_guard_mcp.py", PLUGIN_BIN / "context-guard-mcp"):
+            with self.subTest(script=script, case="missing-root"), tempfile.TemporaryDirectory() as tmp:
+                missing = Path(tmp) / "missing"
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--root", str(missing)],
+                    text=True, capture_output=True, timeout=20,
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertEqual(proc.stderr, "context-guard-mcp: startup failed\n")
+                self.assertEqual(proc.stdout, "")
+                self.assertNotIn(str(missing), proc.stderr)
+            with self.subTest(script=script, case="surrogate-id"), tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--root", tmp],
+                    input='{"jsonrpc":"2.0","id":"\\ud800","method":"ping"}\n',
+                    text=True, capture_output=True, timeout=20,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout), {
+                    "jsonrpc": "2.0", "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request"},
+                })
+                self.assertNotIn("Traceback", proc.stderr)
+
+    def test_mcp_schema_uses_codepoint_max_chars_and_scan_cap_is_fail_closed(self):
+        initialize = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}},
+        }
+        ready = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+        for script in (KIT_DIR / "context_guard_mcp.py", PLUGIN_BIN / "context-guard-mcp"):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                digest = hashlib.sha256(
+                    b"contextguard.mcp.namespace.v1\0" + str(root.resolve()).encode("utf-8") + b"\0scan-cap"
+                ).hexdigest()[:24]
+                namespace_dir = root / ".context-guard" / "mcp" / ("ns-" + digest)
+                namespace_dir.mkdir(parents=True)
+                for index in range(4001):
+                    (namespace_dir / f"junk-{index}").touch()
+                responses = self._conversation(script, root, "scan-cap", [
+                    initialize, ready,
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "context_guard_stats", "arguments": {}}},
+                ])
+                schema = responses[1]["result"]["tools"][1]["inputSchema"]
+                self.assertEqual(schema["properties"]["max_chars"]["maximum"], 20_000)
+                self.assertEqual(schema["properties"]["max_chars"]["default"], 20_000)
+                storage = responses[2]["result"]["structuredContent"]["storage"]
+                self.assertEqual(storage["visited_entries"], 4000)
+                self.assertTrue(storage["scan_capped"])
+                self.assertTrue(storage["ambiguous"])
+
+    def test_mcp_namespace_lock_recovers_after_clean_exit(self):
+        for script in (KIT_DIR / "context_guard_mcp.py", PLUGIN_BIN / "context-guard-mcp"):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                argv = [sys.executable, str(script), "--root", tmp, "--namespace", "lock-test"]
+                first = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    response = self._interactive_response(first, {
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "lock", "version": "1"}},
+                    })
+                    self.assertEqual(response["id"], 1)
+                    second = subprocess.run(argv, text=True, capture_output=True, timeout=20)
+                    self.assertEqual(second.returncode, 2)
+                    self.assertEqual(second.stderr, "context-guard-mcp: startup failed\n")
+                finally:
+                    assert first.stdin is not None
+                    first.stdin.close()
+                    first.wait(timeout=20)
+                    for stream in (first.stdout, first.stderr):
+                        if stream is not None:
+                            stream.close()
+                recovered = subprocess.run(argv, text=True, capture_output=True, timeout=20)
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+
+    def test_mcp_helper_timeout_kills_term_ignoring_descendant_group(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_descendant_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / "forking_helper.py"
+            helper.write_text(
+                "import os, signal, time\n"
+                "child = os.fork()\n"
+                "if child == 0:\n"
+                "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "    time.sleep(0.8)\n"
+                "    open('descendant-survived', 'w').write('yes')\n"
+                "    time.sleep(60)\n"
+                "else:\n"
+                "    open('descendant.pid', 'w').write(str(child))\n"
+                "    time.sleep(60)\n",
+                encoding="utf-8",
+            )
+            server = module.Server(root, "descendant")
+            old_timeout = module.HELPER_TIMEOUT
+            module.HELPER_TIMEOUT = 0.25
+            child_pid = None
+            try:
+                started = time.monotonic()
+                self.assertIsNone(server.run_helper([str(helper)], b"", 1024))
+                self.assertLess(time.monotonic() - started, 2.0)
+                pid_file = root / "descendant.pid"
+                if pid_file.exists():
+                    child_pid = int(pid_file.read_text(encoding="utf-8"))
+                time.sleep(0.9)
+                self.assertFalse((root / "descendant-survived").exists())
+            finally:
+                module.HELPER_TIMEOUT = old_timeout
+                if child_pid is not None:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                server.close()
+
+    def test_mcp_helper_delivery_is_concurrent_and_deadline_bounded(self):
+        # Exercise the runner directly with a child that never consumes 768 KiB.
+        # The production and packaged entrypoints are synchronized byte-for-byte
+        # by the manifest/sync tests; this isolates the dangerous pipe behavior.
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sleepy = root / "sleepy.py"
+            sleepy.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+            server = module.Server(root, "bounded-stdin")
+            old_timeout = module.HELPER_TIMEOUT
+            module.HELPER_TIMEOUT = 0.25
+            try:
+                started = time.monotonic()
+                self.assertIsNone(server.run_helper([str(sleepy)], b"x" * (768 * 1024), 1024))
+                self.assertLess(time.monotonic() - started, 2.0)
+            finally:
+                module.HELPER_TIMEOUT = old_timeout
+                server.close()
+
+    def test_mcp_helper_runner_uses_minimal_environment_new_group_and_bounded_output(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_runner_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "capture.py"
+            capture.write_text(
+                "import json, os, sys\n"
+                "keys=('PYTHONIOENCODING','PYTHONUTF8','LANG','LC_ALL')\n"
+                "open('capture.json','w').write(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'env':{k:os.environ.get(k) for k in keys},'sentinel':os.environ.get('CONTEXT_GUARD_UNAPPROVED_SENTINEL'),'new_group':os.getpgid(0)==os.getpid()}))\n"
+                "print('{}')\n",
+                encoding="utf-8",
+            )
+            flood = root / "flood.py"
+            flood.write_text("import sys\nsys.stdout.write('x' * 8192)\n", encoding="utf-8")
+            malformed = root / "malformed.py"
+            malformed.write_text("print('not-json')\n", encoding="utf-8")
+            server = module.Server(root, "runner-contract")
+            os.environ["CONTEXT_GUARD_UNAPPROVED_SENTINEL"] = "must-not-cross"
+            try:
+                self.assertEqual(server.run_helper([str(capture), "only-allowed"], b"stdin-bytes", 1024), {})
+                captured = json.loads((root / "capture.json").read_text(encoding="utf-8"))
+                self.assertEqual(captured["argv"], ["only-allowed"])
+                self.assertEqual(captured["cwd"], str(server.root))
+                self.assertEqual(captured["env"], {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "LANG": "C", "LC_ALL": "C"})
+                self.assertIsNone(captured["sentinel"])
+                self.assertTrue(captured["new_group"])
+                self.assertIsNone(server.run_helper([str(flood)], b"", 1024))
+                self.assertIsNone(server.run_helper([str(malformed)], b"", 1024))
+            finally:
+                os.environ.pop("CONTEXT_GUARD_UNAPPROVED_SENTINEL", None)
+                server.close()
+
+    def test_mcp_helper_argv_keeps_the_fixed_accepted_content_cap(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_argv_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        compressor = {
+            "content": "safe", "metadata": {
+                "bytes": {"original": 2, "compressed": 4}, "lines": {"original": 1, "compressed": 1},
+                "token_proxy": {"original": 1, "compressed": 1}, "redaction": {"redacted_lines": 0},
+                "protected_zone_policy": {"zone_counts": {}, "retrieval_required": False},
+                "strategy": "prose-whitespace", "content_type": "prose", "type_source": "detected", "lossy": False,
+            },
+        }
+        receipt = {"artifact_id": "a" * 20, "stored_output": {"bytes": 2, "lines": 1}}
+        retrieved = {"content": "safe", "capped": False, "query": {"selector": {"type": "head"}, "returned_lines": 1, "matched_lines": 1, "total_lines": 1}, "stored_output": {"bytes": 2, "lines": 1}}
+        with tempfile.TemporaryDirectory() as tmp:
+            server = module.Server(Path(tmp), "argv-contract")
+            calls = []
+            def fake_runner(argv, stdin, cap):
+                calls.append((argv, stdin, cap))
+                return compressor if len(calls) == 1 else receipt if len(calls) == 2 else retrieved
+            server.run_helper = fake_runner
+            try:
+                server.compress({"content": "ok", "content_type": "prose", "mode": "readable", "protected_policy": True, "store": True})
+                server.retrieve({"artifact_id": "a" * 20, "max_chars": 20_000})
+                self.assertEqual(calls[0][0], [str(server.compress_helper), "--json", "--max-bytes", "786432", "--mode", "readable", "--type", "prose", "--protected-policy"])
+                self.assertEqual(calls[0][1], b"ok")
+                self.assertEqual(calls[1][0], [str(server.artifact_helper), "--dir", str(server.namespace_dir), "store", "--json", "--max-bytes", "786432", "--command", "context-guard-mcp compress"])
+                self.assertEqual(calls[2][0], [str(server.artifact_helper), "--dir", str(server.namespace_dir), "get", "a" * 20, "--json", "--max-lines", "500", "--max-chars", "20000"])
+            finally:
+                server.close()
+
 
 _MOVED_TEST_EXPORTS = {
     "BENCH_SCRIPTS",
