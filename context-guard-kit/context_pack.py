@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 import copy
 import hashlib
 import importlib.machinery
@@ -35,6 +36,8 @@ DEFAULT_BUDGET_BYTES = 12_000
 MIN_BUDGET_BYTES = 0
 MAX_BUDGET_BYTES = 2_000_000
 MAX_RECEIPT_BYTES = 64_000
+ROLLING_DELTA_SAMPLE_BYTES = 65_536
+ROLLING_DELTA_WINDOW_BYTES = 64
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_LABEL_CHARS = 160
 MAX_REASON_CHARS = 120
@@ -45,6 +48,8 @@ AUTO_EXPLAIN_SCHEMA_VERSION = "contextguard.pack-auto-explain.v1"
 REPO_MAP_SCHEMA_VERSION = "contextguard.pack-repo-map.v1"
 ADAPTIVE_K_SCHEMA_VERSION = "contextguard.pack-adaptive-k.v1"
 SYMBOL_MEMORY_SCHEMA_VERSION = "contextguard.pack-symbol-memory.v1"
+CONTENT_ADDRESS_SCHEMA_VERSION = "contextguard.pack-content-address.v1"
+ROLLING_DELTA_SCHEMA_VERSION = "contextguard.pack-rolling-delta.v1"
 DEFAULT_SUGGEST_TOP = 8
 MAX_SUGGEST_TOP = 50
 DEFAULT_SUGGEST_CONTEXT_LINES = 20
@@ -288,6 +293,129 @@ def token_proxy(text: str) -> int:
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def pack_id_arg(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{20}", value) is None:
+        raise argparse.ArgumentTypeError("PACK_ID must be exactly 20 lowercase hexadecimal characters")
+    return value
+
+
+def content_address(digest: str, bytes_count: int) -> dict[str, Any]:
+    return {
+        "schema_version": CONTENT_ADDRESS_SCHEMA_VERSION,
+        "id": f"sha256:{digest}",
+        "algorithm": "sha256",
+        "digest": digest,
+        "bytes": bytes_count,
+    }
+
+
+def rolling_sample_metadata(body: bytes) -> dict[str, Any]:
+    sampled_bytes = min(len(body), ROLLING_DELTA_SAMPLE_BYTES)
+    if sampled_bytes == 0:
+        window_count = 0
+    elif sampled_bytes < ROLLING_DELTA_WINDOW_BYTES:
+        window_count = 1
+    else:
+        window_count = sampled_bytes - ROLLING_DELTA_WINDOW_BYTES + 1
+    return {
+        "total_bytes": len(body),
+        "sampled_bytes": sampled_bytes,
+        "window_count": window_count,
+        "truncated": len(body) > ROLLING_DELTA_SAMPLE_BYTES,
+    }
+
+
+def rolling_window_multiset(body: bytes) -> Counter[bytes]:
+    sample = body[:ROLLING_DELTA_SAMPLE_BYTES]
+    if not sample:
+        return Counter()
+    if len(sample) < ROLLING_DELTA_WINDOW_BYTES:
+        return Counter((hashlib.sha256(sample).digest(),))
+    return Counter(
+        hashlib.sha256(sample[index:index + ROLLING_DELTA_WINDOW_BYTES]).digest()
+        for index in range(len(sample) - ROLLING_DELTA_WINDOW_BYTES + 1)
+    )
+
+
+def rolling_delta_algorithm() -> dict[str, Any]:
+    return {
+        "name": "sha256_sliding_window_multiset",
+        "window_bytes": ROLLING_DELTA_WINDOW_BYTES,
+        "stride_bytes": 1,
+        "max_sample_bytes_per_pack": ROLLING_DELTA_SAMPLE_BYTES,
+    }
+
+
+def rolling_delta_claim_boundary() -> dict[str, bool]:
+    return {
+        "diagnostic_only": True,
+        "changes_manifest_selection_or_pack": False,
+        "provider_token_or_cost_savings_claim_allowed": False,
+    }
+
+
+def build_rolling_delta(
+    current_pack: str,
+    previous_pack: str,
+    previous_pack_id: str,
+    current_address: str,
+) -> dict[str, Any]:
+    current_body = current_pack.encode("utf-8")
+    previous_body = previous_pack.encode("utf-8")
+    current_meta = rolling_sample_metadata(current_body)
+    previous_meta = rolling_sample_metadata(previous_body)
+    current_windows = rolling_window_multiset(current_body)
+    previous_windows = rolling_window_multiset(previous_body)
+    matched = sum((current_windows & previous_windows).values())
+    current_count = current_meta["window_count"]
+    previous_count = previous_meta["window_count"]
+    both_empty = current_count == 0 and previous_count == 0
+    if both_empty:
+        current_ratio = 1.0
+        previous_ratio = 1.0
+    else:
+        current_ratio = round(matched / current_count, 6) if current_count else 0.0
+        previous_ratio = round(matched / previous_count, 6) if previous_count else 0.0
+    return {
+        "schema_version": ROLLING_DELTA_SCHEMA_VERSION,
+        "status": "partial" if current_meta["truncated"] or previous_meta["truncated"] else "available",
+        "previous_pack_id": previous_pack_id,
+        "current_content_address": current_address,
+        "previous_content_address": f"sha256:{hashlib.sha256(previous_body).hexdigest()}",
+        "algorithm": rolling_delta_algorithm(),
+        "current": current_meta,
+        "previous": previous_meta,
+        "matched_window_count": matched,
+        "current_reuse_ratio_proxy": current_ratio,
+        "previous_retention_ratio_proxy": previous_ratio,
+        "reason": None,
+        "claim_boundary": rolling_delta_claim_boundary(),
+    }
+
+
+def unavailable_rolling_delta(
+    current_pack: str,
+    previous_pack_id: str,
+    current_address: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": ROLLING_DELTA_SCHEMA_VERSION,
+        "status": "unavailable",
+        "previous_pack_id": previous_pack_id,
+        "current_content_address": current_address,
+        "previous_content_address": None,
+        "algorithm": rolling_delta_algorithm(),
+        "current": rolling_sample_metadata(current_pack.encode("utf-8")),
+        "previous": {"total_bytes": 0, "sampled_bytes": 0, "window_count": 0, "truncated": False},
+        "matched_window_count": 0,
+        "current_reuse_ratio_proxy": 0.0,
+        "previous_retention_ratio_proxy": 0.0,
+        "reason": reason,
+        "claim_boundary": rolling_delta_claim_boundary(),
+    }
 
 
 def path_hash(path: Path) -> str:
@@ -1168,6 +1296,211 @@ def shrink_receipt_for_write(data: dict[str, Any]) -> tuple[dict[str, Any], bool
     return receipt, capped
 
 
+class ReceiptJSONError(ValueError):
+    pass
+
+
+def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReceiptJSONError("duplicate key")
+        result[key] = value
+    return result
+
+
+def reject_json_constant(_value: str) -> Any:
+    raise ReceiptJSONError("non-finite number")
+
+
+def parse_receipt_int(value: str) -> int:
+    digits = value.removeprefix("-")
+    if len(digits) > 20:
+        raise ReceiptJSONError("integer too large")
+    return int(value)
+
+
+def json_depth(value: Any, depth: int = 1) -> int:
+    if depth > 100:
+        raise ReceiptJSONError("maximum depth exceeded")
+    if isinstance(value, dict):
+        for item in value.values():
+            json_depth(item, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            json_depth(item, depth + 1)
+    return depth
+
+
+def prior_read_capabilities_available() -> bool:
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "geteuid")
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_follow_symlinks", set())
+    )
+
+
+def private_receipt_stat_safe(st: os.stat_result, *, directory: bool) -> bool:
+    expected_mode = 0o700 if directory else 0o600
+    expected_type = stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode)
+    return (
+        expected_type
+        and st.st_uid == os.geteuid()
+        and stat.S_IMODE(st.st_mode) == expected_mode
+        and (directory or st.st_nlink == 1)
+    )
+
+
+def stat_identity(st: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_nlink, st.st_size)
+
+
+def read_previous_receipt(root: Path, requested_id: str) -> tuple[str | None, str | None]:
+    if not prior_read_capabilities_available():
+        return None, "previous_receipt_unsafe"
+    current_fd: int | None = None
+    file_fd: int | None = None
+    parent_stats: list[os.stat_result] = []
+    try:
+        current_fd = open_dir_no_follow(root)
+        for part in (".context-guard", "packs"):
+            try:
+                next_fd = open_dir_no_follow(part, dir_fd=current_fd)
+            except FileNotFoundError:
+                return None, "previous_receipt_not_found"
+            except (OSError, PackError, NotImplementedError):
+                return None, "previous_receipt_unsafe"
+            os.close(current_fd)
+            current_fd = next_fd
+            try:
+                parent_stat = os.fstat(current_fd)
+            except OSError:
+                return None, "previous_receipt_unsafe"
+            parent_stats.append(parent_stat)
+
+        filename = f"{requested_id}.json"
+        try:
+            before = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None, "previous_receipt_not_found"
+        except (OSError, NotImplementedError):
+            return None, "previous_receipt_unsafe"
+        unsafe_parent = any(not private_receipt_stat_safe(item, directory=True) for item in parent_stats)
+        if unsafe_parent or not private_receipt_stat_safe(before, directory=False):
+            return None, "previous_receipt_unsafe"
+        if before.st_size > MAX_RECEIPT_BYTES:
+            return None, "previous_receipt_too_large"
+
+        flags = os.O_RDONLY | os.O_NOFOLLOW
+        for name in ("O_CLOEXEC", "O_NONBLOCK", "O_NOCTTY"):
+            flags |= getattr(os, name, 0)
+        try:
+            file_fd = os.open(filename, flags, dir_fd=current_fd)
+        except FileNotFoundError:
+            return None, "previous_receipt_invalid"
+        except (OSError, NotImplementedError):
+            return None, "previous_receipt_unsafe"
+        opened = os.fstat(file_fd)
+        if not private_receipt_stat_safe(opened, directory=False):
+            return None, "previous_receipt_unsafe"
+        if opened.st_size > MAX_RECEIPT_BYTES:
+            return None, "previous_receipt_too_large"
+        chunks: list[bytes] = []
+        observed = 0
+        while observed < MAX_RECEIPT_BYTES + 1:
+            chunk = os.read(file_fd, min(16 * 1024, MAX_RECEIPT_BYTES + 1 - observed))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed += len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(file_fd)
+        try:
+            path_after = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None, "previous_receipt_invalid"
+        except (OSError, NotImplementedError):
+            return None, "previous_receipt_unsafe"
+        if not private_receipt_stat_safe(after, directory=False) or not private_receipt_stat_safe(path_after, directory=False):
+            return None, "previous_receipt_unsafe"
+        if len(raw) > MAX_RECEIPT_BYTES or after.st_size > MAX_RECEIPT_BYTES or path_after.st_size > MAX_RECEIPT_BYTES:
+            return None, "previous_receipt_too_large"
+        identities = (stat_identity(before), stat_identity(opened), stat_identity(after), stat_identity(path_after))
+        if len(set(identities)) != 1 or len(raw) != after.st_size:
+            return None, "previous_receipt_invalid"
+    except OSError:
+        return None, "previous_receipt_unsafe"
+    finally:
+        if file_fd is not None:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        if current_fd is not None:
+            try:
+                os.close(current_fd)
+            except OSError:
+                pass
+
+    try:
+        receipt = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=strict_json_object,
+            parse_constant=reject_json_constant,
+            parse_int=parse_receipt_int,
+        )
+        json_depth(receipt)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "previous_receipt_invalid"
+    if not isinstance(receipt, dict):
+        return None, "previous_receipt_invalid"
+    prior_id = receipt.get("pack_id")
+    prior_bytes = receipt.get("pack_bytes")
+    pack_present = "pack" in receipt
+    address_present = "content_address" in receipt
+    prior_pack = receipt.get("pack")
+    prior_address = receipt.get("content_address")
+    if not isinstance(prior_id, str) or re.fullmatch(r"[0-9a-f]{20}", prior_id) is None:
+        return None, "previous_receipt_invalid"
+    if not isinstance(prior_bytes, int) or isinstance(prior_bytes, bool) or prior_bytes < 0:
+        return None, "previous_receipt_invalid"
+    if pack_present and not isinstance(prior_pack, str):
+        return None, "previous_receipt_invalid"
+    if address_present and not isinstance(prior_address, dict):
+        return None, "previous_receipt_invalid"
+    if prior_id != requested_id:
+        return None, "previous_pack_integrity_mismatch"
+    if not pack_present:
+        if receipt.get("pack_omitted_from_receipt") is True:
+            return None, "previous_pack_body_unavailable"
+        return None, "previous_receipt_invalid"
+    assert isinstance(prior_pack, str)
+    try:
+        prior_body = prior_pack.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return None, "previous_receipt_invalid"
+    digest = hashlib.sha256(prior_body).hexdigest()
+    if len(prior_body) != prior_bytes:
+        return None, "previous_pack_integrity_mismatch"
+    if address_present and prior_address != content_address(digest, prior_bytes):
+        return None, "previous_pack_integrity_mismatch"
+    return prior_pack, None
+
+
+def rolling_delta_from_receipt(
+    root: Path,
+    current_pack: str,
+    previous_pack_id: str,
+    current_address: str,
+) -> dict[str, Any]:
+    previous_pack, reason = read_previous_receipt(root, previous_pack_id)
+    if reason is not None or previous_pack is None:
+        return unavailable_rolling_delta(current_pack, previous_pack_id, current_address, reason or "previous_receipt_invalid")
+    return build_rolling_delta(current_pack, previous_pack, previous_pack_id, current_address)
+
+
 def store_receipt(root: Path, result: dict[str, Any]) -> dict[str, Any]:
     out_dir, dir_fd, dir_error = ensure_private_pack_dir(root)
     if out_dir is None or dir_fd is None:
@@ -1204,7 +1537,15 @@ def store_receipt(root: Path, result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_arg: str, store_artifact: bool) -> dict[str, Any]:
+def build_pack(
+    root: Path,
+    specs: list[SourceSpec],
+    *,
+    budget_bytes: int,
+    root_arg: str,
+    store_artifact: bool,
+    delta_from_pack_id: str | None = None,
+) -> dict[str, Any]:
     seen: set[tuple[str, str]] = set()
     resolved: list[ResolvedSource] = []
     omitted: list[dict[str, Any]] = []
@@ -1267,6 +1608,7 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
             omitted.append(budget_omission(source, root_arg=root_arg))
     pack = "".join(parts)
     pack_bytes = current_pack_bytes
+    pack_digest = sha256_text(pack)
     redacted_lines = sum(source.redacted_lines for source in resolved)
     partial_count = sum(1 for item in included if item.get("status") == "partial")
     omitted_sorted = sorted(omitted, key=lambda item: (item.get("input_index", 0), str(item.get("path", "")), str(item.get("reason", ""))))
@@ -1275,7 +1617,7 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
         "root": display_root(root),
         "budget_bytes": budget_bytes,
         "sources": canonical_specs,
-        "pack_sha256": sha256_text(pack),
+        "pack_sha256": pack_digest,
         "omission_summary": sorted({str(item.get("reason")) for item in omitted_sorted}),
     }
     pack_id = hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:20]
@@ -1287,6 +1629,7 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
         "budget_bytes": budget_bytes,
         "pack_bytes": pack_bytes,
         "pack": pack,
+        "content_address": content_address(pack_digest, pack_bytes),
         "token_proxy": {"measurement": "estimated", "method": f"chars_div_{TOKEN_PROXY_CHARS_PER_TOKEN}", "pack": token_proxy(pack)},
         "sources": {"total": len(specs), "included": len(included) - partial_count, "partial": partial_count, "omitted": len(omitted_sorted)},
         "included_sources": included,
@@ -1295,6 +1638,13 @@ def build_pack(root: Path, specs: list[SourceSpec], *, budget_bytes: int, root_a
         "artifact": {"stored": False, "path": None, "bytes": 0, "capped": False, "cap_bytes": MAX_RECEIPT_BYTES},
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if delta_from_pack_id is not None:
+        result["rolling_delta"] = rolling_delta_from_receipt(
+            root,
+            pack,
+            delta_from_pack_id,
+            result["content_address"]["id"],
+        )
     if store_artifact:
         artifact = store_receipt(root, result)
         result["artifact"] = artifact
@@ -3267,7 +3617,14 @@ def auto_pack(root: Path, args: argparse.Namespace, *, root_arg: str) -> tuple[d
     manifest = suggest_payload["manifest"]
     specs = manifest_to_source_specs(manifest)
     budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
-    build_payload = build_pack(root, specs, budget_bytes=budget, root_arg=root_arg, store_artifact=False)
+    build_payload = build_pack(
+        root,
+        specs,
+        budget_bytes=budget,
+        root_arg=root_arg,
+        store_artifact=False,
+        delta_from_pack_id=args.delta_from_pack_id,
+    )
     if not args.no_artifact:
         receipt_rel = Path(PACK_DIR) / f"{build_payload['pack_id']}.json"
         if manifest_rel is not None:
@@ -3477,6 +3834,15 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--budget-bytes", type=int, default=DEFAULT_BUDGET_BYTES)
     build.add_argument("--json", action="store_true", help="emit JSON payload")
     build.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
+    build.add_argument(
+        "--delta-from-pack-id",
+        type=pack_id_arg,
+        metavar="PACK_ID",
+        help=(
+            "compare against one private local pack receipt using bounded rolling diagnostics; "
+            "visible only in --json output or a stored receipt (--no-artifact requires --json)"
+        ),
+    )
     slice_cmd = sub.add_parser("slice", help="retrieve an exact sanitized file slice")
     slice_cmd.add_argument("--root", default=".", help="project root; must not be a symlink")
     slice_cmd.add_argument("--path", required=True, help="relative file path under root")
@@ -3512,6 +3878,15 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--pack-out", help="write the built Markdown pack to this relative path under root")
     auto.add_argument("--json", action="store_true", help="emit JSON payload")
     auto.add_argument("--no-artifact", action="store_true", help="do not write .context-guard/packs receipt")
+    auto.add_argument(
+        "--delta-from-pack-id",
+        type=pack_id_arg,
+        metavar="PACK_ID",
+        help=(
+            "compare against one private local pack receipt using bounded rolling diagnostics; "
+            "visible only in --json output or a stored receipt (--no-artifact requires --json)"
+        ),
+    )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
     auto.add_argument("--adaptive-k-policy", choices=ADAPTIVE_K_POLICIES, default="balanced", help="local adaptive-k recommendation policy used when --adaptive-k is set")
@@ -3531,7 +3906,14 @@ def main(argv: list[str] | None = None) -> int:
             if not specs:
                 raise PackError("provide --manifest or --source")
             budget = bounded_int(args.budget_bytes, DEFAULT_BUDGET_BYTES, MIN_BUDGET_BYTES, MAX_BUDGET_BYTES)
-            result = build_pack(root, specs, budget_bytes=budget, root_arg=str(args.root), store_artifact=not args.no_artifact)
+            result = build_pack(
+                root,
+                specs,
+                budget_bytes=budget,
+                root_arg=str(args.root),
+                store_artifact=not args.no_artifact,
+                delta_from_pack_id=args.delta_from_pack_id,
+            )
             if args.json:
                 json.dump(result, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
                 sys.stdout.write("\n")

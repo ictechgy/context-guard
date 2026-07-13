@@ -274,6 +274,10 @@ Artifact mode is for capture, sandbox search, and retrieval. It stores sanitized
   --manifest-out suggested-pack.json --budget-bytes 12000 --json --adaptive-k --adaptive-k-policy recall
 ./plugins/context-guard/bin/context-guard-pack build \
   --root . --manifest suggested-pack.json --budget-bytes 12000 --json
+# Optional diagnostic comparison against one exact private local receipt:
+./plugins/context-guard/bin/context-guard-pack build \
+  --root . --manifest suggested-pack.json --budget-bytes 12000 --json --no-artifact \
+  --delta-from-pack-id 0123456789abcdef0123
 ./plugins/context-guard/bin/context-guard-pack slice --root . --path README.md --lines 1:40 --json
 ```
 
@@ -289,6 +293,7 @@ A few boundaries are intentional:
 - `--manifest-out` writes a build-compatible manifest; `--pack-out` saves the rendered pack.
 - `context-guard-pack suggest` is the lower-level additive local-only planning step. It ranks candidate files and line ranges from `--query`, `--diff`, repeated `--files`, and optional sanitized `--output` / `--test-output` files under `--root`, then writes a manifest that `build --manifest` can consume.
 - `context-guard-pack build` assembles prioritized local file evidence into a Markdown body whose rendered UTF-8 bytes stay within `--budget-bytes`. JSON output records included, partial, duplicate, unsafe, missing, and budget-omitted sources.
+- Every build reports a `content_address` (`sha256:<digest>`) of the exact rendered pack bytes while retaining the legacy `pack_id`. On `build` or `auto`, opt-in `--delta-from-pack-id PACK_ID` reads only `.context-guard/packs/PACK_ID.json` and reports bounded, fail-soft `rolling_delta` diagnostics. It never changes selection, the pack body, `pack_id`, or default behavior, and it is not a provider token/cost savings claim. Diagnostics are reported only in `--json` output or a stored artifact receipt; when `--no-artifact` is used, `--json` is required to report them, while legacy text stdout remains the exact pack body.
 - Bounded receipts are stored under `.context-guard/packs`. When path/root display is safe, JSON output includes copy-pasteable `slice` commands for exact sanitized retrieval; otherwise it records `retrieval_omitted_reason`.
 
 The packer uses deterministic standard-library heuristics only: no network, model calls, embeddings, or provider-cost estimate. Byte counts are observed; token counts remain estimated `chars_div_4` proxies, not measured provider-token savings.
