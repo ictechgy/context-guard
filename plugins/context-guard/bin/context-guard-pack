@@ -4055,7 +4055,11 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--sketch-duplicate-veto",
         action="store_true",
-        help="omit later rank-stable sanitized exact/sketch-set duplicates with bounded fail-open comparison",
+        help=(
+            "omit later rank-stable sanitized exact/sketch-set duplicates; use a fixed 100,000 verified-pair cap, "
+            "then fail open; when enabled report sketch_comparison_cap_reached=true|false in text and "
+            "sketch_duplicate_veto.comparison_cap_reached in JSON"
+        ),
     )
     build.add_argument(
         "--delta-from-pack-id",
@@ -4104,7 +4108,11 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument(
         "--sketch-duplicate-veto",
         action="store_true",
-        help="omit later rank-stable sanitized exact/sketch-set duplicates with bounded fail-open comparison",
+        help=(
+            "omit later rank-stable sanitized exact/sketch-set duplicates; use a fixed 100,000 verified-pair cap, "
+            "then fail open; when enabled report sketch_comparison_cap_reached=true|false in text and "
+            "sketch_duplicate_veto.comparison_cap_reached in JSON"
+        ),
     )
     auto.add_argument(
         "--delta-from-pack-id",

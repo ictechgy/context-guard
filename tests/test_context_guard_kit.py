@@ -14465,8 +14465,18 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 for command in ("build", "auto"):
                     help_text = self._run_pack(script, ROOT, command, "--help").stdout
                     self.assertIn("--sketch-duplicate-veto", help_text)
-                    self.assertRegex(help_text, r"bounded fail-open comparison")
-                self.assertNotIn("--sketch-duplicate-veto", self._run_pack(script, ROOT, "suggest", "--help").stdout)
+                    normalized_help = " ".join(help_text.split())
+                    for term in (
+                        "fixed 100,000 verified-pair cap", "fail open", "sketch_comparison_cap_reached=true|false",
+                        "sketch_duplicate_veto.comparison_cap_reached",
+                    ):
+                        self.assertIn(term, normalized_help)
+                suggest_help = self._run_pack(script, ROOT, "suggest", "--help").stdout
+                for term in (
+                    "--sketch-duplicate-veto", "sketch_comparison_cap_reached",
+                    "sketch_duplicate_veto.comparison_cap_reached",
+                ):
+                    self.assertNotIn(term, suggest_help)
 
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
@@ -14495,10 +14505,20 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         "--no-artifact", "--sketch-duplicate-veto",
                     )
                     self.assertRegex(build_text.stderr, r" omitted=0 sketch_comparison_cap_reached=false\n$")
+                    stored_build_text = self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "a.txt",
+                        "--sketch-duplicate-veto",
+                    )
+                    self.assertRegex(
+                        stored_build_text.stderr,
+                        r" omitted=0 sketch_comparison_cap_reached=false\n$",
+                    )
                     stored = json.loads(self._run_pack(
                         script, root, "build", "--root", ".", "--source", "a.txt",
                         "--json", "--sketch-duplicate-veto",
                     ).stdout)
+                    self.assertTrue(stored["artifact"]["stored"])
+                    self.assertEqual(stored["sketch_duplicate_veto"], {"comparison_cap_reached": False})
                     receipt = json.loads((root / ".context-guard" / "packs" / f"{stored['pack_id']}.json").read_text(encoding="utf-8"))
                     self.assertEqual(receipt["sketch_duplicate_veto"], {"comparison_cap_reached": False})
 
@@ -14510,11 +14530,37 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     self.assertEqual(auto_json["build"]["sketch_duplicate_veto"], {"comparison_cap_reached": False})
                     self.assertNotIn("sketch_duplicate_veto", auto_json["explain"])
                     self.assertNotIn("comparison_cap_reached", auto_json["explain"])
+                    self.assertFalse(auto_json["build"]["artifact"]["stored"])
+                    auto_stored = json.loads(self._run_pack(
+                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--json",
+                        "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertNotIn("sketch_duplicate_veto", auto_stored)
+                    self.assertTrue(auto_stored["build"]["artifact"]["stored"])
+                    self.assertEqual(
+                        auto_stored["build"]["sketch_duplicate_veto"],
+                        {"comparison_cap_reached": False},
+                    )
+                    auto_receipt = json.loads(
+                        (root / auto_stored["build"]["artifact"]["path"]).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        auto_receipt["sketch_duplicate_veto"],
+                        {"comparison_cap_reached": False},
+                    )
                     auto_text = self._run_pack(
                         script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--no-artifact",
                         "--sketch-duplicate-veto",
                     )
                     self.assertRegex(auto_text.stdout.splitlines()[0], r" sketch_comparison_cap_reached=false$")
+                    stored_auto_text = self._run_pack(
+                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt",
+                        "--sketch-duplicate-veto",
+                    )
+                    self.assertRegex(
+                        stored_auto_text.stdout.splitlines()[0],
+                        r" sketch_comparison_cap_reached=false$",
+                    )
 
                     unsafe = root / "unsafe"
                     unsafe.mkdir()
@@ -14524,6 +14570,32 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                         script, unsafe, "build", "--root", ".", "--source", "a.txt", "--sketch-duplicate-veto",
                     )
                     self.assertIn("sketch_comparison_cap_reached=false", unsafe_text.stderr)
+                    unsafe_build_json = json.loads(self._run_pack(
+                        script, unsafe, "build", "--root", ".", "--source", "a.txt", "--json",
+                        "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertEqual(unsafe_build_json["artifact"]["error"], "unsafe_artifact_dir")
+                    self.assertEqual(
+                        unsafe_build_json["sketch_duplicate_veto"],
+                        {"comparison_cap_reached": False},
+                    )
+                    unsafe_auto_json = json.loads(self._run_pack(
+                        script, unsafe, "auto", "--root", ".", "--files", "a.txt", "--json",
+                        "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertNotIn("sketch_duplicate_veto", unsafe_auto_json)
+                    self.assertEqual(unsafe_auto_json["build"]["artifact"]["error"], "unsafe_artifact_dir")
+                    self.assertEqual(
+                        unsafe_auto_json["build"]["sketch_duplicate_veto"],
+                        {"comparison_cap_reached": False},
+                    )
+                    unsafe_auto_text = self._run_pack(
+                        script, unsafe, "auto", "--root", ".", "--files", "a.txt", "--sketch-duplicate-veto",
+                    )
+                    self.assertRegex(
+                        unsafe_auto_text.stdout.splitlines()[0],
+                        r" sketch_comparison_cap_reached=false$",
+                    )
 
                     oversized = copy.deepcopy(stored)
                     oversized["omitted_sources"] = [
@@ -14532,6 +14604,34 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     ]
                     shrunk, _capped = module.shrink_receipt_for_write(oversized)
                     self.assertEqual(shrunk["sketch_duplicate_veto"], {"comparison_cap_reached": False})
+
+                    with mock.patch.object(module, "MAX_RECEIPT_BYTES", 512):
+                        capped_build = module.build_pack(
+                            root,
+                            specs,
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=True,
+                            sketch_duplicate_veto=True,
+                        )
+                        auto_args = module.build_parser().parse_args([
+                            "auto", "--root", ".", "--files", "a.txt,b.txt", "--json",
+                            "--sketch-duplicate-veto",
+                        ])
+                        capped_auto, rc = module.auto_pack(root, auto_args, root_arg=".")
+                    self.assertEqual(rc, 0)
+                    for capped_payload in (capped_build, capped_auto["build"]):
+                        self.assertEqual(
+                            capped_payload["sketch_duplicate_veto"],
+                            {"comparison_cap_reached": False},
+                        )
+                        self.assertFalse(capped_payload["artifact"]["stored"])
+                        self.assertTrue(capped_payload["artifact"]["capped"])
+                        self.assertEqual(
+                            capped_payload["artifact"]["error"],
+                            "receipt_metadata_too_large",
+                        )
+                    self.assertNotIn("sketch_duplicate_veto", capped_auto)
 
         required_doc_terms = (
             "--sketch-duplicate-veto", "sketch-set Jaccard", "bottom 64", "12", "0.90", "100,000",

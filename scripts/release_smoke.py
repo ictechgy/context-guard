@@ -805,6 +805,9 @@ def check_pack_sketch_duplicate_smoke(
     command: str,
     *,
     auto: bool = False,
+    expected_omitted_path: str,
+    artifact_stored: bool,
+    project: Path,
 ) -> None:
     data = load_json(proc.stdout, command)
     build = data.get("build") if auto else data
@@ -816,14 +819,33 @@ def check_pack_sketch_duplicate_smoke(
         fail(f"{command} sketch cap telemetry mismatch")
     if auto and isinstance(data.get("explain"), dict) and "sketch_duplicate_veto" in data["explain"]:
         fail(f"{command} duplicated sketch telemetry in explain")
-    if not any(item.get("reason") == "sketch_duplicate_source" for item in build.get("omitted_sources", [])):
-        fail(f"{command} did not omit the duplicate source")
+    if "sketch_duplicate_veto" in baseline:
+        fail(f"{command} flag-off baseline unexpectedly exposed sketch telemetry")
+    if baseline.get("sources", {}).get("included") != 2 or baseline.get("sources", {}).get("omitted") != 0:
+        fail(f"{command} flag-off baseline did not preserve both distinct sources")
+    omissions = [
+        item for item in build.get("omitted_sources", [])
+        if item.get("reason") == "sketch_duplicate_source"
+    ]
+    if len(omissions) != 1 or omissions[0].get("path") != expected_omitted_path:
+        fail(f"{command} did not omit the expected approximate duplicate source")
     if build.get("pack") == baseline.get("pack"):
         fail(f"{command} did not change the duplicate-containing pack body")
     if build.get("content_address") == baseline.get("content_address"):
         fail(f"{command} did not change rendered-byte identity")
+    artifact = build.get("artifact", {})
+    if artifact.get("stored") is not artifact_stored:
+        fail(f"{command} artifact storage state mismatch")
     serialized = json.dumps(data, ensure_ascii=False)
-    for forbidden in ("winner_id", "exact_digest", "similarity_score", "token_window"):
+    if artifact_stored:
+        path = artifact.get("path")
+        if not isinstance(path, str):
+            fail(f"{command} stored artifact path missing")
+        receipt = load_json((project / path).read_text(encoding="utf-8"), f"{command} receipt")
+        if receipt.get("sketch_duplicate_veto") != {"comparison_cap_reached": False}:
+            fail(f"{command} receipt sketch telemetry mismatch")
+        serialized += json.dumps(receipt, ensure_ascii=False)
+    for forbidden in ("winner_id", "exact_digest", "match_identity", "overlap", "similarity_score", "token_window", "shingle"):
         if forbidden in serialized:
             fail(f"{command} exposed private sketch material: {forbidden}")
 
@@ -896,8 +918,13 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / ".claude").mkdir()
         (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
         (project / "CLAUDE.md").write_text("Keep project context short.\n", encoding="utf-8")
-        (project / "smoke-pack.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
-        (project / "smoke-pack-copy.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
+        sketch_tokens = [f"evidence{number:03d}" for number in range(100)]
+        sketch_original = " ".join(sketch_tokens) + "\n"
+        sketch_variant = " ".join([*sketch_tokens[:-1], "variant-terminal-token"]) + "\n"
+        if sketch_original.encode("utf-8") == sketch_variant.encode("utf-8"):
+            fail("approximate sketch smoke fixtures must have distinct bytes")
+        (project / "smoke-pack.txt").write_text(sketch_original, encoding="utf-8")
+        (project / "smoke-pack-copy.txt").write_text(sketch_variant, encoding="utf-8")
         env = smoke_environment(smoke_home, smoke_tmp)
 
         pack_baseline: dict[str, Any] = {}
@@ -926,7 +953,8 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             expect=lambda proc: check_pack_delta_smoke(proc, pack_baseline, "context-guard-pack build --delta-from-pack-id"),
         )
 
-        duplicate_baseline: dict[str, Any] = {}
+        duplicate_build_baseline: dict[str, Any] = {}
+        duplicate_auto_baseline: dict[str, Any] = {}
         duplicate_sources = [
             "--source", "path=smoke-pack.txt,priority=10",
             "--source", "path=smoke-pack-copy.txt,priority=5",
@@ -939,13 +967,26 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             cwd=project,
             env=env,
             timeout=timeout,
-            expect=lambda proc: duplicate_baseline.update(load_json(proc.stdout, "context-guard-pack build duplicate baseline")),
+            expect=lambda proc: duplicate_build_baseline.update(load_json(proc.stdout, "context-guard-pack build duplicate baseline")),
         )
         run_command(
             entrypoint_launch_argv(
                 command_path(plugin_bin, "context-guard-pack"),
                 [
-                    "build", "--root", str(project), *duplicate_sources, "--json", "--no-artifact",
+                    "auto", "--root", str(project), "--files", "smoke-pack.txt,smoke-pack-copy.txt",
+                    "--json", "--no-artifact", "--explain",
+                ],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: duplicate_auto_baseline.update(load_json(proc.stdout, "context-guard-pack auto duplicate baseline")["build"]),
+        )
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
+                    "build", "--root", str(project), *duplicate_sources, "--json",
                     "--sketch-duplicate-veto",
                 ],
             ),
@@ -953,7 +994,8 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             env=env,
             timeout=timeout,
             expect=lambda proc: check_pack_sketch_duplicate_smoke(
-                proc, duplicate_baseline, "context-guard-pack build --sketch-duplicate-veto",
+                proc, duplicate_build_baseline, "context-guard-pack build --sketch-duplicate-veto",
+                expected_omitted_path="smoke-pack-copy.txt", artifact_stored=True, project=project,
             ),
         )
         run_command(
@@ -961,14 +1003,15 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 command_path(plugin_bin, "context-guard-pack"),
                 [
                     "auto", "--root", str(project), "--files", "smoke-pack.txt,smoke-pack-copy.txt",
-                    "--json", "--no-artifact", "--explain", "--sketch-duplicate-veto",
+                    "--json", "--explain", "--sketch-duplicate-veto",
                 ],
             ),
             cwd=project,
             env=env,
             timeout=timeout,
             expect=lambda proc: check_pack_sketch_duplicate_smoke(
-                proc, duplicate_baseline, "context-guard-pack auto --sketch-duplicate-veto", auto=True,
+                proc, duplicate_auto_baseline, "context-guard-pack auto --sketch-duplicate-veto", auto=True,
+                expected_omitted_path="smoke-pack-copy.txt", artifact_stored=True, project=project,
             ),
         )
         run_command(
