@@ -85,6 +85,7 @@ context-guard-filter validate --config .context-guard/filter-dsl.json
 context-guard-filter run --config .context-guard/filter-dsl.json -- git status --short
 context-guard-pack auto --root . --query "review failing tests" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain --adaptive-k --adaptive-k-policy recall --symbol-memory
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
+context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json --no-artifact --delta-from-pack-id 0123456789abcdef0123
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
 context-guard-cache-score --input prompt.json --provider openai --json
 context-guard cache-score --input prompt.txt --provider anthropic --json
@@ -96,6 +97,8 @@ context-guard-statusline-merged
 ```
 
 ## What the helpers do
+
+Every pack build includes a rendered-byte SHA-256 `content_address` without changing the legacy `pack_id`. `build` and `auto` accept opt-in `--delta-from-pack-id PACK_ID` for bounded, fail-soft diagnostics against exactly one private local receipt; `rolling_delta` is diagnostic-only, changes no selection or pack content, and is not a provider token/cost savings claim.
 
 - **Setup wizard** merges `.claude/settings.json` instead of replacing it, then prints a read-only `context-guard-diet scan` summary. Use `context-guard doctor` or `context-guard setup --verify` for a read-only health check before applying setup; use `--no-diet-scan` when automation needs setup output without the post-apply scan. `PATH` helper fallback is default-off and requires `--allow-path-helper-fallback` plus identity validation.
 - **Context management scanner** checks missing `permissions.deny` guardrails, Bash trim hook/statusline setup, broad read allows, high default model/effort, many MCP servers, large or secret-like agent rule files, and advisory context-exclusion recommendations for bulky/sensitive local paths. Its `--top` cap applies to both context-like files and context-exclusion recommendations.

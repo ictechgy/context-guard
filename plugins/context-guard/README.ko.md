@@ -79,6 +79,7 @@ context-guard-sanitize-output -- rg -n "TOKEN|SECRET" .
 context-guard-sanitize-output -- git diff
 context-guard-pack auto --root . --query "failing tests review" --diff HEAD --manifest-out suggested-pack.json --pack-out context-pack.md --budget-bytes 12000 --json --explain --adaptive-k --adaptive-k-policy recall
 context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json
+context-guard-pack build --root . --manifest suggested-pack.json --budget-bytes 12000 --json --no-artifact --delta-from-pack-id 0123456789abcdef0123
 context-guard-pack slice --root . --path README.md --lines 1:40 --json
 context-guard-cache-score --input prompt.json --provider openai --json
 context-guard-tool-prune select --catalog tools.json --query "review failing tests" --top 5 --budget-bytes 12000 --json
@@ -89,6 +90,8 @@ context-guard-statusline-merged
 ```
 
 ## 헬퍼가 하는 일
+
+모든 pack build는 기존 `pack_id`를 바꾸지 않고 렌더링된 byte의 SHA-256 `content_address`를 포함합니다. `build`와 `auto`의 선택적 `--delta-from-pack-id PACK_ID`는 private local receipt 하나만 bounded/fail-soft 방식으로 비교합니다. `rolling_delta`는 진단 전용이고 selection이나 pack 본문을 바꾸지 않으며 provider token/cost savings claim이 아닙니다.
 
 - **설정 마법사**는 `.claude/settings.json`을 덮어쓰지 않고 병합한 뒤, 읽기 전용 `context-guard-diet scan` 요약을 보여줍니다. 자동화에서 적용 후 검사 요약이 필요 없으면 `--no-diet-scan`을 사용하세요. `PATH` helper fallback은 기본적으로 꺼져 있으며, `--allow-path-helper-fallback`과 identity 검증을 통과해야만 사용됩니다.
 - **컨텍스트 관리 스캐너**는 누락된 `permissions.deny` 가드레일, Bash 출력 축약 훅, 상태표시줄 설정, 넓은 읽기 허용, 비용이 큰 기본 모델/추론 강도, 많은 MCP 서버, 크거나 민감해 보이는 에이전트 규칙 파일, 부피가 크거나 민감해 보이는 로컬 경로에 대한 자문형 context-exclusion 추천을 확인합니다.

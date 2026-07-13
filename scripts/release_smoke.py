@@ -754,6 +754,40 @@ def check_auto_explain_smoke(proc: subprocess.CompletedProcess[str], command: st
         fail(f"{command} adaptive_k missing source verification safeguard")
 
 
+def check_pack_content_address(data: dict[str, Any], command: str) -> None:
+    pack = data.get("pack")
+    address = data.get("content_address")
+    if not isinstance(pack, str) or not isinstance(address, dict):
+        fail(f"{command} JSON missing pack/content_address")
+    pack_bytes = pack.encode("utf-8")
+    if address.get("schema_version") != "contextguard.pack-content-address.v1":
+        fail(f"{command} content_address schema mismatch")
+    if address.get("bytes") != len(pack_bytes) or address.get("bytes") != data.get("pack_bytes"):
+        fail(f"{command} content_address byte count mismatch")
+
+
+def check_pack_delta_smoke(proc: subprocess.CompletedProcess[str], baseline: dict[str, Any], command: str) -> None:
+    data = load_json(proc.stdout, command)
+    check_pack_content_address(data, command)
+    for key in ("pack", "pack_bytes", "pack_id", "token_proxy", "sources", "included_sources", "omitted_sources"):
+        if data.get(key) != baseline.get(key):
+            fail(f"{command} changed legacy build field {key!r}")
+    delta = data.get("rolling_delta")
+    if not isinstance(delta, dict) or delta.get("status") != "available":
+        fail(f"{command} missing available rolling_delta")
+    if delta.get("schema_version") != "contextguard.pack-rolling-delta.v1":
+        fail(f"{command} rolling_delta schema mismatch")
+    boundary = delta.get("claim_boundary", {})
+    if boundary != {
+        "diagnostic_only": True,
+        "changes_manifest_selection_or_pack": False,
+        "provider_token_or_cost_savings_claim_allowed": False,
+    }:
+        fail(f"{command} rolling_delta claim boundary mismatch")
+    if data.get("artifact", {}).get("stored") is not False:
+        fail(f"{command} --no-artifact unexpectedly stored a receipt")
+
+
 def run_entrypoint_launch_smokes(
     *,
     plugin_bin: Path,
@@ -824,6 +858,32 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / "CLAUDE.md").write_text("Keep project context short.\n", encoding="utf-8")
         (project / "smoke-pack.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
         env = smoke_environment(smoke_home, smoke_tmp)
+
+        pack_baseline: dict[str, Any] = {}
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                ["build", "--root", str(project), "--source", "smoke-pack.txt", "--json"],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: pack_baseline.update(load_json(proc.stdout, "context-guard-pack build")),
+        )
+        check_pack_content_address(pack_baseline, "context-guard-pack build")
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
+                    "build", "--root", str(project), "--source", "smoke-pack.txt", "--json", "--no-artifact",
+                    "--delta-from-pack-id", str(pack_baseline["pack_id"]),
+                ],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_pack_delta_smoke(proc, pack_baseline, "context-guard-pack build --delta-from-pack-id"),
+        )
 
         run_command(
             entrypoint_launch_argv(commands["context-guard-setup"], ["--root", str(project), "--plan", "--json"]),
