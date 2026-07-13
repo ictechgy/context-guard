@@ -29058,6 +29058,25 @@ class ContextGuardMcpTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0)
                 self.assertEqual(stderr, "")
 
+    def test_mcp_json_recursion_errors_are_version_stable_invalid_requests(self):
+        spec = importlib.util.spec_from_file_location("_context_guard_mcp_recursion_test", KIT_DIR / "context_guard_mcp.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            server = module.Server(Path(tmp), "recursion")
+            stdin = type("BinaryStdin", (), {"buffer": io.BytesIO(b"{}\n")})()
+            stdout = io.StringIO()
+            try:
+                with mock.patch.object(module.sys, "stdin", stdin), mock.patch.object(module.json, "loads", side_effect=RecursionError), contextlib.redirect_stdout(stdout):
+                    self.assertEqual(module.serve(server), 0)
+            finally:
+                server.close()
+            self.assertEqual(json.loads(stdout.getvalue()), {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            })
+
     def test_mcp_argument_boundaries_artifact_tamper_and_unicode_caps_on_both_entrypoints(self):
         initialize = {
             "jsonrpc": "2.0", "id": 1, "method": "initialize",

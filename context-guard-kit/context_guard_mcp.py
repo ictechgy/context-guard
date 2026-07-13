@@ -951,11 +951,11 @@ def serve(server: Server) -> int:
             return 1
         try:
             data = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates, parse_constant=reject_nonfinite)
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        except (UnicodeDecodeError, json.JSONDecodeError):
             server.protocol_errors += 1
             emit(error_response(None, -32700, "Parse error"))
             continue
-        except (DuplicateKey, NonFinite, ValueError):
+        except (DuplicateKey, NonFinite, RecursionError, ValueError):
             server.protocol_errors += 1
             emit(error_response(None, -32600, "Invalid Request"))
             continue
