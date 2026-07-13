@@ -108,6 +108,10 @@ LOCAL_PROXY_NONCES_BY_PORT: dict[int, str] = {}
 PROOF_CARRYING_CONTEXT_RECEIPT = "0123456789abcdef"
 PROOF_CARRYING_CONTEXT_HASH = "a" * 64
 PROOF_CARRYING_CONTEXT_TIMESTAMP = "2026-07-10T04:11:12Z"
+PROOF_CARRYING_CONTEXT_FIXTURE = b"ContextGuard proof fixture\n"
+PROOF_CARRYING_CONTEXT_FIXTURE_HASH = hashlib.sha256(
+    PROOF_CARRYING_CONTEXT_FIXTURE
+).hexdigest()
 SEMANTIC_GC_RECEIPT = "0123456789abcdef"
 SEMANTIC_GC_HASH = "b" * 64
 
@@ -164,6 +168,84 @@ def run_proof_carrying_context_plan(
         capture_output=True,
         check=True,
     )
+
+
+def proof_carrying_context_verify_args(
+    artifact_dir: Path | None,
+    raw_units: list[str] | None = None,
+    *,
+    json_output: bool = True,
+) -> list[str]:
+    args = ["verify", "proof-carrying-context"]
+    if artifact_dir is not None:
+        args.extend(["--artifact-dir", str(artifact_dir)])
+    for raw in raw_units if raw_units is not None else [
+        json.dumps(
+            proof_carrying_context_unit(
+                content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                safe_range={"kind": "lines", "start": 1, "end": 1},
+            )
+        )
+    ]:
+        args.extend(["--proof-unit-json", raw])
+    if json_output:
+        args.append("--json")
+    return args
+
+
+def run_proof_carrying_context_verify(
+    script: Path,
+    artifact_dir: Path | None,
+    raw_units: list[str] | None = None,
+    *,
+    json_output: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            *proof_carrying_context_verify_args(
+                artifact_dir,
+                raw_units,
+                json_output=json_output,
+            ),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+
+def write_proof_carrying_context_receipt(
+    artifact_dir: Path,
+    *,
+    content: bytes = PROOF_CARRYING_CONTEXT_FIXTURE,
+    receipt: str = PROOF_CARRYING_CONTEXT_RECEIPT,
+    metadata_overrides: dict[str, object] | None = None,
+) -> dict[str, object]:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(artifact_dir, 0o700)
+    metadata: dict[str, object] = {
+        "artifact_id": receipt,
+        "stored_output": {
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "bytes": len(content),
+            "lines": content.count(b"\n") + bool(content and not content.endswith(b"\n")),
+            "content_file": f"{receipt}.txt",
+            "metadata_file": f"{receipt}.json",
+        },
+    }
+    if metadata_overrides:
+        metadata.update(metadata_overrides)
+    content_path = artifact_dir / f"{receipt}.txt"
+    metadata_path = artifact_dir / f"{receipt}.json"
+    content_path.write_bytes(content)
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.chmod(content_path, 0o600)
+    os.chmod(metadata_path, 0o600)
+    return metadata
 
 
 def semantic_gc_unit(unit_id: str, **overrides) -> dict[str, object]:
@@ -3410,15 +3492,23 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 }["proof-carrying-context"]
                 self.assertFalse(experiment["default_enabled"])
                 self.assertEqual(experiment["risk_level"], "high")
-                self.assertEqual(experiment["runtime_status"], "available-plan-only")
+                self.assertEqual(
+                    experiment["runtime_status"],
+                    "available-plan-and-read-only-verify",
+                )
                 self.assertEqual(
                     experiment["commands"],
-                    ["context-guard experiments plan proof-carrying-context"],
+                    [
+                        "context-guard experiments plan proof-carrying-context",
+                        "context-guard experiments verify proof-carrying-context",
+                    ],
                 )
                 self.assertEqual(
                     set(experiment["opt_in_flags"]),
                     {
                         "plan proof-carrying-context",
+                        "verify proof-carrying-context",
+                        "--artifact-dir",
                         "--proof-unit-json",
                         "--provider-boundary-ack",
                         "--protected-zone-policy deny",
@@ -4120,6 +4210,704 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("dry-run metadata readiness only", proc.stdout)
                 self.assertIn("No source/artifact/config/stdin content was read", proc.stdout)
                 self.assertIn("no context was generated or replaced", proc.stdout)
+
+    def test_experimental_proof_carrying_context_verifier_success_and_failure_schema(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                artifact_dir = Path(tmp) / "artifacts"
+                write_proof_carrying_context_receipt(artifact_dir)
+                first = run_proof_carrying_context_verify(script, artifact_dir)
+                second = run_proof_carrying_context_verify(script, artifact_dir)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertEqual(first.stdout, second.stdout)
+                payload = json.loads(first.stdout)
+                self.assertEqual(
+                    set(payload),
+                    {
+                        "artifact_scope", "blocker_order", "blockers",
+                        "candidate_replacement", "claim_boundary", "experiment_id",
+                        "mode", "process_exit_contract", "proof_unit_schema_version",
+                        "proof_units", "runtime_boundaries", "schema", "status",
+                        "summary", "warning_order",
+                    },
+                )
+                self.assertEqual(
+                    payload["schema"],
+                    "contextguard.experiments.proof-carrying-context-verification.v1",
+                )
+                self.assertEqual(payload["mode"], "verify")
+                self.assertEqual(payload["status"], "verified")
+                self.assertEqual(payload["summary"]["verified_unit_count"], 1)
+                self.assertIsNone(payload["candidate_replacement"])
+                self.assertEqual(payload["proof_units"][0]["status"], "verified")
+                self.assertEqual(
+                    set(payload["proof_units"][0]),
+                    {
+                        "blockers", "content_hash", "preflight_valid",
+                        "protected_zone", "receipt", "rehydration", "safe_range",
+                        "source_label", "status", "timestamp", "transform_policy",
+                        "unit_index", "warnings",
+                    },
+                )
+                self.assertEqual(
+                    set(payload["proof_units"][0]["safe_range"]),
+                    {
+                        "bounds_checked", "coordinate_system", "end", "kind",
+                        "range_content_retrieved", "start", "status",
+                    },
+                )
+
+                bad_unit = proof_carrying_context_unit(content_sha256="b" * 64)
+                failed = run_proof_carrying_context_verify(
+                    script,
+                    artifact_dir,
+                    [json.dumps(bad_unit)],
+                )
+                self.assertEqual(failed.returncode, 2)
+                failed_payload = json.loads(failed.stdout)
+                self.assertEqual(failed_payload["status"], "verification_failed")
+                self.assertIn("proof_content_hash_mismatch", failed_payload["blockers"])
+
+                first_dir = "CG_FIRST_PRIVATE_DIR"
+                second_dir = "CG_SECOND_PRIVATE_DIR"
+                duplicate_dir = subprocess.run(
+                    [
+                        sys.executable, str(script), "verify", "proof-carrying-context",
+                        "--artifact-dir", first_dir, "--artifact-dir", second_dir,
+                        "--proof-unit-json", json.dumps(proof_carrying_context_unit()),
+                        "--json",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(duplicate_dir.returncode, 2)
+                self.assertEqual(duplicate_dir.stdout, "")
+                self.assertIn("--artifact-dir may be specified only once", duplicate_dir.stderr)
+                self.assertNotIn(first_dir, duplicate_dir.stderr)
+                self.assertNotIn(second_dir, duplicate_dir.stderr)
+
+    def test_experimental_proof_carrying_context_verifier_preflight_batch_and_counts(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                artifact_dir = Path(tmp) / "artifacts"
+                write_proof_carrying_context_receipt(artifact_dir)
+                missing = run_proof_carrying_context_verify(script, None, [])
+                self.assertEqual(missing.returncode, 2)
+                payload = json.loads(missing.stdout)
+                self.assertEqual(payload["blockers"], ["missing_proof_unit", "invalid_artifact_directory"])
+                self.assertEqual(
+                    payload["summary"],
+                    {
+                        "detailed_unit_count": 0,
+                        "failed_unit_count": 0,
+                        "overflow_unit_count": 0,
+                        "supplied_unit_count": 0,
+                        "unique_receipt_count": 0,
+                        "verified_unit_count": 0,
+                    },
+                )
+                raw = json.dumps(
+                    proof_carrying_context_unit(
+                        content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                        safe_range={"kind": "lines", "start": 1, "end": 1},
+                    )
+                )
+                omitted_dir = run_proof_carrying_context_verify(script, None, [raw])
+                self.assertEqual(omitted_dir.returncode, 2)
+                omitted_payload = json.loads(omitted_dir.stdout)
+                self.assertEqual(
+                    omitted_payload["blockers"],
+                    ["invalid_artifact_directory", "request_preflight_aborted"],
+                )
+                self.assertEqual(
+                    omitted_payload["proof_units"][0]["blockers"],
+                    ["request_preflight_aborted"],
+                )
+                self.assertEqual(
+                    omitted_payload["summary"],
+                    {
+                        "detailed_unit_count": 1,
+                        "failed_unit_count": 1,
+                        "overflow_unit_count": 0,
+                        "supplied_unit_count": 1,
+                        "unique_receipt_count": 1,
+                        "verified_unit_count": 0,
+                    },
+                )
+                normalized_row = omitted_payload["proof_units"][0]
+                self.assertTrue(normalized_row["preflight_valid"])
+                self.assertEqual(normalized_row["safe_range"]["status"], "not_checked")
+                self.assertEqual(
+                    normalized_row["warnings"],
+                    [
+                        "timestamp_freshness_not_checked",
+                        "protected_zone_compliance_not_checked",
+                        "rehydrate_command_not_executed",
+                    ],
+                )
+
+                invalid_then_valid = run_proof_carrying_context_verify(
+                    script, artifact_dir, ["{", raw]
+                )
+                self.assertEqual(invalid_then_valid.returncode, 2)
+                invalid_payload = json.loads(invalid_then_valid.stdout)
+                self.assertEqual(
+                    invalid_payload["blockers"],
+                    ["invalid_proof_unit_json", "request_preflight_aborted"],
+                )
+                self.assertEqual(
+                    invalid_payload["proof_units"][0]["blockers"],
+                    ["invalid_proof_unit_json"],
+                )
+                self.assertIsNone(invalid_payload["proof_units"][0]["receipt"]["id"])
+                self.assertEqual(
+                    invalid_payload["proof_units"][1]["blockers"],
+                    ["request_preflight_aborted"],
+                )
+
+                overflow = run_proof_carrying_context_verify(
+                    script, artifact_dir, [raw] * 65
+                )
+                self.assertEqual(overflow.returncode, 2)
+                overflow_payload = json.loads(overflow.stdout)
+                self.assertEqual(len(overflow_payload["proof_units"]), 64)
+                self.assertEqual(overflow_payload["summary"]["overflow_unit_count"], 1)
+                self.assertEqual(overflow_payload["summary"]["failed_unit_count"], 65)
+                self.assertEqual(
+                    overflow_payload["blockers"],
+                    ["too_many_proof_units", "request_preflight_aborted"],
+                )
+
+                conflict_a = proof_carrying_context_unit(
+                    content_sha256="a" * 64,
+                    safe_range={"kind": "bytes", "start": 0, "end": 1},
+                )
+                conflict_b = proof_carrying_context_unit(content_sha256="b" * 64)
+                conflict = run_proof_carrying_context_verify(
+                    script,
+                    artifact_dir,
+                    [json.dumps(conflict_a), json.dumps(conflict_b)],
+                )
+                conflict_payload = json.loads(conflict.stdout)
+                self.assertEqual(conflict.returncode, 2)
+                self.assertEqual(conflict_payload["summary"]["unique_receipt_count"], 1)
+                for row in conflict_payload["proof_units"]:
+                    self.assertEqual(row["blockers"], ["receipt_hash_conflict"])
+                    self.assertFalse(row["preflight_valid"])
+                    self.assertIsNone(row["source_label"])
+                    self.assertIsNone(row["receipt"]["id"])
+                    self.assertIsNone(row["content_hash"]["declared_value"])
+                    self.assertIsNone(row["safe_range"])
+                    self.assertEqual(row["warnings"], [])
+
+                duplicate = run_proof_carrying_context_verify(
+                    script, artifact_dir, [raw, raw]
+                )
+                duplicate_payload = json.loads(duplicate.stdout)
+                self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+                self.assertEqual(duplicate_payload["summary"]["unique_receipt_count"], 1)
+                self.assertEqual(duplicate_payload["summary"]["verified_unit_count"], 2)
+                for row in duplicate_payload["proof_units"]:
+                    self.assertIn("duplicate_proof_unit", row["warnings"])
+
+                module = load_python_script_module(
+                    script, f"_proof_verifier_preflight_{index}"
+                )
+                for raw_dir in ("", "bad\x00dir", "../artifacts", "~private"):
+                    with self.subTest(raw_dir=repr(raw_dir)):
+                        direct = module.proof_carrying_context_verify_payload(
+                            argparse.Namespace(
+                                artifact_dir=raw_dir,
+                                proof_unit_json=[raw],
+                                json=True,
+                            )
+                        )
+                        self.assertEqual(
+                            direct["blockers"],
+                            ["invalid_artifact_directory", "request_preflight_aborted"],
+                        )
+                        self.assertEqual(
+                            direct["proof_units"][0]["blockers"],
+                            ["request_preflight_aborted"],
+                        )
+                with mock.patch.object(module, "NO_FOLLOW_SUPPORTED", False):
+                    unavailable = module.proof_carrying_context_verify_payload(
+                        argparse.Namespace(
+                            artifact_dir=str(artifact_dir),
+                            proof_unit_json=[raw],
+                            json=True,
+                        )
+                    )
+                self.assertEqual(
+                    unavailable["blockers"],
+                    ["artifact_io_capability_unavailable", "request_preflight_aborted"],
+                )
+                self.assertEqual(
+                    unavailable["proof_units"][0]["blockers"],
+                    ["request_preflight_aborted"],
+                )
+
+    def test_experimental_proof_carrying_context_verifier_metadata_content_and_range_contract(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                artifact_dir = Path(tmp) / "artifacts"
+                write_proof_carrying_context_receipt(artifact_dir)
+                for safe_range in (
+                    {"kind": "lines", "start": 1, "end": 1},
+                    {"kind": "bytes", "start": 0, "end": 1},
+                    {"kind": "bytes", "start": 0, "end": len(PROOF_CARRYING_CONTEXT_FIXTURE)},
+                ):
+                    unit = proof_carrying_context_unit(
+                        content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                        safe_range=safe_range,
+                    )
+                    proc = run_proof_carrying_context_verify(
+                        script,
+                        artifact_dir,
+                        [json.dumps(unit)],
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    row = json.loads(proc.stdout)["proof_units"][0]
+                    self.assertTrue(row["receipt"]["metadata_verified"])
+                    self.assertTrue(row["receipt"]["content_file_verified"])
+                    self.assertEqual(row["safe_range"]["status"], "verified")
+                    self.assertFalse(row["safe_range"]["range_content_retrieved"])
+
+                out_of_bounds = proof_carrying_context_unit(
+                    content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                    safe_range={"kind": "lines", "start": 2, "end": 2},
+                )
+                proc = run_proof_carrying_context_verify(
+                    script,
+                    artifact_dir,
+                    [json.dumps(out_of_bounds)],
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertEqual(
+                    json.loads(proc.stdout)["proof_units"][0]["blockers"],
+                    ["safe_range_out_of_bounds"],
+                )
+
+                identity = proof_carrying_context_unit(
+                    content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                    safe_range=None,
+                    transform_policy="identity",
+                )
+                identity_proc = run_proof_carrying_context_verify(
+                    script, artifact_dir, [json.dumps(identity)]
+                )
+                identity_row = json.loads(identity_proc.stdout)["proof_units"][0]
+                self.assertEqual(identity_proc.returncode, 0, identity_proc.stderr)
+                self.assertIsNone(identity_row["safe_range"])
+                self.assertIn("safe_range_not_supplied", identity_row["warnings"])
+
+                missing_dir = run_proof_carrying_context_verify(
+                    script, Path(tmp) / "missing", [json.dumps(identity)]
+                )
+                missing_payload = json.loads(missing_dir.stdout)
+                self.assertEqual(missing_dir.returncode, 2)
+                self.assertEqual(missing_payload["blockers"], ["artifact_directory_not_found"])
+                self.assertEqual(
+                    missing_payload["proof_units"][0]["blockers"],
+                    ["artifact_directory_not_found"],
+                )
+                self.assertNotIn(
+                    "request_preflight_aborted",
+                    missing_payload["proof_units"][0]["blockers"],
+                )
+
+                mode_dir = Path(tmp) / "mode-artifacts"
+                write_proof_carrying_context_receipt(mode_dir)
+                os.chmod(mode_dir, 0o755)
+                mode_proc = run_proof_carrying_context_verify(
+                    script, mode_dir, [json.dumps(identity)]
+                )
+                self.assertEqual(mode_proc.returncode, 2)
+                self.assertEqual(
+                    json.loads(mode_proc.stdout)["blockers"],
+                    ["artifact_directory_mode_not_private"],
+                )
+
+                pair_dir = Path(tmp) / "pair-artifacts"
+                write_proof_carrying_context_receipt(pair_dir)
+                (pair_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json").unlink()
+                pair_proc = run_proof_carrying_context_verify(
+                    script, pair_dir, [json.dumps(identity)]
+                )
+                self.assertEqual(
+                    json.loads(pair_proc.stdout)["proof_units"][0]["blockers"],
+                    ["receipt_pair_incomplete"],
+                )
+
+                invalid_meta_dir = Path(tmp) / "invalid-metadata"
+                write_proof_carrying_context_receipt(invalid_meta_dir)
+                metadata_path = invalid_meta_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json"
+                metadata_path.write_bytes(b"{")
+                os.chmod(metadata_path, 0o600)
+                invalid_meta = run_proof_carrying_context_verify(
+                    script, invalid_meta_dir, [json.dumps(identity)]
+                )
+                invalid_meta_row = json.loads(invalid_meta.stdout)["proof_units"][0]
+                self.assertEqual(invalid_meta_row["blockers"], ["receipt_metadata_invalid_json"])
+                self.assertFalse(invalid_meta_row["receipt"]["metadata_verified"])
+                self.assertFalse(
+                    json.loads(invalid_meta.stdout)["runtime_boundaries"]
+                    ["artifact_content_read_for_whole_file_verification"]
+                )
+
+                oversize_meta_dir = Path(tmp) / "oversize-metadata"
+                write_proof_carrying_context_receipt(oversize_meta_dir)
+                oversize_path = oversize_meta_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json"
+                oversize_path.write_bytes(b"x" * 64_001)
+                os.chmod(oversize_path, 0o600)
+                oversize_meta = run_proof_carrying_context_verify(
+                    script, oversize_meta_dir, [json.dumps(identity)]
+                )
+                self.assertEqual(
+                    json.loads(oversize_meta.stdout)["proof_units"][0]["blockers"],
+                    ["receipt_metadata_too_large"],
+                )
+
+                line_dir = Path(tmp) / "line-mismatch"
+                write_proof_carrying_context_receipt(line_dir)
+                line_metadata_path = line_dir / f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json"
+                line_metadata = json.loads(line_metadata_path.read_text(encoding="utf-8"))
+                line_metadata["stored_output"]["lines"] = 2
+                line_metadata_path.write_text(json.dumps(line_metadata), encoding="utf-8")
+                os.chmod(line_metadata_path, 0o600)
+                line_proc = run_proof_carrying_context_verify(
+                    script, line_dir, [json.dumps(identity)]
+                )
+                line_row = json.loads(line_proc.stdout)["proof_units"][0]
+                self.assertEqual(line_row["blockers"], ["receipt_line_count_mismatch"])
+                self.assertTrue(line_row["content_hash"]["verified"])
+                self.assertFalse(line_row["receipt"]["content_file_verified"])
+
+                empty_dir = Path(tmp) / "empty-artifacts"
+                write_proof_carrying_context_receipt(empty_dir, content=b"")
+                empty_unit = proof_carrying_context_unit(
+                    content_sha256=hashlib.sha256(b"").hexdigest(),
+                    safe_range=None,
+                    transform_policy="identity",
+                )
+                empty_proc = run_proof_carrying_context_verify(
+                    script, empty_dir, [json.dumps(empty_unit)]
+                )
+                self.assertEqual(empty_proc.returncode, 0, empty_proc.stderr)
+                self.assertEqual(
+                    json.loads(empty_proc.stdout)["proof_units"][0]["receipt"]["stored_lines"],
+                    0,
+                )
+
+                module = load_python_script_module(
+                    script, f"_proof_verifier_reads_{index}"
+                )
+                raw_identity = json.dumps(identity)
+                direct_args = argparse.Namespace(
+                    artifact_dir=str(artifact_dir),
+                    proof_unit_json=[raw_identity],
+                    json=True,
+                )
+                expected_payload = module.proof_carrying_context_verify_payload(direct_args)
+
+                real_open = module.os.open
+                real_read = module.os.read
+                metadata_fds: set[int] = set()
+
+                def short_open(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json":
+                        metadata_fds.add(fd)
+                    return fd
+
+                def short_read(fd, size):
+                    if fd in metadata_fds:
+                        return real_read(fd, min(size, 7))
+                    return real_read(fd, size)
+
+                with mock.patch.object(module.os, "open", side_effect=short_open), \
+                     mock.patch.object(module.os, "read", side_effect=short_read):
+                    short_payload = module.proof_carrying_context_verify_payload(direct_args)
+                self.assertEqual(short_payload, expected_payload)
+
+                verify_calls = []
+                real_verify = module.verify_proof_receipt
+
+                def counted_verify(*args, **kwargs):
+                    verify_calls.append(args[1])
+                    return real_verify(*args, **kwargs)
+
+                with mock.patch.object(
+                    module, "verify_proof_receipt", side_effect=counted_verify
+                ):
+                    duplicate_payload = module.proof_carrying_context_verify_payload(
+                        argparse.Namespace(
+                            artifact_dir=str(artifact_dir),
+                            proof_unit_json=[raw_identity, raw_identity],
+                            json=True,
+                        )
+                    )
+                self.assertEqual(verify_calls, [PROOF_CARRYING_CONTEXT_RECEIPT])
+                self.assertEqual(duplicate_payload["summary"]["verified_unit_count"], 2)
+
+                leaf_events = []
+                file_fds: dict[int, str] = {}
+                real_stat = module.os.stat
+                real_fstat = module.os.fstat
+
+                def counted_stat(name, *args, **kwargs):
+                    if name in {
+                        f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json",
+                        f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt",
+                    }:
+                        leaf_events.append(("stat", name))
+                    return real_stat(name, *args, **kwargs)
+
+                def counted_open(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name in {
+                        f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json",
+                        f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt",
+                    }:
+                        file_fds[fd] = name
+                        leaf_events.append(("open", name))
+                    return fd
+
+                def counted_fstat(fd):
+                    if fd in file_fds:
+                        leaf_events.append(("fstat", file_fds[fd]))
+                    return real_fstat(fd)
+
+                def counted_read(fd, size):
+                    if fd in file_fds:
+                        leaf_events.append(("read", file_fds[fd]))
+                    return real_read(fd, size)
+
+                with mock.patch.object(module.os, "stat", side_effect=counted_stat), \
+                     mock.patch.object(module.os, "open", side_effect=counted_open), \
+                     mock.patch.object(module.os, "fstat", side_effect=counted_fstat), \
+                     mock.patch.object(module.os, "read", side_effect=counted_read):
+                    counted_payload = module.proof_carrying_context_verify_payload(direct_args)
+                self.assertEqual(counted_payload["status"], "verified")
+                metadata_name = f"{PROOF_CARRYING_CONTEXT_RECEIPT}.json"
+                content_name = f"{PROOF_CARRYING_CONTEXT_RECEIPT}.txt"
+                self.assertEqual(
+                    [event for event in leaf_events if event[0] == "stat"],
+                    [("stat", metadata_name), ("stat", content_name)],
+                )
+                self.assertEqual(
+                    [event for event in leaf_events if event[0] == "open"],
+                    [("open", metadata_name), ("open", content_name)],
+                )
+                self.assertEqual(
+                    [event for event in leaf_events if event == ("fstat", metadata_name)],
+                    [("fstat", metadata_name), ("fstat", metadata_name)],
+                )
+                self.assertEqual(
+                    [event for event in leaf_events if event == ("fstat", content_name)],
+                    [("fstat", content_name), ("fstat", content_name)],
+                )
+                self.assertEqual(
+                    [event for event in leaf_events if event == ("read", metadata_name)],
+                    [("read", metadata_name)],
+                )
+                self.assertEqual(
+                    [event for event in leaf_events if event == ("read", content_name)],
+                    [("read", content_name), ("read", content_name)],
+                )
+
+                failing_metadata_fds: set[int] = set()
+
+                def failing_metadata_open(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == metadata_name:
+                        failing_metadata_fds.add(fd)
+                    return fd
+
+                def failing_metadata_read(fd, size):
+                    if fd in failing_metadata_fds:
+                        raise OSError("CG_PRIVATE_METADATA_EXCEPTION")
+                    return real_read(fd, size)
+
+                with mock.patch.object(
+                    module.os, "open", side_effect=failing_metadata_open
+                ), mock.patch.object(
+                    module.os, "read", side_effect=failing_metadata_read
+                ):
+                    read_failure = module.proof_carrying_context_verify_payload(direct_args)
+                self.assertEqual(
+                    read_failure["proof_units"][0]["blockers"],
+                    ["artifact_read_failed"],
+                )
+                self.assertFalse(
+                    read_failure["runtime_boundaries"]
+                    ["artifact_content_read_for_whole_file_verification"]
+                )
+                self.assertNotIn("CG_PRIVATE_METADATA_EXCEPTION", json.dumps(read_failure))
+
+                failing_content_fds: set[int] = set()
+
+                def failing_content_open(name, flags, *args, **kwargs):
+                    fd = real_open(name, flags, *args, **kwargs)
+                    if name == content_name:
+                        failing_content_fds.add(fd)
+                    return fd
+
+                def failing_content_read(fd, size):
+                    if fd in failing_content_fds:
+                        raise OSError("CG_PRIVATE_CONTENT_EXCEPTION")
+                    return real_read(fd, size)
+
+                with mock.patch.object(
+                    module.os, "open", side_effect=failing_content_open
+                ), mock.patch.object(
+                    module.os, "read", side_effect=failing_content_read
+                ):
+                    content_read_failure = module.proof_carrying_context_verify_payload(
+                        direct_args
+                    )
+                self.assertEqual(
+                    content_read_failure["proof_units"][0]["blockers"],
+                    ["artifact_read_failed"],
+                )
+                self.assertTrue(
+                    content_read_failure["runtime_boundaries"]
+                    ["artifact_content_read_for_whole_file_verification"]
+                )
+                self.assertNotIn(
+                    "CG_PRIVATE_CONTENT_EXCEPTION", json.dumps(content_read_failure)
+                )
+
+    def test_experimental_proof_carrying_context_verifier_no_follow_privacy_and_non_echo(self):
+        secret = b"CG_PRIVATE_SECRET_SHOULD_NOT_ECHO\n"
+        secret_hash = hashlib.sha256(secret).hexdigest()
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                artifact_dir = Path(tmp) / "private-secret-directory"
+                write_proof_carrying_context_receipt(artifact_dir, content=secret)
+                unit = proof_carrying_context_unit(
+                    content_sha256="b" * 64,
+                    safe_range={"kind": "lines", "start": 1, "end": 1},
+                    rehydrate_command=(
+                        f"context-guard-artifact get {PROOF_CARRYING_CONTEXT_RECEIPT} --full"
+                    ),
+                )
+                proc = run_proof_carrying_context_verify(
+                    script,
+                    artifact_dir,
+                    [json.dumps(unit)],
+                )
+                combined = proc.stdout + proc.stderr
+                self.assertEqual(proc.returncode, 2)
+                self.assertNotIn(secret.decode().strip(), combined)
+                self.assertNotIn(secret_hash, combined)
+                self.assertNotIn(str(artifact_dir), combined)
+                self.assertNotIn(unit["rehydrate_command"], combined)
+
+                link_dir = Path(tmp) / "linked-artifacts"
+                link_dir.symlink_to(artifact_dir, target_is_directory=True)
+                linked = run_proof_carrying_context_verify(
+                    script,
+                    link_dir,
+                    [json.dumps(proof_carrying_context_unit(content_sha256=secret_hash))],
+                )
+                self.assertEqual(linked.returncode, 2)
+                self.assertIn("artifact_directory_symlink_rejected", linked.stdout)
+
+    def test_experimental_proof_carrying_context_verifier_side_effect_free_and_no_execution(self):
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                artifact_dir = Path(tmp) / "artifacts"
+                write_proof_carrying_context_receipt(artifact_dir)
+                module = load_python_script_module(
+                    script,
+                    f"_proof_carrying_context_verifier_side_effects_{index}",
+                )
+                raw = json.dumps(
+                    proof_carrying_context_unit(
+                        content_sha256=PROOF_CARRYING_CONTEXT_FIXTURE_HASH,
+                        safe_range={"kind": "lines", "start": 1, "end": 1},
+                    )
+                )
+                forbidden = lambda name: mock.Mock(
+                    side_effect=AssertionError(f"forbidden verifier side effect: {name}")
+                )
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(
+                        mock.patch.object(subprocess, "run", forbidden("subprocess.run"))
+                    )
+                    for name in (
+                        "socket", "create_connection", "getaddrinfo", "gethostbyname",
+                        "gethostbyname_ex", "getnameinfo",
+                    ):
+                        stack.enter_context(
+                            mock.patch.object(module.socket, name, forbidden(f"socket.{name}"))
+                        )
+                    stack.enter_context(
+                        mock.patch.object(
+                            module.http.client,
+                            "HTTPConnection",
+                            forbidden("HTTPConnection"),
+                        )
+                    )
+                    stack.enter_context(
+                        mock.patch.object(
+                            module.http.client,
+                            "HTTPSConnection",
+                            forbidden("HTTPSConnection"),
+                        )
+                    )
+                    for name in (
+                        "write", "mkdir", "makedirs", "replace", "rename", "unlink",
+                        "remove", "system", "popen",
+                    ):
+                        stack.enter_context(
+                            mock.patch.object(module.os, name, forbidden(f"os.{name}"))
+                        )
+                    for name in ("write_text", "write_bytes", "unlink", "rename", "replace"):
+                        stack.enter_context(
+                            mock.patch.object(Path, name, forbidden(f"Path.{name}"))
+                        )
+                    for name in ("time", "monotonic", "perf_counter", "sleep"):
+                        stack.enter_context(
+                            mock.patch.object(module.time, name, forbidden(f"time.{name}"))
+                        )
+                    for name in (
+                        "load_config", "read_bounded_regular_file",
+                        "read_context_diff_replacement",
+                        "read_learned_candidate_replacement",
+                    ):
+                        stack.enter_context(
+                            mock.patch.object(module, name, forbidden(name))
+                        )
+                    payload = module.proof_carrying_context_verify_payload(
+                        argparse.Namespace(
+                            artifact_dir=str(artifact_dir),
+                            proof_unit_json=[raw],
+                            json=True,
+                        )
+                    )
+                self.assertEqual(payload["status"], "verified")
+                self.assertFalse(payload["runtime_boundaries"]["command_executed"])
+                self.assertFalse(payload["runtime_boundaries"]["subprocess_started"])
+                self.assertFalse(payload["runtime_boundaries"]["files_written"])
+                self.assertFalse(payload["runtime_boundaries"]["network_or_provider_called"])
+                self.assertFalse(payload["runtime_boundaries"]["source_or_stdin_read"])
+                self.assertFalse(payload["runtime_boundaries"]["config_read"])
+                self.assertFalse(payload["runtime_boundaries"]["range_content_retrieved"])
+                self.assertIsNone(payload["candidate_replacement"])
+
+                dispatcher = subprocess.run(
+                    [
+                        str(PLUGIN_BIN / "context-guard"),
+                        "experiments",
+                        *proof_carrying_context_verify_args(artifact_dir),
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(dispatcher.returncode, 0, dispatcher.stderr)
+                self.assertEqual(json.loads(dispatcher.stdout)["status"], "verified")
 
     def test_experimental_semantic_gc_registry_and_surface(self):
         for script in EXPERIMENT_SCRIPTS:
@@ -8626,6 +9414,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
             "--provider-boundary-ack",
             "--protected-zone-policy deny",
         )
+        verify_flags = ("--artifact-dir", "--proof-unit-json", "--json")
         forbidden_snippets = (
             "emit proof-carrying-context",
             "record proof-carrying-context",
@@ -8650,6 +9439,13 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertIn("timestamp", lower_text)
                 self.assertIn("runtime", lower_text)
                 self.assertRegex(lower_text, r"hosted.*(?:token|cost|savings|절감)")
+                self.assertRegex(lower_text, r"no fallback|fallback search")
+                self.assertRegex(lower_text, r"no symlink|symlink follow")
+                self.assertIn("0700", lower_text)
+                self.assertIn("0600", lower_text)
+                self.assertIn("exit `0`", lower_text)
+                self.assertIn("exit `2`", lower_text)
+                self.assertIn(PROOF_CARRYING_CONTEXT_FIXTURE_HASH, lower_text)
                 for snippet in forbidden_snippets:
                     self.assertNotIn(snippet, lower_text)
 
@@ -8685,6 +9481,45 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 self.assertEqual(payload["review_plan"]["readiness_blockers"], [])
                 self.assertEqual(payload["review_plan"]["warnings"], expected_warnings)
                 self.assertIsNone(payload["candidate_replacement"])
+
+                verify_lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip().startswith(
+                        "context-guard experiments verify proof-carrying-context"
+                    )
+                ]
+                self.assertEqual(len(verify_lines), 1)
+                verify_example = verify_lines[0]
+                for flag in verify_flags:
+                    self.assertIn(flag, verify_example)
+                verify_argv = shlex.split(verify_example)
+                self.assertEqual(
+                    verify_argv[:3], ["context-guard", "experiments", "verify"]
+                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    write_proof_carrying_context_receipt(Path(tmp) / "artifacts")
+                    verify_proc = subprocess.run(
+                        [
+                            sys.executable,
+                            str(PLUGIN_BIN / "context-guard-experiments"),
+                            *verify_argv[2:],
+                        ],
+                        text=True,
+                        capture_output=True,
+                        cwd=tmp,
+                    )
+                self.assertEqual(verify_proc.returncode, 0, verify_proc.stderr)
+                verify_payload = json.loads(verify_proc.stdout)
+                self.assertEqual(verify_payload["mode"], "verify")
+                self.assertEqual(verify_payload["status"], "verified")
+                self.assertIsNone(verify_payload["candidate_replacement"])
+                self.assertFalse(
+                    verify_payload["runtime_boundaries"]["range_content_retrieved"]
+                )
+                self.assertFalse(
+                    verify_payload["runtime_boundaries"]["command_executed"]
+                )
 
     def test_experimental_semantic_gc_docs_parity(self):
         docs = (
