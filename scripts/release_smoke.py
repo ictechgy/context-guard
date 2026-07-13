@@ -829,6 +829,13 @@ def check_pack_sketch_duplicate_smoke(
     ]
     if len(omissions) != 1 or omissions[0].get("path") != expected_omitted_path:
         fail(f"{command} did not omit the expected approximate duplicate source")
+    expected_omission_keys = {
+        "input_index", "path", "priority", "reason", "requested_lines", "retrieval_cli", "status",
+    }
+    if auto:
+        expected_omission_keys.add("label")
+    if set(omissions[0]) != expected_omission_keys:
+        fail(f"{command} sketch omission row schema mismatch")
     if build.get("pack") == baseline.get("pack"):
         fail(f"{command} did not change the duplicate-containing pack body")
     if build.get("content_address") == baseline.get("content_address"):
@@ -848,6 +855,25 @@ def check_pack_sketch_duplicate_smoke(
     for forbidden in ("winner_id", "exact_digest", "match_identity", "overlap", "similarity_score", "token_window", "shingle"):
         if forbidden in serialized:
             fail(f"{command} exposed private sketch material: {forbidden}")
+
+
+def check_pack_sketch_text_smoke(
+    proc: subprocess.CompletedProcess[str],
+    command: str,
+    *,
+    telemetry_stream: str,
+    telemetry_first_line: bool = False,
+) -> None:
+    stream = proc.stderr if telemetry_stream == "stderr" else proc.stdout
+    observed = stream.splitlines()[0] if telemetry_first_line and stream.splitlines() else stream.rstrip()
+    if not observed.endswith("sketch_comparison_cap_reached=false"):
+        fail(f"{command} text missing sketch cap boolean")
+    serialized = proc.stdout + proc.stderr
+    for forbidden in (
+        "winner_id", "exact_digest", "match_identity", "overlap", "similarity_score", "token_window", "shingle",
+    ):
+        if forbidden in serialized:
+            fail(f"{command} text exposed private sketch material: {forbidden}")
 
 
 def run_entrypoint_launch_smokes(
@@ -1022,9 +1048,24 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             cwd=project,
             env=env,
             timeout=timeout,
-            expect=lambda proc: (
-                None if proc.stderr.rstrip().endswith("sketch_comparison_cap_reached=false")
-                else fail("flagged build text missing sketch cap boolean")
+            expect=lambda proc: check_pack_sketch_text_smoke(
+                proc, "context-guard-pack build --sketch-duplicate-veto text", telemetry_stream="stderr",
+            ),
+        )
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
+                    "auto", "--root", str(project), "--files", "smoke-pack.txt,smoke-pack-copy.txt",
+                    "--no-artifact", "--sketch-duplicate-veto",
+                ],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_pack_sketch_text_smoke(
+                proc, "context-guard-pack auto --sketch-duplicate-veto text", telemetry_stream="stdout",
+                telemetry_first_line=True,
             ),
         )
 
@@ -1046,7 +1087,14 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                     load_json(proc.stdout, f"context-guard-pack zero-budget {command_label}")
                 ),
             )
-        if zero_flagged.get("content_address") != zero_plain.get("content_address"):
+        for payload, command_label in (
+            (zero_plain, "context-guard-pack zero-budget plain"),
+            (zero_flagged, "context-guard-pack zero-budget flagged"),
+        ):
+            if not isinstance(payload.get("content_address"), dict):
+                fail(f"{command_label} missing typed content_address")
+            check_pack_content_address(payload, command_label)
+        if zero_flagged["content_address"] != zero_plain["content_address"]:
             fail("zero-budget sketch veto changed rendered-byte identity")
         if zero_flagged.get("pack_id") == zero_plain.get("pack_id"):
             fail("zero-budget sketch veto did not change semantic pack identity")
