@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
+import re
 import signal
 import shutil
 import stat
@@ -762,6 +764,15 @@ def check_pack_content_address(data: dict[str, Any], command: str) -> None:
     pack_bytes = pack.encode("utf-8")
     if address.get("schema_version") != "contextguard.pack-content-address.v1":
         fail(f"{command} content_address schema mismatch")
+    digest = address.get("digest")
+    if address.get("algorithm") != "sha256":
+        fail(f"{command} content_address algorithm mismatch")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        fail(f"{command} content_address digest format mismatch")
+    if address.get("id") != f"sha256:{digest}":
+        fail(f"{command} content_address id mismatch")
+    if hashlib.sha256(pack_bytes).hexdigest() != digest:
+        fail(f"{command} content_address digest does not match pack")
     if address.get("bytes") != len(pack_bytes) or address.get("bytes") != data.get("pack_bytes"):
         fail(f"{command} content_address byte count mismatch")
 

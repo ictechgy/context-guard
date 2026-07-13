@@ -1313,6 +1313,13 @@ def reject_json_constant(_value: str) -> Any:
     raise ReceiptJSONError("non-finite number")
 
 
+def parse_receipt_int(value: str) -> int:
+    digits = value.removeprefix("-")
+    if len(digits) > 20:
+        raise ReceiptJSONError("integer too large")
+    return int(value)
+
+
 def json_depth(value: Any, depth: int = 1) -> int:
     if depth > 100:
         raise ReceiptJSONError("maximum depth exceeded")
@@ -1442,9 +1449,10 @@ def read_previous_receipt(root: Path, requested_id: str) -> tuple[str | None, st
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=strict_json_object,
             parse_constant=reject_json_constant,
+            parse_int=parse_receipt_int,
         )
         json_depth(receipt)
-    except (UnicodeDecodeError, json.JSONDecodeError, ReceiptJSONError, RecursionError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None, "previous_receipt_invalid"
     if not isinstance(receipt, dict):
         return None, "previous_receipt_invalid"
@@ -3830,7 +3838,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--delta-from-pack-id",
         type=pack_id_arg,
         metavar="PACK_ID",
-        help="compare against one private local pack receipt using bounded rolling diagnostics",
+        help=(
+            "compare against one private local pack receipt using bounded rolling diagnostics; "
+            "visible only in --json output or a stored receipt (--no-artifact requires --json)"
+        ),
     )
     slice_cmd = sub.add_parser("slice", help="retrieve an exact sanitized file slice")
     slice_cmd.add_argument("--root", default=".", help="project root; must not be a symlink")
@@ -3871,7 +3882,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--delta-from-pack-id",
         type=pack_id_arg,
         metavar="PACK_ID",
-        help="compare against one private local pack receipt using bounded rolling diagnostics",
+        help=(
+            "compare against one private local pack receipt using bounded rolling diagnostics; "
+            "visible only in --json output or a stored receipt (--no-artifact requires --json)"
+        ),
     )
     auto.add_argument("--explain", action="store_true", help="include deterministic local selection/build explanation metadata")
     auto.add_argument("--adaptive-k", action="store_true", help="include local score/budget top-k advisory metadata without changing the manifest or pack")
