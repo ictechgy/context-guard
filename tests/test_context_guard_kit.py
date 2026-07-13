@@ -3,6 +3,7 @@ import base64
 import builtins
 import csv
 import contextlib
+import copy
 import errno
 import hashlib
 import http.client
@@ -14188,6 +14189,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                             "--source", source, "--source", "path=missing.txt,priority=1",
                             "--budget-bytes", budget, "--json", "--no-artifact",
                         ).stdout)
+                        self.assertNotIn("sketch_duplicate_veto", data)
                         pack_bytes = data["pack"].encode("utf-8")
                         digest = hashlib.sha256(pack_bytes).hexdigest()
                         if budget == "4000":
@@ -14251,6 +14253,298 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 help_text = self._run_pack(script, ROOT, command, "--help").stdout
                 self.assertIn("--delta-from-pack-id PACK_ID", help_text)
                 self.assertRegex(help_text, r"--no-artifact requires\s+--json")
+
+    def test_context_pack_sketch_duplicate_veto_exact_priority_canonical_and_prebudget_identity(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_pack_sketch_exact_{index}")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    repeated = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu\n"
+                    (root / "winner.txt").write_text(repeated, encoding="utf-8")
+                    (root / "duplicate.txt").write_text(repeated, encoding="utf-8")
+                    (root / "unique.txt").write_text("different evidence\n", encoding="utf-8")
+
+                    base = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".",
+                        "--source", "path=winner.txt,priority=20",
+                        "--source", "path=duplicate.txt,priority=10",
+                        "--budget-bytes", "12000", "--json", "--no-artifact",
+                    ).stdout)
+                    flagged = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".",
+                        "--source", "path=winner.txt,priority=20",
+                        "--source", "path=duplicate.txt,priority=10",
+                        "--budget-bytes", "12000", "--json", "--no-artifact",
+                        "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertEqual(flagged["sources"], {"total": 2, "included": 1, "partial": 0, "omitted": 1})
+                    self.assertEqual(flagged["omitted_sources"][0]["reason"], "sketch_duplicate_source")
+                    self.assertEqual(flagged["omitted_sources"][0]["path"], "duplicate.txt")
+                    self.assertIn("--path duplicate.txt", flagged["omitted_sources"][0]["retrieval_cli"])
+                    self.assertNotEqual(flagged["content_address"], base["content_address"])
+                    self.assertNotEqual(flagged["pack_id"], base["pack_id"])
+
+                    zero_base = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "winner.txt",
+                        "--source", "duplicate.txt", "--budget-bytes", "0", "--json", "--no-artifact",
+                    ).stdout)
+                    zero_flagged = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "winner.txt",
+                        "--source", "duplicate.txt", "--budget-bytes", "0", "--json", "--no-artifact",
+                        "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertEqual(zero_flagged["pack"], zero_base["pack"])
+                    self.assertEqual(zero_flagged["content_address"], zero_base["content_address"])
+                    self.assertEqual(zero_flagged["sources"]["omitted"], zero_base["sources"]["omitted"])
+                    self.assertNotEqual(zero_flagged["pack_id"], zero_base["pack_id"])
+                    self.assertEqual(
+                        sorted(item["reason"] for item in zero_flagged["omitted_sources"]),
+                        ["budget_exhausted", "sketch_duplicate_source"],
+                    )
+
+                    path_duplicate = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".",
+                        "--source", "path=winner.txt,priority=1",
+                        "--source", "path=winner.txt,priority=999",
+                        "--source", "path=unique.txt,priority=2",
+                        "--json", "--no-artifact", "--sketch-duplicate-veto",
+                    ).stdout)
+                    path_rows = [item for item in path_duplicate["omitted_sources"] if item["path"] == "winner.txt"]
+                    self.assertEqual([(item["priority"], item["reason"]) for item in path_rows], [(999, "duplicate_source")])
+
+                    signatures = {
+                        "winner.txt": module._DuplicateSignature(b"a" * 32, frozenset(bytes([n]) for n in range(12))),
+                        "duplicate.txt": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(12))),
+                        "unique.txt": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(40, 52))),
+                    }
+                    def controlled_signature(lines, *, include_sketch):
+                        name = lines[0].strip()
+                        value = signatures[name]
+                        return module._DuplicateSignature(value.exact_digest, value.sketch if include_sketch else None)
+
+                    for name in signatures:
+                        (root / name).write_text(name + "\n", encoding="utf-8")
+                    with mock.patch.object(module, "_sketch_duplicate_signature", side_effect=controlled_signature):
+                        controlled = module.build_pack(
+                            root,
+                            [
+                                module.SourceSpec(path="winner.txt", priority=30),
+                                module.SourceSpec(path="duplicate.txt", priority=20),
+                                module.SourceSpec(path="unique.txt", priority=10),
+                            ],
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=False,
+                            sketch_duplicate_veto=True,
+                        )
+                    self.assertEqual([item["path"] for item in controlled["included_sources"]], ["winner.txt", "unique.txt"])
+                    self.assertEqual(
+                        [(item["path"], item["reason"]) for item in controlled["omitted_sources"]],
+                        [("duplicate.txt", "sketch_duplicate_source")],
+                    )
+
+                    original_signature = module._sketch_duplicate_signature
+                    def forced_digest_collision(lines, *, include_sketch):
+                        value = original_signature(lines, include_sketch=include_sketch)
+                        return module._DuplicateSignature(b"x" * 32, value.sketch)
+                    (root / "winner.txt").write_text("left\n", encoding="utf-8")
+                    (root / "duplicate.txt").write_text("right\n", encoding="utf-8")
+                    with mock.patch.object(module, "_sketch_duplicate_signature", side_effect=forced_digest_collision):
+                        collision = module.build_pack(
+                            root,
+                            [module.SourceSpec(path="winner.txt"), module.SourceSpec(path="duplicate.txt")],
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=False,
+                            sketch_duplicate_veto=True,
+                        )
+                    self.assertEqual(collision["sources"]["included"], 2)
+                    self.assertFalse(collision["omitted_sources"])
+
+    def test_context_pack_sketch_duplicate_veto_encoding_jaccard_kway_cap_and_privacy(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_pack_sketch_bounds_{index}")
+                self.assertEqual(
+                    module._sketch_duplicate_shingle_digest(("strasse", "café", "ωmega", "四", "five")).hex(),
+                    "0f01f505103d69b68f0123ea367832ad2fd6ec24eb4cfac8b45301bafacd2f49",
+                )
+                cross_line = module._sketch_duplicate_signature(
+                    ["Straße café\n", "ΩMEGA 四 five six seven\n"], include_sketch=True,
+                )
+                self.assertIn(
+                    module._sketch_duplicate_shingle_digest(("strasse", "café", "ωmega", "四", "five")),
+                    cross_line.sketch,
+                )
+                many = module._sketch_duplicate_signature(
+                    [" ".join(f"token{number}" for number in range(300))], include_sketch=True,
+                )
+                self.assertEqual(len(many.sketch), 64)
+                left = frozenset(bytes([number]) for number in range(18))
+                self.assertTrue(module._sketch_sets_match(left, frozenset(bytes([number]) for number in range(20))))
+                self.assertFalse(module._sketch_sets_match(
+                    frozenset(bytes([number]) for number in range(17)),
+                    frozenset(bytes([number]) for number in range(19)),
+                ))
+                twelve = frozenset(bytes([number]) for number in range(12))
+                self.assertTrue(module._sketch_sets_match(twelve, frozenset(bytes([number]) for number in range(13))))
+                self.assertFalse(module._sketch_sets_match(twelve, frozenset(bytes([number]) for number in range(14))))
+                postings = {b"a": [0, 2, 4], b"b": [1, 2, 3], b"c": [0, 3, 5]}
+                self.assertEqual(list(module._ordered_sketch_winner_ids(frozenset(postings), postings)), [0, 1, 2, 3, 4, 5])
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    for name in ("a", "b", "c", "d"):
+                        (root / f"{name}.txt").write_text(name + "\n", encoding="utf-8")
+                    sketches = {
+                        "a": frozenset([b"a"] + [f"a{n}".encode() for n in range(11)]),
+                        "b": frozenset([b"b"] + [f"b{n}".encode() for n in range(11)]),
+                        "c": frozenset([b"a", b"b"] + [f"c{n}".encode() for n in range(10)]),
+                        "d": frozenset([b"a"] + [f"d{n}".encode() for n in range(11)]),
+                    }
+                    include_calls: list[tuple[str, bool]] = []
+                    def bounded_signature(lines, *, include_sketch):
+                        name = lines[0].strip()
+                        include_calls.append((name, include_sketch))
+                        return module._DuplicateSignature(name.encode().ljust(32, b"_"), sketches[name] if include_sketch else None)
+                    with mock.patch.object(module, "SKETCH_DUPLICATE_COMPARISON_CAP", 1), mock.patch.object(
+                        module, "_sketch_duplicate_signature", side_effect=bounded_signature,
+                    ):
+                        capped = module.build_pack(
+                            root,
+                            [module.SourceSpec(path=f"{name}.txt", input_index=offset) for offset, name in enumerate(("a", "b", "c", "d"))],
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=False,
+                            sketch_duplicate_veto=True,
+                        )
+                    self.assertTrue(capped["sketch_duplicate_veto"]["comparison_cap_reached"])
+                    self.assertEqual(include_calls, [("a", True), ("b", True), ("c", True), ("d", False)])
+                    self.assertEqual(capped["sources"]["included"], 4)
+                    serialized = json.dumps(capped, ensure_ascii=False)
+                    for forbidden in ("winner_id", "exact_digest", "overlap", "similarity_score", "token_window"):
+                        self.assertNotIn(forbidden, serialized)
+
+                    include_calls.clear()
+                    with mock.patch.object(module, "SKETCH_DUPLICATE_COMPARISON_CAP", 1), mock.patch.object(
+                        module, "_sketch_duplicate_signature", side_effect=bounded_signature,
+                    ):
+                        exact_limit = module.build_pack(
+                            root,
+                            [module.SourceSpec(path="a.txt"), module.SourceSpec(path="c.txt")],
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=False,
+                            sketch_duplicate_veto=True,
+                        )
+                    self.assertFalse(exact_limit["sketch_duplicate_veto"]["comparison_cap_reached"])
+
+                    short_signatures = {
+                        "a": module._DuplicateSignature(b"a" * 32, frozenset(bytes([n]) for n in range(11))),
+                        "b": module._DuplicateSignature(b"b" * 32, frozenset(bytes([n]) for n in range(11))),
+                    }
+                    with mock.patch.object(
+                        module, "_sketch_duplicate_signature",
+                        side_effect=lambda lines, include_sketch: short_signatures[lines[0].strip()],
+                    ), mock.patch.object(module, "_ordered_sketch_winner_ids", side_effect=AssertionError("short sketch queried postings")):
+                        short = module.build_pack(
+                            root,
+                            [module.SourceSpec(path="a.txt"), module.SourceSpec(path="b.txt")],
+                            budget_bytes=12000,
+                            root_arg=".",
+                            store_artifact=False,
+                            sketch_duplicate_veto=True,
+                        )
+                    self.assertEqual(short["sources"]["included"], 2)
+
+    def test_context_pack_sketch_duplicate_veto_default_auto_help_docs_and_receipt_contract(self):
+        for index, script in enumerate(PACK_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_context_pack_sketch_contract_{index}")
+                for command in ("build", "auto"):
+                    help_text = self._run_pack(script, ROOT, command, "--help").stdout
+                    self.assertIn("--sketch-duplicate-veto", help_text)
+                    self.assertRegex(help_text, r"bounded fail-open comparison")
+                self.assertNotIn("--sketch-duplicate-veto", self._run_pack(script, ROOT, "suggest", "--help").stdout)
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / "a.txt").write_text("alpha beta gamma delta epsilon\n", encoding="utf-8")
+                    (root / "b.txt").write_text("different local evidence\n", encoding="utf-8")
+                    specs = [module.SourceSpec(path="a.txt"), module.SourceSpec(path="b.txt")]
+                    with mock.patch.object(module, "_sketch_duplicate_signature", side_effect=AssertionError("flag-off signature work")):
+                        module.build_pack(root, specs, budget_bytes=12000, root_arg=".", store_artifact=False)
+
+                    base = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "a.txt", "--source", "b.txt",
+                        "--json", "--no-artifact",
+                    ).stdout)
+                    flagged = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "a.txt", "--source", "b.txt",
+                        "--json", "--no-artifact", "--sketch-duplicate-veto",
+                    ).stdout)
+                    telemetry = flagged.pop("sketch_duplicate_veto")
+                    self.assertEqual(telemetry, {"comparison_cap_reached": False})
+                    for payload in (base, flagged):
+                        payload.pop("created_at", None)
+                    self.assertEqual(flagged, base)
+
+                    build_text = self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "a.txt",
+                        "--no-artifact", "--sketch-duplicate-veto",
+                    )
+                    self.assertRegex(build_text.stderr, r" omitted=0 sketch_comparison_cap_reached=false\n$")
+                    stored = json.loads(self._run_pack(
+                        script, root, "build", "--root", ".", "--source", "a.txt",
+                        "--json", "--sketch-duplicate-veto",
+                    ).stdout)
+                    receipt = json.loads((root / ".context-guard" / "packs" / f"{stored['pack_id']}.json").read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["sketch_duplicate_veto"], {"comparison_cap_reached": False})
+
+                    auto_json = json.loads(self._run_pack(
+                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--json", "--no-artifact",
+                        "--explain", "--sketch-duplicate-veto",
+                    ).stdout)
+                    self.assertNotIn("sketch_duplicate_veto", auto_json)
+                    self.assertEqual(auto_json["build"]["sketch_duplicate_veto"], {"comparison_cap_reached": False})
+                    self.assertNotIn("sketch_duplicate_veto", auto_json["explain"])
+                    self.assertNotIn("comparison_cap_reached", auto_json["explain"])
+                    auto_text = self._run_pack(
+                        script, root, "auto", "--root", ".", "--files", "a.txt,b.txt", "--no-artifact",
+                        "--sketch-duplicate-veto",
+                    )
+                    self.assertRegex(auto_text.stdout.splitlines()[0], r" sketch_comparison_cap_reached=false$")
+
+                    unsafe = root / "unsafe"
+                    unsafe.mkdir()
+                    (unsafe / "a.txt").write_text("evidence\n", encoding="utf-8")
+                    (unsafe / ".context-guard").write_text("not a directory", encoding="utf-8")
+                    unsafe_text = self._run_pack(
+                        script, unsafe, "build", "--root", ".", "--source", "a.txt", "--sketch-duplicate-veto",
+                    )
+                    self.assertIn("sketch_comparison_cap_reached=false", unsafe_text.stderr)
+
+                    oversized = copy.deepcopy(stored)
+                    oversized["omitted_sources"] = [
+                        {"path": f"path-{number}-" + ("x" * 200), "reason": "budget_exhausted", "preview": "y" * 500}
+                        for number in range(400)
+                    ]
+                    shrunk, _capped = module.shrink_receipt_for_write(oversized)
+                    self.assertEqual(shrunk["sketch_duplicate_veto"], {"comparison_cap_reached": False})
+
+        required_doc_terms = (
+            "--sketch-duplicate-veto", "sketch-set Jaccard", "bottom 64", "12", "0.90", "100,000",
+            "exact retrieval", "sketch_duplicate_source", "sketch_duplicate_veto.comparison_cap_reached",
+            "sketch_comparison_cap_reached=true|false", "provider token/cost savings claim",
+        )
+        for doc in (
+            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
+        ):
+            text = doc.read_text(encoding="utf-8")
+            for term in required_doc_terms:
+                self.assertIn(term, text, f"{doc}: {term}")
 
     def test_context_pack_delta_from_pack_id_reports_bounded_rolling_diagnostics_without_changing_build(self):
         for index, script in enumerate(PACK_SCRIPTS):

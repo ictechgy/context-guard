@@ -799,6 +799,35 @@ def check_pack_delta_smoke(proc: subprocess.CompletedProcess[str], baseline: dic
         fail(f"{command} --no-artifact unexpectedly stored a receipt")
 
 
+def check_pack_sketch_duplicate_smoke(
+    proc: subprocess.CompletedProcess[str],
+    baseline: dict[str, Any],
+    command: str,
+    *,
+    auto: bool = False,
+) -> None:
+    data = load_json(proc.stdout, command)
+    build = data.get("build") if auto else data
+    if not isinstance(build, dict):
+        fail(f"{command} JSON missing build result")
+    if auto and "sketch_duplicate_veto" in data:
+        fail(f"{command} duplicated sketch telemetry at auto top-level")
+    if build.get("sketch_duplicate_veto") != {"comparison_cap_reached": False}:
+        fail(f"{command} sketch cap telemetry mismatch")
+    if auto and isinstance(data.get("explain"), dict) and "sketch_duplicate_veto" in data["explain"]:
+        fail(f"{command} duplicated sketch telemetry in explain")
+    if not any(item.get("reason") == "sketch_duplicate_source" for item in build.get("omitted_sources", [])):
+        fail(f"{command} did not omit the duplicate source")
+    if build.get("pack") == baseline.get("pack"):
+        fail(f"{command} did not change the duplicate-containing pack body")
+    if build.get("content_address") == baseline.get("content_address"):
+        fail(f"{command} did not change rendered-byte identity")
+    serialized = json.dumps(data, ensure_ascii=False)
+    for forbidden in ("winner_id", "exact_digest", "similarity_score", "token_window"):
+        if forbidden in serialized:
+            fail(f"{command} exposed private sketch material: {forbidden}")
+
+
 def run_entrypoint_launch_smokes(
     *,
     plugin_bin: Path,
@@ -868,6 +897,7 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
         (project / "CLAUDE.md").write_text("Keep project context short.\n", encoding="utf-8")
         (project / "smoke-pack.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
+        (project / "smoke-pack-copy.txt").write_text("context guard pack explain smoke\n", encoding="utf-8")
         env = smoke_environment(smoke_home, smoke_tmp)
 
         pack_baseline: dict[str, Any] = {}
@@ -894,6 +924,106 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
             env=env,
             timeout=timeout,
             expect=lambda proc: check_pack_delta_smoke(proc, pack_baseline, "context-guard-pack build --delta-from-pack-id"),
+        )
+
+        duplicate_baseline: dict[str, Any] = {}
+        duplicate_sources = [
+            "--source", "path=smoke-pack.txt,priority=10",
+            "--source", "path=smoke-pack-copy.txt,priority=5",
+        ]
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                ["build", "--root", str(project), *duplicate_sources, "--json", "--no-artifact"],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: duplicate_baseline.update(load_json(proc.stdout, "context-guard-pack build duplicate baseline")),
+        )
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
+                    "build", "--root", str(project), *duplicate_sources, "--json", "--no-artifact",
+                    "--sketch-duplicate-veto",
+                ],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_pack_sketch_duplicate_smoke(
+                proc, duplicate_baseline, "context-guard-pack build --sketch-duplicate-veto",
+            ),
+        )
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                [
+                    "auto", "--root", str(project), "--files", "smoke-pack.txt,smoke-pack-copy.txt",
+                    "--json", "--no-artifact", "--explain", "--sketch-duplicate-veto",
+                ],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: check_pack_sketch_duplicate_smoke(
+                proc, duplicate_baseline, "context-guard-pack auto --sketch-duplicate-veto", auto=True,
+            ),
+        )
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                ["build", "--root", str(project), *duplicate_sources, "--no-artifact", "--sketch-duplicate-veto"],
+            ),
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                None if proc.stderr.rstrip().endswith("sketch_comparison_cap_reached=false")
+                else fail("flagged build text missing sketch cap boolean")
+            ),
+        )
+
+        zero_plain: dict[str, Any] = {}
+        zero_flagged: dict[str, Any] = {}
+        for target, extra, label in (
+            (zero_plain, [], "plain"),
+            (zero_flagged, ["--sketch-duplicate-veto"], "flagged"),
+        ):
+            run_command(
+                entrypoint_launch_argv(
+                    command_path(plugin_bin, "context-guard-pack"),
+                    ["build", "--root", str(project), *duplicate_sources, "--budget-bytes", "0", "--json", "--no-artifact", *extra],
+                ),
+                cwd=project,
+                env=env,
+                timeout=timeout,
+                expect=lambda proc, result=target, command_label=label: result.update(
+                    load_json(proc.stdout, f"context-guard-pack zero-budget {command_label}")
+                ),
+            )
+        if zero_flagged.get("content_address") != zero_plain.get("content_address"):
+            fail("zero-budget sketch veto changed rendered-byte identity")
+        if zero_flagged.get("pack_id") == zero_plain.get("pack_id"):
+            fail("zero-budget sketch veto did not change semantic pack identity")
+
+        unsafe_project = project / "unsafe-artifact"
+        unsafe_project.mkdir()
+        (unsafe_project / "source.txt").write_text("safe local smoke\n", encoding="utf-8")
+        (unsafe_project / ".context-guard").write_text("not a directory\n", encoding="utf-8")
+        run_command(
+            entrypoint_launch_argv(
+                command_path(plugin_bin, "context-guard-pack"),
+                ["build", "--root", str(unsafe_project), "--source", "source.txt", "--sketch-duplicate-veto"],
+            ),
+            cwd=unsafe_project,
+            env=env,
+            timeout=timeout,
+            expect=lambda proc: (
+                None if proc.stderr.rstrip().endswith("sketch_comparison_cap_reached=false")
+                else fail("fail-soft artifact build text lost sketch cap boolean")
+            ),
         )
 
         run_command(
