@@ -586,8 +586,37 @@ def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
     """Serialize CSV read/write access with a no-follow sidecar lock file."""
     if fcntl is None:
         raise OSError("platform does not support advisory CSV locks")
-    lock_path = csv_path.with_name(f"{csv_path.name}.lock")
-    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
+    with csv_parent_directory_lock(csv_path, create_parent=create_parent):
+        lock_path = csv_path.with_name(f"{csv_path.name}.lock")
+        fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=False)
+        locked = False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+            yield
+        finally:
+            try:
+                if locked:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+@contextmanager
+def csv_parent_directory_lock(csv_path: Path, *, create_parent: bool) -> Any:
+    """Serialize a CSV transaction without creating a lock sidecar.
+
+    Normal writers take this stable directory-inode lock before the historical
+    sidecar lock. Profiled replay can therefore hold it across freshness validation
+    and its complete batch without leaving a sidecar on rejection. The stable inode
+    also avoids an unlink-while-waiters race.
+    """
+    if fcntl is None:
+        raise OSError("platform does not support advisory CSV locks")
+    parent = csv_path.parent
+    if create_parent:
+        parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     locked = False
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -929,9 +958,10 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                 not isinstance(evaluation_profile, str)
                 or evaluation_profile not in SUPPORTED_EVALUATION_PROFILE_IDS
             ):
-                raise SystemExit(
-                    f"{PROFILE_REJECT_SCHEMA_INVALID}: task {task_id} declares an unsupported "
-                    "evaluation_profile id"
+                profile_reject(
+                    PROFILE_REJECT_SCHEMA_INVALID,
+                    profile_owner(task_id),
+                    "declares an unsupported evaluation_profile id",
                 )
         fixtures.append(TaskFixture(
             evaluation_profile=evaluation_profile,
@@ -1649,71 +1679,91 @@ def append_csv(
     existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None = None,
 ) -> bool:
     with csv_file_lock(csv_path, create_parent=True):
-        key = (result.task_id, result.variant)
-        if skip_existing:
-            if existing_key_cache is not None:
-                refresh_existing_key_cache_unlocked(csv_path, existing_key_cache, existing_key_cache_stamp)
-                if key in existing_key_cache:
-                    return False
-            elif key in _read_existing_keys_unlocked(csv_path):
-                return False
-        flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
-        fd = _open_regular_no_symlink(csv_path, flags, 0o600, create_parent=True)
-        try:
-            new_file = os.fstat(fd).st_size == 0
-            if not new_file:
-                validate_csv_schema(csv_path, read_csv_header_unlocked(csv_path))
-            with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
-                fd = -1
-                writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-                if new_file:
-                    writer.writeheader()
-                tokens = result.tokens
-                total = sum(tokens.values())
-                shifted_cost_known = cost_shift_measured(result)
-                writer.writerow({
-                    "date": sanitize_csv_cell(_dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")),
-                    "claude_version": sanitize_csv_cell(claude_ver),
-                    "task_id": sanitize_csv_cell(result.task_id),
-                    "variant": sanitize_csv_cell(result.variant),
-                    "model": sanitize_csv_cell(result.model),
-                    "effort": sanitize_csv_cell(result.effort),
-                    "total_tokens": total,
-                    "input_tokens": tokens.get("input_tokens", 0),
-                    "output_tokens": tokens.get("output_tokens", 0),
-                    "cache_read": tokens.get("cache_read", 0),
-                    "cache_creation": tokens.get("cache_creation", 0),
-                    "provider_cached_tokens": result.provider_cached_tokens,
-                    "provider_cached_tokens_measured": (
-                        "true" if result.provider_cached_tokens_measured else "false"
-                    ),
-                    "cost_usd": f"{result.cost_usd:.6f}",
-                    "cost_measured": "true" if result.cost_measured else "false",
-                    "wall_time_seconds": f"{result.wall_time_seconds:.6f}",
-                    "turns": result.turns,
-                    "hook_triggers": result.hook_triggers,
-                    "bytes_before": result.bytes_before,
-                    "bytes_after": result.bytes_after,
-                    "artifacts_used": result.artifacts_used,
-                    "external_tokens": result.external_tokens,
-                    "external_tokens_measured": "true" if result.external_tokens_measured else "false",
-                    "external_cost_usd": f"{result.external_cost_usd:.6f}",
-                    "external_cost_measured": "true" if result.external_cost_measured else "false",
-                    "total_cost_with_shift_usd": (
-                        f"{(result.cost_usd + result.external_cost_usd):.6f}" if shifted_cost_known else ""
-                    ),
-                    "success": "true" if result.success else "false",
-                    "corrections": result.corrections,
-                    "notes": sanitize_csv_note(result.notes),
-                    "primary_tokens_measured": "true" if result.primary_tokens_measured else "false",
-                })
-        finally:
-            if fd != -1:
-                os.close(fd)
+        return append_csv_unlocked(
+            csv_path,
+            claude_ver,
+            result,
+            skip_existing=skip_existing,
+            existing_key_cache=existing_key_cache,
+            existing_key_cache_stamp=existing_key_cache_stamp,
+        )
+
+
+def append_csv_unlocked(
+    csv_path: Path,
+    claude_ver: str,
+    result: RunResult,
+    *,
+    skip_existing: bool = False,
+    existing_key_cache: set[tuple[str, str]] | None = None,
+    existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None = None,
+) -> bool:
+    """Append one row while the caller holds the CSV transaction lock."""
+    key = (result.task_id, result.variant)
+    if skip_existing:
         if existing_key_cache is not None:
-            existing_key_cache.add(key)
-        if existing_key_cache_stamp is not None:
-            existing_key_cache_stamp["stamp"] = csv_file_stamp_unlocked(csv_path)
+            refresh_existing_key_cache_unlocked(csv_path, existing_key_cache, existing_key_cache_stamp)
+            if key in existing_key_cache:
+                return False
+        elif key in _read_existing_keys_unlocked(csv_path):
+            return False
+    flags = os.O_CREAT | os.O_APPEND | os.O_WRONLY
+    fd = _open_regular_no_symlink(csv_path, flags, 0o600, create_parent=True)
+    try:
+        new_file = os.fstat(fd).st_size == 0
+        if not new_file:
+            validate_csv_schema(csv_path, read_csv_header_unlocked(csv_path))
+        with os.fdopen(fd, "a", encoding="utf-8", newline="") as f:
+            fd = -1
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+            if new_file:
+                writer.writeheader()
+            tokens = result.tokens
+            total = sum(tokens.values())
+            shifted_cost_known = cost_shift_measured(result)
+            writer.writerow({
+                "date": sanitize_csv_cell(_dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")),
+                "claude_version": sanitize_csv_cell(claude_ver),
+                "task_id": sanitize_csv_cell(result.task_id),
+                "variant": sanitize_csv_cell(result.variant),
+                "model": sanitize_csv_cell(result.model),
+                "effort": sanitize_csv_cell(result.effort),
+                "total_tokens": total,
+                "input_tokens": tokens.get("input_tokens", 0),
+                "output_tokens": tokens.get("output_tokens", 0),
+                "cache_read": tokens.get("cache_read", 0),
+                "cache_creation": tokens.get("cache_creation", 0),
+                "provider_cached_tokens": result.provider_cached_tokens,
+                "provider_cached_tokens_measured": (
+                    "true" if result.provider_cached_tokens_measured else "false"
+                ),
+                "cost_usd": f"{result.cost_usd:.6f}",
+                "cost_measured": "true" if result.cost_measured else "false",
+                "wall_time_seconds": f"{result.wall_time_seconds:.6f}",
+                "turns": result.turns,
+                "hook_triggers": result.hook_triggers,
+                "bytes_before": result.bytes_before,
+                "bytes_after": result.bytes_after,
+                "artifacts_used": result.artifacts_used,
+                "external_tokens": result.external_tokens,
+                "external_tokens_measured": "true" if result.external_tokens_measured else "false",
+                "external_cost_usd": f"{result.external_cost_usd:.6f}",
+                "external_cost_measured": "true" if result.external_cost_measured else "false",
+                "total_cost_with_shift_usd": (
+                    f"{(result.cost_usd + result.external_cost_usd):.6f}" if shifted_cost_known else ""
+                ),
+                "success": "true" if result.success else "false",
+                "corrections": result.corrections,
+                "notes": sanitize_csv_note(result.notes),
+                "primary_tokens_measured": "true" if result.primary_tokens_measured else "false",
+            })
+    finally:
+        if fd != -1:
+            os.close(fd)
+    if existing_key_cache is not None:
+        existing_key_cache.add(key)
+    if existing_key_cache_stamp is not None:
+        existing_key_cache_stamp["stamp"] = csv_file_stamp_unlocked(csv_path)
     return True
 
 
@@ -2449,7 +2499,7 @@ PROFILE_PROJECTION_KEYS = (
 PROFILE_PROOF_UNIT_KEYS = (
     "status", "receipt_id", "receipt_verified", "content_hash_declared_value",
     "content_hash_verified", "rehydration_receipt_bound", "rehydration_syntax_valid",
-    "rehydration_verified", "rehydration_executed",
+    "rehydration_verified", "rehydration_executed", "retrieval_command",
 )
 PROFILE_PROOF_UNIT_REQUIRED_FLAGS = (
     "receipt_verified",
@@ -2688,6 +2738,11 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
         profile_reject(
             PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
             "exact_text_fallback content hash is not bound to the verified proof unit",
+        )
+    if unit.get("retrieval_command") != fallback["retrieval_command"]:
+        profile_reject(
+            PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
+            "exact_text_fallback retrieval command is not bound to the verified proof unit",
         )
 
 
