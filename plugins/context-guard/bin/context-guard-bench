@@ -376,24 +376,6 @@ IMAGE_CONTEXT_GATE_IDS = (
     IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT,
     IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY,
 )
-IMAGE_CONTEXT_GATE_LABELS = {
-    IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING: "Profile and prompt binding",
-    IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW: "Protected-zone deny review attestation",
-    IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING: "Exact-text fallback binding",
-    IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW: "Missed-context review",
-    IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY: "Human correction consistency",
-    IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT: "Generic matched success and provider measurement",
-    IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY: "Evaluation-only promotion boundary",
-}
-# 품질 게이트가 회귀를 보고할 때 lane blocker 로 승격시키는 기존 generic quality_gate 값.
-IMAGE_CONTEXT_QUALITY_BLOCKER_GATES = (
-    "insufficient_baseline",
-    "insufficient_success",
-    "insufficient_corrections_data",
-    "matched_task_regression",
-    "failure_rate_regression",
-    "corrections_regression",
-)
 IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID = "image_context_pack_evaluation_only"
 IMAGE_CONTEXT_CLAIM_BOUNDARY = {
     "id": "image_context_pack_evaluation_only_never_promotion_or_public_claim",
@@ -413,7 +395,6 @@ IMAGE_CONTEXT_CLAIM_BOUNDARY = {
     ),
 }
 PROFILE_SAMPLE_ADEQUACY_POLICY_STATUS = "not_defined_for_promotion"
-PROFILE_EVIDENCE_LEVEL_NOT_APPLICABLE = "not_applicable"
 
 # profile 중첩 블록의 명시적 byte/count 한계. 타입/한계 검사는 항상 semantic 분류보다
 # 먼저 실행되어 oversize 값이 blocked 분기로 새지 않도록 한다.
@@ -424,13 +405,10 @@ MAX_PROFILE_SUMMARY_CHARS = 500
 MAX_PROFILE_COMMAND_CHARS = 500
 MAX_PROFILE_RECEIPT_ID_CHARS = 200
 MAX_PROFILE_BLOCKER_ITEMS = 20
-MAX_PROFILE_BLOCKER_CHARS = 120
 MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
 MAX_PROFILE_CORRECTION_COUNT = 10_000
-MAX_PROFILE_PROOF_UNIT_COUNT = 1_000
 SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
 PROTECTED_ZONE_DENY_POLICY = "deny"
-PROFILE_REVIEW_RESULTS = ("pass", "fail", "unknown")
 
 
 def _base_open_flags() -> int:
