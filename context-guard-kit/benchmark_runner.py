@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import argparse
 import collections
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import csv
 import datetime as _dt
 import hashlib
@@ -2981,12 +2981,12 @@ def preflight_profile_fresh_output(
         )
 
 
-def profile_locked_batch_freshness_gate(
+def profile_batch_freshness_gate_unlocked(
     tasks: list[TaskFixture],
     targets: list[tuple[TaskFixture, Variant]],
     csv_path: Path,
 ) -> None:
-    """Recheck output freshness once, under the lock, before the batch writes.
+    """Recheck output freshness while the caller holds the full-batch lock.
 
     The pre-lock gate reads the CSV without the lock, so a concurrent writer could
     still land a row between that check and the first append. One locked recheck for
@@ -2995,13 +2995,12 @@ def profile_locked_batch_freshness_gate(
     profiled_task_ids = selected_profiled_task_ids(tasks, targets)
     if not profiled_task_ids:
         return
-    with csv_file_lock(csv_path, create_parent=True):
-        if file_has_content_no_follow(csv_path):
-            profile_reject(
-                PROFILE_REJECT_FRESH_OUTPUT_REQUIRED,
-                profile_owner(profiled_task_ids[0]),
-                "the results CSV gained content after the profiled batch was validated",
-            )
+    if file_has_content_no_follow(csv_path):
+        profile_reject(
+            PROFILE_REJECT_FRESH_OUTPUT_REQUIRED,
+            profile_owner(profiled_task_ids[0]),
+            "the results CSV gained content after the profiled batch was validated",
+        )
 
 
 def preflight_evaluation_profiles(
@@ -3013,6 +3012,7 @@ def preflight_evaluation_profiles(
     task_file_dir: Path,
     resume: bool,
     csv_has_preexisting_content: bool,
+    baseline_variant: str = "baseline",
 ) -> None:
     """Validate the complete profiled batch before the first output byte is written.
 
@@ -3042,6 +3042,14 @@ def preflight_evaluation_profiles(
             )
     if not profiled_tasks:
         return
+
+    variant_names = {variant.name for variant in variants}
+    if baseline_variant not in variant_names or len(variant_names - {baseline_variant}) < 1:
+        profile_reject(
+            PROFILE_REJECT_BATCH_INCOMPLETE,
+            profile_owner(next(iter(sorted(profiled_tasks)))),
+            "v1 profiled replay requires the configured baseline and at least one candidate variant",
+        )
 
     selected_by_task: dict[str, set[str]] = collections.defaultdict(set)
     for task, variant in targets:
@@ -3123,11 +3131,41 @@ def build_image_context_evaluation_lane(
     # 두 이름은 이유를 드러내는 구체 blocker 로 함께 유지한다.
     generic_quality_gates: set[str] = set()
     pairs = report.get("matched_pair_evidence")
+    pair_keys: set[tuple[str, str]] = set()
     if isinstance(pairs, list):
         for pair in pairs:
             if isinstance(pair, dict) and isinstance(pair.get("quality_gate"), str):
                 generic_quality_gates.add(pair["quality_gate"])
-    generic_quality_pass = generic_quality_gates.issubset({GENERIC_QUALITY_GATE_PASS})
+                if isinstance(pair.get("task_id"), str) and isinstance(pair.get("variant"), str):
+                    pair_keys.add((pair["task_id"], pair["variant"]))
+    baseline_variant = report.get("baseline_variant")
+    expected_pair_keys = {
+        (lane["task_id"], lane["variant"])
+        for lane in lanes
+        if isinstance(baseline_variant, str) and lane["variant"] != baseline_variant
+    }
+    comparisons = report.get("comparisons")
+    comparison_rows = [item for item in comparisons if isinstance(item, dict)] if isinstance(comparisons, list) else []
+    expected_candidate_variants = {variant for _, variant in expected_pair_keys}
+    comparison_variants = {
+        item["variant"] for item in comparison_rows if isinstance(item.get("variant"), str)
+    }
+    all_comparisons_pass = (
+        bool(comparison_rows)
+        and comparison_variants == expected_candidate_variants
+        and all(
+            item.get("quality_gate") == GENERIC_QUALITY_GATE_PASS
+            and isinstance(item.get("matched_successful_task_count"), int)
+            and item["matched_successful_task_count"] > 0
+            for item in comparison_rows
+        )
+    )
+    complete_matched_pairs = bool(expected_pair_keys) and pair_keys == expected_pair_keys
+    generic_quality_pass = (
+        complete_matched_pairs
+        and all_comparisons_pass
+        and generic_quality_gates == {GENERIC_QUALITY_GATE_PASS}
+    )
 
     gate_results = {
         # preflight 를 통과했다면 profile/prompt binding 은 이미 증명되었다.
