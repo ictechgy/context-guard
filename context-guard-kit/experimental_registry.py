@@ -89,6 +89,14 @@ SEMANTIC_GC_JSON_MAX_DEPTH = 100
 SEMANTIC_GC_PROCESS_EXIT_CONTRACT = (
     "exit code 0 means ready_for_plan_review; exit code 2 means a blocked plan was emitted"
 )
+STATIC_RELEVANCE_PLAN_SCHEMA_VERSION = "contextguard.experiments.static-relevance-plan.v1"
+STATIC_RELEVANCE_UNIT_SCHEMA_VERSION = "contextguard.static-relevance-unit.v1"
+STATIC_RELEVANCE_DETAILED_UNIT_CAP = 64
+STATIC_RELEVANCE_UNIT_JSON_BYTE_CAP = 8192
+STATIC_RELEVANCE_JSON_MAX_DEPTH = 100
+STATIC_RELEVANCE_PROCESS_EXIT_CONTRACT = (
+    "exit code 0 means ready_for_plan_review; exit code 2 means a blocked plan was emitted"
+)
 JSON_SAFE_INTEGER_MAX = 9_007_199_254_740_991
 PROOF_SOURCE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
 PROOF_RECEIPT_ID_RE = re.compile(r"^[a-f0-9]{16,64}$")
@@ -253,6 +261,47 @@ SEMANTIC_GC_WARNING_ORDER = (
     "human_review_still_required", "accepted_notes_are_untrusted",
     "duplicate_content_sha256", "duplicate_receipt_id",
     "protected_unreachable_excluded", "no_sweep_candidates",
+)
+STATIC_RELEVANCE_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+STATIC_RELEVANCE_PATH_TOKEN_SPLIT_RE = re.compile(r"[._-]+")
+STATIC_RELEVANCE_ALLOWED_FIELDS = frozenset({
+    "schema", "unit_id", "path", "task_anchor", "protection_reasons", "symbol",
+    "symbol_references", "dataflow_predecessors", "dataflow_successors", "git",
+})
+STATIC_RELEVANCE_SYMBOL_KINDS = frozenset({
+    "module", "class", "function", "method", "variable", "constant", "test", "config", "data", "unknown",
+})
+STATIC_RELEVANCE_PROTECTION_REASON_ORDER = (
+    "authentication", "authorization", "secrets", "security_sensitive", "migration",
+    "acceptance_test", "unresolved_error_evidence", "caller_protected",
+    "builtin_auth_path", "builtin_security_path", "builtin_secret_path",
+    "builtin_migration_path", "builtin_acceptance_path", "builtin_secret_material_path",
+)
+STATIC_RELEVANCE_EXPLICIT_PROTECTION_REASONS = frozenset(STATIC_RELEVANCE_PROTECTION_REASON_ORDER[:8])
+STATIC_RELEVANCE_BLOCKER_ORDER = (
+    "no_relevance_units", "relevance_unit_limit_exceeded", "relevance_unit_json_too_large",
+    "invalid_unicode_scalar", "decoder_recursion_limit", "malformed_relevance_unit_json",
+    "duplicate_relevance_unit_json_key", "non_finite_relevance_unit_json_value",
+    "relevance_unit_json_depth_exceeded", "relevance_unit_must_be_object",
+    "relevance_unit_schema_mismatch", "relevance_unit_unexpected_field",
+    "invalid_relevance_unit_id", "invalid_relevance_unit_path", "invalid_task_anchor",
+    "missing_protection_reasons", "invalid_protection_reasons", "duplicate_relevance_unit_id",
+    "no_task_anchor", "missing_symbol_signal", "invalid_symbol_signal",
+    "missing_symbol_references_signal", "invalid_symbol_references_signal",
+    "missing_dataflow_predecessors_signal", "invalid_dataflow_predecessors_signal",
+    "missing_dataflow_successors_signal", "invalid_dataflow_successors_signal",
+    "missing_git_signal", "invalid_git_signal", "missing_blame_age_signal",
+    "invalid_blame_age_signal", "missing_blame_contributor_signal",
+    "invalid_blame_contributor_signal", "missing_path_change_count_signal",
+    "invalid_path_change_count_signal", "duplicate_relation_target", "unknown_relation_target",
+    "ambiguous_relation_target", "inconsistent_dataflow_relation",
+    "protected_path_policy_required", "provider_boundary_ack_required",
+)
+STATIC_RELEVANCE_WARNING_ORDER = (
+    "caller_declared_static_evidence_unverified", "symbol_and_dataflow_semantics_not_verified",
+    "git_history_metrics_not_verified", "protected_path_detection_non_exhaustive",
+    "accepted_labels_are_untrusted_caller_data", "static_relevance_is_not_semantic_safety",
+    "review_order_does_not_authorize_omission", "hosted_provider_behavior_and_savings_unverified",
 )
 IMAGE_CONTEXT_PACK_PROVIDER_BOUNDARY = "provider-measured-matched-tasks-required"
 LOCAL_PROXY_DEFAULT_BIND_HOST = "127.0.0.1"
@@ -627,6 +676,43 @@ EXPERIMENTS: tuple[Experiment, ...] = (
             "untrusted missed-context note plus human-review acknowledgement before the plan is ready for review. "
             "A complete graph with no unprotected sweep candidates does not require that acknowledgement. "
             "Ready plans exit 0; blocked plans still emit their envelope and exit 2."
+        ),
+    ),
+    Experiment(
+        id="static-relevance",
+        name="Static relevance evidence compiler",
+        summary=(
+            "Compile bounded caller-declared symbol, dataflow, and git-history signals into deterministic "
+            "human-review diagnostics with protected-retention vetoes."
+        ),
+        stability="experimental",
+        default_enabled=False,
+        risk_level="high",
+        claim_boundary=(
+            "Static evidence and review order are unverified plan-review diagnostics only; they do not authorize "
+            "deprioritization, omission, deletion, replacement, or runtime action."
+        ),
+        gate_requirements=(
+            "complete bounded inline caller-declared static evidence",
+            "unambiguous reciprocal dataflow relations and at least one task anchor",
+            "deny-only protected-path policy",
+            "provider-boundary acknowledgement",
+        ),
+        runtime_status="available-plan-only",
+        commands=("context-guard experiments plan static-relevance",),
+        opt_in_flags=(
+            "plan static-relevance", "--relevance-unit-json", "--provider-boundary-ack",
+            "--protected-path-policy deny",
+        ),
+        config_effect=(
+            "Registry enablement records project-local intent only; static-relevance exposes one deterministic plan "
+            "command and never scans repositories, reads source, invokes git/parsers/providers/subprocesses, writes "
+            "files, or authorizes runtime selection or omission."
+        ),
+        evidence_contract=(
+            "Every caller-supplied symbol, relation, dataflow, and git signal must be syntactically complete and "
+            "internally consistent before slices or review ordering are compiled. Protected paths and explicit "
+            "protected evidence are retention vetoes. All evidence remains unverified."
         ),
     ),
     Experiment(
@@ -4272,6 +4358,631 @@ def command_plan_semantic_gc(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "ready_for_plan_review" else 2
 
 
+_STATIC_RELEVANCE_NONFINITE_SENTINEL = object()
+
+
+def ordered_static_relevance_taxonomy(values: list[str] | set[str]) -> list[str]:
+    selected = set(values)
+    return [value for value in STATIC_RELEVANCE_BLOCKER_ORDER if value in selected]
+
+
+def static_relevance_validation_row(index: int, issue: str | None = None) -> dict[str, Any]:
+    return {
+        "input_index": index,
+        "unit_id": None,
+        "normalized_path": None,
+        "normalized_evidence_included": False,
+        "structural_issues": [issue] if issue else [],
+        "missing_signals": [],
+        "invalid_signals": [],
+        "protection_reasons": [],
+    }
+
+
+def decode_static_relevance_unit(raw: Any, index: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    row = static_relevance_validation_row(index)
+    if not isinstance(raw, str):
+        row["structural_issues"] = ["malformed_relevance_unit_json"]
+        return None, row
+    try:
+        encoded = raw.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        row["structural_issues"] = ["invalid_unicode_scalar"]
+        return None, row
+    if len(encoded) > STATIC_RELEVANCE_UNIT_JSON_BYTE_CAP:
+        row["structural_issues"] = ["relevance_unit_json_too_large"]
+        return None, row
+
+    duplicate_key = False
+
+    def pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal duplicate_key
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_key = True
+            result[key] = value
+        return result
+
+    try:
+        decoded = json.loads(
+            raw,
+            object_pairs_hook=pairs_hook,
+            parse_constant=lambda _value: _STATIC_RELEVANCE_NONFINITE_SENTINEL,
+        )
+    except RecursionError:
+        row["structural_issues"] = ["decoder_recursion_limit"]
+        return None, row
+    except UnicodeDecodeError:
+        row["structural_issues"] = ["invalid_unicode_scalar"]
+        return None, row
+    except (json.JSONDecodeError, ValueError, TypeError):
+        row["structural_issues"] = ["malformed_relevance_unit_json"]
+        return None, row
+
+    depth_exceeded = False
+    nonfinite = False
+    invalid_unicode = False
+    try:
+        stack: list[tuple[Any, int]] = [(decoded, 0)]
+        while stack:
+            value, depth = stack.pop()
+            if depth > STATIC_RELEVANCE_JSON_MAX_DEPTH:
+                depth_exceeded = True
+                continue
+            if isinstance(value, str):
+                try:
+                    value.encode("utf-8", errors="strict")
+                except UnicodeEncodeError:
+                    invalid_unicode = True
+            elif value is _STATIC_RELEVANCE_NONFINITE_SENTINEL or (
+                type(value) is float and not math.isfinite(value)
+            ):
+                nonfinite = True
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    stack.append((key, depth + 1))
+                    stack.append((child, depth + 1))
+            elif isinstance(value, list):
+                for child in value:
+                    stack.append((child, depth + 1))
+    except RecursionError:
+        row["structural_issues"] = ["decoder_recursion_limit"]
+        return None, row
+
+    issue = None
+    if duplicate_key:
+        issue = "duplicate_relevance_unit_json_key"
+    elif nonfinite:
+        issue = "non_finite_relevance_unit_json_value"
+    elif depth_exceeded:
+        issue = "relevance_unit_json_depth_exceeded"
+    elif invalid_unicode:
+        issue = "invalid_unicode_scalar"
+    elif not isinstance(decoded, dict):
+        issue = "relevance_unit_must_be_object"
+    if issue:
+        row["structural_issues"] = [issue]
+        return None, row
+    return decoded, row
+
+
+def valid_static_relevance_path(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    if not (1 <= len(encoded) <= 240) or value.startswith("/") or value.endswith("/") or "\\" in value:
+        return False
+    components = value.split("/")
+    if any(component in {"", ".", ".."} for component in components):
+        return False
+    return not any(unicodedata.category(char) in {"Cc", "Cs"} for char in value)
+
+
+def valid_static_relevance_symbol_name(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        size = len(value.encode("utf-8", errors="strict"))
+    except UnicodeEncodeError:
+        return False
+    return 1 <= size <= 128 and all(
+        char.isprintable() and not unicodedata.category(char).startswith("C") for char in value
+    )
+
+
+def static_relevance_builtin_protection_reasons(path: str) -> list[str]:
+    reasons: set[str] = set()
+    components = path.split("/")
+    lowered = [component.lower() for component in components]
+    for component in lowered:
+        tokens = {token for token in STATIC_RELEVANCE_PATH_TOKEN_SPLIT_RE.split(component) if token}
+        if tokens & {"auth", "authentication", "authorization"}:
+            reasons.add("builtin_auth_path")
+        if "security" in tokens:
+            reasons.add("builtin_security_path")
+        if tokens & {"secret", "secrets", "credential", "credentials"}:
+            reasons.add("builtin_secret_path")
+        if tokens & {"migration", "migrations"}:
+            reasons.add("builtin_migration_path")
+        if tokens & {"acceptance", "e2e"}:
+            reasons.add("builtin_acceptance_path")
+    basename = lowered[-1]
+    if (
+        basename == ".env"
+        or basename.startswith(".env.")
+        or basename.endswith((".pem", ".key", ".p12", ".pfx"))
+    ):
+        reasons.add("builtin_secret_material_path")
+    return [reason for reason in STATIC_RELEVANCE_PROTECTION_REASON_ORDER if reason in reasons]
+
+
+def normalize_static_relevance_unit(
+    obj: dict[str, Any], row: dict[str, Any]
+) -> dict[str, Any]:
+    structural: list[str] = []
+    missing: list[str] = []
+    invalid: list[str] = []
+    if obj.get("schema") != STATIC_RELEVANCE_UNIT_SCHEMA_VERSION:
+        structural.append("relevance_unit_schema_mismatch")
+    if set(obj) - STATIC_RELEVANCE_ALLOWED_FIELDS:
+        structural.append("relevance_unit_unexpected_field")
+
+    raw_id = obj.get("unit_id")
+    unit_id = raw_id if isinstance(raw_id, str) and STATIC_RELEVANCE_ID_RE.fullmatch(raw_id) else None
+    if unit_id is None:
+        structural.append("invalid_relevance_unit_id")
+    row["unit_id"] = unit_id
+
+    raw_path = obj.get("path")
+    normalized_path = raw_path if valid_static_relevance_path(raw_path) else None
+    if normalized_path is None:
+        structural.append("invalid_relevance_unit_path")
+    row["normalized_path"] = normalized_path
+
+    task_anchor = obj.get("task_anchor")
+    if type(task_anchor) is not bool:
+        structural.append("invalid_task_anchor")
+        task_anchor = None
+
+    explicit_reasons: list[str] = []
+    if "protection_reasons" not in obj:
+        structural.append("missing_protection_reasons")
+    else:
+        raw_reasons = obj.get("protection_reasons")
+        if (
+            not isinstance(raw_reasons, list)
+            or len(raw_reasons) > 8
+            or any(not isinstance(reason, str) or reason not in STATIC_RELEVANCE_EXPLICIT_PROTECTION_REASONS for reason in raw_reasons)
+            or len(raw_reasons) != len(set(raw_reasons))
+        ):
+            structural.append("invalid_protection_reasons")
+        else:
+            explicit_reasons = list(raw_reasons)
+    all_reasons = set(explicit_reasons)
+    if normalized_path is not None:
+        all_reasons.update(static_relevance_builtin_protection_reasons(normalized_path))
+    ordered_reasons = [reason for reason in STATIC_RELEVANCE_PROTECTION_REASON_ORDER if reason in all_reasons]
+    row["protection_reasons"] = ordered_reasons
+
+    symbol = None
+    if "symbol" not in obj:
+        missing.append("missing_symbol_signal")
+    else:
+        raw_symbol = obj.get("symbol")
+        if not isinstance(raw_symbol, dict) or set(raw_symbol) != {"name", "kind", "start_line", "end_line"}:
+            invalid.append("invalid_symbol_signal")
+        else:
+            name = raw_symbol.get("name")
+            kind = raw_symbol.get("kind")
+            start_line = raw_symbol.get("start_line")
+            end_line = raw_symbol.get("end_line")
+            if (
+                not valid_static_relevance_symbol_name(name)
+                or not isinstance(kind, str)
+                or kind not in STATIC_RELEVANCE_SYMBOL_KINDS
+                or type(start_line) is not int
+                or type(end_line) is not int
+                or not (1 <= start_line <= end_line <= 10_000_000)
+            ):
+                invalid.append("invalid_symbol_signal")
+            else:
+                symbol = {"name": name, "kind": kind, "start_line": start_line, "end_line": end_line}
+
+    relations: dict[str, list[str] | None] = {}
+    relation_specs = (
+        ("symbol_references", "missing_symbol_references_signal", "invalid_symbol_references_signal"),
+        ("dataflow_predecessors", "missing_dataflow_predecessors_signal", "invalid_dataflow_predecessors_signal"),
+        ("dataflow_successors", "missing_dataflow_successors_signal", "invalid_dataflow_successors_signal"),
+    )
+    for field, missing_token, invalid_token in relation_specs:
+        if field not in obj:
+            missing.append(missing_token)
+            relations[field] = None
+            continue
+        raw_relations = obj.get(field)
+        valid_list = isinstance(raw_relations, list)
+        safe_targets = [
+            target for target in raw_relations
+            if isinstance(target, str) and STATIC_RELEVANCE_ID_RE.fullmatch(target) is not None
+        ] if valid_list else []
+        valid_targets = valid_list and len(safe_targets) == len(raw_relations)
+        duplicate_targets = len(safe_targets) != len(set(safe_targets))
+        if not valid_list or len(raw_relations) > 64 or not valid_targets or duplicate_targets:
+            invalid.append(invalid_token)
+            relations[field] = None
+            if duplicate_targets:
+                structural.append("duplicate_relation_target")
+            continue
+        relations[field] = sorted(raw_relations)
+
+    git = None
+    if "git" not in obj:
+        missing.append("missing_git_signal")
+    else:
+        raw_git = obj.get("git")
+        expected_git_fields = {"blame_age_days", "blame_contributor_count", "path_change_count_90d"}
+        if not isinstance(raw_git, dict) or set(raw_git) - expected_git_fields:
+            invalid.append("invalid_git_signal")
+        else:
+            values: dict[str, int] = {}
+            git_specs = (
+                ("blame_age_days", "missing_blame_age_signal", "invalid_blame_age_signal", 0, 365000),
+                ("blame_contributor_count", "missing_blame_contributor_signal", "invalid_blame_contributor_signal", 1, 10000),
+                ("path_change_count_90d", "missing_path_change_count_signal", "invalid_path_change_count_signal", 0, 100000),
+            )
+            for field, missing_token, invalid_token, minimum, maximum in git_specs:
+                if field not in raw_git:
+                    missing.append(missing_token)
+                else:
+                    value = raw_git[field]
+                    if type(value) is not int or not minimum <= value <= maximum:
+                        invalid.append(invalid_token)
+                    else:
+                        values[field] = value
+            if len(values) == 3 and not any(token == "invalid_git_signal" for token in invalid):
+                git = {
+                    "blame_age_days": values["blame_age_days"],
+                    "blame_contributor_count": values["blame_contributor_count"],
+                    "path_change_count_90d": values["path_change_count_90d"],
+                }
+
+    row["structural_issues"] = ordered_static_relevance_taxonomy(structural)
+    row["missing_signals"] = ordered_static_relevance_taxonomy(missing)
+    row["invalid_signals"] = ordered_static_relevance_taxonomy(invalid)
+    locally_valid = not structural and not missing and not invalid
+    normalized = None
+    if locally_valid:
+        assert unit_id is not None and normalized_path is not None and task_anchor is not None
+        assert symbol is not None and git is not None
+        assert all(relations[field] is not None for field, _, _ in relation_specs)
+        normalized = {
+            "unit_id": unit_id,
+            "normalized_path": normalized_path,
+            "task_anchor": task_anchor,
+            "protection_reasons": ordered_reasons,
+            "symbol": symbol,
+            "symbol_references": relations["symbol_references"],
+            "dataflow_predecessors": relations["dataflow_predecessors"],
+            "dataflow_successors": relations["dataflow_successors"],
+            "git": git,
+        }
+        row["normalized_evidence_included"] = True
+    return {
+        "row": row,
+        "unit_id": unit_id,
+        "normalized_path": normalized_path,
+        "task_anchor": task_anchor,
+        "relations": relations,
+        "normalized": normalized,
+    }
+
+
+def traverse_static_relevance(starts: list[str], adjacency: dict[str, set[str]]) -> set[str]:
+    visited: set[str] = set()
+    pending = list(starts)
+    while pending:
+        unit_id = pending.pop()
+        if unit_id in visited:
+            continue
+        visited.add(unit_id)
+        pending.extend(sorted(adjacency[unit_id] - visited, reverse=True))
+    return visited
+
+
+def static_relevance_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    raw_units = getattr(args, "relevance_unit_json", None) or []
+    input_count = len(raw_units)
+    detailed_count = min(input_count, STATIC_RELEVANCE_DETAILED_UNIT_CAP)
+    overflow_count = max(input_count - STATIC_RELEVANCE_DETAILED_UNIT_CAP, 0)
+    rows: list[dict[str, Any]] = []
+    units: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    if input_count == 0:
+        blockers.append("no_relevance_units")
+    if overflow_count:
+        blockers.append("relevance_unit_limit_exceeded")
+    for index, raw in enumerate(raw_units[:STATIC_RELEVANCE_DETAILED_UNIT_CAP]):
+        decoded, row = decode_static_relevance_unit(raw, index)
+        rows.append(row)
+        if decoded is not None:
+            units.append(normalize_static_relevance_unit(decoded, row))
+
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for unit in units:
+        if unit["unit_id"] is not None:
+            by_id.setdefault(unit["unit_id"], []).append(unit)
+    duplicate_ids = {unit_id for unit_id, matches in by_id.items() if len(matches) > 1}
+    if duplicate_ids:
+        blockers.append("duplicate_relevance_unit_id")
+        for unit_id in duplicate_ids:
+            for unit in by_id[unit_id]:
+                unit["row"]["structural_issues"] = ordered_static_relevance_taxonomy(
+                    unit["row"]["structural_issues"] + ["duplicate_relevance_unit_id"]
+                )
+
+    relation_fields = ("symbol_references", "dataflow_predecessors", "dataflow_successors")
+    for unit in units:
+        relation_targets = [
+            target
+            for field in relation_fields
+            for target in (unit["relations"].get(field) or [])
+        ]
+        cross_issues: list[str] = []
+        if any(target not in by_id for target in relation_targets):
+            cross_issues.append("unknown_relation_target")
+        if any(target in duplicate_ids for target in relation_targets):
+            cross_issues.append("ambiguous_relation_target")
+        if cross_issues:
+            unit["row"]["structural_issues"] = ordered_static_relevance_taxonomy(
+                unit["row"]["structural_issues"] + cross_issues
+            )
+
+    unique_normalized = {
+        unit_id: matches[0]["normalized"]
+        for unit_id, matches in by_id.items()
+        if len(matches) == 1 and matches[0]["normalized"] is not None
+    }
+    inconsistent_ids: set[str] = set()
+    for unit_id, unit in unique_normalized.items():
+        assert unit is not None
+        for successor in unit["dataflow_successors"]:
+            target = unique_normalized.get(successor)
+            if target is not None and unit_id not in target["dataflow_predecessors"]:
+                inconsistent_ids.add(unit_id)
+        for predecessor in unit["dataflow_predecessors"]:
+            target = unique_normalized.get(predecessor)
+            if target is not None and unit_id not in target["dataflow_successors"]:
+                inconsistent_ids.add(unit_id)
+    if inconsistent_ids:
+        blockers.append("inconsistent_dataflow_relation")
+        for unit_id in inconsistent_ids:
+            for unit in by_id[unit_id]:
+                unit["row"]["structural_issues"] = ordered_static_relevance_taxonomy(
+                    unit["row"]["structural_issues"] + ["inconsistent_dataflow_relation"]
+                )
+
+    safe_anchor_ids = sorted({
+        unit["unit_id"] for unit in units
+        if unit["unit_id"] is not None and unit["task_anchor"] is True
+    })
+    if not safe_anchor_ids:
+        blockers.append("no_task_anchor")
+    for row in rows:
+        blockers.extend(row["structural_issues"])
+        blockers.extend(row["missing_signals"])
+        blockers.extend(row["invalid_signals"])
+
+    protected_policy = "deny" if getattr(args, "protected_path_policy", None) == "deny" else None
+    if protected_policy is None:
+        blockers.append("protected_path_policy_required")
+    provider_ack = bool(getattr(args, "provider_boundary_ack", False))
+    if not provider_ack:
+        blockers.append("provider_boundary_ack_required")
+    blockers = ordered_static_relevance_taxonomy(blockers)
+
+    structural_tokens = set(STATIC_RELEVANCE_BLOCKER_ORDER[:19]) | set(STATIC_RELEVANCE_BLOCKER_ORDER[35:39])
+    structural_integrity_complete = not any(token in structural_tokens for token in blockers)
+    unassessable_tokens = set(STATIC_RELEVANCE_BLOCKER_ORDER[2:12])
+    signal_tokens = set(STATIC_RELEVANCE_BLOCKER_ORDER[19:35])
+    declared_signal_fields_complete = (
+        1 <= input_count <= STATIC_RELEVANCE_DETAILED_UNIT_CAP
+        and not any(token in unassessable_tokens or token in signal_tokens for token in blockers)
+    )
+    compilation_performed = (
+        structural_integrity_complete
+        and declared_signal_fields_complete
+        and protected_policy == "deny"
+        and provider_ack
+    )
+
+    normalized_units = [unit["normalized"] for unit in units if unit["normalized"] is not None]
+    normalized_units.sort(key=lambda unit: (
+        unit["unit_id"], unit["normalized_path"],
+        json.dumps(unit, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    ))
+    protected_vetoes = [
+        {
+            "unit_id": unit["unit_id"],
+            "normalized_path": unit["normalized_path"],
+            "protection_reasons": unit["row"]["protection_reasons"],
+            "protected_retention_veto": True,
+            "review_priority_tier": 0,
+        }
+        for unit in units
+        if unit["unit_id"] is not None
+        and unit["normalized_path"] is not None
+        and unit["row"]["protection_reasons"]
+    ]
+    protected_vetoes.sort(key=lambda row: (
+        row["unit_id"], row["normalized_path"],
+        json.dumps(row["protection_reasons"], ensure_ascii=False, separators=(",", ":")),
+    ))
+
+    backward_ids: list[str] = []
+    forward_ids: list[str] = []
+    symbol_ids: list[str] = []
+    review_order: list[dict[str, Any]] = []
+    if compilation_performed:
+        compiled_by_id = {unit["unit_id"]: unit for unit in normalized_units}
+        identifiers = set(compiled_by_id)
+        successors = {unit_id: set(unit["dataflow_successors"]) for unit_id, unit in compiled_by_id.items()}
+        predecessors = {unit_id: set(unit["dataflow_predecessors"]) for unit_id, unit in compiled_by_id.items()}
+        symbol_out = {unit_id: set(unit["symbol_references"]) for unit_id, unit in compiled_by_id.items()}
+        symbol_in = {unit_id: set() for unit_id in identifiers}
+        symbol_graph = {unit_id: set() for unit_id in identifiers}
+        union_graph = {unit_id: set() for unit_id in identifiers}
+        for unit_id in identifiers:
+            for target in symbol_out[unit_id]:
+                symbol_in[target].add(unit_id)
+                symbol_graph[unit_id].add(target)
+                symbol_graph[target].add(unit_id)
+                union_graph[unit_id].add(target)
+                union_graph[target].add(unit_id)
+            for target in successors[unit_id] | predecessors[unit_id]:
+                union_graph[unit_id].add(target)
+                union_graph[target].add(unit_id)
+        anchors = sorted(unit_id for unit_id, unit in compiled_by_id.items() if unit["task_anchor"])
+        forward = traverse_static_relevance(anchors, successors)
+        backward = traverse_static_relevance(anchors, predecessors)
+        symbol_slice = traverse_static_relevance(anchors, symbol_graph)
+        forward_ids = sorted(forward)
+        backward_ids = sorted(backward)
+        symbol_ids = sorted(symbol_slice)
+        distances = {unit_id: 65 for unit_id in identifiers}
+        pending = [(anchor, 0) for anchor in anchors]
+        cursor = 0
+        while cursor < len(pending):
+            unit_id, distance = pending[cursor]
+            cursor += 1
+            if distance >= distances[unit_id]:
+                continue
+            distances[unit_id] = distance
+            for target in sorted(union_graph[unit_id]):
+                if distance + 1 < distances[target]:
+                    pending.append((target, distance + 1))
+        rows_for_sort: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        for unit_id, unit in compiled_by_id.items():
+            symbol_in_degree = len(symbol_in[unit_id] - {unit_id})
+            symbol_out_degree = len(symbol_out[unit_id] - {unit_id})
+            dataflow_in_degree = len(predecessors[unit_id] - {unit_id})
+            dataflow_out_degree = len(successors[unit_id] - {unit_id})
+            centrality_total = symbol_in_degree + symbol_out_degree + dataflow_in_degree + dataflow_out_degree
+            protected = bool(unit["protection_reasons"])
+            if protected:
+                tier = 0
+            elif unit["task_anchor"]:
+                tier = 1
+            elif unit_id in forward or unit_id in backward:
+                tier = 2
+            elif unit_id in symbol_slice:
+                tier = 3
+            elif distances[unit_id] != 65:
+                tier = 4
+            else:
+                tier = 5
+            rank_key = (
+                tier, distances[unit_id], -centrality_total,
+                -unit["git"]["path_change_count_90d"], unit["git"]["blame_age_days"],
+                unit["normalized_path"], unit_id,
+            )
+            review = {
+                "rank": 0,
+                "unit_id": unit_id,
+                "normalized_path": unit["normalized_path"],
+                "symbol": unit["symbol"],
+                "task_anchor": unit["task_anchor"],
+                "protection_reasons": unit["protection_reasons"],
+                "protected_retention_veto": protected,
+                "review_priority_tier": tier,
+                "task_distance": distances[unit_id],
+                "centrality": {
+                    "symbol_in_degree": symbol_in_degree,
+                    "symbol_out_degree": symbol_out_degree,
+                    "dataflow_in_degree": dataflow_in_degree,
+                    "dataflow_out_degree": dataflow_out_degree,
+                    "centrality_total": centrality_total,
+                },
+                "git": unit["git"],
+                "rank_key": list(rank_key),
+            }
+            rows_for_sort.append((rank_key, review))
+        rows_for_sort.sort(key=lambda item: item[0])
+        review_order = [row for _, row in rows_for_sort]
+        for rank, row in enumerate(review_order, 1):
+            row["rank"] = rank
+
+    rows.sort(key=lambda row: (
+        row["unit_id"] is None, row["unit_id"] or "",
+        row["normalized_path"] is None, row["normalized_path"] or "", row["input_index"],
+    ))
+    return {
+        "schema": STATIC_RELEVANCE_PLAN_SCHEMA_VERSION,
+        "experiment_id": "static-relevance",
+        "mode": "plan",
+        "status": "ready_for_plan_review" if compilation_performed else "blocked",
+        "process_exit_contract": STATIC_RELEVANCE_PROCESS_EXIT_CONTRACT,
+        "protected_path_policy": protected_policy,
+        "effective_protected_path_policy": "deny",
+        "provider_boundary_acknowledged": provider_ack,
+        "input_summary": {
+            "input_count": input_count, "detailed_count": detailed_count, "overflow_count": overflow_count,
+        },
+        "structural_integrity_complete": structural_integrity_complete,
+        "declared_signal_fields_complete": declared_signal_fields_complete,
+        "compilation_performed": compilation_performed,
+        "normalized_evidence": {"unit_count": len(normalized_units), "units": normalized_units},
+        "unit_validation": rows,
+        "compilation": {
+            "task_anchor_ids": safe_anchor_ids,
+            "backward_dataflow_slice_ids": backward_ids,
+            "forward_dataflow_slice_ids": forward_ids,
+            "symbol_slice_ids": symbol_ids,
+            "protected_vetoes": protected_vetoes,
+            "review_order": review_order,
+        },
+        "readiness_blockers": blockers,
+        "warnings": list(STATIC_RELEVANCE_WARNING_ORDER),
+        "verification_scope": {
+            "evidence_collection_verified": False,
+            "repository_coverage_verified": False,
+            "symbol_resolution_verified": False,
+            "dataflow_semantics_verified": False,
+            "git_metrics_verified": False,
+        },
+        "runtime_boundaries": {
+            "repository_scanned": False,
+            "source_content_read": False,
+            "git_invoked": False,
+            "parser_invoked": False,
+            "provider_called": False,
+            "files_written": False,
+        },
+        "candidate_replacement": None,
+        "human_review_performed": False,
+        "deprioritization_authorized": False,
+        "omission_authorized": False,
+        "runtime_action_allowed": False,
+    }
+
+
+def command_plan_static_relevance(args: argparse.Namespace) -> int:
+    payload = static_relevance_plan_payload(args)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    else:
+        summary = payload["input_summary"]
+        print("ContextGuard static-relevance plan")
+        print(f"Status: {payload['status']}")
+        print(f"Inputs: {summary['input_count']}; blockers: {len(payload['readiness_blockers'])}")
+        print(f"Protected retention vetoes: {len(payload['compilation']['protected_vetoes'])}")
+        print("Static relevance is plan-review-only and authorizes no deprioritization, omission, deletion, or runtime action.")
+    return 0 if payload["status"] == "ready_for_plan_review" else 2
+
+
 def visual_crop_ocr_evidence_pack_payload(args: argparse.Namespace) -> dict[str, Any]:
     payload = visual_crop_ocr_plan_payload(args)
     blockers = list(payload["review_plan"]["readiness_blockers"])
@@ -6972,7 +7683,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(disable_parser)
     disable_parser.set_defaults(func=command_disable)
 
-    plan_parser = sub.add_parser("plan", help="Run read-only dry-run planners for experimental lanes.")
+    plan_parser = sub.add_parser(
+        "plan", allow_abbrev=False, help="Run read-only dry-run planners for experimental lanes."
+    )
     plan_sub = plan_parser.add_subparsers(dest="plan_command", required=True)
 
     context_diff = plan_sub.add_parser(
@@ -7131,6 +7844,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     semantic_gc.add_argument("--json", action="store_true", help="Emit JSON output.")
     semantic_gc.set_defaults(func=command_plan_semantic_gc)
+
+    static_relevance = plan_sub.add_parser(
+        "static-relevance",
+        allow_abbrev=False,
+        help="Compile bounded caller-declared static evidence into plan-review diagnostics.",
+    )
+    static_relevance.add_argument(
+        "--relevance-unit-json",
+        action="append",
+        help="Inline literal static-relevance unit JSON object. Repeatable; never treated as a path.",
+    )
+    static_relevance.add_argument(
+        "--provider-boundary-ack",
+        action="store_true",
+        help="Acknowledge that provider behavior and hosted savings remain unverified.",
+    )
+    static_relevance.add_argument(
+        "--protected-path-policy",
+        choices=("deny",),
+        default=None,
+        help="Explicit deny-only protected-path declaration; omitted remains effective deny but blocks readiness.",
+    )
+    static_relevance.add_argument("--json", action="store_true", help="Emit JSON output.")
+    static_relevance.set_defaults(func=command_plan_static_relevance)
 
     self_hosted = plan_sub.add_parser(
         "self-hosted-metrics-ledger",

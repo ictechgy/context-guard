@@ -296,6 +296,43 @@ def run_semantic_gc_plan(
     return subprocess.run(argv, text=True, capture_output=True)
 
 
+def static_relevance_unit(unit_id: str = "src/cli.py::main", **overrides) -> dict[str, object]:
+    unit: dict[str, object] = {
+        "schema": "contextguard.static-relevance-unit.v1",
+        "unit_id": unit_id,
+        "path": "src/cli.py",
+        "task_anchor": True,
+        "protection_reasons": [],
+        "symbol": {"name": "main", "kind": "function", "start_line": 1, "end_line": 40},
+        "symbol_references": [],
+        "dataflow_predecessors": [],
+        "dataflow_successors": [],
+        "git": {"blame_age_days": 2, "blame_contributor_count": 1, "path_change_count_90d": 3},
+    }
+    unit.update(overrides)
+    return unit
+
+
+def run_static_relevance_plan(
+    script: Path,
+    units: list[object] | None = None,
+    *,
+    provider_boundary_ack: bool = True,
+    protected_path_policy: str | None = "deny",
+    json_output: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    argv = [sys.executable, str(script), "plan", "static-relevance"]
+    if json_output:
+        argv.append("--json")
+    for unit in units if units is not None else [static_relevance_unit()]:
+        argv.extend(["--relevance-unit-json", unit if isinstance(unit, str) else json.dumps(unit)])
+    if provider_boundary_ack:
+        argv.append("--provider-boundary-ack")
+    if protected_path_policy is not None:
+        argv.extend(["--protected-path-policy", protected_path_policy])
+    return subprocess.run(argv, text=True, capture_output=True)
+
+
 def reserve_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -5137,6 +5174,686 @@ class ClaudeTokenKitTests(unittest.TestCase):
                 )
                 self.assertEqual(dispatcher.returncode, 0, dispatcher.stderr)
                 self.assertEqual(json.loads(dispatcher.stdout)["status"], "verified")
+
+    def test_experimental_static_relevance_registry_and_surface(self):
+        for script in EXPERIMENT_SCRIPTS:
+            with self.subTest(script=script):
+                registry = json.loads(subprocess.run(
+                    [sys.executable, str(script), "list", "--json"],
+                    text=True, capture_output=True, check=True,
+                ).stdout)
+                rows = [item for item in registry["experiments"] if item["id"] == "static-relevance"]
+                self.assertEqual(len(rows), 1)
+                row = rows[0]
+                self.assertFalse(row["default_enabled"])
+                self.assertEqual(row["risk_level"], "high")
+                self.assertEqual(row["runtime_status"], "available-plan-only")
+                self.assertEqual(row["commands"], ["context-guard experiments plan static-relevance"])
+                proc = run_static_relevance_plan(script)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                payload = json.loads(proc.stdout)
+                self.assertEqual(payload["status"], "ready_for_plan_review")
+                module = load_python_script_module(script, f"_static_relevance_parser_{script.name.replace('-', '_')}")
+                parser = module.build_parser()
+                root_sub = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
+                plan = root_sub.choices["plan"]
+                self.assertFalse(plan.allow_abbrev)
+                plan_sub = next(action for action in plan._actions if isinstance(action, argparse._SubParsersAction))
+                static = plan_sub.choices["static-relevance"]
+                self.assertFalse(static.allow_abbrev)
+                self.assertEqual(
+                    {option for action in static._actions for option in action.option_strings if option not in {"-h", "--help"}},
+                    {"--relevance-unit-json", "--provider-boundary-ack", "--protected-path-policy", "--json"},
+                )
+                abbreviated = subprocess.run(
+                    [sys.executable, str(script), "plan", "static-relevance", "--relevance-unit-j", "{}"],
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(abbreviated.returncode, 2)
+
+    def test_experimental_static_relevance_ready_and_deterministic(self):
+        top_keys = {
+            "schema", "experiment_id", "mode", "status", "process_exit_contract",
+            "protected_path_policy", "effective_protected_path_policy",
+            "provider_boundary_acknowledged", "input_summary", "structural_integrity_complete",
+            "declared_signal_fields_complete", "compilation_performed", "normalized_evidence",
+            "unit_validation", "compilation", "readiness_blockers", "warnings",
+            "verification_scope", "runtime_boundaries", "candidate_replacement",
+            "human_review_performed", "deprioritization_authorized", "omission_authorized",
+            "runtime_action_allowed",
+        }
+        expected_warnings = [
+            "caller_declared_static_evidence_unverified",
+            "symbol_and_dataflow_semantics_not_verified",
+            "git_history_metrics_not_verified",
+            "protected_path_detection_non_exhaustive",
+            "accepted_labels_are_untrusted_caller_data",
+            "static_relevance_is_not_semantic_safety",
+            "review_order_does_not_authorize_omission",
+            "hosted_provider_behavior_and_savings_unverified",
+        ]
+        for script in EXPERIMENT_SCRIPTS:
+            first = run_static_relevance_plan(script)
+            second = run_static_relevance_plan(script)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(first.stdout, second.stdout)
+            self.assertEqual(first.stdout, json.dumps(json.loads(first.stdout), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+            payload = json.loads(first.stdout)
+            self.assertEqual(set(payload), top_keys)
+            self.assertEqual(payload["schema"], "contextguard.experiments.static-relevance-plan.v1")
+            self.assertEqual(payload["experiment_id"], "static-relevance")
+            self.assertEqual(payload["mode"], "plan")
+            self.assertEqual(payload["status"], "ready_for_plan_review")
+            self.assertTrue(payload["structural_integrity_complete"])
+            self.assertTrue(payload["declared_signal_fields_complete"])
+            self.assertTrue(payload["compilation_performed"])
+            self.assertEqual(payload["readiness_blockers"], [])
+            self.assertEqual(payload["warnings"], expected_warnings)
+            self.assertEqual(set(payload["input_summary"]), {"input_count", "detailed_count", "overflow_count"})
+            self.assertEqual(payload["normalized_evidence"]["unit_count"], 1)
+            normalized = payload["normalized_evidence"]["units"][0]
+            self.assertEqual(set(normalized), {
+                "unit_id", "normalized_path", "task_anchor", "protection_reasons", "symbol",
+                "symbol_references", "dataflow_predecessors", "dataflow_successors", "git",
+            })
+            self.assertEqual(set(payload["unit_validation"][0]), {
+                "input_index", "unit_id", "normalized_path", "normalized_evidence_included",
+                "structural_issues", "missing_signals", "invalid_signals", "protection_reasons",
+            })
+            compilation = payload["compilation"]
+            self.assertEqual(set(compilation), {
+                "task_anchor_ids", "backward_dataflow_slice_ids", "forward_dataflow_slice_ids",
+                "symbol_slice_ids", "protected_vetoes", "review_order",
+            })
+            self.assertEqual(compilation["task_anchor_ids"], ["src/cli.py::main"])
+            self.assertEqual(compilation["backward_dataflow_slice_ids"], ["src/cli.py::main"])
+            self.assertEqual(compilation["forward_dataflow_slice_ids"], ["src/cli.py::main"])
+            self.assertEqual(compilation["symbol_slice_ids"], ["src/cli.py::main"])
+            review = compilation["review_order"][0]
+            self.assertEqual(set(review), {
+                "rank", "unit_id", "normalized_path", "symbol", "task_anchor", "protection_reasons",
+                "protected_retention_veto", "review_priority_tier", "task_distance", "centrality", "git", "rank_key",
+            })
+            self.assertEqual(set(review["centrality"]), {
+                "symbol_in_degree", "symbol_out_degree", "dataflow_in_degree", "dataflow_out_degree", "centrality_total",
+            })
+            self.assertEqual(review["rank_key"], [1, 0, 0, -3, 2, "src/cli.py", "src/cli.py::main"])
+            self.assertEqual(review["centrality"]["centrality_total"], 0)
+            self.assertEqual(payload["verification_scope"], {
+                "evidence_collection_verified": False, "repository_coverage_verified": False,
+                "symbol_resolution_verified": False, "dataflow_semantics_verified": False,
+                "git_metrics_verified": False,
+            })
+            self.assertEqual(payload["runtime_boundaries"], {
+                "repository_scanned": False, "source_content_read": False, "git_invoked": False,
+                "parser_invoked": False, "provider_called": False, "files_written": False,
+            })
+            self.assertIsNone(payload["candidate_replacement"])
+            for field in ("human_review_performed", "deprioritization_authorized", "omission_authorized", "runtime_action_allowed"):
+                self.assertFalse(payload[field])
+
+        source_ready = run_static_relevance_plan(EXPERIMENT_SCRIPTS[0])
+        package_ready = run_static_relevance_plan(EXPERIMENT_SCRIPTS[1])
+        self.assertEqual(source_ready.returncode, package_ready.returncode)
+        self.assertEqual(source_ready.stdout, package_ready.stdout)
+        self.assertEqual(source_ready.stderr, package_ready.stderr)
+
+        graph = [
+            static_relevance_unit(
+                "a", path="src/a.py", symbol_references=["a", "d", "s"],
+                dataflow_predecessors=["c"], dataflow_successors=["d"],
+            ),
+            static_relevance_unit(
+                "d", path="src/d.py", task_anchor=False,
+                symbol={"name": "d", "kind": "function", "start_line": 1, "end_line": 2},
+                symbol_references=["d"], dataflow_predecessors=["a", "d"],
+                dataflow_successors=["c", "d"],
+            ),
+            static_relevance_unit(
+                "c", path="src/c.py", task_anchor=False,
+                symbol={"name": "c", "kind": "function", "start_line": 1, "end_line": 2},
+                dataflow_predecessors=["d"], dataflow_successors=["a"],
+            ),
+            static_relevance_unit(
+                "m", path="src/m.py", task_anchor=True,
+                symbol={"name": "m", "kind": "function", "start_line": 1, "end_line": 2},
+                symbol_references=["t"],
+            ),
+            static_relevance_unit(
+                "s", path="src/s.py", task_anchor=False,
+                symbol={"name": "s", "kind": "function", "start_line": 1, "end_line": 2},
+                dataflow_successors=["u"],
+            ),
+            static_relevance_unit(
+                "u", path="src/u.py", task_anchor=False,
+                symbol={"name": "u", "kind": "function", "start_line": 1, "end_line": 2},
+                dataflow_predecessors=["s"],
+            ),
+            static_relevance_unit(
+                "t", path="src/t.py", task_anchor=False,
+                symbol={"name": "t", "kind": "function", "start_line": 1, "end_line": 2},
+                dataflow_successors=["v"],
+            ),
+            static_relevance_unit(
+                "v", path="src/v.py", task_anchor=False,
+                symbol={"name": "v", "kind": "function", "start_line": 1, "end_line": 2},
+                symbol_references=["u"], dataflow_predecessors=["t"],
+            ),
+            static_relevance_unit(
+                "p", path="src/security/p.py", task_anchor=False,
+                symbol={"name": "p", "kind": "function", "start_line": 1, "end_line": 2},
+            ),
+            static_relevance_unit(
+                "x", path="src/x.py", task_anchor=False,
+                symbol={"name": "x", "kind": "function", "start_line": 1, "end_line": 2},
+                git={"blame_age_days": 2, "blame_contributor_count": 999, "path_change_count_90d": 3},
+            ),
+            static_relevance_unit(
+                "y", path="src/y.py", task_anchor=False,
+                symbol={"name": "y", "kind": "function", "start_line": 1, "end_line": 2},
+                git={"blame_age_days": 2, "blame_contributor_count": 1, "path_change_count_90d": 3},
+            ),
+        ]
+        permuted = []
+        for unit in reversed(copy.deepcopy(graph)):
+            for field in ("symbol_references", "dataflow_predecessors", "dataflow_successors"):
+                unit[field] = list(reversed(unit[field]))
+            permuted.append(unit)
+        forward_proc = run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], graph)
+        reverse_proc = run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], permuted)
+        self.assertEqual(forward_proc.returncode, 0, forward_proc.stderr)
+        self.assertEqual(reverse_proc.returncode, 0, reverse_proc.stderr)
+        forward = json.loads(forward_proc.stdout)
+        reverse = json.loads(reverse_proc.stdout)
+        self.assertNotEqual(forward["unit_validation"], reverse["unit_validation"])
+        self.assertEqual(forward["normalized_evidence"], reverse["normalized_evidence"])
+        self.assertEqual(forward["compilation"], reverse["compilation"])
+        compilation = forward["compilation"]
+        self.assertEqual(compilation["task_anchor_ids"], ["a", "m"])
+        self.assertEqual(compilation["backward_dataflow_slice_ids"], ["a", "c", "d", "m"])
+        self.assertEqual(compilation["forward_dataflow_slice_ids"], ["a", "c", "d", "m"])
+        self.assertEqual(compilation["symbol_slice_ids"], ["a", "d", "m", "s", "t"])
+        review_order = compilation["review_order"]
+        self.assertEqual([row["unit_id"] for row in review_order], [
+            "p", "a", "m", "d", "c", "s", "t", "u", "v", "x", "y",
+        ])
+        self.assertEqual([row["rank"] for row in review_order], list(range(1, 12)))
+        reviews = {row["unit_id"]: row for row in review_order}
+        expected_tiers = {"p": 0, "a": 1, "m": 1, "d": 2, "c": 2, "s": 3, "t": 3, "u": 4, "v": 4, "x": 5, "y": 5}
+        expected_distances = {"p": 65, "a": 0, "m": 0, "d": 1, "c": 1, "s": 1, "t": 1, "u": 2, "v": 2, "x": 65, "y": 65}
+        for unit_id, tier in expected_tiers.items():
+            self.assertEqual(reviews[unit_id]["review_priority_tier"], tier)
+            self.assertEqual(reviews[unit_id]["task_distance"], expected_distances[unit_id])
+        expected_centrality = {
+            "a": {"symbol_in_degree": 0, "symbol_out_degree": 2, "dataflow_in_degree": 1, "dataflow_out_degree": 1, "centrality_total": 4},
+            "d": {"symbol_in_degree": 1, "symbol_out_degree": 0, "dataflow_in_degree": 1, "dataflow_out_degree": 1, "centrality_total": 3},
+            "c": {"symbol_in_degree": 0, "symbol_out_degree": 0, "dataflow_in_degree": 1, "dataflow_out_degree": 1, "centrality_total": 2},
+        }
+        for unit_id, centrality in expected_centrality.items():
+            self.assertEqual(reviews[unit_id]["centrality"], centrality)
+        expected_rank_keys = {
+            "p": [0, 65, 0, -3, 2, "src/security/p.py", "p"],
+            "a": [1, 0, -4, -3, 2, "src/a.py", "a"],
+            "m": [1, 0, -1, -3, 2, "src/m.py", "m"],
+            "d": [2, 1, -3, -3, 2, "src/d.py", "d"],
+            "c": [2, 1, -2, -3, 2, "src/c.py", "c"],
+            "s": [3, 1, -2, -3, 2, "src/s.py", "s"],
+            "t": [3, 1, -2, -3, 2, "src/t.py", "t"],
+            "u": [4, 2, -2, -3, 2, "src/u.py", "u"],
+            "v": [4, 2, -2, -3, 2, "src/v.py", "v"],
+            "x": [5, 65, 0, -3, 2, "src/x.py", "x"],
+            "y": [5, 65, 0, -3, 2, "src/y.py", "y"],
+        }
+        for unit_id, rank_key in expected_rank_keys.items():
+            self.assertEqual(reviews[unit_id]["rank_key"], rank_key)
+        self.assertNotEqual(reviews["x"]["git"]["blame_contributor_count"], reviews["y"]["git"]["blame_contributor_count"])
+        self.assertEqual(reviews["x"]["rank_key"][:5], reviews["y"]["rank_key"][:5])
+        self.assertEqual(compilation["protected_vetoes"][0]["unit_id"], "p")
+        self.assertEqual(reviews["p"]["rank"], 1)
+
+    def test_experimental_static_relevance_missing_signals(self):
+        cases = (
+            ("symbol", "missing_symbol_signal"),
+            ("symbol_references", "missing_symbol_references_signal"),
+            ("dataflow_predecessors", "missing_dataflow_predecessors_signal"),
+            ("dataflow_successors", "missing_dataflow_successors_signal"),
+            ("git", "missing_git_signal"),
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            for field, token in cases:
+                unit = static_relevance_unit()
+                del unit[field]
+                proc = run_static_relevance_plan(script, [unit])
+                self.assertEqual(proc.returncode, 2)
+                payload = json.loads(proc.stdout)
+                self.assertIn(token, payload["readiness_blockers"])
+                self.assertFalse(payload["declared_signal_fields_complete"])
+                self.assertFalse(payload["compilation_performed"])
+                self.assertEqual(payload["compilation"]["review_order"], [])
+                self.assertEqual(payload["compilation"]["forward_dataflow_slice_ids"], [])
+            for field, token in (
+                ("blame_age_days", "missing_blame_age_signal"),
+                ("blame_contributor_count", "missing_blame_contributor_signal"),
+                ("path_change_count_90d", "missing_path_change_count_signal"),
+            ):
+                unit = static_relevance_unit()
+                del unit["git"][field]
+                payload = json.loads(run_static_relevance_plan(script, [unit]).stdout)
+                self.assertIn(token, payload["readiness_blockers"])
+                self.assertNotIn("invalid_git_signal", payload["readiness_blockers"])
+        no_input = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], []).stdout)
+        self.assertFalse(no_input["declared_signal_fields_complete"])
+        self.assertEqual(no_input["readiness_blockers"][:2], ["no_relevance_units", "no_task_anchor"])
+
+    def test_experimental_static_relevance_graph_integrity(self):
+        fixtures = (
+            ([static_relevance_unit("dup"), static_relevance_unit("dup", task_anchor=False)], "duplicate_relevance_unit_id"),
+            ([static_relevance_unit("a", symbol_references=["missing"])], "unknown_relation_target"),
+            ([static_relevance_unit("a", dataflow_successors=["b"]), static_relevance_unit("b", path="b.py", task_anchor=False)], "inconsistent_dataflow_relation"),
+            ([static_relevance_unit("a", task_anchor=False)], "no_task_anchor"),
+        )
+        for units, token in fixtures:
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], units).stdout)
+            self.assertIn(token, payload["readiness_blockers"])
+            self.assertFalse(payload["structural_integrity_complete"])
+            self.assertFalse(payload["compilation_performed"])
+            self.assertEqual(payload["compilation"]["review_order"], [])
+            self.assertEqual(payload["compilation"]["symbol_slice_ids"], [])
+            if token in {"duplicate_relevance_unit_id", "unknown_relation_target", "inconsistent_dataflow_relation"}:
+                self.assertTrue(payload["declared_signal_fields_complete"])
+                self.assertTrue(payload["normalized_evidence"]["units"])
+        for field, signal_token in (
+            ("symbol_references", "invalid_symbol_references_signal"),
+            ("dataflow_predecessors", "invalid_dataflow_predecessors_signal"),
+            ("dataflow_successors", "invalid_dataflow_successors_signal"),
+        ):
+            unit = static_relevance_unit()
+            unit[field] = ["a", "a"]
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+            blockers = payload["readiness_blockers"]
+            self.assertLess(blockers.index(signal_token), blockers.index("duplicate_relation_target"))
+            self.assertFalse(payload["declared_signal_fields_complete"])
+            self.assertFalse(payload["structural_integrity_complete"])
+            self.assertEqual(payload["normalized_evidence"]["units"], [])
+        overflow = [static_relevance_unit(f"u{i}", path=f"src/u{i}.py", task_anchor=i == 0) for i in range(65)]
+        overflow_payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], overflow).stdout)
+        self.assertIn("relevance_unit_limit_exceeded", overflow_payload["readiness_blockers"])
+        self.assertEqual(overflow_payload["input_summary"], {"input_count": 65, "detailed_count": 64, "overflow_count": 1})
+        bool_git = static_relevance_unit(git={"blame_age_days": True, "blame_contributor_count": 1, "path_change_count_90d": 3})
+        bool_payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [bool_git]).stdout)
+        self.assertIn("invalid_blame_age_signal", bool_payload["readiness_blockers"])
+        missing_ack = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], provider_boundary_ack=False).stdout)
+        self.assertEqual(missing_ack["readiness_blockers"], ["provider_boundary_ack_required"])
+        self.assertTrue(missing_ack["structural_integrity_complete"])
+        self.assertTrue(missing_ack["declared_signal_fields_complete"])
+        self.assertFalse(missing_ack["compilation_performed"])
+
+        invalid_signal_units = [
+            (static_relevance_unit(symbol=[]), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "function", "start_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "", "kind": "function", "start_line": 1, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "bad\nname", "kind": "function", "start_line": 1, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "procedure", "start_line": 1, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "function", "start_line": True, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "function", "start_line": 0, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "function", "start_line": 2, "end_line": 1}), "invalid_symbol_signal"),
+            (static_relevance_unit(symbol={"name": "x", "kind": "function", "start_line": 1, "end_line": 10_000_001}), "invalid_symbol_signal"),
+            (static_relevance_unit(git=[]), "invalid_git_signal"),
+            (static_relevance_unit(git={"blame_age_days": 1, "blame_contributor_count": 1, "path_change_count_90d": 1, "extra": 1}), "invalid_git_signal"),
+            (static_relevance_unit(git={"blame_age_days": -1, "blame_contributor_count": 1, "path_change_count_90d": 1}), "invalid_blame_age_signal"),
+            (static_relevance_unit(git={"blame_age_days": 365001, "blame_contributor_count": 1, "path_change_count_90d": 1}), "invalid_blame_age_signal"),
+            (static_relevance_unit(git={"blame_age_days": 1, "blame_contributor_count": 0, "path_change_count_90d": 1}), "invalid_blame_contributor_signal"),
+            (static_relevance_unit(git={"blame_age_days": 1, "blame_contributor_count": 10001, "path_change_count_90d": 1}), "invalid_blame_contributor_signal"),
+            (static_relevance_unit(git={"blame_age_days": 1, "blame_contributor_count": 1, "path_change_count_90d": -1}), "invalid_path_change_count_signal"),
+            (static_relevance_unit(git={"blame_age_days": 1, "blame_contributor_count": 1, "path_change_count_90d": 100001}), "invalid_path_change_count_signal"),
+        ]
+        for unit, token in invalid_signal_units:
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+            self.assertIn(token, payload["readiness_blockers"])
+            self.assertFalse(payload["declared_signal_fields_complete"])
+            self.assertTrue(payload["structural_integrity_complete"])
+            self.assertEqual(payload["normalized_evidence"]["units"], [])
+            self.assertEqual(payload["compilation"]["backward_dataflow_slice_ids"], [])
+            self.assertEqual(payload["compilation"]["forward_dataflow_slice_ids"], [])
+            self.assertEqual(payload["compilation"]["symbol_slice_ids"], [])
+            self.assertEqual(payload["compilation"]["review_order"], [])
+
+        for field, signal_token in (
+            ("symbol_references", "invalid_symbol_references_signal"),
+            ("dataflow_predecessors", "invalid_dataflow_predecessors_signal"),
+            ("dataflow_successors", "invalid_dataflow_successors_signal"),
+        ):
+            for targets in ([f"u{i}" for i in range(65)], ["bad target"]):
+                unit = static_relevance_unit()
+                unit[field] = targets
+                payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+                self.assertIn(signal_token, payload["readiness_blockers"])
+                self.assertFalse(payload["declared_signal_fields_complete"])
+            unit = static_relevance_unit()
+            unit[field] = ["a"] * 65
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+            blockers = payload["readiness_blockers"]
+            self.assertLess(blockers.index(signal_token), blockers.index("duplicate_relation_target"))
+            self.assertFalse(payload["declared_signal_fields_complete"])
+            self.assertFalse(payload["structural_integrity_complete"])
+            unit[field] = ["a", "a", "bad target"]
+            mixed_payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+            self.assertIn(signal_token, mixed_payload["readiness_blockers"])
+            self.assertIn("duplicate_relation_target", mixed_payload["readiness_blockers"])
+
+        structural_only = [
+            (static_relevance_unit("bad id"), "invalid_relevance_unit_id"),
+            (static_relevance_unit(path="/absolute.py"), "invalid_relevance_unit_path"),
+            (static_relevance_unit(task_anchor="yes"), "invalid_task_anchor"),
+            (static_relevance_unit(protection_reasons=None), "invalid_protection_reasons"),
+            (static_relevance_unit(protection_reasons=["caller_protected", "caller_protected"]), "invalid_protection_reasons"),
+            (static_relevance_unit(protection_reasons=["unknown"]), "invalid_protection_reasons"),
+        ]
+        missing_protection = static_relevance_unit()
+        del missing_protection["protection_reasons"]
+        structural_only.append((missing_protection, "missing_protection_reasons"))
+        for unit, token in structural_only:
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [unit]).stdout)
+            self.assertIn(token, payload["readiness_blockers"])
+            self.assertTrue(payload["declared_signal_fields_complete"])
+            self.assertFalse(payload["structural_integrity_complete"])
+            self.assertFalse(payload["compilation_performed"])
+            self.assertEqual(payload["compilation"]["review_order"], [])
+
+        ambiguous = [
+            static_relevance_unit("root", symbol_references=["dup"]),
+            static_relevance_unit("dup", path="src/dup1.py", task_anchor=False),
+            static_relevance_unit("dup", path="src/dup2.py", task_anchor=False),
+        ]
+        ambiguous_payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], ambiguous).stdout)
+        self.assertIn("duplicate_relevance_unit_id", ambiguous_payload["readiness_blockers"])
+        self.assertIn("ambiguous_relation_target", ambiguous_payload["readiness_blockers"])
+        self.assertTrue(ambiguous_payload["declared_signal_fields_complete"])
+        self.assertEqual(ambiguous_payload["normalized_evidence"]["unit_count"], 3)
+        self.assertEqual(ambiguous_payload["compilation"]["review_order"], [])
+
+        exact_cap = [
+            static_relevance_unit(f"cap{i}", path=f"src/cap{i}.py", task_anchor=i == 0)
+            for i in range(64)
+        ]
+        exact_cap[0]["symbol_references"] = [f"cap{i}" for i in range(64)]
+        exact_cap_payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], exact_cap).stdout)
+        self.assertTrue(exact_cap_payload["compilation_performed"])
+        self.assertEqual(exact_cap_payload["normalized_evidence"]["unit_count"], 64)
+        self.assertEqual(len(exact_cap_payload["compilation"]["review_order"]), 64)
+
+        unassessable = (
+            ("{", "malformed_relevance_unit_json"),
+            ("[]", "relevance_unit_must_be_object"),
+            (json.dumps(static_relevance_unit(schema="wrong")), "relevance_unit_schema_mismatch"),
+            (json.dumps(static_relevance_unit(extra="x")), "relevance_unit_unexpected_field"),
+        )
+        for raw, token in unassessable:
+            payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], [raw]).stdout)
+            self.assertIn(token, payload["readiness_blockers"])
+            self.assertFalse(payload["declared_signal_fields_complete"])
+            self.assertFalse(payload["structural_integrity_complete"])
+        self.assertFalse(overflow_payload["declared_signal_fields_complete"])
+        self.assertEqual(overflow_payload["compilation"]["backward_dataflow_slice_ids"], [])
+        self.assertEqual(overflow_payload["compilation"]["forward_dataflow_slice_ids"], [])
+        self.assertEqual(overflow_payload["compilation"]["symbol_slice_ids"], [])
+        self.assertEqual(overflow_payload["compilation"]["review_order"], [])
+
+        private_path = "src/\ue000/private.py"
+        private_payload = json.loads(run_static_relevance_plan(
+            EXPERIMENT_SCRIPTS[0], [static_relevance_unit(path=private_path)]
+        ).stdout)
+        self.assertTrue(private_payload["compilation_performed"])
+        self.assertEqual(private_payload["normalized_evidence"]["units"][0]["normalized_path"], private_path)
+        control_payload = json.loads(run_static_relevance_plan(
+            EXPERIMENT_SCRIPTS[0], [static_relevance_unit(path="src/bad\x01.py")]
+        ).stdout)
+        self.assertIn("invalid_relevance_unit_path", control_payload["readiness_blockers"])
+        module = load_python_script_module(EXPERIMENT_SCRIPTS[0], "_static_relevance_path_categories")
+        self.assertTrue(module.valid_static_relevance_path(private_path))
+        self.assertFalse(module.valid_static_relevance_path("src/bad\x01.py"))
+        self.assertFalse(module.valid_static_relevance_path("src/\ud800.py"))
+
+    def test_experimental_static_relevance_protected_vetoes(self):
+        path_cases = [
+            ("src/AUTH-handler.py", "builtin_auth_path"),
+            ("src/authentication/session.py", "builtin_auth_path"),
+            ("src/authorization.check.py", "builtin_auth_path"),
+            ("src/SeCuRiTy/check.py", "builtin_security_path"),
+            ("config/secret.py", "builtin_secret_path"),
+            ("config/secrets.py", "builtin_secret_path"),
+            ("config/credential.py", "builtin_secret_path"),
+            ("config/credentials.py", "builtin_secret_path"),
+            ("db/migration/001.py", "builtin_migration_path"),
+            ("db/migrations-archive/001.py", "builtin_migration_path"),
+            ("tests/acceptance.login.py", "builtin_acceptance_path"),
+            ("tests/e2e-login.py", "builtin_acceptance_path"),
+            ("config/.env", "builtin_secret_material_path"),
+            ("config/.env.local", "builtin_secret_material_path"),
+            ("cert/server.pem", "builtin_secret_material_path"),
+            ("cert/server.key", "builtin_secret_material_path"),
+            ("cert/server.p12", "builtin_secret_material_path"),
+            ("cert/server.pfx", "builtin_secret_material_path"),
+        ]
+        near_misses = [
+            "src/oauth.py", "src/authz.py", "src/security2.py", "config/.envx",
+            "cert/server.keyx", "src/authenticator.py", "src/migrationary.py",
+        ]
+        units = []
+        for index, (path, _reason) in enumerate(path_cases):
+            units.append(static_relevance_unit(
+                f"protected{index}", path=path, task_anchor=index == 0,
+                symbol={"name": f"protected{index}", "kind": "function", "start_line": 1, "end_line": 1},
+                git={"blame_age_days": 365000, "blame_contributor_count": 1, "path_change_count_90d": 0},
+            ))
+        for index, path in enumerate(near_misses):
+            units.append(static_relevance_unit(
+                f"near{index}", path=path, task_anchor=False,
+                symbol={"name": f"near{index}", "kind": "function", "start_line": 1, "end_line": 1},
+            ))
+        explicit_reasons = [
+            "authentication", "authorization", "secrets", "security_sensitive", "migration",
+            "acceptance_test", "unresolved_error_evidence", "caller_protected",
+        ]
+        units.append(static_relevance_unit(
+            "explicit", path="src/plain/explicit.py", task_anchor=False,
+            symbol={"name": "explicit", "kind": "function", "start_line": 1, "end_line": 1},
+            protection_reasons=list(reversed(explicit_reasons)),
+        ))
+        units.append(static_relevance_unit(
+            "union", path="AUTH/security/secrets/migrations/e2e/.env.key", task_anchor=False,
+            symbol={"name": "union", "kind": "function", "start_line": 1, "end_line": 1},
+            protection_reasons=list(reversed(explicit_reasons)),
+        ))
+        units.append(static_relevance_unit(
+            "dedup", path="auth/AUTH.py", task_anchor=False,
+            symbol={"name": "dedup", "kind": "function", "start_line": 1, "end_line": 1},
+        ))
+        payload = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], units).stdout)
+        self.assertTrue(payload["compilation_performed"])
+        vetoes = {row["unit_id"]: row for row in payload["compilation"]["protected_vetoes"]}
+        for index, (_path, reason) in enumerate(path_cases):
+            self.assertIn(reason, vetoes[f"protected{index}"]["protection_reasons"])
+        for index in range(len(near_misses)):
+            self.assertNotIn(f"near{index}", vetoes)
+        self.assertEqual(vetoes["explicit"]["protection_reasons"], explicit_reasons)
+        self.assertEqual(vetoes["union"]["protection_reasons"], explicit_reasons + [
+            "builtin_auth_path", "builtin_security_path", "builtin_secret_path",
+            "builtin_migration_path", "builtin_acceptance_path", "builtin_secret_material_path",
+        ])
+        self.assertEqual(vetoes["dedup"]["protection_reasons"], ["builtin_auth_path"])
+        for row in vetoes.values():
+            self.assertEqual(set(row), {"unit_id", "normalized_path", "protection_reasons", "protected_retention_veto", "review_priority_tier"})
+            self.assertTrue(row["protected_retention_veto"])
+            self.assertEqual(row["review_priority_tier"], 0)
+        reviews = {row["unit_id"]: row for row in payload["compilation"]["review_order"]}
+        self.assertTrue(all(reviews[unit_id]["review_priority_tier"] == 0 for unit_id in vetoes))
+        self.assertLess(
+            max(reviews[unit_id]["rank"] for unit_id in vetoes),
+            min(reviews[f"near{index}"]["rank"] for index in range(len(near_misses))),
+        )
+        self.assertFalse(payload["deprioritization_authorized"])
+        blocked = json.loads(run_static_relevance_plan(EXPERIMENT_SCRIPTS[0], units, protected_path_policy=None).stdout)
+        self.assertIsNone(blocked["protected_path_policy"])
+        self.assertEqual(blocked["effective_protected_path_policy"], "deny")
+        self.assertEqual(blocked["compilation"]["protected_vetoes"], payload["compilation"]["protected_vetoes"])
+        self.assertTrue(blocked["compilation"]["task_anchor_ids"])
+        self.assertEqual(blocked["compilation"]["backward_dataflow_slice_ids"], [])
+        self.assertEqual(blocked["compilation"]["forward_dataflow_slice_ids"], [])
+        self.assertEqual(blocked["compilation"]["symbol_slice_ids"], [])
+        self.assertEqual(blocked["compilation"]["review_order"], [])
+
+    def test_experimental_static_relevance_strict_json_and_non_echo(self):
+        secret = "STATIC_RELEVANCE_SECRET_SENTINEL"
+        cases = (
+            ('{"schema":"contextguard.static-relevance-unit.v1","schema":"x"}', "duplicate_relevance_unit_json_key"),
+            ('{"schema":"contextguard.static-relevance-unit.v1","symbol":{"name":"x","name":"y"}}', "duplicate_relevance_unit_json_key"),
+            ('{"x":NaN}', "non_finite_relevance_unit_json_value"),
+            ('{"x":Infinity}', "non_finite_relevance_unit_json_value"),
+            ('{"x":-Infinity}', "non_finite_relevance_unit_json_value"),
+            ('[]', "relevance_unit_must_be_object"),
+            ('{', "malformed_relevance_unit_json"),
+        )
+        for script in EXPERIMENT_SCRIPTS:
+            for raw, token in cases:
+                proc = run_static_relevance_plan(script, [raw])
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn(token, json.loads(proc.stdout)["readiness_blockers"])
+            oversized = json.dumps({"sentinel": secret + "x" * 9000})
+            proc = run_static_relevance_plan(script, [oversized])
+            self.assertIn("relevance_unit_json_too_large", json.loads(proc.stdout)["readiness_blockers"])
+            self.assertNotIn(secret, proc.stdout + proc.stderr)
+            proc = run_static_relevance_plan(script, [json.dumps(static_relevance_unit(extra=secret))])
+            self.assertIn("relevance_unit_unexpected_field", json.loads(proc.stdout)["readiness_blockers"])
+            self.assertNotIn(secret, proc.stdout + proc.stderr)
+            human = run_static_relevance_plan(script, [static_relevance_unit(unit_id="SECRET_ID", path="secret/path.py")], json_output=False)
+            self.assertNotIn("SECRET_ID", human.stdout)
+            self.assertNotIn("secret/path.py", human.stdout)
+            prefix = '{"x":"'
+            suffix = '"}'
+            exact = prefix + ("a" * (8192 - len(prefix) - len(suffix))) + suffix
+            self.assertEqual(len(exact.encode()), 8192)
+            exact_payload = json.loads(run_static_relevance_plan(script, [exact]).stdout)
+            self.assertNotIn("relevance_unit_json_too_large", exact_payload["readiness_blockers"])
+            oversized_payload = json.loads(run_static_relevance_plan(script, [exact + " "]).stdout)
+            self.assertIn("relevance_unit_json_too_large", oversized_payload["readiness_blockers"])
+            nested: object = 0
+            for _ in range(100):
+                nested = [nested]
+            allowed_depth = json.loads(run_static_relevance_plan(script, [json.dumps(nested)]).stdout)
+            self.assertIn("relevance_unit_must_be_object", allowed_depth["readiness_blockers"])
+            self.assertNotIn("relevance_unit_json_depth_exceeded", allowed_depth["readiness_blockers"])
+            nested = [nested]
+            rejected_depth = json.loads(run_static_relevance_plan(script, [json.dumps(nested)]).stdout)
+            self.assertIn("relevance_unit_json_depth_exceeded", rejected_depth["readiness_blockers"])
+            duplicate_precedence = json.loads(run_static_relevance_plan(script, ['{"x":NaN,"x":1}']).stdout)
+            self.assertIn("duplicate_relevance_unit_json_key", duplicate_precedence["readiness_blockers"])
+            self.assertNotIn("non_finite_relevance_unit_json_value", duplicate_precedence["readiness_blockers"])
+            deep_value: object = 0
+            for _ in range(101):
+                deep_value = [deep_value]
+            nonfinite_depth_raw = json.dumps({"nonfinite": float("nan"), "deep": deep_value})
+            nonfinite_precedence = json.loads(run_static_relevance_plan(script, [nonfinite_depth_raw]).stdout)
+            self.assertIn("non_finite_relevance_unit_json_value", nonfinite_precedence["readiness_blockers"])
+            self.assertNotIn("relevance_unit_json_depth_exceeded", nonfinite_precedence["readiness_blockers"])
+        module = load_python_script_module(EXPERIMENT_SCRIPTS[0], "_static_relevance_recursion")
+        with mock.patch.object(module.json, "loads", side_effect=RecursionError):
+            payload = module.static_relevance_plan_payload(argparse.Namespace(
+                relevance_unit_json=[json.dumps(static_relevance_unit())],
+                protected_path_policy="deny", provider_boundary_ack=True,
+            ))
+        self.assertIn("decoder_recursion_limit", payload["readiness_blockers"])
+        class RecursingDict(dict):
+            def items(self):
+                raise RecursionError("injected depth walk")
+        with mock.patch.object(module.json, "loads", return_value=RecursingDict()):
+            payload = module.static_relevance_plan_payload(argparse.Namespace(
+                relevance_unit_json=["{}"], protected_path_policy="deny", provider_boundary_ack=True,
+            ))
+        self.assertIn("decoder_recursion_limit", payload["readiness_blockers"])
+        lone = json.dumps(static_relevance_unit(), ensure_ascii=False)[:-1] + ',"extra":"\ud800"}'
+        payload = module.static_relevance_plan_payload(argparse.Namespace(
+            relevance_unit_json=[lone], protected_path_policy="deny", provider_boundary_ack=True,
+        ))
+        self.assertIn("invalid_unicode_scalar", payload["readiness_blockers"])
+        oversized_lone = "\ud800" + ("x" * 9000)
+        payload = module.static_relevance_plan_payload(argparse.Namespace(
+            relevance_unit_json=[oversized_lone], protected_path_policy="deny", provider_boundary_ack=True,
+        ))
+        self.assertIn("invalid_unicode_scalar", payload["readiness_blockers"])
+        self.assertNotIn("relevance_unit_json_too_large", payload["readiness_blockers"])
+
+    def test_experimental_static_relevance_side_effects(self):
+        raw = json.dumps(static_relevance_unit())
+        for index, script in enumerate(EXPERIMENT_SCRIPTS):
+            module = load_python_script_module(script, f"_static_relevance_side_effects_{index}")
+            def forbidden(name):
+                return lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(name))
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(builtins, "open", forbidden("builtins.open")))
+                for name in ("open", "read_text", "read_bytes", "write_text", "write_bytes", "mkdir", "unlink", "rename", "replace"):
+                    stack.enter_context(mock.patch.object(Path, name, forbidden(f"Path.{name}")))
+                for name in ("open", "read", "write", "system", "popen"):
+                    if hasattr(module.os, name):
+                        stack.enter_context(mock.patch.object(module.os, name, forbidden(f"os.{name}")))
+                for name in ("socket", "create_connection", "getaddrinfo"):
+                    stack.enter_context(mock.patch.object(module.socket, name, forbidden(f"socket.{name}")))
+                for name in ("run", "Popen", "check_output"):
+                    stack.enter_context(mock.patch.object(subprocess, name, forbidden(f"subprocess.{name}")))
+                stack.enter_context(mock.patch.object(module.http.client, "HTTPConnection", forbidden("HTTPConnection")))
+                stack.enter_context(mock.patch.object(module.http.client, "HTTPSConnection", forbidden("HTTPSConnection")))
+                ready = module.static_relevance_plan_payload(argparse.Namespace(
+                    relevance_unit_json=[raw], protected_path_policy="deny", provider_boundary_ack=True,
+                ))
+                blocked = module.static_relevance_plan_payload(argparse.Namespace(
+                    relevance_unit_json=[raw], protected_path_policy=None, provider_boundary_ack=False,
+                ))
+            self.assertTrue(ready["compilation_performed"])
+            self.assertFalse(blocked["compilation_performed"])
+            expected_verification = {
+                "evidence_collection_verified": False, "repository_coverage_verified": False,
+                "symbol_resolution_verified": False, "dataflow_semantics_verified": False,
+                "git_metrics_verified": False,
+            }
+            expected_runtime = {
+                "repository_scanned": False, "source_content_read": False, "git_invoked": False,
+                "parser_invoked": False, "provider_called": False, "files_written": False,
+            }
+            for payload in (ready, blocked):
+                self.assertEqual(payload["verification_scope"], expected_verification)
+                self.assertEqual(payload["runtime_boundaries"], expected_runtime)
+                self.assertIsNone(payload["candidate_replacement"])
+                self.assertFalse(payload["human_review_performed"])
+                self.assertFalse(payload["deprioritization_authorized"])
+                self.assertFalse(payload["omission_authorized"])
+                self.assertFalse(payload["runtime_action_allowed"])
+
+    def test_experimental_static_relevance_docs_parity(self):
+        docs = (
+            ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md",
+            PLUGIN_DIR / "README.md", PLUGIN_DIR / "README.ko.md",
+            ROOT / "research" / "experimental-token-reduction-radar.md",
+        )
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            lower = text.lower()
+            lines = [line.strip() for line in text.splitlines() if line.strip().startswith("context-guard experiments plan static-relevance")]
+            self.assertEqual(len(lines), 1, doc)
+            self.assertRegex(lower, r"caller.supplied|caller.declared|호출자.*제공|호출자.*선언")
+            self.assertRegex(lower, r"missing.*suppress|누락.*억제")
+            self.assertRegex(lower, r"protected.*veto|보호.*veto")
+            self.assertRegex(lower, r"does not (?:scan|read).*repo|repo.*읽지 않|저장소.*읽지 않")
+            self.assertRegex(lower, r"does not invoke git|git.*호출하지 않")
+            self.assertRegex(lower, r"does not invoke.*parser|parser.*호출하지 않")
+            self.assertRegex(lower, r"plan.review.only|plan-review-only|계획 검토 전용")
+            self.assertRegex(lower, r"no .*omit|does not authorize.*omission|omit.*권한이 없|생략.*권한이 없")
+            argv = shlex.split(lines[0])
+            proc = subprocess.run(
+                [sys.executable, str(PLUGIN_BIN / "context-guard-experiments"), *argv[2:]],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(json.loads(proc.stdout)["status"], "ready_for_plan_review")
 
     def test_experimental_semantic_gc_registry_and_surface(self):
         for script in EXPERIMENT_SCRIPTS:
