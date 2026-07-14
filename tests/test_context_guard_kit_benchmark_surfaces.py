@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -6182,6 +6183,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
             "receipt_verified": True,
             "content_hash_declared_value": content_sha256,
             "content_hash_verified": True,
+            "retrieval_command": retrieval_command,
             "rehydration_receipt_bound": True,
             "rehydration_syntax_valid": True,
             "rehydration_verified": True,
@@ -6407,14 +6409,14 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
     # replay 경로가 기본값이다. claude_bin 을 주면 --evidence-jsonl 없이 평범한 provider
     # 경로로 같은 CLI 를 호출한다(= 예전 _run_direct). 두 경로의 argv 는 이 한 곳에서만
     # 만들어지므로 복사본이 서로 어긋날 수 없다.
-    def _run(self, script, case, outputs, *, claude_bin=None, extra_args=()):
+    def _run(self, script, case, outputs, *, claude_bin=None, extra_args=(), baseline_variant=None):
         replay_args = () if claude_bin else ("--evidence-jsonl", str(case["evidence"]))
         argv = [
             sys.executable, str(script),
             "--tasks", str(case["tasks"]),
             "--variants", str(case["variants"]),
             *replay_args,
-            "--baseline-variant", self.BASELINE,
+            "--baseline-variant", baseline_variant or self.BASELINE,
             "--claude-bin", str(claude_bin or "/definitely/missing/contextguard-claude"),
             "--csv", str(outputs["csv"]),
             "--ledger-jsonl", str(outputs["ledger"]),
@@ -7145,8 +7147,194 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                     len(surviving), 2,
                     f"a partial profiled batch was appended to the raced CSV: {surviving}",
                 )
+                self.assertFalse(
+                    outputs["csv"].with_name(outputs["csv"].name + ".lock").exists(),
+                    "a rejected raced batch must not leave a CSV lock sidecar",
+                )
                 for label in ("ledger", "report", "dashboard"):
                     self.assertFalse(outputs[label].exists(), f"{label} was written after a raced CSV")
+
+    def test_profiled_csv_rows_are_one_atomic_batch_against_lock_respecting_writers(self):
+        """Freshness validation and every profiled row share one transaction lock.
+
+        The hostile writer uses the runner's public ``append_csv`` path, so it obeys
+        the same lock protocol as a real concurrent runner.  Triggering it on the
+        first logical row models a writer immediately after the freshness gate;
+        triggering it on the second models a writer between the two profile rows.
+        In both cases it must remain blocked until the complete profile batch lands.
+        """
+        placements = (("after_freshness_gate", 1), ("between_logical_rows", 2))
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for placement, trigger_call in placements:
+                with self.subTest(script=script.name, placement=placement), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, self._default_rows(prompts))
+                    outputs = self._output_paths(root, f"atomic{index}-{placement}")
+                    module = load_python_script_module(
+                        script, f"_bench_profile_atomic_{index}_{placement}",
+                    )
+
+                    real_run_evidence_fixture = module.run_evidence_fixture
+                    call_count = 0
+                    attempted = threading.Event()
+                    completed = threading.Event()
+                    completed_inside_batch = []
+                    writer_errors = []
+                    writer_threads = []
+
+                    def instrumented_run_evidence_fixture(task, variant, evidence):
+                        nonlocal call_count
+                        result = real_run_evidence_fixture(task, variant, evidence)
+                        call_count += 1
+                        if call_count == trigger_call:
+                            foreign_result = module.RunResult(**{
+                                **result.__dict__,
+                                "task_id": "foreign-writer-task",
+                                "variant": "foreign-writer-variant",
+                            })
+
+                            def foreign_writer():
+                                attempted.set()
+                                try:
+                                    module.append_csv(outputs["csv"], "foreign-writer", foreign_result)
+                                except BaseException as exc:  # captured for assertion on the main thread
+                                    writer_errors.append(exc)
+                                finally:
+                                    completed.set()
+
+                            thread = threading.Thread(target=foreign_writer, daemon=True)
+                            writer_threads.append(thread)
+                            thread.start()
+                            self.assertTrue(attempted.wait(1), "foreign writer never attempted its append")
+                            completed_inside_batch.append(completed.wait(0.15))
+                        return result
+
+                    argv = [
+                        str(script),
+                        "--tasks", str(case["tasks"]),
+                        "--variants", str(case["variants"]),
+                        "--evidence-jsonl", str(case["evidence"]),
+                        "--baseline-variant", self.BASELINE,
+                        "--claude-bin", "/definitely/missing/contextguard-claude",
+                        "--csv", str(outputs["csv"]),
+                        "--ledger-jsonl", str(outputs["ledger"]),
+                        "--report-json", str(outputs["report"]),
+                        "--dashboard-md", str(outputs["dashboard"]),
+                    ]
+                    saved_argv = sys.argv
+                    module.run_evidence_fixture = instrumented_run_evidence_fixture
+                    sys.argv = argv
+                    try:
+                        self.assertEqual(module.main(), 0)
+                    finally:
+                        sys.argv = saved_argv
+                        module.run_evidence_fixture = real_run_evidence_fixture
+                    for thread in writer_threads:
+                        thread.join(2)
+
+                    self.assertEqual(writer_errors, [])
+                    self.assertTrue(completed.is_set(), "foreign writer stayed blocked after the batch completed")
+                    self.assertEqual(completed_inside_batch, [False], placement)
+                    with outputs["csv"].open(newline="", encoding="utf-8") as handle:
+                        task_ids = [row["task_id"] for row in csv.DictReader(handle)]
+                    self.assertEqual(
+                        task_ids[:2], [self.TASK_ID, self.TASK_ID],
+                        f"{placement} split the profiled batch: {task_ids}",
+                    )
+                    self.assertEqual(task_ids[2:], ["foreign-writer-task"])
+
+    def test_profiled_batch_requires_real_baseline_and_candidate_before_writes(self):
+        """A one-variant or ghost-baseline batch cannot pass on empty matched pairs."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id in ("baseline_only", "ghost_baseline"):
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    if case_id == "baseline_only":
+                        rows = [self._row(
+                            variant=self.BASELINE,
+                            prompt_path=prompts[self.BASELINE],
+                            measured=True,
+                            omission=False,
+                        )]
+                    else:
+                        rows = self._default_rows(prompts, measured=True, verified_fallback=False)
+                    case = self._write_case(root, rows)
+                    if case_id == "baseline_only":
+                        case["variants"].write_text(
+                            json.dumps([{"name": self.BASELINE, "extra_args": []}]),
+                            encoding="utf-8",
+                        )
+                        task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                        task["variant_prompt_files"] = {
+                            self.BASELINE: task["variant_prompt_files"][self.BASELINE],
+                        }
+                        case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                    outputs = self._output_paths(root, f"empty-pairs{index}-{case_id}")
+
+                    proc = self._run(
+                        script,
+                        case,
+                        outputs,
+                        baseline_variant=("ghost-profile-baseline" if case_id == "ghost_baseline" else None),
+                    )
+
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn("profile_batch_incomplete", proc.stdout + proc.stderr)
+                    self._assert_zero_writes(outputs)
+
+    def test_profile_fallback_retrieval_command_matches_imported_verifier_projection(self):
+        """The exact outer retrieval command is part of the verifier-bound proof unit."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = (
+                    "echo unrelated-command-not-in-verifier-record"
+                )
+                module = load_python_script_module(script, f"_bench_retrieval_contract_{index}")
+                if "retrieval_command" not in module.PROFILE_PROOF_UNIT_KEYS:
+                    # Preserve the old valid projection shape so this regression proves
+                    # the actual pre-fix acceptance gap rather than failing on a future
+                    # field that the old schema does not yet recognize.
+                    rows[1]["evaluation_controls"]["exact_text_fallback"][
+                        "verifier_projection"
+                    ]["proof_unit"].pop("retrieval_command")
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"retrieval-mismatch{index}")
+
+                proc = self._run(script, case, outputs)
+
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fallback_claim_inconsistent", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    def test_unsupported_profile_error_redacts_secret_shaped_task_id(self):
+        """Task parsing must sanitize an attacker-controlled id before error output."""
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["evaluation_profile"] = "contextguard.bench.image-context-pack-evaluation.v999"
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"task-id-redaction{index}")
+
+                proc = self._run(script, case, outputs)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertNotIn(secret, combined)
+                self.assertNotIn("AKIAIOSFODNN7EXAMPLE", combined)
+                self.assertNotIn("sk-", combined)
+                self.assertIn("[REDACTED]", combined)
+                self._assert_zero_writes(outputs)
 
     def test_generic_quality_gate_regression_blocks_lane_readiness(self):
         """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
