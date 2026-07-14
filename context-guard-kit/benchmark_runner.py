@@ -602,6 +602,8 @@ class TaskFixture:
     success_cwd: str = "."
     variant_prompt_files: dict[str, str] = field(default_factory=dict)
     variant_prompt_texts: dict[str, str] = field(default_factory=dict)
+    # 선택적 evaluation profile opt-in. None 이면 기존 generic 동작을 그대로 유지한다.
+    evaluation_profile: str | None = None
 
 
 @dataclass
@@ -649,6 +651,9 @@ class EvidenceReplayRow:
     public_claim_eligible: bool
     explicit_notes: bool
     line_number: int
+    # profile 을 선언하지 않은 row 는 두 필드가 모두 None 이며 generic 경로와 동일하다.
+    evaluation_profile: str | None = None
+    evaluation_controls: dict[str, Any] | None = None
 
     @property
     def key(self) -> tuple[str, str]:
