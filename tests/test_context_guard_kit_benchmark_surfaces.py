@@ -6,6 +6,7 @@ discovery does not duplicate tests.
 """
 
 import csv
+import hashlib
 import importlib
 import json
 import os
@@ -71,6 +72,51 @@ load_module_from_path = base.load_module_from_path
 load_python_script_module = base.load_python_script_module
 
 BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"]
+
+# ---------------------------------------------------------------------------
+# Image-context evaluation profile contract (PRD/test-spec phase 4/5).
+#
+# These are the *stable public* strings of the optional evaluation profile.  The
+# tests below deliberately assert them through public surfaces (report JSON, CLI
+# exit status, dashboard text) rather than through runner-private helper names,
+# so the lane contract stays provable even if the runner refactors internally.
+# ---------------------------------------------------------------------------
+IMAGE_CONTEXT_EVALUATION_PROFILE_ID = "contextguard.bench.image-context-pack-evaluation.v1"
+IMAGE_CONTEXT_READINESS_SCHEMA_VERSION = "contextguard.bench.image-context-pack-readiness.v1"
+IMAGE_CONTEXT_PROFILE_REPORT_KEY = "image_context_pack"
+IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS = "image_context_pack_evaluation_only_not_public_claim"
+
+# reject_prewrite error ids, in the PRD's deterministic order.
+PROFILE_REJECT_ERROR_IDS = (
+    "profile_controls_missing",
+    "profile_schema_invalid",
+    "profile_binding_mismatch",
+    "profile_batch_incomplete",
+    "profile_fresh_output_required",
+    "profile_prompt_binding_invalid",
+    "profile_correction_inconsistent",
+    "profile_measurement_inconsistent",
+    "profile_fallback_claim_inconsistent",
+)
+
+# Lane gate ids, in the PRD's deterministic order.
+IMAGE_CONTEXT_GATE_IDS = (
+    "profile_and_prompt_binding",
+    "protected_zone_deny_review",
+    "exact_text_fallback_binding",
+    "missed_context_review",
+    "human_correction_consistency",
+    "generic_matched_success_and_measurement",
+    "evaluation_only_promotion_boundary",
+)
+
+# The imported proof-verifier projection binds to the *existing* verifier contract
+# in context-guard-kit/experimental_registry.py; replay never re-runs the verifier.
+PROOF_VERIFY_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
+PROOF_VERIFICATION_CLAIM_BOUNDARY = (
+    "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "
+    "omission, or hosted-savings authority."
+)
 
 
 class SplitModuleCompatibilityTests(unittest.TestCase):
@@ -3226,7 +3272,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
         expected_top_level_keys = {
             "artifacts_used", "byte_metrics", "bytes_after", "bytes_before", "claim_boundary",
-            "corrections", "cost_measured", "cost_usd", "effort", "external_cost_measured",
+            "corrections", "cost_measured", "cost_usd", "effort", "evaluation_controls",
+            "evaluation_profile", "external_cost_measured",
             "external_cost_usd", "external_tokens", "external_tokens_measured", "hook_triggers",
             "human_correction", "missed_context", "model", "notes", "primary_tokens_measured",
             "provenance", "provider_cached_tokens", "provider_cached_tokens_measured",
@@ -3387,11 +3434,26 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 outputs.append((normalized_csv_rows, report_path.read_bytes(), dashboard_path.read_bytes()))
             self.assertEqual(outputs[0], outputs[1])
             report = json.loads(outputs[0][1])
-            self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+            # The fixture now opts into the image-context evaluation profile, so every
+            # public-authority surface is clamped to the evaluation-only non-candidate value.
+            self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+            self.assertEqual(report["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+            self.assertFalse(report["public_claim_eligible"])
             self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
             self.assertEqual(len(report["matched_pair_evidence"]), 1)
             blockers = set(report["public_claim_readiness"]["blocking_gate_ids"])
             self.assertTrue({"provider_measured_token_cost", "quality_non_inferiority", "shifted_cost_accounting", "provider_export_provenance"}.issubset(blockers))
+            lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+            self.assertEqual(lane["schema_version"], IMAGE_CONTEXT_READINESS_SCHEMA_VERSION)
+            self.assertEqual(lane["status"], "blocked")
+            self.assertTrue(lane["evaluation_only"])
+            self.assertFalse(lane["promotion_authority"])
+            self.assertFalse(lane["public_claim_allowed"])
+            # The shipped fixture is deliberately unverified-fallback with one correction.
+            self.assertIn("exact_text_fallback_binding", lane["blocking_gate_ids"])
+            self.assertIn("missed_context_review", lane["blocking_gate_ids"])
+            self.assertEqual(lane["evidence_levels"]["provider_measurement"], "unmeasured")
+            self.assertEqual(lane["evidence_levels"]["fallback_binding"], "missing")
 
     def test_token_savings_12task_fixture_parses_and_generates_claim_safe_report(self):
         fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
@@ -6038,6 +6100,773 @@ class ContextEscrowCcrMetadataTests(unittest.TestCase):
                     pat_payload = json.loads(pat.stdout)
                     self.assertTrue(pat_payload["content"])
                     self.assertTrue(all(token in line for line in pat_payload["content"].splitlines()))
+
+class ImageContextEvaluationProfileTests(unittest.TestCase):
+    """Contract tests for the optional image-context evaluation profile.
+
+    The profile is evaluation-only: no fixture in this class may ever produce a
+    public claim, promotion authority, or a savings claim.  Structurally invalid
+    evidence must fail closed *before any output byte is written*; well-formed
+    negative evidence must stay replayable and score the lane as blocked.
+
+    Kept in its own TestCase because ``BenchmarkRunnerTests`` has a hardcoded
+    ``countTestCases() == 75`` assertion in the split-module compatibility tests.
+    """
+
+    TASK_ID = "image_context_profile_case"
+    BASELINE = "baseline_full_evidence"
+    CANDIDATE = "packed_image_context"
+
+    # ---------- fixture construction -------------------------------------
+
+    def _prompt_text(self, kind):
+        # Bounded, sanitized, claim-safe prompt bodies.  Never echoed into reports.
+        return (
+            f"# {kind} sanitized textual evidence fixture\n"
+            "Plan-only; protected-zone deny; no renderer call; no OCR call; no provider call.\n"
+            "This fixture does not establish token savings, cost savings, or quality non-inferiority.\n"
+        )
+
+    def _write_prompts(self, root):
+        paths = {}
+        for variant, kind in ((self.BASELINE, "full"), (self.CANDIDATE, "packed")):
+            path = root / f"{variant}.prompt.md"
+            path.write_text(self._prompt_text(kind), encoding="utf-8")
+            paths[variant] = path
+        return paths
+
+    def _sha256_file(self, path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _proof_projection(self, *, receipt_id, content_sha256, retrieval_command, **overrides):
+        """A passing bounded projection of one imported local-verifier result.
+
+        Mirrors the real verifier payload contract; replay validates the projection
+        against the outer fallback binding but never re-authenticates the artifact.
+        """
+        unit = {
+            "status": "verified",
+            "receipt_id": receipt_id,
+            "receipt_verified": True,
+            "content_hash_declared_value": content_sha256,
+            "content_hash_verified": True,
+            "rehydration_receipt_bound": True,
+            "rehydration_syntax_valid": True,
+            "rehydration_verified": True,
+            "rehydration_executed": False,
+        }
+        unit.update(overrides.pop("proof_unit", {}))
+        projection = {
+            "schema": PROOF_VERIFY_SCHEMA_VERSION,
+            "status": "verified",
+            "blockers": [],
+            "candidate_replacement": None,
+            "claim_boundary": PROOF_VERIFICATION_CLAIM_BOUNDARY,
+            "proof_unit": unit,
+        }
+        projection.update(overrides)
+        return projection
+
+    def _controls(self, *, prompt_path, omission, verified_fallback, corrections, correction_reason,
+                  missed_present, measured, **overrides):
+        """Build a well-formed ``evaluation_controls`` block, then apply overrides."""
+        receipt_id = "receipt-fixture-0001"
+        content_sha256 = hashlib.sha256(b"exact-source-text-fixture").hexdigest()
+        retrieval_command = "context-guard experiments verify proof-carrying-context --artifact-dir ./fixture-receipts"
+        if omission and verified_fallback:
+            fallback = {
+                "available": True,
+                "verified": True,
+                "receipt_id": receipt_id,
+                "content_sha256": content_sha256,
+                "retrieval_command": retrieval_command,
+                "verifier_projection": self._proof_projection(
+                    receipt_id=receipt_id,
+                    content_sha256=content_sha256,
+                    retrieval_command=retrieval_command,
+                ),
+            }
+        elif omission:
+            # Omission declared but never bound to a passing verifier record.
+            fallback = {
+                "available": True, "verified": False,
+                "receipt_id": "none", "content_sha256": "none",
+                "retrieval_command": "none", "verifier_projection": None,
+            }
+        else:
+            fallback = {
+                "available": False, "verified": False,
+                "receipt_id": "none", "content_sha256": "none",
+                "retrieval_command": "none", "verifier_projection": None,
+            }
+        controls = {
+            "control_provenance": {
+                "review_source": "synthetic_fixture",
+                "verifier_label": "local_proof_verifier_fixture" if (omission and verified_fallback) else "none",
+            },
+            "exact_text_fallback": fallback,
+            "human_correction": {"count": corrections, "reason": correction_reason},
+            "missed_context_review": {
+                "correction_required": bool(corrections),
+                "present": missed_present,
+                "review_completed": True,
+                "summary": "packed evidence omitted the qualifying acknowledgement" if missed_present else "none",
+            },
+            "prompt_evidence": {
+                "sha256": self._sha256_file(prompt_path),
+                "source_label": prompt_path.name,
+            },
+            "protected_zone_review": {
+                "included_prompt_like_regions": 0,
+                "included_protected_regions": 0,
+                "policy": "deny",
+                "review_completed": True,
+                "review_note": "deny policy declared; no protected or prompt-like region included",
+                "reviewer_label": "synthetic_fixture_reviewer",
+            },
+            "provider_usage": {
+                "primary_cost_measured": measured,
+                "primary_tokens_measured": measured,
+                "provider_called": measured,
+            },
+            "shifted_cost": {
+                "external_cost_measured": measured,
+                "external_tokens_measured": measured,
+                "status": "measured" if measured else "unmeasured",
+            },
+            "source_omission": {
+                "present": omission,
+                "transform": "packed_textual_summary" if omission else "none",
+            },
+        }
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(controls.get(key), dict):
+                controls[key] = {**controls[key], **value}
+            else:
+                controls[key] = value
+        return controls
+
+    def _row(self, *, variant, prompt_path, measured, omission, verified_fallback=False, corrections=0,
+             correction_reason="none", missed_present=False, input_tokens=1000, output_tokens=200,
+             cost_usd=0.05, bytes_before=1000, bytes_after=1000, profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+             controls=None, control_overrides=None, drop_controls=False):
+        """One evidence row.  ``measured`` switches synthetic_fixture vs provider_export."""
+        if measured:
+            provenance = {
+                "evidence_source_type": "provider_export",
+                "provider_name": "fixture-provider",
+                "capture_command_or_export_id": "fixture-export-0001",
+                "claim_scope": "provider_measured_matched_task",
+            }
+        else:
+            provenance = {
+                "evidence_source_type": "synthetic_fixture",
+                "capture_command_or_export_id": "unit-test-fixture",
+                "claim_scope": "local_replay_fixture_not_public_claim",
+            }
+        row = {
+            "schema_version": "contextguard.bench.run-evidence.v1",
+            "task_id": self.TASK_ID,
+            "variant": variant,
+            "success": True,
+            "provenance": provenance,
+            "tokens": {
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "cache_read": 0, "cache_creation": 0,
+            },
+            "primary_tokens_measured": measured,
+            "cost_usd": cost_usd,
+            "cost_measured": measured,
+            "external_tokens": 0,
+            "external_tokens_measured": measured,
+            "external_cost_usd": 0,
+            "external_cost_measured": measured,
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_after,
+            "corrections": corrections,
+            "notes": f"sanitized fixture row for {variant}; no provider call in replay",
+        }
+        if profile is not None:
+            row["evaluation_profile"] = profile
+        if not drop_controls:
+            built = controls if controls is not None else self._controls(
+                prompt_path=prompt_path, omission=omission, verified_fallback=verified_fallback,
+                corrections=corrections, correction_reason=correction_reason,
+                missed_present=missed_present, measured=measured,
+            )
+            if control_overrides:
+                for key, value in control_overrides.items():
+                    if isinstance(value, dict) and isinstance(built.get(key), dict):
+                        built[key] = {**built[key], **value}
+                    else:
+                        built[key] = value
+            row["evaluation_controls"] = built
+        return row
+
+    def _write_case(self, root, rows, *, task_profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+                    variant_prompt_files=True):
+        prompts = self._write_prompts(root)
+        task = {
+            "id": self.TASK_ID,
+            "prompt": "sanitized fixture task; no renderer, OCR, provider, network, or subprocess call",
+            "model": "sonnet",
+            "effort": "medium",
+            "max_turns": 1,
+            "allowed_tools": [],
+            "success_command": (
+                "python3 -c \"raise SystemExit('fixture-only placeholder: "
+                "replace success_command before real benchmark runs')\""
+            ),
+            "success_cwd": ".",
+        }
+        if variant_prompt_files:
+            task["variant_prompt_files"] = {v: p.name for v, p in prompts.items()}
+        if task_profile is not None:
+            task["evaluation_profile"] = task_profile
+
+        tasks_path = root / "tasks.json"
+        variants_path = root / "variants.json"
+        evidence_path = root / "evidence.jsonl"
+        tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+        variants_path.write_text(json.dumps([
+            {"name": self.BASELINE, "extra_args": []},
+            {"name": self.CANDIDATE, "extra_args": []},
+        ]), encoding="utf-8")
+        evidence_path.write_text(
+            "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "tasks": tasks_path, "variants": variants_path, "evidence": evidence_path,
+            "prompts": prompts,
+        }
+
+    def _default_rows(self, prompts, *, measured=False, verified_fallback=False):
+        """Baseline (no omission) + candidate (omission) pair."""
+        return [
+            self._row(
+                variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=measured,
+                omission=False, input_tokens=1000, output_tokens=200, cost_usd=0.05,
+                bytes_before=1000, bytes_after=1000,
+            ),
+            self._row(
+                variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=measured,
+                omission=True, verified_fallback=verified_fallback, input_tokens=400,
+                output_tokens=120, cost_usd=0.02, bytes_before=1000, bytes_after=400,
+            ),
+        ]
+
+    # ---------- invocation + zero-write helpers ---------------------------
+
+    def _output_paths(self, root, stem):
+        return {
+            "csv": root / f"{stem}.csv",
+            "ledger": root / f"{stem}.ledger.jsonl",
+            "report": root / f"{stem}.report.json",
+            "dashboard": root / f"{stem}.dashboard.md",
+        }
+
+    def _run(self, script, case, outputs, *, extra_args=(), cwd=None):
+        argv = [
+            sys.executable, str(script),
+            "--tasks", str(case["tasks"]),
+            "--variants", str(case["variants"]),
+            "--evidence-jsonl", str(case["evidence"]),
+            "--baseline-variant", self.BASELINE,
+            "--claude-bin", "/definitely/missing/contextguard-claude",
+            "--csv", str(outputs["csv"]),
+            "--ledger-jsonl", str(outputs["ledger"]),
+            "--report-json", str(outputs["report"]),
+            "--dashboard-md", str(outputs["dashboard"]),
+            *extra_args,
+        ]
+        return subprocess.run(argv, cwd=cwd or ROOT, text=True, capture_output=True)
+
+    def _assert_zero_writes(self, outputs):
+        """No output *and* no lock sidecar may exist after a reject_prewrite."""
+        for label, path in outputs.items():
+            self.assertFalse(path.exists(), f"{label} must not be written on reject_prewrite: {path}")
+            lock = path.with_name(path.name + ".lock")
+            self.assertFalse(lock.exists(), f"{label} lock sidecar must not be created: {lock}")
+
+    def _assert_no_leakage(self, text, case):
+        """Reports/errors must never echo prompts, artifact dirs, or secret-shaped values."""
+        lowered = text.lower()
+        for forbidden in ("sanitized textual evidence fixture", "-----begin", "sk-", "http://", "https://"):
+            self.assertNotIn(forbidden, lowered)
+        self.assertNotIn(str(Path.home()).lower(), lowered)
+        for prompt_path in case["prompts"].values():
+            self.assertNotIn(prompt_path.read_text(encoding="utf-8").strip().lower(), lowered)
+
+    # ---------- success + clamp -------------------------------------------
+
+    def test_complete_provider_export_pilot_reaches_bounded_pilot_review_without_public_authority(self):
+        """PRD AC10: the strongest possible evidence still cannot buy public authority.
+
+        Every generic gate passes (measured provider tokens/cost, measured shifted
+        cost, verified fallback, clean protection review, zero corrections), yet the
+        lane may only reach ``ready_for_bounded_pilot_review`` and every public-claim
+        surface stays clamped false.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"pilot{index}")
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+
+                self.assertEqual(lane["schema_version"], IMAGE_CONTEXT_READINESS_SCHEMA_VERSION)
+                self.assertEqual(lane["status"], "ready_for_bounded_pilot_review")
+                self.assertEqual(lane["blocking_gate_ids"], [])
+                self.assertEqual(list(lane["gate_ids"]), list(IMAGE_CONTEXT_GATE_IDS))
+                self.assertEqual(lane["matched_task_count"], 1)
+                self.assertEqual(lane["evidence_levels"], {
+                    "provider_measurement": "measured",
+                    "fallback_binding": "imported_local_verifier_attestation",
+                    "protected_zone": "review_attested",
+                    "missed_context": "reviewed",
+                })
+
+                # Evaluation-only invariants -- the whole point of the lane.
+                self.assertTrue(lane["evaluation_only"])
+                self.assertFalse(lane["promotion_authority"])
+                self.assertFalse(lane["public_claim_allowed"])
+                self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                self.assertEqual(report["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                self.assertFalse(report["public_claim_eligible"])
+                self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
+                for pair in report["matched_pair_evidence"]:
+                    self.assertFalse(pair["claim_boundary"]["token_savings_claim_allowed"])
+                    self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+
+                # Pre-clamp measurement survives only in explicitly non-authoritative fields.
+                self.assertEqual(
+                    report["raw_metric_claim_status"], "token_and_shifted_cost_savings_observed"
+                )
+
+                # Non-promotional sample adequacy never grants readiness.
+                self.assertEqual(
+                    lane["sample_adequacy"]["policy_status"], "not_defined_for_promotion"
+                )
+
+                dashboard = outputs["dashboard"].read_text(encoding="utf-8")
+                self.assertIn("Image-context evaluation", dashboard)
+                self.assertNotIn("promotion ready", dashboard.lower())
+                self.assertNotIn("runtime authorized", dashboard.lower())
+                self._assert_no_leakage(dashboard, case)
+                self._assert_no_leakage(outputs["report"].read_text(encoding="utf-8"), case)
+
+    # ---------- reject_prewrite taxonomy ----------------------------------
+
+    def _reject_cases(self, root, prompts):
+        """(case_id, expected_error_id, rows, task_profile) for every reject_prewrite row."""
+        other_sha = hashlib.sha256(b"not-the-prompt").hexdigest()
+        cases = []
+
+        # profile_controls_missing -- required control block absent.
+        rows = self._default_rows(prompts)
+        rows[1] = self._row(
+            variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+            omission=True, drop_controls=True,
+        )
+        cases.append(("controls_missing", "profile_controls_missing", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- unknown nested key for this v1 profile.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["unexpected_future_key"] = True
+        cases.append(("unknown_key", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- wrong type.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"]["included_protected_regions"] = "zero"
+        cases.append(("wrong_type", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- oversized policy value.  Bounds run BEFORE semantic
+        # policy classification, so this must reject rather than fall through to the
+        # accepted_blocked protected-zone branch.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = "x" * 100_000
+        cases.append(("oversize_policy", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- unknown profile version on the task.
+        rows = self._default_rows(prompts)
+        for row in rows:
+            row["evaluation_profile"] = "contextguard.bench.image-context-pack-evaluation.v999"
+        cases.append((
+            "unknown_version", "profile_schema_invalid", rows,
+            "contextguard.bench.image-context-pack-evaluation.v999",
+        ))
+
+        # profile_binding_mismatch -- row omits the profile the task declares.
+        rows = self._default_rows(prompts)
+        rows[1].pop("evaluation_profile")
+        cases.append(("row_profile_missing", "profile_binding_mismatch", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_binding_mismatch -- profiled row on an unprofiled task.
+        rows = self._default_rows(prompts)
+        cases.append(("profiled_row_unprofiled_task", "profile_binding_mismatch", rows, None))
+
+        # profile_batch_incomplete -- mixed profiled/unprofiled rows for one task.
+        rows = self._default_rows(prompts)
+        rows[1].pop("evaluation_profile")
+        rows[1].pop("evaluation_controls")
+        cases.append(("mixed_batch", "profile_batch_incomplete", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_prompt_binding_invalid -- candidate carries the wrong prompt hash.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["prompt_evidence"]["sha256"] = other_sha
+        cases.append(("prompt_sha_mismatch", "profile_prompt_binding_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_prompt_binding_invalid -- baseline hash used for the candidate row.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["prompt_evidence"]["sha256"] = self._sha256_file(prompts[self.BASELINE])
+        cases.append(("prompt_sha_swapped", "profile_prompt_binding_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_correction_inconsistent -- nested count disagrees with top-level corrections.
+        rows = self._default_rows(prompts)
+        rows[1]["corrections"] = 1
+        rows[1]["evaluation_controls"]["human_correction"] = {"count": 0, "reason": "none"}
+        cases.append(("correction_count_mismatch", "profile_correction_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_correction_inconsistent -- positive count with no reason.
+        rows = self._default_rows(prompts)
+        rows[1]["corrections"] = 1
+        rows[1]["evaluation_controls"]["human_correction"] = {"count": 1, "reason": ""}
+        cases.append(("correction_without_reason", "profile_correction_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_measurement_inconsistent -- lane metadata claims measured while the
+        # generic synthetic_fixture row is provably unmeasured.  Lane metadata must
+        # never be able to upgrade a generic measurement flag.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["provider_usage"] = {
+            "primary_cost_measured": True, "primary_tokens_measured": True, "provider_called": True,
+        }
+        cases.append(("lane_upgrades_measurement", "profile_measurement_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_measurement_inconsistent -- lane shifted-cost claims measured while generic is not.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["shifted_cost"] = {
+            "external_cost_measured": True, "external_tokens_measured": True, "status": "measured",
+        }
+        cases.append(("lane_upgrades_shifted_cost", "profile_measurement_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_fallback_claim_inconsistent -- claims verified but the projection contradicts it.
+        contradictions = {
+            "blockers_present": {"blockers": ["proof_content_hash_mismatch"]},
+            "non_null_replacement": {"candidate_replacement": {"unit_id": "u1"}},
+            "verifier_status_failed": {"status": "verification_failed"},
+            "wrong_schema": {"schema": "contextguard.experiments.some-other-schema.v1"},
+            "unit_not_verified": {"proof_unit": {"status": "verification_failed", "receipt_verified": False}},
+            "content_hash_mismatch": {"proof_unit": {"content_hash_declared_value": other_sha}},
+            "command_not_bound": {"proof_unit": {"rehydration_receipt_bound": False}},
+        }
+        for name, override in contradictions.items():
+            rows = self._default_rows(prompts, verified_fallback=True)
+            fallback = rows[1]["evaluation_controls"]["exact_text_fallback"]
+            projection = dict(fallback["verifier_projection"])
+            unit_override = override.pop("proof_unit", None)
+            if unit_override:
+                projection["proof_unit"] = {**projection["proof_unit"], **unit_override}
+            projection.update(override)
+            fallback["verifier_projection"] = projection
+            cases.append((
+                f"fallback_{name}", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # profile_fallback_claim_inconsistent -- receipt id disagrees with the projection.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["receipt_id"] = "receipt-does-not-match"
+        cases.append(("fallback_receipt_mismatch", "profile_fallback_claim_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        return cases
+
+    def test_profile_reject_cases_fail_closed_with_stable_ids_and_zero_writes(self):
+        """Structurally invalid/contradictory evidence rejects before any output byte.
+
+        Asserts the exact stable error id, a non-zero exit, and that CSV, ledger,
+        report, dashboard, and all four lock sidecars remain absent.
+        """
+        with tempfile.TemporaryDirectory() as shared:
+            probe_prompts = self._write_prompts(Path(shared))
+            case_specs = self._reject_cases(Path(shared), probe_prompts)
+        self.assertGreaterEqual(len(case_specs), len(PROFILE_REJECT_ERROR_IDS))
+
+        covered = set()
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, expected_id, _rows, _profile in case_specs:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    # Rebuild rows against this temp dir so prompt hashes bind correctly.
+                    rebuilt = {
+                        cid: (eid, rws, prof)
+                        for cid, eid, rws, prof in self._reject_cases(root, prompts)
+                    }
+                    expected_id, rows, task_profile = rebuilt[case_id]
+                    case = self._write_case(root, rows, task_profile=task_profile)
+                    outputs = self._output_paths(root, f"reject{index}")
+
+                    proc = self._run(script, case, outputs)
+
+                    self.assertNotEqual(proc.returncode, 0, f"{case_id} must fail closed")
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn(expected_id, combined, f"{case_id} must report {expected_id}: {combined}")
+                    self._assert_zero_writes(outputs)
+                    self._assert_no_leakage(combined, case)
+                    covered.add(expected_id)
+
+        # Every reject id in the PRD taxonomy that this suite claims to cover is exercised.
+        self.assertEqual(
+            covered,
+            set(PROFILE_REJECT_ERROR_IDS) - {"profile_fresh_output_required"},
+            "fresh-output rejection is covered by its own CLI test",
+        )
+
+    def test_profile_replay_rejects_resume_preexisting_csv_and_partial_selection(self):
+        """v1 profiled replay requires a fresh, empty CSV and a complete batch."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            # --resume is forbidden for a profiled replay.
+            with self.subTest(script=script.name, case="resume"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"resume{index}")
+                proc = self._run(script, case, outputs, extra_args=("--resume",))
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+            # A pre-existing, non-empty CSV is forbidden.
+            with self.subTest(script=script.name, case="preexisting_csv"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"pre{index}")
+                module = load_python_script_module(script, f"_bench_profile_freshcsv_{index}")
+                with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerow({column: "" for column in module.CSV_COLUMNS})
+                before = outputs["csv"].read_bytes()
+
+                proc = self._run(script, case, outputs)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                # The pre-existing CSV must be byte-unchanged, and no other output appears.
+                self.assertEqual(outputs["csv"].read_bytes(), before)
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists())
+                    self.assertFalse(outputs[label].with_name(outputs[label].name + ".lock").exists())
+
+            # A partial variant selection cannot cover the full profiled batch.
+            with self.subTest(script=script.name, case="partial_selection"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"partial{index}")
+                proc = self._run(script, case, outputs, extra_args=("--variant", self.CANDIDATE))
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_batch_incomplete", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    # ---------- accepted_blocked taxonomy ---------------------------------
+
+    def test_profile_accepted_blocked_cases_replay_and_emit_stable_lane_blockers(self):
+        """Well-formed negative evidence stays reviewable and blocks the lane.
+
+        These must NOT reject: they replay successfully, write outputs, and score
+        the lane ``blocked`` with a deterministic blocker id.
+        """
+        def unverified_fallback(prompts):
+            return self._default_rows(prompts, measured=True, verified_fallback=False)
+
+        def protection_not_deny(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = "allow"
+            return rows
+
+        def protection_review_incomplete(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["review_completed"] = False
+            return rows
+
+        def protection_included_region(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["included_protected_regions"] = 1
+            return rows
+
+        def missed_context_present(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            controls = rows[1]["evaluation_controls"]
+            controls["missed_context_review"] = {
+                "correction_required": False, "present": True, "review_completed": True,
+                "summary": "packed evidence omitted one qualifying acknowledgement",
+            }
+            return rows
+
+        def missed_context_review_incomplete(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["missed_context_review"]["review_completed"] = False
+            return rows
+
+        def provider_unmeasured(prompts):
+            # Internally consistent synthetic evidence: unmeasured everywhere.
+            return self._default_rows(prompts, measured=False, verified_fallback=True)
+
+        cases = (
+            ("unverified_fallback", unverified_fallback, "exact_text_fallback_binding"),
+            ("protection_not_deny", protection_not_deny, "protected_zone_deny_review"),
+            ("protection_review_incomplete", protection_review_incomplete, "protected_zone_deny_review"),
+            ("protection_included_region", protection_included_region, "protected_zone_deny_review"),
+            ("missed_context_present", missed_context_present, "missed_context_review"),
+            ("missed_context_incomplete", missed_context_review_incomplete, "missed_context_review"),
+            ("provider_unmeasured", provider_unmeasured, "generic_matched_success_and_measurement"),
+        )
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, build_rows, expected_blocker in cases:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, build_rows(prompts))
+                    outputs = self._output_paths(root, f"blocked{index}")
+
+                    proc = self._run(script, case, outputs)
+                    self.assertEqual(proc.returncode, 0, f"{case_id} must replay, not reject: {proc.stderr}")
+
+                    report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                    lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                    self.assertEqual(lane["status"], "blocked")
+                    self.assertIn(expected_blocker, lane["blocking_gate_ids"])
+                    # Blocked can never be dressed up as authority.
+                    self.assertFalse(lane["public_claim_allowed"])
+                    self.assertFalse(lane["promotion_authority"])
+                    self.assertTrue(lane["evaluation_only"])
+                    self.assertFalse(report["public_claim_eligible"])
+                    self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                    self._assert_no_leakage(outputs["report"].read_text(encoding="utf-8"), case)
+
+    def test_secret_shaped_non_deny_policy_is_blocked_and_redacted_not_echoed(self):
+        """Bounded but secret-shaped policy text blocks the lane without ever being echoed."""
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = secret
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"secret{index}")
+
+                proc = self._run(script, case, outputs)
+                # Within limits -> structurally valid -> accepted_blocked, not a reject.
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report_text = outputs["report"].read_text(encoding="utf-8")
+                dashboard_text = outputs["dashboard"].read_text(encoding="utf-8")
+                lane = json.loads(report_text)["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                self.assertEqual(lane["status"], "blocked")
+                self.assertIn("protected_zone_deny_review", lane["blocking_gate_ids"])
+
+                # Raw policy text never reaches any output surface.
+                for surface in (report_text, dashboard_text, proc.stdout, proc.stderr):
+                    self.assertNotIn(secret, surface)
+                    self.assertNotIn("AKIAIOSFODNN7EXAMPLE", surface)
+
+    # ---------- generic compatibility -------------------------------------
+
+    def test_unprofiled_replay_keeps_existing_schema_and_claim_semantics(self):
+        """Absence of the profile preserves current generic behavior exactly."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = [
+                    self._row(variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=False,
+                              omission=False, profile=None, drop_controls=True),
+                    self._row(variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+                              omission=True, profile=None, drop_controls=True,
+                              input_tokens=400, output_tokens=120, bytes_after=400),
+                ]
+                case = self._write_case(root, rows, task_profile=None)
+                outputs = self._output_paths(root, f"generic{index}")
+
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                # No profile -> no lane block, and the pre-existing statuses are untouched.
+                self.assertNotIn("evaluation_profiles", report)
+                self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+                self.assertEqual(report["public_claim_status"], "replay_only_not_public_claim")
+                self.assertFalse(report["public_claim_eligible"])
+                self.assertIn("public_claim_readiness", report)
+                dashboard = outputs["dashboard"].read_text(encoding="utf-8")
+                self.assertNotIn("Image-context evaluation", dashboard)
+
+    def test_profiled_dry_run_stays_write_free(self):
+        """--dry-run must not write outputs or locks, profiled or not."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"dry{index}")
+                proc = self._run(script, case, outputs, extra_args=("--dry-run",))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    # ---------- determinism + source/package parity -----------------------
+
+    def test_profiled_replay_outputs_are_identical_across_source_and_package(self):
+        """Kit and packaged CLI must agree byte-for-byte on a profiled replay."""
+        rendered = []
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts, measured=True, verified_fallback=True))
+                outputs = self._output_paths(root, "parity")
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                with outputs["csv"].open(newline="", encoding="utf-8") as handle:
+                    csv_rows = [
+                        {key: value for key, value in row.items() if key != "date"}
+                        for row in csv.DictReader(handle)
+                    ]
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                rendered.append((csv_rows, report, outputs["dashboard"].read_text(encoding="utf-8")))
+
+        self.assertEqual(rendered[0][0], rendered[1][0])
+        self.assertEqual(rendered[0][1], rendered[1][1])
+        self.assertEqual(rendered[0][2], rendered[1][2])
+
+    def test_profile_gate_and_error_id_ordering_is_deterministic_in_both_copies(self):
+        """Stable, identically ordered lane/error id constants in source and package."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name):
+                module = load_python_script_module(script, f"_bench_profile_constants_{index}")
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_EVALUATION_PROFILE_ID, IMAGE_CONTEXT_EVALUATION_PROFILE_ID
+                )
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_READINESS_SCHEMA_VERSION, IMAGE_CONTEXT_READINESS_SCHEMA_VERSION
+                )
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                    IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                )
+                self.assertEqual(tuple(module.PROFILE_REJECT_ERROR_IDS), PROFILE_REJECT_ERROR_IDS)
+                self.assertEqual(tuple(module.IMAGE_CONTEXT_GATE_IDS), IMAGE_CONTEXT_GATE_IDS)
+
 
 if __name__ == "__main__":
     unittest.main()
