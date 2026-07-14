@@ -7328,6 +7328,95 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 self.assertIn("[REDACTED]", combined)
                 self._assert_zero_writes(outputs)
 
+    def test_supported_profile_unsafe_prompt_path_redacts_secret_id_and_path(self):
+        """G005: supported-profile prompt-path validation must not echo attacker labels.
+
+        A v1 profiled task with a secret-shaped id and an unsafe ``variant_prompt_files``
+        path used to reach the generic path validator, which interpolated the raw task
+        id, variant name, and path into stderr. Both surfaces must reject with a
+        redacted profile owner, never write outputs/sidecars, and never invoke a
+        provider binary.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        unsafe_path = "../../etc/passwd"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["variant_prompt_files"] = {
+                    self.BASELINE: unsafe_path,
+                    self.CANDIDATE: unsafe_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-unsafe-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                # Direct path: proves the leak is in parse/validation, not only replay.
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    secret,
+                    "AKIAIOSFODNN7EXAMPLE",
+                    "sk-",
+                    unsafe_path,
+                    "etc/passwd",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_unknown_prompt_map_key_redacts_secret_id_and_variant(self):
+        """G005: supported-profile unknown prompt-map keys must not echo attacker labels.
+
+        An unknown ``variant_prompt_files`` key is attacker-controlled. The pre-repair
+        path echoed both the secret-shaped task id and the raw mapping key / variant
+        label. Reject must stay fail-closed, redacted, and write-free on both surfaces.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        hostile_variant = "attacker-controlled-variant-AKIAIOSFODNN7EXAMPLE"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    hostile_variant: "hostile-prompt.md",
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-unknown-key{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    secret,
+                    "AKIAIOSFODNN7EXAMPLE",
+                    "sk-",
+                    hostile_variant,
+                    "attacker-controlled-variant",
+                    "hostile-prompt.md",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
     def test_generic_quality_gate_regression_blocks_lane_readiness(self):
         """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
 

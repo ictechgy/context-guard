@@ -823,19 +823,44 @@ def validate_variant_prompt_file_references(
     Unknown variant keys and unsafe relative paths are rejected before any file
     read. Missing prompt files are intentionally not checked here so a run
     narrowed by --task-id/--variant is not blocked by unselected prompt files.
+
+    Profiled tasks use the redacted profile owner and never echo raw task ids,
+    variant labels, mapping keys, or unsafe paths. Unprofiled messages stay
+    unchanged for compatibility.
     """
     known_variants = {variant.name for variant in variants}
     for task in tasks:
+        profiled = task.evaluation_profile is not None
         unknown = sorted(set(task.variant_prompt_files) - known_variants)
         if unknown:
+            if profiled:
+                # 매핑 키·variant 라벨은 attacker-controlled 이므로 이름 대신 적색 처리한다.
+                profile_reject(
+                    PROFILE_REJECT_PROMPT_BINDING_INVALID,
+                    profile_owner(task.id),
+                    "variant_prompt_files references unknown variant(s): "
+                    f"{redact_profile_labels(unknown)}",
+                )
             raise SystemExit(
                 f"task {task.id} variant_prompt_files references unknown variant(s): {', '.join(unknown)}"
             )
         for variant_name, raw_path in task.variant_prompt_files.items():
-            validate_variant_prompt_file_path(
-                raw_path,
-                owner=f"task {task.id} variant {variant_name}",
-            )
+            if profiled:
+                owner = profile_owner(task.id, variant_name)
+                try:
+                    validate_variant_prompt_file_path(raw_path, owner=owner)
+                except SystemExit:
+                    # 원본 경로·라벨이 새어나가지 않도록 안정적인 프로파일 오류로 다시 쓴다.
+                    profile_reject(
+                        PROFILE_REJECT_PROMPT_BINDING_INVALID,
+                        owner,
+                        "variant_prompt_files path is unsafe or invalid",
+                    )
+            else:
+                validate_variant_prompt_file_path(
+                    raw_path,
+                    owner=f"task {task.id} variant {variant_name}",
+                )
 
 
 def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None = None) -> str:
@@ -933,26 +958,12 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
     for item in raw:
         if not isinstance(item, dict):
             raise SystemExit(f"task entry must be a JSON object: {item}")
-        effort_raw = item.get("effort")
-        budget_raw = item.get("max_budget_usd")
-        if budget_raw is not None:
-            try:
-                budget = float(budget_raw)
-            except (TypeError, ValueError):
-                raise SystemExit(f"task {item.get('id')} max_budget_usd must be number or null")
-            if not math.isfinite(budget) or budget <= 0:
-                raise SystemExit(f"task {item.get('id')} max_budget_usd must be finite and > 0 (use null for unlimited)")
-        else:
-            budget = None
         task_id = str(item["id"])
-        if "variant_prompts" in item:
-            raise SystemExit(
-                f"task {task_id} variant_prompts is not supported; use file-backed variant_prompt_files"
-            )
-        # Optional evaluation profile opt-in. 알 수 없는 값은 prompt/evidence 처리 이전에
-        # 거부한다. 선언이 없으면 기존 generic 동작이 그대로 유지된다.
+        # Optional evaluation profile opt-in. 소유권을 나머지 task 구조/prompt 검증보다
+        # 먼저 확정해서, 지원 프로파일 오류도 raw task id 를 에코하지 않게 한다.
         evaluation_profile = item.get("evaluation_profile")
-        if evaluation_profile is not None:
+        profiled = evaluation_profile is not None
+        if profiled:
             if (
                 not isinstance(evaluation_profile, str)
                 or evaluation_profile not in SUPPORTED_EVALUATION_PROFILE_IDS
@@ -962,26 +973,67 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                     profile_owner(task_id),
                     "declares an unsupported evaluation_profile id",
                 )
+            owner = profile_owner(task_id)
+        else:
+            owner = f"task {task_id}"
+        if "variant_prompts" in item:
+            detail = "variant_prompts is not supported; use file-backed variant_prompt_files"
+            if profiled:
+                profile_reject(PROFILE_REJECT_SCHEMA_INVALID, owner, detail)
+            raise SystemExit(f"{owner} {detail}")
+        effort_raw = item.get("effort")
+        budget_raw = item.get("max_budget_usd")
+        if budget_raw is not None:
+            try:
+                budget = float(budget_raw)
+            except (TypeError, ValueError):
+                detail = "max_budget_usd must be number or null"
+                if profiled:
+                    profile_reject(PROFILE_REJECT_SCHEMA_INVALID, owner, detail)
+                raise SystemExit(f"{owner} {detail}")
+            if not math.isfinite(budget) or budget <= 0:
+                detail = "max_budget_usd must be finite and > 0 (use null for unlimited)"
+                if profiled:
+                    profile_reject(PROFILE_REJECT_SCHEMA_INVALID, owner, detail)
+                raise SystemExit(f"{owner} {detail}")
+        else:
+            budget = None
+        # profiled 경로에서는 매핑 키 등 attacker-controlled 라벨이 파서 오류에 실릴 수
+        # 있으므로, 구조 필드 오류를 안정적인 프로파일 거부로 다시 쓴다.
+        try:
+            max_turns = parse_positive_int(
+                item.get("max_turns", 3), field="max_turns", owner=owner,
+            )
+            allowed_tools = parse_string_list(
+                item.get("allowed_tools", []),
+                field="allowed_tools",
+                owner=owner,
+            )
+            variant_prompt_files = parse_string_map(
+                item.get("variant_prompt_files"),
+                field="variant_prompt_files",
+                owner=owner,
+            )
+        except SystemExit:
+            if profiled:
+                profile_reject(
+                    PROFILE_REJECT_SCHEMA_INVALID,
+                    owner,
+                    "task fixture fields are invalid",
+                )
+            raise
         fixtures.append(TaskFixture(
             evaluation_profile=evaluation_profile,
             id=task_id,
             prompt=str(item["prompt"]),
             model=str(item.get("model", "sonnet")),
             effort=str(effort_raw) if effort_raw is not None else None,
-            max_turns=parse_positive_int(item.get("max_turns", 3), field="max_turns", owner=f"task {task_id}"),
+            max_turns=max_turns,
             max_budget_usd=budget,
-            allowed_tools=parse_string_list(
-                item.get("allowed_tools", []),
-                field="allowed_tools",
-                owner=f"task {task_id}",
-            ),
+            allowed_tools=allowed_tools,
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
-            variant_prompt_files=parse_string_map(
-                item.get("variant_prompt_files"),
-                field="variant_prompt_files",
-                owner=f"task {task_id}",
-            ),
+            variant_prompt_files=variant_prompt_files,
         ))
     if variants is not None:
         validate_variant_prompt_file_references(fixtures, variants)
