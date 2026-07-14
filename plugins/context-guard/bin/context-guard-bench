@@ -2989,8 +2989,8 @@ def profile_batch_freshness_gate_unlocked(
     """Recheck output freshness while the caller holds the full-batch lock.
 
     The pre-lock gate reads the CSV without the lock, so a concurrent writer could
-    still land a row between that check and the first append. One locked recheck for
-    the whole batch closes that window without holding the lock across the run.
+    still land a row between that check and the first append. One recheck under the
+    caller's held parent-directory lock closes that window for the whole batch.
     """
     profiled_task_ids = selected_profiled_task_ids(tasks, targets)
     if not profiled_task_ids:

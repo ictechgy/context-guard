@@ -7179,12 +7179,12 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                     call_count = 0
                     attempted = threading.Event()
                     completed = threading.Event()
-                    completed_inside_batch = []
+                    completed_inside_batch = False
                     writer_errors = []
-                    writer_threads = []
+                    writer_thread = None
 
                     def instrumented_run_evidence_fixture(task, variant, evidence):
-                        nonlocal call_count
+                        nonlocal call_count, completed_inside_batch, writer_thread
                         result = real_run_evidence_fixture(task, variant, evidence)
                         call_count += 1
                         if call_count == trigger_call:
@@ -7203,11 +7203,10 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                                 finally:
                                     completed.set()
 
-                            thread = threading.Thread(target=foreign_writer, daemon=True)
-                            writer_threads.append(thread)
-                            thread.start()
+                            writer_thread = threading.Thread(target=foreign_writer, daemon=True)
+                            writer_thread.start()
                             self.assertTrue(attempted.wait(1), "foreign writer never attempted its append")
-                            completed_inside_batch.append(completed.wait(0.15))
+                            completed_inside_batch = completed.wait(0.15)
                         return result
 
                     argv = [
@@ -7230,12 +7229,12 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                     finally:
                         sys.argv = saved_argv
                         module.run_evidence_fixture = real_run_evidence_fixture
-                    for thread in writer_threads:
-                        thread.join(2)
+                    if writer_thread is not None:
+                        writer_thread.join(2)
 
                     self.assertEqual(writer_errors, [])
                     self.assertTrue(completed.is_set(), "foreign writer stayed blocked after the batch completed")
-                    self.assertEqual(completed_inside_batch, [False], placement)
+                    self.assertFalse(completed_inside_batch, placement)
                     with outputs["csv"].open(newline="", encoding="utf-8") as handle:
                         task_ids = [row["task_id"] for row in csv.DictReader(handle)]
                     self.assertEqual(
@@ -7291,17 +7290,10 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 root = Path(tmp)
                 prompts = self._write_prompts(root)
                 rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                # Outer command deliberately diverges from the bound proof unit.
                 rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = (
                     "echo unrelated-command-not-in-verifier-record"
                 )
-                module = load_python_script_module(script, f"_bench_retrieval_contract_{index}")
-                if "retrieval_command" not in module.PROFILE_PROOF_UNIT_KEYS:
-                    # Preserve the old valid projection shape so this regression proves
-                    # the actual pre-fix acceptance gap rather than failing on a future
-                    # field that the old schema does not yet recognize.
-                    rows[1]["evaluation_controls"]["exact_text_fallback"][
-                        "verifier_projection"
-                    ]["proof_unit"].pop("retrieval_command")
                 case = self._write_case(root, rows)
                 outputs = self._output_paths(root, f"retrieval-mismatch{index}")
 
