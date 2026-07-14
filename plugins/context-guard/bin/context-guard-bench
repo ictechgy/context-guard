@@ -435,15 +435,8 @@ MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
 MAX_PROFILE_CORRECTION_COUNT = 10_000
 SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
 PROTECTED_ZONE_DENY_POLICY = "deny"
-# 오류 메시지에 그대로 실을 수 있는 라벨 문자셋. task id, variant 이름, 알 수 없는
-# evidence 키는 모두 작성자 통제 값이므로 이 패턴을 통과할 때만 원문으로 echo 한다.
-PROFILE_SAFE_LABEL_PATTERN = re.compile(r"\A[A-Za-z0-9_.:-]{1,64}\Z")
-# credential 처럼 생긴 라벨은 통째로 지운다. SECRET_NOTE_PATTERNS 는 값의 "몸통"만
-# 가리므로 sk-live-<masked>-x 처럼 접두사가 살아남는데, 부분 마스킹된 조각을 echo 하면
-# 그 자체가 유출이다. 이 패턴에 걸리면 조각이 아니라 토큰 전체를 placeholder 로 바꾼다.
-PROFILE_SECRET_SHAPED_LABEL_PATTERN = re.compile(
-    r"(?i)(sk[-_]|pk[-_]|rk[-_]|ghp_|gho_|glpat|xox|eyj|akia|bearer|api|token|secret|password|passwd|credential|auth)"
-)
+# 프로파일 진단에 실리는 작성자 통제 라벨은 문자셋이 안전해 보여도 원문을 절대 남기지
+# 않는다. G006 은 regex-safe 값까지 포함한 완전 불투명 표현을 요구한다.
 PROFILE_REDACTED_PLACEHOLDER = "[REDACTED]"
 MAX_PROFILE_ERROR_LABELS = 5
 
@@ -958,11 +951,19 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
     for item in raw:
         if not isinstance(item, dict):
             raise SystemExit(f"task entry must be a JSON object: {item}")
-        task_id = str(item["id"])
-        # Optional evaluation profile opt-in. 소유권을 나머지 task 구조/prompt 검증보다
-        # 먼저 확정해서, 지원 프로파일 오류도 raw task id 를 에코하지 않게 한다.
+        # evaluation_profile opt-in 을 필수 라벨(id/prompt)보다 먼저 확정한다.
+        # 지원 프로파일의 구조 오류는 raw KeyError 가 아니라 안정적인 프로파일 거부로 끝낸다.
         evaluation_profile = item.get("evaluation_profile")
         profiled = evaluation_profile is not None
+        if "id" not in item:
+            if profiled:
+                profile_reject(
+                    PROFILE_REJECT_SCHEMA_INVALID,
+                    profile_owner(None),
+                    "task fixture fields are invalid",
+                )
+            raise KeyError("id")
+        task_id = str(item["id"])
         owner = profile_owner(task_id) if profiled else f"task {task_id}"
         if profiled and (
             not isinstance(evaluation_profile, str)
@@ -1019,6 +1020,14 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                     "task fixture fields are invalid",
                 )
             raise
+        if "prompt" not in item:
+            if profiled:
+                profile_reject(
+                    PROFILE_REJECT_SCHEMA_INVALID,
+                    owner,
+                    "task fixture fields are invalid",
+                )
+            raise KeyError("prompt")
         fixtures.append(TaskFixture(
             evaluation_profile=evaluation_profile,
             id=task_id,
@@ -2563,34 +2572,22 @@ PROFILE_SHIFTED_COST_STATUSES = ("measured", "unmeasured")
 def redact_profile_label(value: Any) -> str:
     """Bound one untrusted label so an error message can never carry a payload.
 
-    Task ids, variant names, and unknown evidence keys are author-controlled, so a
-    secret-shaped or oversized value could otherwise ride a fatal message to the
-    console. Only a conservative identifier charset survives verbatim; everything
-    else collapses to the shared placeholder.
-
-    A whole label is replaced, never partially masked. ``sanitize_note_text`` masks a
-    credential's body but leaves its prefix (``sk-live-[REDACTED]-x``), and echoing
-    that fragment is itself a leak, so any credential-shaped label is dropped
-    entirely. That deliberately redacts a benign id containing e.g. "auth": an
-    unknown key is never something we must name, and the stable error id carries the
-    meaning.
+    Task ids, variant names, unknown evidence keys, and prompt-map labels are
+    author-controlled. Opted-in profile diagnostics must use a fully opaque fixed
+    representation for every such value — even regex-safe-looking identifiers —
+    because any preserved attacker text is itself a leak channel. The stable error
+    id and fixed field names carry the meaning; ``value`` is intentionally unused.
     """
-    # 부분 마스킹된 잔여물은 여기까지 오지 못한다. sanitize 가 무언가를 지웠다면 그 자리에
-    # 대괄호가 붙은 placeholder 가 남는데, 안전 문자셋에는 대괄호가 없으므로 첫 검사에서
-    # 이미 통째로 걸러진다.
-    text = sanitize_note_text(value)
-    if not PROFILE_SAFE_LABEL_PATTERN.match(text):
-        return PROFILE_REDACTED_PLACEHOLDER
-    if PROFILE_SECRET_SHAPED_LABEL_PATTERN.search(text):
-        return PROFILE_REDACTED_PLACEHOLDER
-    return text
+    # 작성자 통제 값은 형태와 무관하게 절대 진단에 싣지 않는다.
+    return PROFILE_REDACTED_PLACEHOLDER
 
 
 def redact_profile_labels(values: Iterable[Any]) -> str:
-    """Render a bounded, redacted key list for schema errors.
+    """Render a bounded, fully opaque key list for schema errors.
 
-    The count is always truthful; the names are only echoed when they are safe, and
-    the list is truncated so an oversized evidence object cannot flood the message.
+    The count is always truthful; each name collapses to the shared placeholder so
+    no author-controlled text rides the message. The list is truncated so an
+    oversized evidence object cannot flood the diagnostic.
     """
     labels = [redact_profile_label(value) for value in values]
     shown = labels[:MAX_PROFILE_ERROR_LABELS]
