@@ -6404,21 +6404,25 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
             "dashboard": root / f"{stem}.dashboard.md",
         }
 
-    def _run(self, script, case, outputs, *, extra_args=(), cwd=None):
+    # replay 경로가 기본값이다. claude_bin 을 주면 --evidence-jsonl 없이 평범한 provider
+    # 경로로 같은 CLI 를 호출한다(= 예전 _run_direct). 두 경로의 argv 는 이 한 곳에서만
+    # 만들어지므로 복사본이 서로 어긋날 수 없다.
+    def _run(self, script, case, outputs, *, claude_bin=None, extra_args=()):
+        replay_args = () if claude_bin else ("--evidence-jsonl", str(case["evidence"]))
         argv = [
             sys.executable, str(script),
             "--tasks", str(case["tasks"]),
             "--variants", str(case["variants"]),
-            "--evidence-jsonl", str(case["evidence"]),
+            *replay_args,
             "--baseline-variant", self.BASELINE,
-            "--claude-bin", "/definitely/missing/contextguard-claude",
+            "--claude-bin", str(claude_bin or "/definitely/missing/contextguard-claude"),
             "--csv", str(outputs["csv"]),
             "--ledger-jsonl", str(outputs["ledger"]),
             "--report-json", str(outputs["report"]),
             "--dashboard-md", str(outputs["dashboard"]),
             *extra_args,
         ]
-        return subprocess.run(argv, cwd=cwd or ROOT, text=True, capture_output=True)
+        return subprocess.run(argv, cwd=ROOT, text=True, capture_output=True)
 
     def _recording_claude(self, root, marker):
         """A *working* fake provider that records the fact it was executed.
@@ -6441,22 +6445,6 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
         )
         fake.chmod(0o755)
         return fake
-
-    def _run_direct(self, script, case, outputs, *, claude_bin, extra_args=()):
-        """Invoke the *normal provider path*: identical to _run but with no --evidence-jsonl."""
-        argv = [
-            sys.executable, str(script),
-            "--tasks", str(case["tasks"]),
-            "--variants", str(case["variants"]),
-            "--baseline-variant", self.BASELINE,
-            "--claude-bin", str(claude_bin),
-            "--csv", str(outputs["csv"]),
-            "--ledger-jsonl", str(outputs["ledger"]),
-            "--report-json", str(outputs["report"]),
-            "--dashboard-md", str(outputs["dashboard"]),
-            *extra_args,
-        ]
-        return subprocess.run(argv, cwd=ROOT, text=True, capture_output=True)
 
     def _assert_zero_writes(self, outputs):
         """No output *and* no lock sidecar may exist after a reject_prewrite."""
@@ -7012,7 +7000,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                     marker = root / "provider-was-invoked"
                     claude_bin = self._recording_claude(root, marker)
 
-                    proc = self._run_direct(
+                    proc = self._run(
                         script, case, outputs, claude_bin=claude_bin,
                         extra_args=("--dry-run",) if dry_run else (),
                     )
@@ -7056,7 +7044,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 marker = root / "provider-was-invoked"
                 claude_bin = self._recording_claude(root, marker)
 
-                proc = self._run_direct(script, case, outputs, claude_bin=claude_bin)
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
 
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertTrue(marker.exists(), "the unprofiled provider path must still invoke the provider")

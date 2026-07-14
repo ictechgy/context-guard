@@ -2476,14 +2476,13 @@ def redact_profile_label(value: Any) -> str:
     unknown key is never something we must name, and the stable error id carries the
     meaning.
     """
+    # 부분 마스킹된 잔여물은 여기까지 오지 못한다. sanitize 가 무언가를 지웠다면 그 자리에
+    # 대괄호가 붙은 placeholder 가 남는데, 안전 문자셋에는 대괄호가 없으므로 첫 검사에서
+    # 이미 통째로 걸러진다.
     text = sanitize_note_text(value)
     if not PROFILE_SAFE_LABEL_PATTERN.match(text):
         return PROFILE_REDACTED_PLACEHOLDER
     if PROFILE_SECRET_SHAPED_LABEL_PATTERN.search(text):
-        return PROFILE_REDACTED_PLACEHOLDER
-    # sanitize 가 무언가를 바꿨다면 그 값은 secret 패턴에 걸린 것이다. 부분 마스킹된
-    # 잔여물을 내보내지 않는다.
-    if text != sanitize_note_text(str(value)) or "[REDACTED]" in text:
         return PROFILE_REDACTED_PLACEHOLDER
     return text
 
@@ -2860,7 +2859,6 @@ def validate_profile_row_controls(
         "missed_context_reviewed": missed_reviewed,
         # lane 이 correction 판정을 lane 데이터에서 직접 유도할 수 있도록 정규화해 넘긴다.
         "human_correction_consistent": correction_count == row.result.corrections,
-        "corrections": int(row.result.corrections),
         "provider_measured": bool(row.result.primary_tokens_measured and row.result.cost_measured),
         "shifted_cost_measured": bool(lane_external_tokens and lane_external_cost),
     }
@@ -2939,13 +2937,14 @@ def profile_locked_batch_freshness_gate(
     still land a row between that check and the first append. One locked recheck for
     the whole batch closes that window without holding the lock across the run.
     """
-    if not selected_profiled_task_ids(tasks, targets):
+    profiled_task_ids = selected_profiled_task_ids(tasks, targets)
+    if not profiled_task_ids:
         return
     with csv_file_lock(csv_path, create_parent=True):
         if file_has_content_no_follow(csv_path):
             profile_reject(
                 PROFILE_REJECT_FRESH_OUTPUT_REQUIRED,
-                profile_owner(selected_profiled_task_ids(tasks, targets)[0]),
+                profile_owner(profiled_task_ids[0]),
                 "the results CSV gained content after the profiled batch was validated",
             )
 
