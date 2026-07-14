@@ -2890,8 +2890,10 @@ def preflight_profile_replay_mode(
     sees profile validation or the evaluation-only clamp. Fail closed instead, before
     the provider runtime, the lock sidecar, and the first output byte.
 
-    Callers must skip this on ``--dry-run``, which invokes no provider and writes no
-    output, so it cannot cross the boundary this gate protects.
+    This also refuses ``--dry-run``. A dry run writes nothing and spawns no provider,
+    so it is not itself dangerous, but keeping the invariant absolute — a profiled task
+    never enters the provider path — is what makes the boundary auditable. The useful
+    preview, ``--evidence-jsonl --dry-run``, is unaffected.
     """
     if evidence_replay_active:
         return
@@ -3171,6 +3173,11 @@ def clamp_report_for_evaluation_profile(report: dict[str, Any], lane: dict[str, 
         readiness["claim_allowed"] = False
         readiness["status"] = IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
         readiness["reason"] = IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID
+        # `_observed` 라는 이름이 붙었어도 값 자체가 "..._public_claim_candidate" 라는
+        # 권한 문자열이다. 그대로 두면 downstream 이 이 필드를 읽고 candidate 로 오해할
+        # 수 있으므로, profiled report 에서는 관측치도 evaluation-only 로 clamp 한다.
+        readiness["public_claim_status_observed"] = IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
+        readiness["public_claim_eligible_observed"] = False
         blocking = readiness.get("blocking_gate_ids")
         if isinstance(blocking, list) and IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID not in blocking:
             blocking.append(IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID)
@@ -4867,11 +4874,14 @@ def main() -> int:
     # CSV lock sidecar 를 만들기 때문에, 그 뒤에서 거부하면 우리가 거절한 실행이 이미
     # 파일 시스템에 바이트를 남긴 뒤가 된다.
     #
-    # --dry-run 은 provider 를 실행하지 않고 CSV/ledger/report/dashboard 를 하나도 쓰지
-    # 않는 계획 미리보기다(append_csv 와 write_report_outputs 모두 dry-run 을 건너뛴다).
-    # 넘을 경계 자체가 없으므로 dry-run 은 profiled fixture 에서도 그대로 허용한다.
+    # replay 경계는 --dry-run 에도 적용한다. dry-run 이 provider 를 부르지 않는 것은
+    # 맞지만, 불변식을 "profiled task 는 provider 경로에 진입하지 않는다" 로 단순하게
+    # 유지하는 편이 감사 가능하고 fail-closed 다. 의미 있는 미리보기인
+    # `--evidence-jsonl --dry-run` 은 그대로 동작한다.
+    preflight_profile_replay_mode(tasks, targets, evidence_replay_active=args.evidence_jsonl is not None)
+    # 반대로 freshness 는 출력을 쓰는 실행에만 의미가 있다. dry-run 은 CSV/ledger/report 를
+    # 하나도 쓰지 않으므로 기존 CSV 가 있어도 잃을 profile 문맥이 없다.
     if not args.dry_run:
-        preflight_profile_replay_mode(tasks, targets, evidence_replay_active=args.evidence_jsonl is not None)
         preflight_profile_fresh_output(
             tasks,
             targets,

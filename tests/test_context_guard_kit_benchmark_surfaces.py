@@ -3768,24 +3768,56 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     variant_raw = json.loads(variant_path.read_text(encoding="utf-8"))
                     target_task = task_raw[0]["id"]
                     target_variant = variant_raw[0]["name"]
+                    profiled_fixture = task_raw[0].get("evaluation_profile") is not None
                     with tempfile.TemporaryDirectory() as tmp:
                         csv_path = Path(tmp) / "dry-run.csv"
+                        base_argv = [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(task_path),
+                            "--variants",
+                            str(variant_path),
+                            "--task-id",
+                            target_task,
+                            "--variant",
+                            target_variant,
+                            "--csv",
+                            str(csv_path),
+                        ]
+                        if profiled_fixture:
+                            # A profiled fixture is evaluation-only: the provider path is refused
+                            # outright, --dry-run included, so it never reaches the placeholder
+                            # guard and never renders a provider-path prompt preview. Its prompt
+                            # swap and replay behavior are covered by
+                            # ImageContextEvaluationProfileTests against --evidence-jsonl.
+                            sentinel = Path(tmp) / "provider-called.txt"
+                            fake = Path(tmp) / "fake-claude"
+                            fake.write_text(
+                                "#!/usr/bin/env python3\n"
+                                "import pathlib, sys\n"
+                                f"pathlib.Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n"
+                                "sys.stdout.write('{}')\n",
+                                encoding="utf-8",
+                            )
+                            fake.chmod(0o755)
+                            for extra in (["--dry-run"], ["--claude-bin", str(fake)]):
+                                refused = subprocess.run(
+                                    base_argv + extra, text=True, capture_output=True,
+                                )
+                                self.assertNotEqual(refused.returncode, 0)
+                                self.assertIn(
+                                    "profile_replay_required", refused.stdout + refused.stderr,
+                                )
+                                self.assertFalse(sentinel.exists())
+                                self.assertFalse(csv_path.exists())
+                                self.assertFalse(
+                                    csv_path.with_name(f"{csv_path.name}.lock").exists()
+                                )
+                            continue
+
                         proc = subprocess.run(
-                            [
-                                sys.executable,
-                                str(script),
-                                "--tasks",
-                                str(task_path),
-                                "--variants",
-                                str(variant_path),
-                                "--task-id",
-                                target_task,
-                                "--variant",
-                                target_variant,
-                                "--csv",
-                                str(csv_path),
-                                "--dry-run",
-                            ],
+                            base_argv + ["--dry-run"],
                             text=True,
                             capture_output=True,
                             check=True,
@@ -3816,14 +3848,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 check=True,
                             )
                             dry_runs[variant_name] = variant_proc.stdout
-                        if lane == "image_context_pack":
-                            self.assertIn("Full sanitized textual evidence", dry_runs["baseline_full_evidence_fixture"])
-                            self.assertIn("Packed sanitized textual evidence", dry_runs["fixture_only_image_context_pack"])
-                            self.assertNotEqual(
-                                dry_runs["baseline_full_evidence_fixture"],
-                                dry_runs["fixture_only_image_context_pack"],
-                            )
-                        elif lane == "visual_ocr":
+                        if lane == "visual_ocr":
                             self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
                             self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
                             self.assertNotEqual(
