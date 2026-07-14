@@ -12,6 +12,7 @@
     "variant_prompt_files": {
       "baseline_full_evidence_fixture": "image-context-pack-full-evidence.prompt.example.md",
       "fixture_only_image_context_pack": "image-context-pack-packed-evidence.prompt.example.md"
-    }
+    },
+    "evaluation_profile": "contextguard.bench.image-context-pack-evaluation.v1"
   }
 ]
