@@ -376,24 +376,6 @@ IMAGE_CONTEXT_GATE_IDS = (
     IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT,
     IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY,
 )
-IMAGE_CONTEXT_GATE_LABELS = {
-    IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING: "Profile and prompt binding",
-    IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW: "Protected-zone deny review attestation",
-    IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING: "Exact-text fallback binding",
-    IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW: "Missed-context review",
-    IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY: "Human correction consistency",
-    IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT: "Generic matched success and provider measurement",
-    IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY: "Evaluation-only promotion boundary",
-}
-# 품질 게이트가 회귀를 보고할 때 lane blocker 로 승격시키는 기존 generic quality_gate 값.
-IMAGE_CONTEXT_QUALITY_BLOCKER_GATES = (
-    "insufficient_baseline",
-    "insufficient_success",
-    "insufficient_corrections_data",
-    "matched_task_regression",
-    "failure_rate_regression",
-    "corrections_regression",
-)
 IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID = "image_context_pack_evaluation_only"
 IMAGE_CONTEXT_CLAIM_BOUNDARY = {
     "id": "image_context_pack_evaluation_only_never_promotion_or_public_claim",
