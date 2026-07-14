@@ -52,6 +52,7 @@ import collections
 from contextlib import contextmanager
 import csv
 import datetime as _dt
+import hashlib
 import json
 import math
 import os
