@@ -586,20 +586,19 @@ def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
     """Serialize CSV read/write access with a no-follow sidecar lock file."""
     if fcntl is None:
         raise OSError("platform does not support advisory CSV locks")
-    with csv_parent_directory_lock(csv_path, create_parent=create_parent):
-        lock_path = csv_path.with_name(f"{csv_path.name}.lock")
-        fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=False)
-        locked = False
+    lock_path = csv_path.with_name(f"{csv_path.name}.lock")
+    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
+    locked = False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            locked = True
-            yield
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            try:
-                if locked:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+            os.close(fd)
 
 
 @contextmanager
@@ -1678,15 +1677,16 @@ def append_csv(
     existing_key_cache: set[tuple[str, str]] | None = None,
     existing_key_cache_stamp: dict[str, tuple[int, int, int, int] | None] | None = None,
 ) -> bool:
-    with csv_file_lock(csv_path, create_parent=True):
-        return append_csv_unlocked(
-            csv_path,
-            claude_ver,
-            result,
-            skip_existing=skip_existing,
-            existing_key_cache=existing_key_cache,
-            existing_key_cache_stamp=existing_key_cache_stamp,
-        )
+    with csv_parent_directory_lock(csv_path, create_parent=True):
+        with csv_file_lock(csv_path, create_parent=False):
+            return append_csv_unlocked(
+                csv_path,
+                claude_ver,
+                result,
+                skip_existing=skip_existing,
+                existing_key_cache=existing_key_cache,
+                existing_key_cache_stamp=existing_key_cache_stamp,
+            )
 
 
 def append_csv_unlocked(
