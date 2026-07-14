@@ -66,6 +66,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -380,6 +381,10 @@ IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW = "protected_zone_deny_review"
 IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING = "exact_text_fallback_binding"
 IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW = "missed_context_review"
 IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY = "human_correction_consistency"
+# generic quality gate 결과를 lane 이 직접 소비한다. profile 이 generic regression 을
+# 무시하고 ready 로 올라가는 경로를 막는다.
+IMAGE_CONTEXT_GATE_CORRECTIONS_REGRESSION = "corrections_regression"
+IMAGE_CONTEXT_GATE_FAILURE_RATE_REGRESSION = "failure_rate_regression"
 IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT = "generic_matched_success_and_measurement"
 IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY = "evaluation_only_promotion_boundary"
 IMAGE_CONTEXT_GATE_IDS = (
@@ -388,9 +393,15 @@ IMAGE_CONTEXT_GATE_IDS = (
     IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING,
     IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW,
     IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY,
+    IMAGE_CONTEXT_GATE_CORRECTIONS_REGRESSION,
+    IMAGE_CONTEXT_GATE_FAILURE_RATE_REGRESSION,
     IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT,
     IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY,
 )
+# lane gate 를 막는 generic quality_gate 값. summarize_benchmark_rows 가 계산한다.
+GENERIC_QUALITY_GATE_PASS = "pass"
+GENERIC_QUALITY_GATE_CORRECTIONS_REGRESSION = "corrections_regression"
+GENERIC_QUALITY_GATE_FAILURE_RATE_REGRESSION = "failure_rate_regression"
 IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID = "image_context_pack_evaluation_only"
 IMAGE_CONTEXT_CLAIM_BOUNDARY = {
     "id": "image_context_pack_evaluation_only_never_promotion_or_public_claim",
@@ -424,6 +435,17 @@ MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
 MAX_PROFILE_CORRECTION_COUNT = 10_000
 SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
 PROTECTED_ZONE_DENY_POLICY = "deny"
+# 오류 메시지에 그대로 실을 수 있는 라벨 문자셋. task id, variant 이름, 알 수 없는
+# evidence 키는 모두 작성자 통제 값이므로 이 패턴을 통과할 때만 원문으로 echo 한다.
+PROFILE_SAFE_LABEL_PATTERN = re.compile(r"\A[A-Za-z0-9_.:-]{1,64}\Z")
+# credential 처럼 생긴 라벨은 통째로 지운다. SECRET_NOTE_PATTERNS 는 값의 "몸통"만
+# 가리므로 sk-live-<masked>-x 처럼 접두사가 살아남는데, 부분 마스킹된 조각을 echo 하면
+# 그 자체가 유출이다. 이 패턴에 걸리면 조각이 아니라 토큰 전체를 placeholder 로 바꾼다.
+PROFILE_SECRET_SHAPED_LABEL_PATTERN = re.compile(
+    r"(?i)(sk[-_]|pk[-_]|rk[-_]|ghp_|gho_|glpat|xox|eyj|akia|bearer|api|token|secret|password|passwd|credential|auth)"
+)
+PROFILE_REDACTED_PLACEHOLDER = "[REDACTED]"
+MAX_PROFILE_ERROR_LABELS = 5
 
 
 def _base_open_flags() -> int:
@@ -2151,18 +2173,22 @@ def parse_evidence_row(raw_value: Any, *, owner: str, line_number: int) -> Evide
     )
     # Profile metadata 는 추가 필드로만 수집한다. 깊은 검증은 preflight 에서 task/prompt
     # 문맥과 함께 수행하며, 어떤 출력도 기록되기 전에 끝난다.
+    # profile 오류는 evidence 파일 경로를 절대 echo 하지 않는다. 줄 번호만으로 위치를 준다.
+    profile_row_owner = f"evidence line {line_number}"
     evaluation_profile = raw.get("evaluation_profile")
     if evaluation_profile is not None and (
         not isinstance(evaluation_profile, str)
         or evaluation_profile not in SUPPORTED_EVALUATION_PROFILE_IDS
     ):
-        raise SystemExit(
-            f"{PROFILE_REJECT_SCHEMA_INVALID}: {owner} evaluation_profile is not a supported profile id"
+        profile_reject(
+            PROFILE_REJECT_SCHEMA_INVALID, profile_row_owner,
+            "evaluation_profile is not a supported profile id",
         )
     evaluation_controls = raw.get("evaluation_controls")
     if evaluation_controls is not None and not isinstance(evaluation_controls, dict):
-        raise SystemExit(
-            f"{PROFILE_REJECT_SCHEMA_INVALID}: {owner} evaluation_controls must be a JSON object"
+        profile_reject(
+            PROFILE_REJECT_SCHEMA_INVALID, profile_row_owner,
+            "evaluation_controls must be a JSON object",
         )
 
     return EvidenceReplayRow(
@@ -2435,12 +2461,65 @@ PROFILE_PROOF_UNIT_REQUIRED_FLAGS = (
 PROFILE_SHIFTED_COST_STATUSES = ("measured", "unmeasured")
 
 
+def redact_profile_label(value: Any) -> str:
+    """Bound one untrusted label so an error message can never carry a payload.
+
+    Task ids, variant names, and unknown evidence keys are author-controlled, so a
+    secret-shaped or oversized value could otherwise ride a fatal message to the
+    console. Only a conservative identifier charset survives verbatim; everything
+    else collapses to the shared placeholder.
+
+    A whole label is replaced, never partially masked. ``sanitize_note_text`` masks a
+    credential's body but leaves its prefix (``sk-live-[REDACTED]-x``), and echoing
+    that fragment is itself a leak, so any credential-shaped label is dropped
+    entirely. That deliberately redacts a benign id containing e.g. "auth": an
+    unknown key is never something we must name, and the stable error id carries the
+    meaning.
+    """
+    text = sanitize_note_text(value)
+    if not PROFILE_SAFE_LABEL_PATTERN.match(text):
+        return PROFILE_REDACTED_PLACEHOLDER
+    if PROFILE_SECRET_SHAPED_LABEL_PATTERN.search(text):
+        return PROFILE_REDACTED_PLACEHOLDER
+    # sanitize 가 무언가를 바꿨다면 그 값은 secret 패턴에 걸린 것이다. 부분 마스킹된
+    # 잔여물을 내보내지 않는다.
+    if text != sanitize_note_text(str(value)) or "[REDACTED]" in text:
+        return PROFILE_REDACTED_PLACEHOLDER
+    return text
+
+
+def redact_profile_labels(values: Iterable[Any]) -> str:
+    """Render a bounded, redacted key list for schema errors.
+
+    The count is always truthful; the names are only echoed when they are safe, and
+    the list is truncated so an oversized evidence object cannot flood the message.
+    """
+    labels = [redact_profile_label(value) for value in values]
+    shown = labels[:MAX_PROFILE_ERROR_LABELS]
+    overflow = len(labels) - len(shown)
+    rendered = ", ".join(shown)
+    if overflow > 0:
+        rendered = f"{rendered}, +{overflow} more"
+    return rendered
+
+
+def profile_owner(task_id: Any, variant: Any = None) -> str:
+    """Build the redacted owner prefix shared by every profile error."""
+    owner = f"task {redact_profile_label(task_id)}"
+    if variant is not None:
+        owner = f"{owner} variant {redact_profile_label(variant)}"
+    return owner
+
+
 def profile_reject(error_id: str, owner: str, detail: str) -> "NoReturn":
     """Fail closed with a stable id and a bounded, redacted message.
 
-    Raw policy text, prompt content, and filesystem paths are never echoed.
+    Raw policy text, prompt content, and filesystem paths are never echoed. ``owner``
+    must already come from :func:`profile_owner` and ``detail`` must be a fixed
+    literal or a redacted label list; the final message is sanitized again so no
+    caller can smuggle a secret-shaped value through.
     """
-    raise SystemExit(f"{error_id}: {owner} {detail}")
+    raise SystemExit(sanitize_note_text(f"{error_id}: {owner} {detail}"))
 
 
 def profile_block(controls: dict[str, Any], key: str, *, owner: str) -> dict[str, Any]:
@@ -2453,7 +2532,7 @@ def profile_block(controls: dict[str, Any], key: str, *, owner: str) -> dict[str
     if unknown:
         profile_reject(
             PROFILE_REJECT_SCHEMA_INVALID, owner,
-            f"evaluation_controls.{key} has unknown v1 key(s): {', '.join(unknown)}",
+            f"evaluation_controls.{key} has unknown v1 key(s): {redact_profile_labels(unknown)}",
         )
     return value
 
@@ -2513,6 +2592,22 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
     structural rejection. Replay never authenticates the record's author and never
     rereads the artifact; this only checks internal consistency.
     """
+    # 검증을 주장하려면 fallback 자체가 available 이어야 한다. available=false 인데
+    # verified=true 인 레코드는 자기 모순이다.
+    if fallback.get("available") is not True:
+        profile_reject(
+            PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
+            "exact_text_fallback claims verification while declaring the fallback unavailable",
+        )
+    # placeholder receipt/command 로는 어떤 것도 되찾을 수 없다. 검증 주장에는 실제
+    # 값이 필요하다.
+    for key in ("receipt_id", "retrieval_command"):
+        value = fallback.get(key)
+        if not isinstance(value, str) or value.strip().lower() in PROFILE_FALLBACK_PLACEHOLDER_VALUES:
+            profile_reject(
+                PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
+                f"exact_text_fallback claims verification without an exact {key}",
+            )
     projection = fallback.get("verifier_projection")
     if not isinstance(projection, dict):
         profile_reject(
@@ -2523,7 +2618,7 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
     if unknown:
         profile_reject(
             PROFILE_REJECT_SCHEMA_INVALID, owner,
-            f"exact_text_fallback.verifier_projection has unknown v1 key(s): {', '.join(unknown)}",
+            f"exact_text_fallback.verifier_projection has unknown v1 key(s): {redact_profile_labels(unknown)}",
         )
     if projection.get("schema") != PROOF_VERIFICATION_SCHEMA_VERSION:
         profile_reject(
@@ -2548,6 +2643,13 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
             PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
             "exact_text_fallback claims verification but the verifier proposes a candidate replacement",
         )
+    # 가져온 레코드는 local-only 경계를 그대로 선언해야 한다. 경계가 다르면 이 lane 이
+    # 인정할 수 있는 권한 범위를 벗어난 주장이다.
+    if projection.get("claim_boundary") != PROOF_VERIFICATION_CLAIM_BOUNDARY:
+        profile_reject(
+            PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
+            "exact_text_fallback claims verification without the expected local-only claim boundary",
+        )
     unit = projection.get("proof_unit")
     if not isinstance(unit, dict):
         profile_reject(
@@ -2558,7 +2660,7 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
     if unknown_unit:
         profile_reject(
             PROFILE_REJECT_SCHEMA_INVALID, owner,
-            f"verifier proof_unit has unknown v1 key(s): {', '.join(unknown_unit)}",
+            f"verifier proof_unit has unknown v1 key(s): {redact_profile_labels(unknown_unit)}",
         )
     if unit.get("status") != PROOF_VERIFICATION_VERIFIED_STATUS:
         profile_reject(
@@ -2571,6 +2673,13 @@ def validate_profile_fallback_projection(fallback: dict[str, Any], *, owner: str
                 PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
                 f"exact_text_fallback claims verification but proof_unit.{flag} does not confirm it",
             )
+    # local verifier 는 rehydration 을 실행하지 않는다. 실행했다고 주장하면 이 레코드는
+    # 우리가 검증할 수 있는 evaluation-only 경계 밖의 산출물이다.
+    if unit.get("rehydration_executed") is not PROOF_VERIFICATION_REHYDRATION_EXECUTED:
+        profile_reject(
+            PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
+            "exact_text_fallback claims verification but proof_unit.rehydration_executed leaves the local-only boundary",
+        )
     if unit.get("receipt_id") != fallback["receipt_id"]:
         profile_reject(
             PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT, owner,
@@ -2590,7 +2699,7 @@ def validate_profile_row_controls(
     task_file_dir: Path,
 ) -> dict[str, Any]:
     """Validate one profiled evidence row and return its normalized lane record."""
-    owner = f"task {task.id} variant {row.result.variant}"
+    owner = profile_owner(task.id, row.result.variant)
     controls = row.evaluation_controls
     if controls is None:
         profile_reject(PROFILE_REJECT_CONTROLS_MISSING, owner, "evaluation_controls is required for a profiled row")
@@ -2598,7 +2707,7 @@ def validate_profile_row_controls(
     if unknown:
         profile_reject(
             PROFILE_REJECT_SCHEMA_INVALID, owner,
-            f"evaluation_controls has unknown v1 key(s): {', '.join(unknown)}",
+            f"evaluation_controls has unknown v1 key(s): {redact_profile_labels(unknown)}",
         )
 
     # --- prompt binding -------------------------------------------------
@@ -2749,9 +2858,94 @@ def validate_profile_row_controls(
         "fallback_projection_supplied": fallback.get("verifier_projection") is not None,
         "protected_zone_attested": protection_attested,
         "missed_context_reviewed": missed_reviewed,
+        # lane 이 correction 판정을 lane 데이터에서 직접 유도할 수 있도록 정규화해 넘긴다.
+        "human_correction_consistent": correction_count == row.result.corrections,
+        "corrections": int(row.result.corrections),
         "provider_measured": bool(row.result.primary_tokens_measured and row.result.cost_measured),
         "shifted_cost_measured": bool(lane_external_tokens and lane_external_cost),
     }
+
+
+def selected_profiled_task_ids(
+    tasks: list[TaskFixture],
+    targets: list[tuple[TaskFixture, Variant]],
+) -> list[str]:
+    """Profiled task ids that this invocation actually selected, in stable order."""
+    profiled = {task.id for task in tasks if task.evaluation_profile is not None}
+    selected = {task.id for task, _ in targets}
+    return sorted(profiled & selected)
+
+
+def preflight_profile_replay_mode(
+    tasks: list[TaskFixture],
+    targets: list[tuple[TaskFixture, Variant]],
+    *,
+    evidence_replay_active: bool,
+) -> None:
+    """Refuse a profiled task outside evidence replay, before any provider call.
+
+    The profile is evaluation-only: it validates imported evidence and clamps every
+    authority surface. Those checks live entirely on the replay path, so running a
+    profiled task through the provider would execute a real run whose report never
+    sees profile validation or the evaluation-only clamp. Fail closed instead, before
+    the provider runtime, the lock sidecar, and the first output byte.
+
+    Callers must skip this on ``--dry-run``, which invokes no provider and writes no
+    output, so it cannot cross the boundary this gate protects.
+    """
+    if evidence_replay_active:
+        return
+    for task_id in selected_profiled_task_ids(tasks, targets):
+        profile_reject(
+            PROFILE_REJECT_REPLAY_REQUIRED, profile_owner(task_id),
+            "a profiled task is evaluation-only and runs only under --evidence-jsonl replay; "
+            "provider execution is refused",
+        )
+
+
+def preflight_profile_fresh_output(
+    tasks: list[TaskFixture],
+    targets: list[tuple[TaskFixture, Variant]],
+    *,
+    resume: bool,
+    csv_has_preexisting_content: bool,
+) -> None:
+    """Refuse a resumed or pre-existing profiled batch before any lock/read helper.
+
+    v1 gives up incremental replay so profile context cannot silently vanish from a
+    resumed report. This must run before the resume key snapshot, which acquires the
+    CSV lock and therefore creates a ``.lock`` sidecar: rejecting afterwards would
+    leave a byte on disk for a run we refused.
+    """
+    if not (resume or csv_has_preexisting_content):
+        return
+    for task_id in selected_profiled_task_ids(tasks, targets):
+        profile_reject(
+            PROFILE_REJECT_FRESH_OUTPUT_REQUIRED, profile_owner(task_id),
+            "v1 profiled replay requires a fresh empty results CSV and forbids --resume",
+        )
+
+
+def profile_locked_batch_freshness_gate(
+    tasks: list[TaskFixture],
+    targets: list[tuple[TaskFixture, Variant]],
+    csv_path: Path,
+) -> None:
+    """Recheck output freshness once, under the lock, before the batch writes.
+
+    The pre-lock gate reads the CSV without the lock, so a concurrent writer could
+    still land a row between that check and the first append. One locked recheck for
+    the whole batch closes that window without holding the lock across the run.
+    """
+    if not selected_profiled_task_ids(tasks, targets):
+        return
+    with csv_file_lock(csv_path, create_parent=True):
+        if file_has_content_no_follow(csv_path):
+            profile_reject(
+                PROFILE_REJECT_FRESH_OUTPUT_REQUIRED,
+                profile_owner(selected_profiled_task_ids(tasks, targets)[0]),
+                "the results CSV gained content after the profiled batch was validated",
+            )
 
 
 def preflight_evaluation_profiles(
@@ -2771,6 +2965,11 @@ def preflight_evaluation_profiles(
     normalized lane record to each row, which makes report annotation infallible over
     an already-validated batch.
     """
+    # 같은 gate 를 main 이 lock helper 이전에 이미 호출한다. 여기서 다시 부르는 것은
+    # 이 함수를 직접 쓰는 호출자도 같은 boundary 를 얻게 하기 위한 이중 방어다.
+    preflight_profile_fresh_output(
+        tasks, targets, resume=resume, csv_has_preexisting_content=csv_has_preexisting_content,
+    )
     profiled_tasks = {task.id: task for task in tasks if task.evaluation_profile is not None}
     rows_by_task: dict[str, list[EvidenceReplayRow]] = collections.defaultdict(list)
     for row in evidence_rows:
@@ -2782,7 +2981,7 @@ def preflight_evaluation_profiles(
         if task is None and (row.evaluation_profile is not None or row.evaluation_controls is not None):
             profile_reject(
                 PROFILE_REJECT_BINDING_MISMATCH,
-                f"task {row.result.task_id} variant {row.result.variant}",
+                profile_owner(row.result.task_id, row.result.variant),
                 "a profiled evidence row cannot be replayed against a task that does not declare the profile",
             )
     if not profiled_tasks:
@@ -2800,21 +2999,29 @@ def preflight_evaluation_profiles(
         expected = {variant.name for variant in variants}
         if selected != expected:
             profile_reject(
-                PROFILE_REJECT_BATCH_INCOMPLETE, f"task {task_id}",
+                PROFILE_REJECT_BATCH_INCOMPLETE, profile_owner(task_id),
                 "v1 profiled replay requires the complete baseline/candidate batch; "
                 "partial variant selection is not supported",
             )
-        # profiled replay 는 신선한 빈 CSV 를 요구한다. resume/기존 CSV 는 profile 문맥을
-        # 조용히 잃게 만들 수 있으므로 출력 이전에 거부한다.
-        if resume or csv_has_preexisting_content:
-            profile_reject(
-                PROFILE_REJECT_FRESH_OUTPUT_REQUIRED, f"task {task_id}",
-                "v1 profiled replay requires a fresh empty results CSV and forbids --resume",
-            )
-
         task_rows = rows_by_task.get(task_id, [])
+        # 중복/여분 row 는 coverage 집합 계산에 흡수되어 조용히 통과했다. 배치가
+        # 모호하면 어떤 lane 판정도 신뢰할 수 없으므로 안정 ID 로 먼저 거부한다.
+        seen_variants: set[str] = set()
         for row in task_rows:
-            owner = f"task {task_id} variant {row.result.variant}"
+            owner = profile_owner(task_id, row.result.variant)
+            if row.result.variant in seen_variants:
+                profile_reject(
+                    PROFILE_REJECT_BATCH_INCOMPLETE, owner,
+                    "a profiled task cannot carry duplicate evidence rows for one variant",
+                )
+            seen_variants.add(row.result.variant)
+            if row.result.variant not in expected:
+                profile_reject(
+                    PROFILE_REJECT_BATCH_INCOMPLETE, owner,
+                    "a profiled batch cannot carry an evidence row for an unknown variant",
+                )
+        for row in task_rows:
+            owner = profile_owner(task_id, row.result.variant)
             if row.evaluation_profile is None and row.evaluation_controls is None:
                 profile_reject(
                     PROFILE_REJECT_BATCH_INCOMPLETE, owner,
@@ -2829,7 +3036,7 @@ def preflight_evaluation_profiles(
         covered = {row.result.variant for row in task_rows}
         if not expected.issubset(covered):
             profile_reject(
-                PROFILE_REJECT_BATCH_INCOMPLETE, f"task {task_id}",
+                PROFILE_REJECT_BATCH_INCOMPLETE, profile_owner(task_id),
                 "profiled replay requires complete baseline and candidate evidence coverage",
             )
         for row in task_rows:
@@ -2850,16 +3057,41 @@ def build_image_context_evaluation_lane(
     all_success = all(lane["success"] for lane in lanes)
     omission_lanes = [lane for lane in lanes if lane["source_omission_present"]]
 
+    # generic quality gate 결과를 lane 이 그대로 소비한다. profile 이 자기만의 판정으로
+    # generic regression 을 덮어쓰지 못하게 하는 것이 목적이므로, 어떤 matched pair 가
+    # regression 을 보고하면 lane 도 막힌다(보수적으로 fail-closed).
+    #
+    # 이름 붙은 두 gate 만 매핑하면 구멍이 남는다: quality_gate 는 corrections_regression /
+    # failure_rate_regression 외에도 insufficient_corrections_data 같은 값을 낼 수 있고,
+    # 그때 lane 이 ready 로 올라가면 안 된다. 따라서 불변식은 "pass 가 아니면 막는다" 이며,
+    # 두 이름은 이유를 드러내는 구체 blocker 로 함께 유지한다.
+    generic_quality_gates: set[str] = set()
+    pairs = report.get("matched_pair_evidence")
+    if isinstance(pairs, list):
+        for pair in pairs:
+            if isinstance(pair, dict) and isinstance(pair.get("quality_gate"), str):
+                generic_quality_gates.add(pair["quality_gate"])
+    generic_quality_pass = generic_quality_gates.issubset({GENERIC_QUALITY_GATE_PASS})
+
     gate_results = {
         # preflight 를 통과했다면 profile/prompt binding 은 이미 증명되었다.
         IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING: True,
         IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW: all(lane["protected_zone_attested"] for lane in lanes),
         IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING: all(lane["fallback_bound"] for lane in lanes),
         IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW: all(lane["missed_context_reviewed"] for lane in lanes),
-        # count/reason 모순은 거부되므로, 여기까지 온 배치는 일관적이다.
-        IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY: True,
+        # count/reason 모순은 거부되지만, 판정은 lane 레코드에서 직접 유도한다.
+        IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY: all(
+            lane["human_correction_consistent"] for lane in lanes
+        ),
+        IMAGE_CONTEXT_GATE_CORRECTIONS_REGRESSION: (
+            GENERIC_QUALITY_GATE_CORRECTIONS_REGRESSION not in generic_quality_gates
+        ),
+        IMAGE_CONTEXT_GATE_FAILURE_RATE_REGRESSION: (
+            GENERIC_QUALITY_GATE_FAILURE_RATE_REGRESSION not in generic_quality_gates
+        ),
+        # generic quality gate 가 pass 가 아니면 어떤 값이든 여기서 막힌다.
         IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT: (
-            all_success and provider_measured and shifted_measured
+            all_success and provider_measured and shifted_measured and generic_quality_pass
         ),
         # 이 gate 는 통과해도 권한을 주지 않는다. 경계 자체가 불변이므로 항상 참이다.
         IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY: True,
@@ -2924,6 +3156,15 @@ def clamp_report_for_evaluation_profile(report: dict[str, Any], lane: dict[str, 
     # 콘솔이 report['claim_status'] 를 그대로 출력하므로 legacy 필드도 함께 clamp 한다.
     report["claim_status"] = IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
     report["public_claim_eligible"] = False
+
+    # replay_evidence 는 top-level 과 같은 이름의 권한 필드를 복사해 들고 있다. 여기를
+    # 함께 clamp 하지 않으면 report.json 소비자가 중첩 사본에서 candidate/eligible=true 를
+    # 그대로 읽어 evaluation-only 경계를 우회한다.
+    replay_evidence = report.get("replay_evidence")
+    if isinstance(replay_evidence, dict):
+        replay_evidence["public_claim_status"] = IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
+        replay_evidence["public_claim_eligible"] = False
+        replay_evidence["report_claim_gates_allow_public_claim"] = False
 
     readiness = report.get("public_claim_readiness")
     if isinstance(readiness, dict):
@@ -4622,6 +4863,22 @@ def main() -> int:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
 
+    # profile gate 는 어떤 lock/read helper 보다 먼저 끝난다. existing_keys_snapshot 은
+    # CSV lock sidecar 를 만들기 때문에, 그 뒤에서 거부하면 우리가 거절한 실행이 이미
+    # 파일 시스템에 바이트를 남긴 뒤가 된다.
+    #
+    # --dry-run 은 provider 를 실행하지 않고 CSV/ledger/report/dashboard 를 하나도 쓰지
+    # 않는 계획 미리보기다(append_csv 와 write_report_outputs 모두 dry-run 을 건너뛴다).
+    # 넘을 경계 자체가 없으므로 dry-run 은 profiled fixture 에서도 그대로 허용한다.
+    if not args.dry_run:
+        preflight_profile_replay_mode(tasks, targets, evidence_replay_active=args.evidence_jsonl is not None)
+        preflight_profile_fresh_output(
+            tasks,
+            targets,
+            resume=args.resume,
+            csv_has_preexisting_content=file_has_content_no_follow(args.csv),
+        )
+
     if args.resume:
         skip_keys, skip_keys_loaded_stamp = existing_keys_snapshot(args.csv)
         skip_keys_stamp = {"stamp": skip_keys_loaded_stamp}
@@ -4665,6 +4922,9 @@ def main() -> int:
             existing_key_cache_stamp=skip_keys_stamp,
         )
         evidence_by_key = validate_evidence_coverage(evidence_rows, runnable_targets)
+        # 배치 단위 freshness 재확인 1회. lock 없이 읽은 위 preflight 와 첫 append 사이의
+        # 경쟁 구간을 닫는다. lock 을 배치 내내 붙들지 않으므로 append_csv 와 교착하지 않는다.
+        profile_locked_batch_freshness_gate(tasks, targets, args.csv)
         runnable_keys = {(task.id, variant.name) for task, variant in runnable_targets}
         claude_ver = "evidence-replay"
         completed = 0
