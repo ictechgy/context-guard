@@ -97,15 +97,22 @@ PROFILE_REJECT_ERROR_IDS = (
     "profile_correction_inconsistent",
     "profile_measurement_inconsistent",
     "profile_fallback_claim_inconsistent",
+    # A profiled task may only be replayed.  Selecting one without --evidence-jsonl
+    # must reject before the provider runtime is reachable at all.
+    "profile_replay_required",
 )
 
-# Lane gate ids, in the PRD's deterministic order.
+# Lane gate ids, in the PRD's deterministic order.  The two regression gates carry
+# the generic matched-pair quality verdict into lane readiness: a profiled batch may
+# never reach bounded-pilot review while the generic quality gate is not `pass`.
 IMAGE_CONTEXT_GATE_IDS = (
     "profile_and_prompt_binding",
     "protected_zone_deny_review",
     "exact_text_fallback_binding",
     "missed_context_review",
     "human_correction_consistency",
+    "corrections_regression",
+    "failure_rate_regression",
     "generic_matched_success_and_measurement",
     "evaluation_only_promotion_boundary",
 )
@@ -6304,7 +6311,13 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
         return row
 
     def _write_case(self, root, rows, *, task_profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
-                    variant_prompt_files=True):
+                    variant_prompt_files=True, success_command=None):
+        """Write tasks/variants/evidence for one profiled case.
+
+        ``success_command`` defaults to the placeholder, which the runner already
+        refuses outside a dry run.  Hostile direct-run tests pass a *real* command
+        so the placeholder guard cannot be mistaken for the profile guard.
+        """
         prompts = self._write_prompts(root)
         task = {
             "id": self.TASK_ID,
@@ -6313,7 +6326,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
             "effort": "medium",
             "max_turns": 1,
             "allowed_tools": [],
-            "success_command": (
+            "success_command": success_command or (
                 "python3 -c \"raise SystemExit('fixture-only placeholder: "
                 "replace success_command before real benchmark runs')\""
             ),
@@ -6381,6 +6394,44 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
             *extra_args,
         ]
         return subprocess.run(argv, cwd=cwd or ROOT, text=True, capture_output=True)
+
+    def _recording_claude(self, root, marker):
+        """A *working* fake provider that records the fact it was executed.
+
+        The profile guard must reject before this can ever run; the marker file is
+        the only proof that distinguishes "never invoked" from "invoked and failed".
+        """
+        fake = root / "recording-claude"
+        payload = json.dumps({
+            "message": {"usage": {"input_tokens": 10, "output_tokens": 5}},
+            "total_cost_usd": 0.0123,
+        })
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text('provider invoked', encoding='utf-8')\n"
+            f"sys.stdout.write({payload!r})\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        return fake
+
+    def _run_direct(self, script, case, outputs, *, claude_bin, extra_args=()):
+        """Invoke the *normal provider path*: identical to _run but with no --evidence-jsonl."""
+        argv = [
+            sys.executable, str(script),
+            "--tasks", str(case["tasks"]),
+            "--variants", str(case["variants"]),
+            "--baseline-variant", self.BASELINE,
+            "--claude-bin", str(claude_bin),
+            "--csv", str(outputs["csv"]),
+            "--ledger-jsonl", str(outputs["ledger"]),
+            "--report-json", str(outputs["report"]),
+            "--dashboard-md", str(outputs["dashboard"]),
+            *extra_args,
+        ]
+        return subprocess.run(argv, cwd=ROOT, text=True, capture_output=True)
 
     def _assert_zero_writes(self, outputs):
         """No output *and* no lock sidecar may exist after a reject_prewrite."""
@@ -6585,6 +6636,86 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
         rows[1]["evaluation_controls"]["exact_text_fallback"]["receipt_id"] = "receipt-does-not-match"
         cases.append(("fallback_receipt_mismatch", "profile_fallback_claim_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
 
+        # --- G002 blocker 6: duplicate profile evidence needs a *stable* id ------
+        # A duplicate must be caught by profile preflight with profile_batch_incomplete,
+        # not fall through to the generic un-prefixed "duplicate evidence row" error.
+        rows = self._default_rows(prompts)
+        rows.append(self._row(
+            variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False, omission=True,
+        ))
+        cases.append(("duplicate_candidate_row", "profile_batch_incomplete", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # --- G002 blocker 2: every bounded attestation field must be *bound* ------
+        # Each case below is a proof that currently "looks" passing: the projection
+        # itself is internally consistent, so only an explicit binding rule catches it.
+
+        # available=false while verification is claimed: an unavailable fallback is not proof.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["available"] = False
+        cases.append(("fallback_available_false", "profile_fallback_claim_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # Empty / placeholder receipt id, bound identically on both sides so that only
+        # an explicit "must be exact and non-empty" rule can reject it.
+        for label, placeholder in (("empty", ""), ("placeholder", "none")):
+            rows = self._default_rows(prompts, verified_fallback=True)
+            fallback = rows[1]["evaluation_controls"]["exact_text_fallback"]
+            fallback["receipt_id"] = placeholder
+            fallback["verifier_projection"]["proof_unit"]["receipt_id"] = placeholder
+            cases.append((
+                f"fallback_{label}_receipt_id", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # Empty / placeholder retrieval command: an exact retrieval handle is required.
+        for label, placeholder in (("empty", ""), ("placeholder", "none")):
+            rows = self._default_rows(prompts, verified_fallback=True)
+            rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = placeholder
+            cases.append((
+                f"fallback_{label}_retrieval_command", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # The imported proof may only ever carry the local-only claim boundary.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["verifier_projection"]["claim_boundary"] = (
+            "Semantic safety, freshness, replacement, and hosted-savings authority granted."
+        )
+        cases.append((
+            "fallback_claim_boundary_widened", "profile_fallback_claim_inconsistent", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # Replay may never accept a proof that claims the artifact was rehydrated:
+        # replay does not execute, re-read, or re-authenticate the artifact.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["verifier_projection"]["proof_unit"][
+            "rehydration_executed"
+        ] = True
+        cases.append((
+            "fallback_rehydration_executed", "profile_fallback_claim_inconsistent", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # --- G002 blocker 7: an attacker-chosen key name must not be echoed ------
+        # _assert_no_leakage (applied to every reject case) proves the secret-shaped
+        # key never reaches stdout/stderr.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"] = True
+        cases.append((
+            "unknown_key_secret_shaped", "profile_schema_invalid", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # The same rule applies to a nested block and to the imported projection.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"][
+            "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        ] = True
+        cases.append((
+            "unknown_nested_key_secret_shaped", "profile_schema_invalid", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
         return cases
 
     def test_profile_reject_cases_fail_closed_with_stable_ids_and_zero_writes(self):
@@ -6623,10 +6754,13 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                     covered.add(expected_id)
 
         # Every reject id in the PRD taxonomy that this suite claims to cover is exercised.
+        # The two flag-driven ids cannot be provoked by an evidence row, so each owns a
+        # dedicated CLI test: profile_fresh_output_required (resume/pre-existing CSV) and
+        # profile_replay_required (profiled task on the direct provider path).
         self.assertEqual(
             covered,
-            set(PROFILE_REJECT_ERROR_IDS) - {"profile_fresh_output_required"},
-            "fresh-output rejection is covered by its own CLI test",
+            set(PROFILE_REJECT_ERROR_IDS) - {"profile_fresh_output_required", "profile_replay_required"},
+            "fresh-output and replay-required rejections are covered by their own CLI tests",
         )
 
     def test_profile_replay_rejects_resume_preexisting_csv_and_partial_selection(self):
@@ -6822,6 +6956,356 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 proc = self._run(script, case, outputs, extra_args=("--dry-run",))
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self._assert_zero_writes(outputs)
+
+    # ---------- hostile regressions for the G002 architect blockers --------
+    #
+    # One test per blocking finding in .omx/reports/g002-architect-block-20260714.md.
+    # Each one is an *observable bypass* of an invariant the PRD already promises, so
+    # each must fail on the pre-repair runner and pass afterwards.  Every case runs on
+    # both the kit source and the packaged CLI (BENCH_SCRIPTS).
+
+    def test_profiled_task_rejects_the_direct_provider_path_before_any_invocation(self):
+        """Blocker 1 (CRITICAL): profile opt-in must not be ignorable by dropping --evidence-jsonl.
+
+        Profile validation only ever ran inside the ``--evidence-jsonl`` branch, so a
+        profiled task selected on the normal provider path executed the provider and
+        emitted a generic ``claim_status`` with no ``evaluation_profiles`` block at all.
+        The fixture below is armed to make that bypass observable: a *real*
+        ``success_command`` (so the placeholder guard cannot fire instead) and a *working*
+        provider binary that records its own execution.
+        """
+        real_success_command = "python3 -c \"raise SystemExit(0)\""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for dry_run in (False, True):
+                with self.subTest(script=script.name, dry_run=dry_run), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(
+                        root, self._default_rows(prompts), success_command=real_success_command,
+                    )
+                    outputs = self._output_paths(root, f"direct{index}")
+                    marker = root / "provider-was-invoked"
+                    claude_bin = self._recording_claude(root, marker)
+
+                    proc = self._run_direct(
+                        script, case, outputs, claude_bin=claude_bin,
+                        extra_args=("--dry-run",) if dry_run else (),
+                    )
+
+                    self.assertNotEqual(
+                        proc.returncode, 0,
+                        "a profiled task must never run outside evidence replay",
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("profile_replay_required", combined, combined)
+                    # The provider runtime must be unreachable, not merely unsuccessful.
+                    self.assertFalse(
+                        marker.exists(),
+                        "the provider binary was executed for a profiled task",
+                    )
+                    self._assert_zero_writes(outputs)
+                    self._assert_no_leakage(combined, case)
+
+    def test_unprofiled_direct_run_still_invokes_the_provider_and_writes(self):
+        """The blocker-1 repair must not amputate the ordinary provider path.
+
+        Same fixture, same real success_command, same working provider -- but with no
+        ``evaluation_profile`` declared.  This must still run end to end, or the fix
+        for the profiled bypass has broken every generic benchmark run.
+        """
+        real_success_command = "python3 -c \"raise SystemExit(0)\""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = [
+                    self._row(variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=False,
+                              omission=False, profile=None, drop_controls=True),
+                    self._row(variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+                              omission=True, profile=None, drop_controls=True),
+                ]
+                case = self._write_case(
+                    root, rows, task_profile=None, success_command=real_success_command,
+                )
+                outputs = self._output_paths(root, f"unprofiled{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run_direct(script, case, outputs, claude_bin=claude_bin)
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertTrue(marker.exists(), "the unprofiled provider path must still invoke the provider")
+                self.assertTrue(outputs["csv"].exists(), "the unprofiled provider path must still write its CSV")
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                self.assertNotIn("evaluation_profiles", report)
+
+    def test_profiled_resume_with_preexisting_csv_rejects_before_creating_a_lock_sidecar(self):
+        """Blocker 5 (HIGH): --resume read keys and took a CSV lock *before* profile preflight.
+
+        The combined hostile input is ``--resume`` **and** a pre-existing non-empty CSV.
+        Rejection must happen before the resume key snapshot, so the CSV stays
+        byte-identical and no ``.lock`` sidecar is ever created.  A lock sidecar left
+        behind is a write, and the profile contract promises zero writes on reject.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"resumepre{index}")
+                module = load_python_script_module(script, f"_bench_profile_resume_lock_{index}")
+
+                with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerow({column: "" for column in module.CSV_COLUMNS})
+                before = outputs["csv"].read_bytes()
+
+                proc = self._run(script, case, outputs, extra_args=("--resume",))
+
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                self.assertEqual(outputs["csv"].read_bytes(), before, "the pre-existing CSV was mutated")
+                csv_lock = outputs["csv"].with_name(outputs["csv"].name + ".lock")
+                self.assertFalse(
+                    csv_lock.exists(),
+                    "a CSV lock sidecar was created before the profile preflight rejected",
+                )
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists())
+                    self.assertFalse(outputs[label].with_name(outputs[label].name + ".lock").exists())
+
+    def test_profiled_replay_aborts_on_locked_freshness_recheck_without_partial_batch(self):
+        """Blocker 5 (HIGH), second half: no single locked batch freshness recheck existed.
+
+        Pure preflight passes against a fresh, absent CSV; then a concurrent writer
+        creates the CSV before the first batch write.  Without a locked freshness
+        recheck the runner happily appends replay rows onto a CSV it never validated,
+        silently mixing profiled and foreign rows.  The recheck must abort the batch
+        with the same stable id and leave the concurrent writer's CSV untouched.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"race{index}")
+                module = load_python_script_module(script, f"_bench_profile_freshness_race_{index}")
+
+                real_preflight = module.preflight_evaluation_profiles
+
+                def racing_preflight(*args, **kwargs):
+                    # Pure preflight sees a clean slate and passes...
+                    real_preflight(*args, **kwargs)
+                    # ...and only then does a concurrent writer create the results CSV.
+                    with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                        writer.writeheader()
+                        writer.writerow({column: "" for column in module.CSV_COLUMNS})
+
+                argv = [
+                    str(script),
+                    "--tasks", str(case["tasks"]),
+                    "--variants", str(case["variants"]),
+                    "--evidence-jsonl", str(case["evidence"]),
+                    "--baseline-variant", self.BASELINE,
+                    "--claude-bin", "/definitely/missing/contextguard-claude",
+                    "--csv", str(outputs["csv"]),
+                    "--ledger-jsonl", str(outputs["ledger"]),
+                    "--report-json", str(outputs["report"]),
+                    "--dashboard-md", str(outputs["dashboard"]),
+                ]
+                saved_argv = sys.argv
+                module.preflight_evaluation_profiles = racing_preflight
+                sys.argv = argv
+                try:
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.main()
+                finally:
+                    sys.argv = saved_argv
+                    module.preflight_evaluation_profiles = real_preflight
+
+                self.assertIn("profile_fresh_output_required", str(ctx.exception))
+                # Header + the concurrent writer's single row, and nothing appended after it.
+                surviving = outputs["csv"].read_text(encoding="utf-8").strip().splitlines()
+                self.assertEqual(
+                    len(surviving), 2,
+                    f"a partial profiled batch was appended to the raced CSV: {surviving}",
+                )
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists(), f"{label} was written after a raced CSV")
+
+    def test_generic_quality_gate_regression_blocks_lane_readiness(self):
+        """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
+
+        The lane never read the generic quality verdict, so a profiled batch whose every
+        lane control is clean could reach ``ready_for_bounded_pilot_review`` while the
+        generic matched-pair gate reported ``corrections_regression``.  The invariant is
+        broader than any single gate name: a non-``pass`` generic quality gate must always
+        block the lane, whichever gate fired.
+        """
+        def corrections_regression(prompts):
+            # Every lane control is deliberately clean: verified fallback, deny review,
+            # completed missed-context review, measured provider and shifted cost.  The
+            # *only* defect is that the candidate needed two human corrections.
+            return [
+                self._row(
+                    variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=True,
+                    omission=False, corrections=0, correction_reason="none", missed_present=False,
+                ),
+                self._row(
+                    variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=True,
+                    omission=True, verified_fallback=True, corrections=2,
+                    correction_reason="reviewer twice restored the omitted acknowledgement context",
+                    missed_present=False, input_tokens=400, output_tokens=120, cost_usd=0.02,
+                    bytes_before=1000, bytes_after=400,
+                ),
+            ]
+
+        def candidate_failure(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["success"] = False
+            return rows
+
+        cases = (
+            ("corrections_regression", corrections_regression, "corrections_regression"),
+            # A failed candidate cannot reach failure_rate_regression in a one-task v1
+            # batch (insufficient_success precedes it), so only the invariant is asserted.
+            ("candidate_failure", candidate_failure, None),
+        )
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, build_rows, expected_blocker in cases:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, build_rows(prompts))
+                    outputs = self._output_paths(root, f"quality{index}")
+
+                    proc = self._run(script, case, outputs)
+                    # Well-formed negative evidence stays replayable: block, never reject.
+                    self.assertEqual(proc.returncode, 0, f"{case_id} must replay, not reject: {proc.stderr}")
+
+                    report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                    lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                    quality_gate = report["comparisons"][0]["quality_gate"]
+
+                    self.assertNotEqual(quality_gate, "pass", f"{case_id} must trip a generic quality gate")
+                    if expected_blocker is not None:
+                        self.assertEqual(quality_gate, expected_blocker)
+                        self.assertIn(expected_blocker, lane["blocking_gate_ids"])
+                    # The invariant behind the blocker, independent of which gate fired.
+                    self.assertEqual(
+                        lane["status"], "blocked",
+                        f"lane reached {lane['status']} while the generic quality gate was {quality_gate}",
+                    )
+                    self.assertNotEqual(lane["status"], "ready_for_bounded_pilot_review")
+                    self.assertFalse(lane["public_claim_allowed"])
+                    self.assertFalse(lane["promotion_authority"])
+                    self.assertFalse(report["public_claim_eligible"])
+
+    def test_nested_replay_authority_is_clamped_in_every_report_surface(self):
+        """Blocker 4 (HIGH): nested replay_evidence claim authority stayed unclamped.
+
+        The clamp rewrote the top-level claim surfaces but not
+        ``replay_evidence.public_claim_status`` / ``public_claim_eligible``, so the
+        strongest profiled fixture still shipped a nested
+        ``provider_export_public_claim_candidate`` / ``true`` pair in the report JSON.
+        No authority-bearing key may survive anywhere in the document.
+        """
+        authority_false_keys = {
+            "public_claim_eligible",
+            "public_claim_allowed",
+            "promotion_authority",
+            "claim_allowed",
+            "report_claim_gates_allow_public_claim",
+            "token_savings_claim_allowed",
+            "shifted_cost_claim_allowed",
+            "hosted_api_token_savings_claim_allowed",
+            "hosted_api_cost_savings_claim_allowed",
+            "quality_non_inferiority_claim_allowed",
+        }
+
+        def walk(node, path="$"):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield path, key, value
+                    yield from walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for position, value in enumerate(node):
+                    yield from walk(value, f"{path}[{position}]")
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                # The strongest possible evidence: fully measured provider export with a
+                # verified fallback.  Pre-clamp this is a public-claim candidate.
+                case = self._write_case(root, self._default_rows(prompts, measured=True, verified_fallback=True))
+                outputs = self._output_paths(root, f"nested{index}")
+
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report_text = outputs["report"].read_text(encoding="utf-8")
+                report = json.loads(report_text)
+                replay_evidence = report["replay_evidence"]
+
+                self.assertEqual(
+                    replay_evidence["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
+                )
+                self.assertFalse(replay_evidence["public_claim_eligible"])
+                self.assertFalse(replay_evidence["report_claim_gates_allow_public_claim"])
+
+                # Nothing anywhere in the document may still read as public-claim authority.
+                self.assertNotIn("provider_export_public_claim_candidate", report_text)
+                for path, key, value in walk(report):
+                    if key in authority_false_keys:
+                        self.assertIs(
+                            value, False,
+                            f"{path}.{key} grants authority for a profiled run: {value!r}",
+                        )
+                    if key == "public_claim_status":
+                        self.assertEqual(
+                            value, IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                            f"{path}.{key} is not clamped",
+                        )
+
+    def test_profile_schema_errors_fully_redact_secret_shaped_unknown_keys(self):
+        """Blocker 7 (MEDIUM): unknown *key names* are attacker-controlled and were echoed raw.
+
+        ``profile_reject`` interpolates ``', '.join(unknown)`` straight into stderr, so a
+        key named after a credential leaks it.  Partial redaction is not enough: the
+        generic secret patterns rewrite the ``AKIA...`` body but leave the ``sk-live-``
+        prefix standing, which is still a credential shape.  The whole offending key must
+        collapse to the redaction placeholder while the stable id survives.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        placements = (
+            ("top_level_block", lambda controls: controls.__setitem__(secret, True)),
+            ("nested_block", lambda controls: controls["protected_zone_review"].__setitem__(secret, True)),
+        )
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, place in placements:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    rows = self._default_rows(prompts)
+                    place(rows[1]["evaluation_controls"])
+                    case = self._write_case(root, rows)
+                    outputs = self._output_paths(root, f"redact{index}")
+
+                    proc = self._run(script, case, outputs)
+
+                    self.assertNotEqual(proc.returncode, 0)
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("profile_schema_invalid", combined)
+                    # No fragment of the credential-shaped key may survive.
+                    self.assertNotIn(secret, combined)
+                    self.assertNotIn("AKIAIOSFODNN7EXAMPLE", combined)
+                    self.assertNotIn("sk-", combined)
+                    self.assertIn("[REDACTED]", combined)
+                    self._assert_zero_writes(outputs)
 
     # ---------- determinism + source/package parity -----------------------
 
