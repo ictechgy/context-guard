@@ -336,6 +336,17 @@ PROFILE_STATUS_READY_FOR_BOUNDED_PILOT_REVIEW = "ready_for_bounded_pilot_review"
 IMPORTED_LOCAL_VERIFIER_ATTESTATION_LABEL = "imported_local_verifier_attestation"
 PROOF_VERIFICATION_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
 PROOF_VERIFICATION_VERIFIED_STATUS = "verified"
+# experimental_registry.PROOF_VERIFICATION_CLAIM_BOUNDARY 와 반드시 같은 문자열이다.
+# 가져온 attestation 은 이 local-only 경계를 그대로 선언할 때만 verified 로 인정한다.
+PROOF_VERIFICATION_CLAIM_BOUNDARY = (
+    "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "
+    "omission, or hosted-savings authority."
+)
+# local verifier 는 rehydration 을 절대 실행하지 않는다. 실행했다고 주장하는 레코드는
+# 이 evaluation-only 경계를 벗어나므로 verified 로 받아들이지 않는다.
+PROOF_VERIFICATION_REHYDRATION_EXECUTED = False
+# verified attestation 에서 placeholder 로 취급해 거부할 receipt/command 값이다.
+PROFILE_FALLBACK_PLACEHOLDER_VALUES = frozenset({"", "none", "null", "n/a", "-"})
 
 # reject_prewrite 오류 ID. 출력이 하나라도 기록되기 전에 실패해야 하는 구조적 오류다.
 PROFILE_REJECT_CONTROLS_MISSING = "profile_controls_missing"
@@ -347,6 +358,9 @@ PROFILE_REJECT_PROMPT_BINDING_INVALID = "profile_prompt_binding_invalid"
 PROFILE_REJECT_CORRECTION_INCONSISTENT = "profile_correction_inconsistent"
 PROFILE_REJECT_MEASUREMENT_INCONSISTENT = "profile_measurement_inconsistent"
 PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT = "profile_fallback_claim_inconsistent"
+# profile 은 evaluation-only replay 전용이다. --evidence-jsonl 없이 profiled task 가
+# 선택되면 provider runtime 을 부르기 전에, 어떤 출력/lock 도 만들기 전에 거부한다.
+PROFILE_REJECT_REPLAY_REQUIRED = "profile_replay_required"
 PROFILE_REJECT_ERROR_IDS = (
     PROFILE_REJECT_CONTROLS_MISSING,
     PROFILE_REJECT_SCHEMA_INVALID,
@@ -357,6 +371,7 @@ PROFILE_REJECT_ERROR_IDS = (
     PROFILE_REJECT_CORRECTION_INCONSISTENT,
     PROFILE_REJECT_MEASUREMENT_INCONSISTENT,
     PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT,
+    PROFILE_REJECT_REPLAY_REQUIRED,
 )
 
 # lane gate ID. 순서는 report/dashboard 출력 순서와 동일하게 고정한다.
