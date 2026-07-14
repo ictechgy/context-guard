@@ -395,7 +395,6 @@ IMAGE_CONTEXT_CLAIM_BOUNDARY = {
     ),
 }
 PROFILE_SAMPLE_ADEQUACY_POLICY_STATUS = "not_defined_for_promotion"
-PROFILE_EVIDENCE_LEVEL_NOT_APPLICABLE = "not_applicable"
 
 # profile 중첩 블록의 명시적 byte/count 한계. 타입/한계 검사는 항상 semantic 분류보다
 # 먼저 실행되어 oversize 값이 blocked 분기로 새지 않도록 한다.
@@ -406,13 +405,10 @@ MAX_PROFILE_SUMMARY_CHARS = 500
 MAX_PROFILE_COMMAND_CHARS = 500
 MAX_PROFILE_RECEIPT_ID_CHARS = 200
 MAX_PROFILE_BLOCKER_ITEMS = 20
-MAX_PROFILE_BLOCKER_CHARS = 120
 MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
 MAX_PROFILE_CORRECTION_COUNT = 10_000
-MAX_PROFILE_PROOF_UNIT_COUNT = 1_000
 SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
 PROTECTED_ZONE_DENY_POLICY = "deny"
-PROFILE_REVIEW_RESULTS = ("pass", "fail", "unknown")
 
 
 def _base_open_flags() -> int:
