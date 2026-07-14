@@ -319,6 +319,119 @@ ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "var": Path("/private/var"),
 }
 
+# --- Phase 4/5 optional image-context evaluation profile (evaluation-only) ---
+# 이 profile 은 task fixture 가 명시적으로 opt-in 할 때만 동작한다. profile 이 없는
+# 기존 replay 는 스키마/동작이 그대로 유지된다. profile 이 붙은 report 는 어떤
+# 경우에도 public claim / promotion 권한을 얻지 못하도록 clamp 된다.
+IMAGE_CONTEXT_EVALUATION_PROFILE_ID = "contextguard.bench.image-context-pack-evaluation.v1"
+SUPPORTED_EVALUATION_PROFILE_IDS = frozenset({IMAGE_CONTEXT_EVALUATION_PROFILE_ID})
+IMAGE_CONTEXT_READINESS_SCHEMA_VERSION = "contextguard.bench.image-context-pack-readiness.v1"
+IMAGE_CONTEXT_PROFILE_REPORT_KEY = "image_context_pack"
+EVALUATION_PROFILES_REPORT_KEY = "evaluation_profiles"
+IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS = "image_context_pack_evaluation_only_not_public_claim"
+PROFILE_STATUS_BLOCKED = "blocked"
+PROFILE_STATUS_READY_FOR_BOUNDED_PILOT_REVIEW = "ready_for_bounded_pilot_review"
+# 가져온 local proof-verifier 레코드는 "누가 만들었는지" 를 인증하지 않고 artifact 를
+# 다시 읽지도 않는다. 라벨로 그 경계를 명시한다.
+IMPORTED_LOCAL_VERIFIER_ATTESTATION_LABEL = "imported_local_verifier_attestation"
+PROOF_VERIFICATION_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
+PROOF_VERIFICATION_VERIFIED_STATUS = "verified"
+
+# reject_prewrite 오류 ID. 출력이 하나라도 기록되기 전에 실패해야 하는 구조적 오류다.
+PROFILE_REJECT_CONTROLS_MISSING = "profile_controls_missing"
+PROFILE_REJECT_SCHEMA_INVALID = "profile_schema_invalid"
+PROFILE_REJECT_BINDING_MISMATCH = "profile_binding_mismatch"
+PROFILE_REJECT_BATCH_INCOMPLETE = "profile_batch_incomplete"
+PROFILE_REJECT_FRESH_OUTPUT_REQUIRED = "profile_fresh_output_required"
+PROFILE_REJECT_PROMPT_BINDING_INVALID = "profile_prompt_binding_invalid"
+PROFILE_REJECT_CORRECTION_INCONSISTENT = "profile_correction_inconsistent"
+PROFILE_REJECT_MEASUREMENT_INCONSISTENT = "profile_measurement_inconsistent"
+PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT = "profile_fallback_claim_inconsistent"
+PROFILE_REJECT_ERROR_IDS = (
+    PROFILE_REJECT_CONTROLS_MISSING,
+    PROFILE_REJECT_SCHEMA_INVALID,
+    PROFILE_REJECT_BINDING_MISMATCH,
+    PROFILE_REJECT_BATCH_INCOMPLETE,
+    PROFILE_REJECT_FRESH_OUTPUT_REQUIRED,
+    PROFILE_REJECT_PROMPT_BINDING_INVALID,
+    PROFILE_REJECT_CORRECTION_INCONSISTENT,
+    PROFILE_REJECT_MEASUREMENT_INCONSISTENT,
+    PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT,
+)
+
+# lane gate ID. 순서는 report/dashboard 출력 순서와 동일하게 고정한다.
+IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING = "profile_and_prompt_binding"
+IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW = "protected_zone_deny_review"
+IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING = "exact_text_fallback_binding"
+IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW = "missed_context_review"
+IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY = "human_correction_consistency"
+IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT = "generic_matched_success_and_measurement"
+IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY = "evaluation_only_promotion_boundary"
+IMAGE_CONTEXT_GATE_IDS = (
+    IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING,
+    IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW,
+    IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING,
+    IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW,
+    IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY,
+    IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT,
+    IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY,
+)
+IMAGE_CONTEXT_GATE_LABELS = {
+    IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING: "Profile and prompt binding",
+    IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW: "Protected-zone deny review attestation",
+    IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING: "Exact-text fallback binding",
+    IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW: "Missed-context review",
+    IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY: "Human correction consistency",
+    IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT: "Generic matched success and provider measurement",
+    IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY: "Evaluation-only promotion boundary",
+}
+# 품질 게이트가 회귀를 보고할 때 lane blocker 로 승격시키는 기존 generic quality_gate 값.
+IMAGE_CONTEXT_QUALITY_BLOCKER_GATES = (
+    "insufficient_baseline",
+    "insufficient_success",
+    "insufficient_corrections_data",
+    "matched_task_regression",
+    "failure_rate_regression",
+    "corrections_regression",
+)
+IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID = "image_context_pack_evaluation_only"
+IMAGE_CONTEXT_CLAIM_BOUNDARY = {
+    "id": "image_context_pack_evaluation_only_never_promotion_or_public_claim",
+    "evaluation_only": True,
+    "promotion_authority": False,
+    "public_claim_allowed": False,
+    "runtime_authority": False,
+    "hosted_savings_claim_allowed": False,
+    "fallback_attestation_label": IMPORTED_LOCAL_VERIFIER_ATTESTATION_LABEL,
+    "fallback_attestation_is_independently_verified": False,
+    "protected_zone_evidence_is_review_attestation_not_semantic_proof": True,
+    "reason": (
+        "The image-context evaluation profile reviews imported evidence only. It does not render, "
+        "parse, or reread any image or artifact, does not authenticate who produced an imported "
+        "verifier or review record, and can never authorize a public savings claim, a quality "
+        "non-inferiority claim, or a runtime promotion."
+    ),
+}
+PROFILE_SAMPLE_ADEQUACY_POLICY_STATUS = "not_defined_for_promotion"
+PROFILE_EVIDENCE_LEVEL_NOT_APPLICABLE = "not_applicable"
+
+# profile 중첩 블록의 명시적 byte/count 한계. 타입/한계 검사는 항상 semantic 분류보다
+# 먼저 실행되어 oversize 값이 blocked 분기로 새지 않도록 한다.
+MAX_PROFILE_LABEL_CHARS = 120
+MAX_PROFILE_POLICY_CHARS = 120
+MAX_PROFILE_NOTE_CHARS = 500
+MAX_PROFILE_SUMMARY_CHARS = 500
+MAX_PROFILE_COMMAND_CHARS = 500
+MAX_PROFILE_RECEIPT_ID_CHARS = 200
+MAX_PROFILE_BLOCKER_ITEMS = 20
+MAX_PROFILE_BLOCKER_CHARS = 120
+MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
+MAX_PROFILE_CORRECTION_COUNT = 10_000
+MAX_PROFILE_PROOF_UNIT_COUNT = 1_000
+SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
+PROTECTED_ZONE_DENY_POLICY = "deny"
+PROFILE_REVIEW_RESULTS = ("pass", "fail", "unknown")
+
 
 def _base_open_flags() -> int:
     flags = os.O_RDONLY
