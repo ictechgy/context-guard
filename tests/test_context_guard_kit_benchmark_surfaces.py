@@ -7417,6 +7417,139 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 self.assertFalse(marker.exists(), "provider binary must not run on reject")
                 self._assert_zero_writes(outputs)
 
+    def test_supported_profile_regex_safe_unknown_map_key_is_fully_opaque(self):
+        """G006: regex-safe task id + unknown map key must not appear in diagnostics.
+
+        G005 closed credential-shaped labels; regex-safe identifiers still survived
+        ``redact_profile_label``. Both surfaces must reject with a fully opaque owner
+        and never echo the task id or unknown map key.
+        """
+        hostile_task = "hostile-controlled-task"
+        evil_key = "evil-label"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    evil_key: "hostile-prompt.md",
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-opaque-unknown-key{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (hostile_task, evil_key, "hostile-prompt.md"):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_regex_safe_hostile_variant_unsafe_path_is_fully_opaque(self):
+        """G006: known regex-safe variant + unsafe path must stay fully opaque.
+
+        A supported-profile task whose known variant maps to an unsafe relative path
+        must reject without echoing the task id, variant label, or path on either
+        surface.
+        """
+        hostile_task = "hostile-controlled-task"
+        hostile_variant = "hostile-controlled-variant"
+        unsafe_path = "../../etc/passwd"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                variants = json.loads(case["variants"].read_text(encoding="utf-8"))
+                variants.append({"name": hostile_variant, "extra_args": []})
+                case["variants"].write_text(json.dumps(variants), encoding="utf-8")
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    hostile_variant: unsafe_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-opaque-unsafe-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    hostile_task,
+                    hostile_variant,
+                    unsafe_path,
+                    "etc/passwd",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_missing_task_id_is_stable_schema_reject(self):
+        """G006: supported-v1 task missing id must not raise raw KeyError/traceback."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                del task["id"]
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-missing-id{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in ("Traceback", "KeyError", self.TASK_ID):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_missing_task_prompt_is_stable_schema_reject(self):
+        """G006: supported-v1 task missing prompt must not raise raw KeyError/traceback."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                del task["prompt"]
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-missing-prompt{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in ("Traceback", "KeyError", self.TASK_ID):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
     def test_generic_quality_gate_regression_blocks_lane_readiness(self):
         """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
 
