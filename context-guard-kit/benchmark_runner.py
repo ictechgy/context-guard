@@ -5015,6 +5015,7 @@ def main() -> int:
             task_file_dir=args.tasks.parent,
             resume=args.resume,
             csv_has_preexisting_content=csv_had_preexisting_content,
+            baseline_variant=args.baseline_variant,
         )
         runnable_targets = resume_runnable_targets(
             args.csv,
@@ -5024,43 +5025,54 @@ def main() -> int:
             existing_key_cache_stamp=skip_keys_stamp,
         )
         evidence_by_key = validate_evidence_coverage(evidence_rows, runnable_targets)
-        # 배치 단위 freshness 재확인 1회. lock 없이 읽은 위 preflight 와 첫 append 사이의
-        # 경쟁 구간을 닫는다. lock 을 배치 내내 붙들지 않으므로 append_csv 와 교착하지 않는다.
-        profile_locked_batch_freshness_gate(tasks, targets, args.csv)
+        profiled_batch = bool(selected_profiled_task_ids(tasks, targets))
         runnable_keys = {(task.id, variant.name) for task, variant in runnable_targets}
         claude_ver = "evidence-replay"
         completed = 0
         replay_rows_written: list[EvidenceReplayRow] = []
-        for task, variant in targets:
-            if args.resume and (task.id, variant.name) not in runnable_keys:
-                print(f"skip {task.id}/{variant.name} (already in {args.csv})")
-                continue
-            evidence = evidence_by_key[(task.id, variant.name)]
-            print(f"replay {task.id}/{variant.name} ...", flush=True)
-            result = run_evidence_fixture(task, variant, evidence)
-            wrote = append_csv(
-                args.csv,
+        pending_ledger_rows: list[tuple[EvidenceReplayRow, RunResult]] = []
+        batch_lock = csv_parent_directory_lock(args.csv, create_parent=True) if profiled_batch else nullcontext()
+        with batch_lock:
+            if profiled_batch:
+                # The same stable lock covers the raced freshness recheck and every
+                # row. No sidecar is created, and no foreign append can land between
+                # profiled rows because append_csv takes this lock first.
+                profile_batch_freshness_gate_unlocked(tasks, targets, args.csv)
+            for task, variant in targets:
+                if args.resume and (task.id, variant.name) not in runnable_keys:
+                    print(f"skip {task.id}/{variant.name} (already in {args.csv})")
+                    continue
+                evidence = evidence_by_key[(task.id, variant.name)]
+                print(f"replay {task.id}/{variant.name} ...", flush=True)
+                result = run_evidence_fixture(task, variant, evidence)
+                writer = append_csv_unlocked if profiled_batch else append_csv
+                wrote = writer(
+                    args.csv,
+                    claude_ver,
+                    result,
+                    skip_existing=args.resume,
+                    existing_key_cache=skip_keys if args.resume else None,
+                    existing_key_cache_stamp=skip_keys_stamp,
+                )
+                if wrote:
+                    replay_rows_written.append(evidence)
+                    if args.ledger_jsonl is not None:
+                        pending_ledger_rows.append((evidence, result))
+                completed += 1
+                status = "ok" if result.success else "FAIL"
+                suffix = "" if wrote else " (CSV not updated; row already present)"
+                print(
+                    f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
+                    f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
+                )
+        # Ledger/report/dashboard writes happen after the CSV batch lock so distinct
+        # outputs in the same directory cannot deadlock on the directory inode.
+        for evidence, result in pending_ledger_rows:
+            append_cost_shift_ledger(
+                args.ledger_jsonl,
                 claude_ver,
                 result,
-                skip_existing=args.resume,
-                existing_key_cache=skip_keys if args.resume else None,
-                existing_key_cache_stamp=skip_keys_stamp,
-            )
-            if wrote:
-                replay_rows_written.append(evidence)
-                if args.ledger_jsonl is not None:
-                    append_cost_shift_ledger(
-                        args.ledger_jsonl,
-                        claude_ver,
-                        result,
-                        replay_provenance=evidence.provenance_payload(),
-                    )
-            completed += 1
-            status = "ok" if result.success else "FAIL"
-            suffix = "" if wrote else " (CSV not updated; row already present)"
-            print(
-                f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
-                f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
+                replay_provenance=evidence.provenance_payload(),
             )
         if args.report_json is not None or args.dashboard_md is not None:
             report = write_report_outputs(
