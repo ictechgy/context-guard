@@ -997,7 +997,8 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
         else:
             budget = None
         # profiled 경로에서는 매핑 키 등 attacker-controlled 라벨이 파서 오류에 실릴 수
-        # 있으므로, 구조 필드 오류를 안정적인 프로파일 거부로 다시 쓴다.
+        # 있으므로, 구조 필드 오류(파서 SystemExit·필수 prompt 누락 KeyError)를 안정적인
+        # 프로파일 거부로 다시 쓴다. unprofiled 는 원본 예외를 그대로 재발생시킨다.
         try:
             max_turns = parse_positive_int(
                 item.get("max_turns", 3), field="max_turns", owner=owner,
@@ -1012,7 +1013,8 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                 field="variant_prompt_files",
                 owner=owner,
             )
-        except SystemExit:
+            prompt = str(item["prompt"])
+        except (SystemExit, KeyError):
             if profiled:
                 profile_reject(
                     PROFILE_REJECT_SCHEMA_INVALID,
@@ -1020,18 +1022,10 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                     "task fixture fields are invalid",
                 )
             raise
-        if "prompt" not in item:
-            if profiled:
-                profile_reject(
-                    PROFILE_REJECT_SCHEMA_INVALID,
-                    owner,
-                    "task fixture fields are invalid",
-                )
-            raise KeyError("prompt")
         fixtures.append(TaskFixture(
             evaluation_profile=evaluation_profile,
             id=task_id,
-            prompt=str(item["prompt"]),
+            prompt=prompt,
             model=str(item.get("model", "sonnet")),
             effort=str(effort_raw) if effort_raw is not None else None,
             max_turns=max_turns,
