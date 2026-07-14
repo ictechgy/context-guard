@@ -130,6 +130,10 @@ Run `python3 context_guard_mcp.py --root <project> --namespace <slug>` for a loc
 
 context-guard experiments plan semantic-gc --json --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false}' --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"orphan","references":[],"is_root":false,"protected_zone":false,"content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","provenance":{"source_label":"canonical-example","receipt_id":"0123456789abcdef"},"missed_context_note":"A reviewer could lose the orphaned rationale.","exact_fallback_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --human-review-ack --protected-zone-policy deny
 
+`static-relevance` is a default-off compiler for bounded caller-supplied static evidence. Missing signals suppress all slices and review ordering; accepted empty edge lists are declarations, not verified observations. Built-in protected-path matches and explicit protected reasons are hard retention vetoes that move evidence first for human review only. This plan-review-only command does not scan or read any repository, does not invoke git, and does not invoke a parser, provider, network, or subprocess. Its deterministic review order does not authorize omission, deletion, deprioritization, replacement, or runtime action.
+
+context-guard experiments plan static-relevance --json --relevance-unit-json '{"schema":"contextguard.static-relevance-unit.v1","unit_id":"src/cli.py::main","path":"src/cli.py","task_anchor":true,"protection_reasons":[],"symbol":{"name":"main","kind":"function","start_line":1,"end_line":40},"symbol_references":[],"dataflow_predecessors":[],"dataflow_successors":[],"git":{"blame_age_days":2,"blame_contributor_count":1,"path_change_count_90d":3}}' --protected-path-policy deny --provider-boundary-ack
+
 ## License
 
 Copyright 2026 jinhongan. Licensed under the Apache License 2.0. See the repository [LICENSE](../LICENSE) and [NOTICE](../NOTICE).

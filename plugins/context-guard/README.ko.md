@@ -169,6 +169,10 @@ claude --plugin-dir ./plugins/context-guard
 
 context-guard experiments plan semantic-gc --json --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"root","references":[],"is_root":true,"protected_zone":false}' --context-unit-json '{"schema":"contextguard.semantic-gc-unit.v1","unit_id":"orphan","references":[],"is_root":false,"protected_zone":false,"content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","provenance":{"source_label":"canonical-example","receipt_id":"0123456789abcdef"},"missed_context_note":"A reviewer could lose the orphaned rationale.","exact_fallback_command":"context-guard-artifact get 0123456789abcdef --full"}' --provider-boundary-ack --human-review-ack --protected-zone-policy deny
 
+`static-relevance`는 호출자가 제공한 제한된 static evidence를 컴파일하는 기본 비활성화 기능입니다. 누락된 signal은 모든 slice와 review ordering을 억제하며, 빈 edge list도 검증된 관측이 아니라 선언입니다. protected path match와 명시적 보호 reason은 사람 검토에서 먼저 보게 하는 hard retention veto일 뿐입니다. 이 명령은 계획 검토 전용이며 repo를 읽지 않고, git을 호출하지 않으며, parser·provider·network·subprocess도 호출하지 않습니다. 결정적 review order에는 omit 권한이 없고 삭제·deprioritization·대체·runtime action도 승인하지 않습니다.
+
+context-guard experiments plan static-relevance --json --relevance-unit-json '{"schema":"contextguard.static-relevance-unit.v1","unit_id":"src/cli.py::main","path":"src/cli.py","task_anchor":true,"protection_reasons":[],"symbol":{"name":"main","kind":"function","start_line":1,"end_line":40},"symbol_references":[],"dataflow_predecessors":[],"dataflow_successors":[],"git":{"blame_age_days":2,"blame_contributor_count":1,"path_change_count_90d":3}}' --protected-path-policy deny --provider-boundary-ack
+
 ## 라이선스
 
 Copyright 2026 jinhongan. Apache License 2.0으로 배포됩니다. [LICENSE](LICENSE)와 [NOTICE](NOTICE)를 참고하세요.
