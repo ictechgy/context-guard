@@ -7259,13 +7259,18 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                             omission=False,
                         )]
                     else:
-                        rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                        rows = self._default_rows(prompts, measured=True, verified_fallback=False)
                     case = self._write_case(root, rows)
                     if case_id == "baseline_only":
                         case["variants"].write_text(
                             json.dumps([{"name": self.BASELINE, "extra_args": []}]),
                             encoding="utf-8",
                         )
+                        task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                        task["variant_prompt_files"] = {
+                            self.BASELINE: task["variant_prompt_files"][self.BASELINE],
+                        }
+                        case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
                     outputs = self._output_paths(root, f"empty-pairs{index}-{case_id}")
 
                     proc = self._run(
@@ -7289,6 +7294,14 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = (
                     "echo unrelated-command-not-in-verifier-record"
                 )
+                module = load_python_script_module(script, f"_bench_retrieval_contract_{index}")
+                if "retrieval_command" not in module.PROFILE_PROOF_UNIT_KEYS:
+                    # Preserve the old valid projection shape so this regression proves
+                    # the actual pre-fix acceptance gap rather than failing on a future
+                    # field that the old schema does not yet recognize.
+                    rows[1]["evaluation_controls"]["exact_text_fallback"][
+                        "verifier_projection"
+                    ]["proof_unit"].pop("retrieval_command")
                 case = self._write_case(root, rows)
                 outputs = self._output_paths(root, f"retrieval-mismatch{index}")
 
