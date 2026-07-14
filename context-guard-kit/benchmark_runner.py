@@ -845,22 +845,22 @@ def validate_variant_prompt_file_references(
                 f"task {task.id} variant_prompt_files references unknown variant(s): {', '.join(unknown)}"
             )
         for variant_name, raw_path in task.variant_prompt_files.items():
-            if profiled:
-                owner = profile_owner(task.id, variant_name)
-                try:
-                    validate_variant_prompt_file_path(raw_path, owner=owner)
-                except SystemExit:
+            owner = (
+                profile_owner(task.id, variant_name)
+                if profiled
+                else f"task {task.id} variant {variant_name}"
+            )
+            try:
+                validate_variant_prompt_file_path(raw_path, owner=owner)
+            except SystemExit:
+                if profiled:
                     # 원본 경로·라벨이 새어나가지 않도록 안정적인 프로파일 오류로 다시 쓴다.
                     profile_reject(
                         PROFILE_REJECT_PROMPT_BINDING_INVALID,
                         owner,
                         "variant_prompt_files path is unsafe or invalid",
                     )
-            else:
-                validate_variant_prompt_file_path(
-                    raw_path,
-                    owner=f"task {task.id} variant {variant_name}",
-                )
+                raise
 
 
 def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None = None) -> str:
@@ -963,19 +963,16 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
         # 먼저 확정해서, 지원 프로파일 오류도 raw task id 를 에코하지 않게 한다.
         evaluation_profile = item.get("evaluation_profile")
         profiled = evaluation_profile is not None
-        if profiled:
-            if (
-                not isinstance(evaluation_profile, str)
-                or evaluation_profile not in SUPPORTED_EVALUATION_PROFILE_IDS
-            ):
-                profile_reject(
-                    PROFILE_REJECT_SCHEMA_INVALID,
-                    profile_owner(task_id),
-                    "declares an unsupported evaluation_profile id",
-                )
-            owner = profile_owner(task_id)
-        else:
-            owner = f"task {task_id}"
+        owner = profile_owner(task_id) if profiled else f"task {task_id}"
+        if profiled and (
+            not isinstance(evaluation_profile, str)
+            or evaluation_profile not in SUPPORTED_EVALUATION_PROFILE_IDS
+        ):
+            profile_reject(
+                PROFILE_REJECT_SCHEMA_INVALID,
+                owner,
+                "declares an unsupported evaluation_profile id",
+            )
         if "variant_prompts" in item:
             detail = "variant_prompts is not supported; use file-backed variant_prompt_files"
             if profiled:
