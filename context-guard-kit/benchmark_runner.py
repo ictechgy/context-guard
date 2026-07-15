@@ -2675,14 +2675,9 @@ def profile_variant_prompt_sha256(task: TaskFixture, variant_name: str, *, task_
         text = read_variant_prompt_file(
             task_file_dir / rel_path, owner=owner, display_path=str(rel_path),
         )
-    except SystemExit:
-        # 원본 경로/내용이 새어나가지 않도록 안정적인 프로파일 오류로 다시 쓴다.
-        profile_reject(
-            PROFILE_REJECT_PROMPT_BINDING_INVALID, owner,
-            "the selected variant prompt file could not be safely read",
-        )
-    except (ValueError, UnicodeError):
-        # 조기 검증을 지나친 동등 저수준 실패(os.open NUL/인코딩 거부 등)만 좁게 정규화.
+    except (SystemExit, ValueError, UnicodeError):
+        # SystemExit: 경로/내용 누설 방지용 안정 프로파일 오류 재작성.
+        # ValueError/UnicodeError: 조기 검증을 지나친 os.open NUL·인코딩 거부 등만 좁게 정규화.
         # 프로그래머 버그를 숨기지 않도록 범용 Exception 은 잡지 않는다.
         profile_reject(
             PROFILE_REJECT_PROMPT_BINDING_INVALID, owner,
