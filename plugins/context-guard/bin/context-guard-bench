@@ -797,6 +797,16 @@ def require_argv_safe_prompt(text: str, *, owner: str) -> str:
 
 def validate_variant_prompt_file_path(raw_path: str, *, owner: str) -> Path:
     """Return a safe relative prompt-file path, or fail before any file read."""
+    # 결정적으로 거부 가능한 값: 임베디드 NUL 과 로컬 fs 인코딩으로 표현 불가한 문자열.
+    # 이 값들은 이후 os.open 에서 ValueError/UnicodeError 로 터질 수 있으므로 미리 막는다.
+    if "\x00" in raw_path:
+        raise SystemExit(f"{owner} variant_prompt_files path must not contain embedded NUL")
+    try:
+        os.fsencode(raw_path)
+    except UnicodeError:
+        raise SystemExit(
+            f"{owner} variant_prompt_files path is not representable on the local filesystem"
+        ) from None
     rel_path = Path(raw_path)
     if rel_path.is_absolute():
         raise SystemExit(f"{owner} variant_prompt_files path must be relative: {raw_path}")
@@ -2667,6 +2677,13 @@ def profile_variant_prompt_sha256(task: TaskFixture, variant_name: str, *, task_
         )
     except SystemExit:
         # 원본 경로/내용이 새어나가지 않도록 안정적인 프로파일 오류로 다시 쓴다.
+        profile_reject(
+            PROFILE_REJECT_PROMPT_BINDING_INVALID, owner,
+            "the selected variant prompt file could not be safely read",
+        )
+    except (ValueError, UnicodeError):
+        # 조기 검증을 지나친 동등 저수준 실패(os.open NUL/인코딩 거부 등)만 좁게 정규화.
+        # 프로그래머 버그를 숨기지 않도록 범용 Exception 은 잡지 않는다.
         profile_reject(
             PROFILE_REJECT_PROMPT_BINDING_INVALID, owner,
             "the selected variant prompt file could not be safely read",

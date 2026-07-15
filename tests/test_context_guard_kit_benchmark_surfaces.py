@@ -7550,6 +7550,154 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 self.assertFalse(marker.exists(), "provider binary must not run on reject")
                 self._assert_zero_writes(outputs)
 
+    def test_supported_profile_embedded_nul_prompt_path_is_stable_binding_reject(self):
+        """G007: supported-v1 replay path with embedded NUL must not traceback.
+
+        JSON can carry ``\\u0000`` in ``variant_prompt_files``. Pre-repair validation
+        accepted it, then ``os.open`` raised ``ValueError`` outside the SystemExit
+        rewrite, so both CLIs leaked a full traceback. Reject must stay stable,
+        opaque, provider-free, and write-free.
+        """
+        hostile_task = "hostile-controlled-task"
+        nul_path = "prompt\x00hostile.md"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: nul_path,
+                    self.CANDIDATE: nul_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-nul-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    hostile_task,
+                    self.BASELINE,
+                    self.CANDIDATE,
+                    "hostile.md",
+                    "\x00",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_lone_surrogate_prompt_path_is_stable_binding_reject(self):
+        """G007: supported-v1 replay path with a lone surrogate must not traceback.
+
+        A filesystem-encoding-invalid path such as ``\\ud800`` used to pass path
+        validation, then fail inside ``os.open`` as ``UnicodeEncodeError``. Both
+        surfaces must normalize to opaque ``profile_prompt_binding_invalid``.
+        """
+        hostile_task = "hostile-controlled-task"
+        surrogate_path = "prompt\ud800hostile.md"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: surrogate_path,
+                    self.CANDIDATE: surrogate_path,
+                }
+                # Default ensure_ascii escapes the lone surrogate so the tasks file
+                # stays UTF-8; json.loads restores the filesystem-invalid code unit.
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-surrogate-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    hostile_task,
+                    self.BASELINE,
+                    self.CANDIDATE,
+                    "hostile.md",
+                    "\ud800",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_profile_prompt_path_boundary_normalizes_nul_and_surrogate(self):
+        """Unit-level: path validation + profile hash boundary reject encoding-invalid paths."""
+        module = load_module_from_path(
+            KIT_DIR / "benchmark_runner.py",
+            "_bench_runner_g007_path_boundary",
+        )
+        owner = module.profile_owner("hostile-controlled-task", "hostile-controlled-variant")
+        for bad_path in ("prompt\x00hostile.md", "prompt\ud800hostile.md"):
+            with self.subTest(path_kind=repr(bad_path)):
+                with self.assertRaises(SystemExit) as raised:
+                    module.validate_variant_prompt_file_path(bad_path, owner=owner)
+                message = str(raised.exception)
+                self.assertIn("variant_prompt_files path", message)
+                self.assertNotIn("Traceback", message)
+                self.assertNotIn("\x00", message)
+                self.assertNotIn("\ud800", message)
+                self.assertNotIn("hostile.md", message)
+
+                task = module.TaskFixture(
+                    id="hostile-controlled-task",
+                    prompt="sanitized",
+                    model="sonnet",
+                    effort="medium",
+                    max_turns=1,
+                    allowed_tools=[],
+                    success_command="true",
+                    success_cwd=".",
+                    variant_prompt_files={"hostile-controlled-variant": bad_path},
+                    evaluation_profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+                )
+                with self.assertRaises(SystemExit) as profile_raised:
+                    module.profile_variant_prompt_sha256(
+                        task,
+                        "hostile-controlled-variant",
+                        task_file_dir=Path("."),
+                        owner=owner,
+                    )
+                profile_message = str(profile_raised.exception)
+                self.assertIn("profile_prompt_binding_invalid", profile_message)
+                self.assertIn("[REDACTED]", profile_message)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    "hostile-controlled-task",
+                    "hostile-controlled-variant",
+                    "hostile.md",
+                    "\x00",
+                    "\ud800",
+                ):
+                    self.assertNotIn(forbidden, profile_message, f"leaked {forbidden!r}")
+
     def test_generic_quality_gate_regression_blocks_lane_readiness(self):
         """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
 
