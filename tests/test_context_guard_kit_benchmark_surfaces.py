@@ -7576,7 +7576,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 marker = root / "provider-was-invoked"
                 claude_bin = self._recording_claude(root, marker)
 
-                proc = self._run(script, case, outputs)
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
 
                 combined = proc.stdout + proc.stderr
                 self.assertNotEqual(proc.returncode, 0, combined)
@@ -7624,7 +7624,7 @@ class ImageContextEvaluationProfileTests(unittest.TestCase):
                 marker = root / "provider-was-invoked"
                 claude_bin = self._recording_claude(root, marker)
 
-                proc = self._run(script, case, outputs)
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
 
                 combined = proc.stdout + proc.stderr
                 self.assertNotEqual(proc.returncode, 0, combined)
