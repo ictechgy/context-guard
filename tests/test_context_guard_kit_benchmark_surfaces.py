@@ -6,6 +6,7 @@ discovery does not duplicate tests.
 """
 
 import csv
+import hashlib
 import importlib
 import json
 import os
@@ -16,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -71,6 +73,58 @@ load_module_from_path = base.load_module_from_path
 load_python_script_module = base.load_python_script_module
 
 BENCH_SCRIPTS = [KIT_DIR / "benchmark_runner.py", PLUGIN_BIN / "context-guard-bench"]
+
+# ---------------------------------------------------------------------------
+# Image-context evaluation profile contract (PRD/test-spec phase 4/5).
+#
+# These are the *stable public* strings of the optional evaluation profile.  The
+# tests below deliberately assert them through public surfaces (report JSON, CLI
+# exit status, dashboard text) rather than through runner-private helper names,
+# so the lane contract stays provable even if the runner refactors internally.
+# ---------------------------------------------------------------------------
+IMAGE_CONTEXT_EVALUATION_PROFILE_ID = "contextguard.bench.image-context-pack-evaluation.v1"
+IMAGE_CONTEXT_READINESS_SCHEMA_VERSION = "contextguard.bench.image-context-pack-readiness.v1"
+IMAGE_CONTEXT_PROFILE_REPORT_KEY = "image_context_pack"
+IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS = "image_context_pack_evaluation_only_not_public_claim"
+
+# reject_prewrite error ids, in the PRD's deterministic order.
+PROFILE_REJECT_ERROR_IDS = (
+    "profile_controls_missing",
+    "profile_schema_invalid",
+    "profile_binding_mismatch",
+    "profile_batch_incomplete",
+    "profile_fresh_output_required",
+    "profile_prompt_binding_invalid",
+    "profile_correction_inconsistent",
+    "profile_measurement_inconsistent",
+    "profile_fallback_claim_inconsistent",
+    # A profiled task may only be replayed.  Selecting one without --evidence-jsonl
+    # must reject before the provider runtime is reachable at all.
+    "profile_replay_required",
+)
+
+# Lane gate ids, in the PRD's deterministic order.  The two regression gates carry
+# the generic matched-pair quality verdict into lane readiness: a profiled batch may
+# never reach bounded-pilot review while the generic quality gate is not `pass`.
+IMAGE_CONTEXT_GATE_IDS = (
+    "profile_and_prompt_binding",
+    "protected_zone_deny_review",
+    "exact_text_fallback_binding",
+    "missed_context_review",
+    "human_correction_consistency",
+    "corrections_regression",
+    "failure_rate_regression",
+    "generic_matched_success_and_measurement",
+    "evaluation_only_promotion_boundary",
+)
+
+# The imported proof-verifier projection binds to the *existing* verifier contract
+# in context-guard-kit/experimental_registry.py; replay never re-runs the verifier.
+PROOF_VERIFY_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
+PROOF_VERIFICATION_CLAIM_BOUNDARY = (
+    "Local receipt/hash/range/command binding only; no semantic-safety, protected-zone, freshness, replacement, "
+    "omission, or hosted-savings authority."
+)
 
 
 class SplitModuleCompatibilityTests(unittest.TestCase):
@@ -3226,7 +3280,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
 
         expected_top_level_keys = {
             "artifacts_used", "byte_metrics", "bytes_after", "bytes_before", "claim_boundary",
-            "corrections", "cost_measured", "cost_usd", "effort", "external_cost_measured",
+            "corrections", "cost_measured", "cost_usd", "effort", "evaluation_controls",
+            "evaluation_profile", "external_cost_measured",
             "external_cost_usd", "external_tokens", "external_tokens_measured", "hook_triggers",
             "human_correction", "missed_context", "model", "notes", "primary_tokens_measured",
             "provenance", "provider_cached_tokens", "provider_cached_tokens_measured",
@@ -3387,11 +3442,26 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 outputs.append((normalized_csv_rows, report_path.read_bytes(), dashboard_path.read_bytes()))
             self.assertEqual(outputs[0], outputs[1])
             report = json.loads(outputs[0][1])
-            self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+            # The fixture now opts into the image-context evaluation profile, so every
+            # public-authority surface is clamped to the evaluation-only non-candidate value.
+            self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+            self.assertEqual(report["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+            self.assertFalse(report["public_claim_eligible"])
             self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
             self.assertEqual(len(report["matched_pair_evidence"]), 1)
             blockers = set(report["public_claim_readiness"]["blocking_gate_ids"])
             self.assertTrue({"provider_measured_token_cost", "quality_non_inferiority", "shifted_cost_accounting", "provider_export_provenance"}.issubset(blockers))
+            lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+            self.assertEqual(lane["schema_version"], IMAGE_CONTEXT_READINESS_SCHEMA_VERSION)
+            self.assertEqual(lane["status"], "blocked")
+            self.assertTrue(lane["evaluation_only"])
+            self.assertFalse(lane["promotion_authority"])
+            self.assertFalse(lane["public_claim_allowed"])
+            # The shipped fixture is deliberately unverified-fallback with one correction.
+            self.assertIn("exact_text_fallback_binding", lane["blocking_gate_ids"])
+            self.assertIn("missed_context_review", lane["blocking_gate_ids"])
+            self.assertEqual(lane["evidence_levels"]["provider_measurement"], "unmeasured")
+            self.assertEqual(lane["evidence_levels"]["fallback_binding"], "missing")
 
     def test_token_savings_12task_fixture_parses_and_generates_claim_safe_report(self):
         fixture_dir, _guide, fixture_pairs = self._experimental_benchmark_fixture_paths()
@@ -3699,24 +3769,56 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     variant_raw = json.loads(variant_path.read_text(encoding="utf-8"))
                     target_task = task_raw[0]["id"]
                     target_variant = variant_raw[0]["name"]
+                    profiled_fixture = task_raw[0].get("evaluation_profile") is not None
                     with tempfile.TemporaryDirectory() as tmp:
                         csv_path = Path(tmp) / "dry-run.csv"
+                        base_argv = [
+                            sys.executable,
+                            str(script),
+                            "--tasks",
+                            str(task_path),
+                            "--variants",
+                            str(variant_path),
+                            "--task-id",
+                            target_task,
+                            "--variant",
+                            target_variant,
+                            "--csv",
+                            str(csv_path),
+                        ]
+                        if profiled_fixture:
+                            # A profiled fixture is evaluation-only: the provider path is refused
+                            # outright, --dry-run included, so it never reaches the placeholder
+                            # guard and never renders a provider-path prompt preview. Its prompt
+                            # swap and replay behavior are covered by
+                            # ImageContextEvaluationProfileTests against --evidence-jsonl.
+                            sentinel = Path(tmp) / "provider-called.txt"
+                            fake = Path(tmp) / "fake-claude"
+                            fake.write_text(
+                                "#!/usr/bin/env python3\n"
+                                "import pathlib, sys\n"
+                                f"pathlib.Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n"
+                                "sys.stdout.write('{}')\n",
+                                encoding="utf-8",
+                            )
+                            fake.chmod(0o755)
+                            for extra in (["--dry-run"], ["--claude-bin", str(fake)]):
+                                refused = subprocess.run(
+                                    base_argv + extra, text=True, capture_output=True,
+                                )
+                                self.assertNotEqual(refused.returncode, 0)
+                                self.assertIn(
+                                    "profile_replay_required", refused.stdout + refused.stderr,
+                                )
+                                self.assertFalse(sentinel.exists())
+                                self.assertFalse(csv_path.exists())
+                                self.assertFalse(
+                                    csv_path.with_name(f"{csv_path.name}.lock").exists()
+                                )
+                            continue
+
                         proc = subprocess.run(
-                            [
-                                sys.executable,
-                                str(script),
-                                "--tasks",
-                                str(task_path),
-                                "--variants",
-                                str(variant_path),
-                                "--task-id",
-                                target_task,
-                                "--variant",
-                                target_variant,
-                                "--csv",
-                                str(csv_path),
-                                "--dry-run",
-                            ],
+                            base_argv + ["--dry-run"],
                             text=True,
                             capture_output=True,
                             check=True,
@@ -3747,14 +3849,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 check=True,
                             )
                             dry_runs[variant_name] = variant_proc.stdout
-                        if lane == "image_context_pack":
-                            self.assertIn("Full sanitized textual evidence", dry_runs["baseline_full_evidence_fixture"])
-                            self.assertIn("Packed sanitized textual evidence", dry_runs["fixture_only_image_context_pack"])
-                            self.assertNotEqual(
-                                dry_runs["baseline_full_evidence_fixture"],
-                                dry_runs["fixture_only_image_context_pack"],
-                            )
-                        elif lane == "visual_ocr":
+                        if lane == "visual_ocr":
                             self.assertIn("Full visual evidence", dry_runs["baseline_full_visual_fixture"])
                             self.assertIn("Cropped or OCR-derived evidence", dry_runs["fixture_only_cropped_or_ocr_evidence"])
                             self.assertNotEqual(
@@ -6038,6 +6133,1787 @@ class ContextEscrowCcrMetadataTests(unittest.TestCase):
                     pat_payload = json.loads(pat.stdout)
                     self.assertTrue(pat_payload["content"])
                     self.assertTrue(all(token in line for line in pat_payload["content"].splitlines()))
+
+class ImageContextEvaluationProfileTests(unittest.TestCase):
+    """Contract tests for the optional image-context evaluation profile.
+
+    The profile is evaluation-only: no fixture in this class may ever produce a
+    public claim, promotion authority, or a savings claim.  Structurally invalid
+    evidence must fail closed *before any output byte is written*; well-formed
+    negative evidence must stay replayable and score the lane as blocked.
+
+    Kept in its own TestCase because ``BenchmarkRunnerTests`` has a hardcoded
+    ``countTestCases() == 75`` assertion in the split-module compatibility tests.
+    """
+
+    TASK_ID = "image_context_profile_case"
+    BASELINE = "baseline_full_evidence"
+    CANDIDATE = "packed_image_context"
+
+    # ---------- fixture construction -------------------------------------
+
+    def _prompt_text(self, kind):
+        # Bounded, sanitized, claim-safe prompt bodies.  Never echoed into reports.
+        return (
+            f"# {kind} sanitized textual evidence fixture\n"
+            "Plan-only; protected-zone deny; no renderer call; no OCR call; no provider call.\n"
+            "This fixture does not establish token savings, cost savings, or quality non-inferiority.\n"
+        )
+
+    def _write_prompts(self, root):
+        paths = {}
+        for variant, kind in ((self.BASELINE, "full"), (self.CANDIDATE, "packed")):
+            path = root / f"{variant}.prompt.md"
+            path.write_text(self._prompt_text(kind), encoding="utf-8")
+            paths[variant] = path
+        return paths
+
+    def _sha256_file(self, path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _proof_projection(self, *, receipt_id, content_sha256, retrieval_command, **overrides):
+        """A passing bounded projection of one imported local-verifier result.
+
+        Mirrors the real verifier payload contract; replay validates the projection
+        against the outer fallback binding but never re-authenticates the artifact.
+        """
+        unit = {
+            "status": "verified",
+            "receipt_id": receipt_id,
+            "receipt_verified": True,
+            "content_hash_declared_value": content_sha256,
+            "content_hash_verified": True,
+            "retrieval_command": retrieval_command,
+            "rehydration_receipt_bound": True,
+            "rehydration_syntax_valid": True,
+            "rehydration_verified": True,
+            "rehydration_executed": False,
+        }
+        unit.update(overrides.pop("proof_unit", {}))
+        projection = {
+            "schema": PROOF_VERIFY_SCHEMA_VERSION,
+            "status": "verified",
+            "blockers": [],
+            "candidate_replacement": None,
+            "claim_boundary": PROOF_VERIFICATION_CLAIM_BOUNDARY,
+            "proof_unit": unit,
+        }
+        projection.update(overrides)
+        return projection
+
+    def _controls(self, *, prompt_path, omission, verified_fallback, corrections, correction_reason,
+                  missed_present, measured, **overrides):
+        """Build a well-formed ``evaluation_controls`` block, then apply overrides."""
+        receipt_id = "receipt-fixture-0001"
+        content_sha256 = hashlib.sha256(b"exact-source-text-fixture").hexdigest()
+        retrieval_command = "context-guard experiments verify proof-carrying-context --artifact-dir ./fixture-receipts"
+        if omission and verified_fallback:
+            fallback = {
+                "available": True,
+                "verified": True,
+                "receipt_id": receipt_id,
+                "content_sha256": content_sha256,
+                "retrieval_command": retrieval_command,
+                "verifier_projection": self._proof_projection(
+                    receipt_id=receipt_id,
+                    content_sha256=content_sha256,
+                    retrieval_command=retrieval_command,
+                ),
+            }
+        elif omission:
+            # Omission declared but never bound to a passing verifier record.
+            fallback = {
+                "available": True, "verified": False,
+                "receipt_id": "none", "content_sha256": "none",
+                "retrieval_command": "none", "verifier_projection": None,
+            }
+        else:
+            fallback = {
+                "available": False, "verified": False,
+                "receipt_id": "none", "content_sha256": "none",
+                "retrieval_command": "none", "verifier_projection": None,
+            }
+        controls = {
+            "control_provenance": {
+                "review_source": "synthetic_fixture",
+                "verifier_label": "local_proof_verifier_fixture" if (omission and verified_fallback) else "none",
+            },
+            "exact_text_fallback": fallback,
+            "human_correction": {"count": corrections, "reason": correction_reason},
+            "missed_context_review": {
+                "correction_required": bool(corrections),
+                "present": missed_present,
+                "review_completed": True,
+                "summary": "packed evidence omitted the qualifying acknowledgement" if missed_present else "none",
+            },
+            "prompt_evidence": {
+                "sha256": self._sha256_file(prompt_path),
+                "source_label": prompt_path.name,
+            },
+            "protected_zone_review": {
+                "included_prompt_like_regions": 0,
+                "included_protected_regions": 0,
+                "policy": "deny",
+                "review_completed": True,
+                "review_note": "deny policy declared; no protected or prompt-like region included",
+                "reviewer_label": "synthetic_fixture_reviewer",
+            },
+            "provider_usage": {
+                "primary_cost_measured": measured,
+                "primary_tokens_measured": measured,
+                "provider_called": measured,
+            },
+            "shifted_cost": {
+                "external_cost_measured": measured,
+                "external_tokens_measured": measured,
+                "status": "measured" if measured else "unmeasured",
+            },
+            "source_omission": {
+                "present": omission,
+                "transform": "packed_textual_summary" if omission else "none",
+            },
+        }
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(controls.get(key), dict):
+                controls[key] = {**controls[key], **value}
+            else:
+                controls[key] = value
+        return controls
+
+    def _row(self, *, variant, prompt_path, measured, omission, verified_fallback=False, corrections=0,
+             correction_reason="none", missed_present=False, input_tokens=1000, output_tokens=200,
+             cost_usd=0.05, bytes_before=1000, bytes_after=1000, profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+             controls=None, control_overrides=None, drop_controls=False):
+        """One evidence row.  ``measured`` switches synthetic_fixture vs provider_export."""
+        if measured:
+            provenance = {
+                "evidence_source_type": "provider_export",
+                "provider_name": "fixture-provider",
+                "capture_command_or_export_id": "fixture-export-0001",
+                "claim_scope": "provider_measured_matched_task",
+            }
+        else:
+            provenance = {
+                "evidence_source_type": "synthetic_fixture",
+                "capture_command_or_export_id": "unit-test-fixture",
+                "claim_scope": "local_replay_fixture_not_public_claim",
+            }
+        row = {
+            "schema_version": "contextguard.bench.run-evidence.v1",
+            "task_id": self.TASK_ID,
+            "variant": variant,
+            "success": True,
+            "provenance": provenance,
+            "tokens": {
+                "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "cache_read": 0, "cache_creation": 0,
+            },
+            "primary_tokens_measured": measured,
+            "cost_usd": cost_usd,
+            "cost_measured": measured,
+            "external_tokens": 0,
+            "external_tokens_measured": measured,
+            "external_cost_usd": 0,
+            "external_cost_measured": measured,
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_after,
+            "corrections": corrections,
+            "notes": f"sanitized fixture row for {variant}; no provider call in replay",
+        }
+        if profile is not None:
+            row["evaluation_profile"] = profile
+        if not drop_controls:
+            built = controls if controls is not None else self._controls(
+                prompt_path=prompt_path, omission=omission, verified_fallback=verified_fallback,
+                corrections=corrections, correction_reason=correction_reason,
+                missed_present=missed_present, measured=measured,
+            )
+            if control_overrides:
+                for key, value in control_overrides.items():
+                    if isinstance(value, dict) and isinstance(built.get(key), dict):
+                        built[key] = {**built[key], **value}
+                    else:
+                        built[key] = value
+            row["evaluation_controls"] = built
+        return row
+
+    def _write_case(self, root, rows, *, task_profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+                    variant_prompt_files=True, success_command=None):
+        """Write tasks/variants/evidence for one profiled case.
+
+        ``success_command`` defaults to the placeholder, which the runner already
+        refuses outside a dry run.  Hostile direct-run tests pass a *real* command
+        so the placeholder guard cannot be mistaken for the profile guard.
+        """
+        prompts = self._write_prompts(root)
+        task = {
+            "id": self.TASK_ID,
+            "prompt": "sanitized fixture task; no renderer, OCR, provider, network, or subprocess call",
+            "model": "sonnet",
+            "effort": "medium",
+            "max_turns": 1,
+            "allowed_tools": [],
+            "success_command": success_command or (
+                "python3 -c \"raise SystemExit('fixture-only placeholder: "
+                "replace success_command before real benchmark runs')\""
+            ),
+            "success_cwd": ".",
+        }
+        if variant_prompt_files:
+            task["variant_prompt_files"] = {v: p.name for v, p in prompts.items()}
+        if task_profile is not None:
+            task["evaluation_profile"] = task_profile
+
+        tasks_path = root / "tasks.json"
+        variants_path = root / "variants.json"
+        evidence_path = root / "evidence.jsonl"
+        tasks_path.write_text(json.dumps([task]), encoding="utf-8")
+        variants_path.write_text(json.dumps([
+            {"name": self.BASELINE, "extra_args": []},
+            {"name": self.CANDIDATE, "extra_args": []},
+        ]), encoding="utf-8")
+        evidence_path.write_text(
+            "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "tasks": tasks_path, "variants": variants_path, "evidence": evidence_path,
+            "prompts": prompts,
+        }
+
+    def _default_rows(self, prompts, *, measured=False, verified_fallback=False):
+        """Baseline (no omission) + candidate (omission) pair."""
+        return [
+            self._row(
+                variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=measured,
+                omission=False, input_tokens=1000, output_tokens=200, cost_usd=0.05,
+                bytes_before=1000, bytes_after=1000,
+            ),
+            self._row(
+                variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=measured,
+                omission=True, verified_fallback=verified_fallback, input_tokens=400,
+                output_tokens=120, cost_usd=0.02, bytes_before=1000, bytes_after=400,
+            ),
+        ]
+
+    # ---------- invocation + zero-write helpers ---------------------------
+
+    def _output_paths(self, root, stem):
+        return {
+            "csv": root / f"{stem}.csv",
+            "ledger": root / f"{stem}.ledger.jsonl",
+            "report": root / f"{stem}.report.json",
+            "dashboard": root / f"{stem}.dashboard.md",
+        }
+
+    # replay 경로가 기본값이다. claude_bin 을 주면 --evidence-jsonl 없이 평범한 provider
+    # 경로로 같은 CLI 를 호출한다(= 예전 _run_direct). 두 경로의 argv 는 이 한 곳에서만
+    # 만들어지므로 복사본이 서로 어긋날 수 없다.
+    def _run(self, script, case, outputs, *, claude_bin=None, extra_args=(), baseline_variant=None):
+        replay_args = () if claude_bin else ("--evidence-jsonl", str(case["evidence"]))
+        argv = [
+            sys.executable, str(script),
+            "--tasks", str(case["tasks"]),
+            "--variants", str(case["variants"]),
+            *replay_args,
+            "--baseline-variant", baseline_variant or self.BASELINE,
+            "--claude-bin", str(claude_bin or "/definitely/missing/contextguard-claude"),
+            "--csv", str(outputs["csv"]),
+            "--ledger-jsonl", str(outputs["ledger"]),
+            "--report-json", str(outputs["report"]),
+            "--dashboard-md", str(outputs["dashboard"]),
+            *extra_args,
+        ]
+        return subprocess.run(argv, cwd=ROOT, text=True, capture_output=True)
+
+    def _recording_claude(self, root, marker):
+        """A *working* fake provider that records the fact it was executed.
+
+        The profile guard must reject before this can ever run; the marker file is
+        the only proof that distinguishes "never invoked" from "invoked and failed".
+        """
+        fake = root / "recording-claude"
+        payload = json.dumps({
+            "message": {"usage": {"input_tokens": 10, "output_tokens": 5}},
+            "total_cost_usd": 0.0123,
+        })
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text('provider invoked', encoding='utf-8')\n"
+            f"sys.stdout.write({payload!r})\n"
+            "sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        return fake
+
+    def _assert_zero_writes(self, outputs):
+        """No output *and* no lock sidecar may exist after a reject_prewrite."""
+        for label, path in outputs.items():
+            self.assertFalse(path.exists(), f"{label} must not be written on reject_prewrite: {path}")
+            lock = path.with_name(path.name + ".lock")
+            self.assertFalse(lock.exists(), f"{label} lock sidecar must not be created: {lock}")
+
+    def _assert_no_leakage(self, text, case):
+        """Reports/errors must never echo prompts, artifact dirs, or secret-shaped values."""
+        lowered = text.lower()
+        for forbidden in ("sanitized textual evidence fixture", "-----begin", "sk-", "http://", "https://"):
+            self.assertNotIn(forbidden, lowered)
+        self.assertNotIn(str(Path.home()).lower(), lowered)
+        for prompt_path in case["prompts"].values():
+            self.assertNotIn(prompt_path.read_text(encoding="utf-8").strip().lower(), lowered)
+
+    # ---------- success + clamp -------------------------------------------
+
+    def test_complete_provider_export_pilot_reaches_bounded_pilot_review_without_public_authority(self):
+        """PRD AC10: the strongest possible evidence still cannot buy public authority.
+
+        Every generic gate passes (measured provider tokens/cost, measured shifted
+        cost, verified fallback, clean protection review, zero corrections), yet the
+        lane may only reach ``ready_for_bounded_pilot_review`` and every public-claim
+        surface stays clamped false.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"pilot{index}")
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+
+                self.assertEqual(lane["schema_version"], IMAGE_CONTEXT_READINESS_SCHEMA_VERSION)
+                self.assertEqual(lane["status"], "ready_for_bounded_pilot_review")
+                self.assertEqual(lane["blocking_gate_ids"], [])
+                self.assertEqual(list(lane["gate_ids"]), list(IMAGE_CONTEXT_GATE_IDS))
+                self.assertEqual(lane["matched_task_count"], 1)
+                self.assertEqual(lane["evidence_levels"], {
+                    "provider_measurement": "measured",
+                    "fallback_binding": "imported_local_verifier_attestation",
+                    "protected_zone": "review_attested",
+                    "missed_context": "reviewed",
+                })
+
+                # Evaluation-only invariants -- the whole point of the lane.
+                self.assertTrue(lane["evaluation_only"])
+                self.assertFalse(lane["promotion_authority"])
+                self.assertFalse(lane["public_claim_allowed"])
+                self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                self.assertEqual(report["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                self.assertFalse(report["public_claim_eligible"])
+                self.assertFalse(report["public_claim_readiness"]["claim_allowed"])
+                for pair in report["matched_pair_evidence"]:
+                    self.assertFalse(pair["claim_boundary"]["token_savings_claim_allowed"])
+                    self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+
+                # Pre-clamp measurement survives only in explicitly non-authoritative fields.
+                self.assertEqual(
+                    report["raw_metric_claim_status"], "token_and_shifted_cost_savings_observed"
+                )
+
+                # Non-promotional sample adequacy never grants readiness.
+                self.assertEqual(
+                    lane["sample_adequacy"]["policy_status"], "not_defined_for_promotion"
+                )
+
+                dashboard = outputs["dashboard"].read_text(encoding="utf-8")
+                self.assertIn("Image-context evaluation", dashboard)
+                self.assertNotIn("promotion ready", dashboard.lower())
+                self.assertNotIn("runtime authorized", dashboard.lower())
+                self._assert_no_leakage(dashboard, case)
+                self._assert_no_leakage(outputs["report"].read_text(encoding="utf-8"), case)
+
+    # ---------- reject_prewrite taxonomy ----------------------------------
+
+    def _reject_cases(self, root, prompts):
+        """(case_id, expected_error_id, rows, task_profile) for every reject_prewrite row."""
+        other_sha = hashlib.sha256(b"not-the-prompt").hexdigest()
+        cases = []
+
+        # profile_controls_missing -- required control block absent.
+        rows = self._default_rows(prompts)
+        rows[1] = self._row(
+            variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+            omission=True, drop_controls=True,
+        )
+        cases.append(("controls_missing", "profile_controls_missing", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- unknown nested key for this v1 profile.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["unexpected_future_key"] = True
+        cases.append(("unknown_key", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- wrong type.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"]["included_protected_regions"] = "zero"
+        cases.append(("wrong_type", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- oversized policy value.  Bounds run BEFORE semantic
+        # policy classification, so this must reject rather than fall through to the
+        # accepted_blocked protected-zone branch.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = "x" * 100_000
+        cases.append(("oversize_policy", "profile_schema_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_schema_invalid -- unknown profile version on the task.
+        rows = self._default_rows(prompts)
+        for row in rows:
+            row["evaluation_profile"] = "contextguard.bench.image-context-pack-evaluation.v999"
+        cases.append((
+            "unknown_version", "profile_schema_invalid", rows,
+            "contextguard.bench.image-context-pack-evaluation.v999",
+        ))
+
+        # profile_binding_mismatch -- row omits the profile the task declares.
+        rows = self._default_rows(prompts)
+        rows[1].pop("evaluation_profile")
+        cases.append(("row_profile_missing", "profile_binding_mismatch", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_binding_mismatch -- profiled row on an unprofiled task.
+        rows = self._default_rows(prompts)
+        cases.append(("profiled_row_unprofiled_task", "profile_binding_mismatch", rows, None))
+
+        # profile_batch_incomplete -- mixed profiled/unprofiled rows for one task.
+        rows = self._default_rows(prompts)
+        rows[1].pop("evaluation_profile")
+        rows[1].pop("evaluation_controls")
+        cases.append(("mixed_batch", "profile_batch_incomplete", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_prompt_binding_invalid -- candidate carries the wrong prompt hash.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["prompt_evidence"]["sha256"] = other_sha
+        cases.append(("prompt_sha_mismatch", "profile_prompt_binding_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_prompt_binding_invalid -- baseline hash used for the candidate row.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["prompt_evidence"]["sha256"] = self._sha256_file(prompts[self.BASELINE])
+        cases.append(("prompt_sha_swapped", "profile_prompt_binding_invalid", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_correction_inconsistent -- nested count disagrees with top-level corrections.
+        rows = self._default_rows(prompts)
+        rows[1]["corrections"] = 1
+        rows[1]["evaluation_controls"]["human_correction"] = {"count": 0, "reason": "none"}
+        cases.append(("correction_count_mismatch", "profile_correction_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_correction_inconsistent -- positive count with no reason.
+        rows = self._default_rows(prompts)
+        rows[1]["corrections"] = 1
+        rows[1]["evaluation_controls"]["human_correction"] = {"count": 1, "reason": ""}
+        cases.append(("correction_without_reason", "profile_correction_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_measurement_inconsistent -- lane metadata claims measured while the
+        # generic synthetic_fixture row is provably unmeasured.  Lane metadata must
+        # never be able to upgrade a generic measurement flag.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["provider_usage"] = {
+            "primary_cost_measured": True, "primary_tokens_measured": True, "provider_called": True,
+        }
+        cases.append(("lane_upgrades_measurement", "profile_measurement_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_measurement_inconsistent -- lane shifted-cost claims measured while generic is not.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["shifted_cost"] = {
+            "external_cost_measured": True, "external_tokens_measured": True, "status": "measured",
+        }
+        cases.append(("lane_upgrades_shifted_cost", "profile_measurement_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # profile_fallback_claim_inconsistent -- claims verified but the projection contradicts it.
+        contradictions = {
+            "blockers_present": {"blockers": ["proof_content_hash_mismatch"]},
+            "non_null_replacement": {"candidate_replacement": {"unit_id": "u1"}},
+            "verifier_status_failed": {"status": "verification_failed"},
+            "wrong_schema": {"schema": "contextguard.experiments.some-other-schema.v1"},
+            "unit_not_verified": {"proof_unit": {"status": "verification_failed", "receipt_verified": False}},
+            "content_hash_mismatch": {"proof_unit": {"content_hash_declared_value": other_sha}},
+            "command_not_bound": {"proof_unit": {"rehydration_receipt_bound": False}},
+        }
+        for name, override in contradictions.items():
+            rows = self._default_rows(prompts, verified_fallback=True)
+            fallback = rows[1]["evaluation_controls"]["exact_text_fallback"]
+            projection = dict(fallback["verifier_projection"])
+            unit_override = override.pop("proof_unit", None)
+            if unit_override:
+                projection["proof_unit"] = {**projection["proof_unit"], **unit_override}
+            projection.update(override)
+            fallback["verifier_projection"] = projection
+            cases.append((
+                f"fallback_{name}", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # profile_fallback_claim_inconsistent -- receipt id disagrees with the projection.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["receipt_id"] = "receipt-does-not-match"
+        cases.append(("fallback_receipt_mismatch", "profile_fallback_claim_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # --- G002 blocker 6: duplicate profile evidence needs a *stable* id ------
+        # A duplicate must be caught by profile preflight with profile_batch_incomplete,
+        # not fall through to the generic un-prefixed "duplicate evidence row" error.
+        rows = self._default_rows(prompts)
+        rows.append(self._row(
+            variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False, omission=True,
+        ))
+        cases.append(("duplicate_candidate_row", "profile_batch_incomplete", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # --- G002 blocker 2: every bounded attestation field must be *bound* ------
+        # Each case below is a proof that currently "looks" passing: the projection
+        # itself is internally consistent, so only an explicit binding rule catches it.
+
+        # available=false while verification is claimed: an unavailable fallback is not proof.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["available"] = False
+        cases.append(("fallback_available_false", "profile_fallback_claim_inconsistent", rows, IMAGE_CONTEXT_EVALUATION_PROFILE_ID))
+
+        # Empty / placeholder receipt id, bound identically on both sides so that only
+        # an explicit "must be exact and non-empty" rule can reject it.
+        for label, placeholder in (("empty", ""), ("placeholder", "none")):
+            rows = self._default_rows(prompts, verified_fallback=True)
+            fallback = rows[1]["evaluation_controls"]["exact_text_fallback"]
+            fallback["receipt_id"] = placeholder
+            fallback["verifier_projection"]["proof_unit"]["receipt_id"] = placeholder
+            cases.append((
+                f"fallback_{label}_receipt_id", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # Empty / placeholder retrieval command: an exact retrieval handle is required.
+        for label, placeholder in (("empty", ""), ("placeholder", "none")):
+            rows = self._default_rows(prompts, verified_fallback=True)
+            rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = placeholder
+            cases.append((
+                f"fallback_{label}_retrieval_command", "profile_fallback_claim_inconsistent", rows,
+                IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+            ))
+
+        # The imported proof may only ever carry the local-only claim boundary.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["verifier_projection"]["claim_boundary"] = (
+            "Semantic safety, freshness, replacement, and hosted-savings authority granted."
+        )
+        cases.append((
+            "fallback_claim_boundary_widened", "profile_fallback_claim_inconsistent", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # Replay may never accept a proof that claims the artifact was rehydrated:
+        # replay does not execute, re-read, or re-authenticate the artifact.
+        rows = self._default_rows(prompts, verified_fallback=True)
+        rows[1]["evaluation_controls"]["exact_text_fallback"]["verifier_projection"]["proof_unit"][
+            "rehydration_executed"
+        ] = True
+        cases.append((
+            "fallback_rehydration_executed", "profile_fallback_claim_inconsistent", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # --- G002 blocker 7: an attacker-chosen key name must not be echoed ------
+        # _assert_no_leakage (applied to every reject case) proves the secret-shaped
+        # key never reaches stdout/stderr.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"] = True
+        cases.append((
+            "unknown_key_secret_shaped", "profile_schema_invalid", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        # The same rule applies to a nested block and to the imported projection.
+        rows = self._default_rows(prompts)
+        rows[1]["evaluation_controls"]["protected_zone_review"][
+            "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        ] = True
+        cases.append((
+            "unknown_nested_key_secret_shaped", "profile_schema_invalid", rows,
+            IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+        ))
+
+        return cases
+
+    def test_profile_reject_cases_fail_closed_with_stable_ids_and_zero_writes(self):
+        """Structurally invalid/contradictory evidence rejects before any output byte.
+
+        Asserts the exact stable error id, a non-zero exit, and that CSV, ledger,
+        report, dashboard, and all four lock sidecars remain absent.
+        """
+        with tempfile.TemporaryDirectory() as shared:
+            probe_prompts = self._write_prompts(Path(shared))
+            case_specs = self._reject_cases(Path(shared), probe_prompts)
+        self.assertGreaterEqual(len(case_specs), len(PROFILE_REJECT_ERROR_IDS))
+
+        covered = set()
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, expected_id, _rows, _profile in case_specs:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    # Rebuild rows against this temp dir so prompt hashes bind correctly.
+                    rebuilt = {
+                        cid: (eid, rws, prof)
+                        for cid, eid, rws, prof in self._reject_cases(root, prompts)
+                    }
+                    expected_id, rows, task_profile = rebuilt[case_id]
+                    case = self._write_case(root, rows, task_profile=task_profile)
+                    outputs = self._output_paths(root, f"reject{index}")
+
+                    proc = self._run(script, case, outputs)
+
+                    self.assertNotEqual(proc.returncode, 0, f"{case_id} must fail closed")
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn(expected_id, combined, f"{case_id} must report {expected_id}: {combined}")
+                    self._assert_zero_writes(outputs)
+                    self._assert_no_leakage(combined, case)
+                    covered.add(expected_id)
+
+        # Every reject id in the PRD taxonomy that this suite claims to cover is exercised.
+        # The two flag-driven ids cannot be provoked by an evidence row, so each owns a
+        # dedicated CLI test: profile_fresh_output_required (resume/pre-existing CSV) and
+        # profile_replay_required (profiled task on the direct provider path).
+        self.assertEqual(
+            covered,
+            set(PROFILE_REJECT_ERROR_IDS) - {"profile_fresh_output_required", "profile_replay_required"},
+            "fresh-output and replay-required rejections are covered by their own CLI tests",
+        )
+
+    def test_profile_replay_rejects_resume_preexisting_csv_and_partial_selection(self):
+        """v1 profiled replay requires a fresh, empty CSV and a complete batch."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            # --resume is forbidden for a profiled replay.
+            with self.subTest(script=script.name, case="resume"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"resume{index}")
+                proc = self._run(script, case, outputs, extra_args=("--resume",))
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+            # A pre-existing, non-empty CSV is forbidden.
+            with self.subTest(script=script.name, case="preexisting_csv"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"pre{index}")
+                module = load_python_script_module(script, f"_bench_profile_freshcsv_{index}")
+                with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerow({column: "" for column in module.CSV_COLUMNS})
+                before = outputs["csv"].read_bytes()
+
+                proc = self._run(script, case, outputs)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                # The pre-existing CSV must be byte-unchanged, and no other output appears.
+                self.assertEqual(outputs["csv"].read_bytes(), before)
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists())
+                    self.assertFalse(outputs[label].with_name(outputs[label].name + ".lock").exists())
+
+            # A partial variant selection cannot cover the full profiled batch.
+            with self.subTest(script=script.name, case="partial_selection"), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"partial{index}")
+                proc = self._run(script, case, outputs, extra_args=("--variant", self.CANDIDATE))
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_batch_incomplete", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    # ---------- accepted_blocked taxonomy ---------------------------------
+
+    def test_profile_accepted_blocked_cases_replay_and_emit_stable_lane_blockers(self):
+        """Well-formed negative evidence stays reviewable and blocks the lane.
+
+        These must NOT reject: they replay successfully, write outputs, and score
+        the lane ``blocked`` with a deterministic blocker id.
+        """
+        def unverified_fallback(prompts):
+            return self._default_rows(prompts, measured=True, verified_fallback=False)
+
+        def protection_not_deny(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = "allow"
+            return rows
+
+        def protection_review_incomplete(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["review_completed"] = False
+            return rows
+
+        def protection_included_region(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["protected_zone_review"]["included_protected_regions"] = 1
+            return rows
+
+        def missed_context_present(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            controls = rows[1]["evaluation_controls"]
+            controls["missed_context_review"] = {
+                "correction_required": False, "present": True, "review_completed": True,
+                "summary": "packed evidence omitted one qualifying acknowledgement",
+            }
+            return rows
+
+        def missed_context_review_incomplete(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["evaluation_controls"]["missed_context_review"]["review_completed"] = False
+            return rows
+
+        def provider_unmeasured(prompts):
+            # Internally consistent synthetic evidence: unmeasured everywhere.
+            return self._default_rows(prompts, measured=False, verified_fallback=True)
+
+        cases = (
+            ("unverified_fallback", unverified_fallback, "exact_text_fallback_binding"),
+            ("protection_not_deny", protection_not_deny, "protected_zone_deny_review"),
+            ("protection_review_incomplete", protection_review_incomplete, "protected_zone_deny_review"),
+            ("protection_included_region", protection_included_region, "protected_zone_deny_review"),
+            ("missed_context_present", missed_context_present, "missed_context_review"),
+            ("missed_context_incomplete", missed_context_review_incomplete, "missed_context_review"),
+            ("provider_unmeasured", provider_unmeasured, "generic_matched_success_and_measurement"),
+        )
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, build_rows, expected_blocker in cases:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, build_rows(prompts))
+                    outputs = self._output_paths(root, f"blocked{index}")
+
+                    proc = self._run(script, case, outputs)
+                    self.assertEqual(proc.returncode, 0, f"{case_id} must replay, not reject: {proc.stderr}")
+
+                    report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                    lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                    self.assertEqual(lane["status"], "blocked")
+                    self.assertIn(expected_blocker, lane["blocking_gate_ids"])
+                    # Blocked can never be dressed up as authority.
+                    self.assertFalse(lane["public_claim_allowed"])
+                    self.assertFalse(lane["promotion_authority"])
+                    self.assertTrue(lane["evaluation_only"])
+                    self.assertFalse(report["public_claim_eligible"])
+                    self.assertEqual(report["claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS)
+                    self._assert_no_leakage(outputs["report"].read_text(encoding="utf-8"), case)
+
+    def test_secret_shaped_non_deny_policy_is_blocked_and_redacted_not_echoed(self):
+        """Bounded but secret-shaped policy text blocks the lane without ever being echoed."""
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                rows[1]["evaluation_controls"]["protected_zone_review"]["policy"] = secret
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"secret{index}")
+
+                proc = self._run(script, case, outputs)
+                # Within limits -> structurally valid -> accepted_blocked, not a reject.
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report_text = outputs["report"].read_text(encoding="utf-8")
+                dashboard_text = outputs["dashboard"].read_text(encoding="utf-8")
+                lane = json.loads(report_text)["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                self.assertEqual(lane["status"], "blocked")
+                self.assertIn("protected_zone_deny_review", lane["blocking_gate_ids"])
+
+                # Raw policy text never reaches any output surface.
+                for surface in (report_text, dashboard_text, proc.stdout, proc.stderr):
+                    self.assertNotIn(secret, surface)
+                    self.assertNotIn("AKIAIOSFODNN7EXAMPLE", surface)
+
+    # ---------- generic compatibility -------------------------------------
+
+    def test_unprofiled_replay_keeps_existing_schema_and_claim_semantics(self):
+        """Absence of the profile preserves current generic behavior exactly."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = [
+                    self._row(variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=False,
+                              omission=False, profile=None, drop_controls=True),
+                    self._row(variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+                              omission=True, profile=None, drop_controls=True,
+                              input_tokens=400, output_tokens=120, bytes_after=400),
+                ]
+                case = self._write_case(root, rows, task_profile=None)
+                outputs = self._output_paths(root, f"generic{index}")
+
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                # No profile -> no lane block, and the pre-existing statuses are untouched.
+                self.assertNotIn("evaluation_profiles", report)
+                self.assertEqual(report["claim_status"], "replay_only_not_public_claim")
+                self.assertEqual(report["public_claim_status"], "replay_only_not_public_claim")
+                self.assertFalse(report["public_claim_eligible"])
+                self.assertIn("public_claim_readiness", report)
+                dashboard = outputs["dashboard"].read_text(encoding="utf-8")
+                self.assertNotIn("Image-context evaluation", dashboard)
+
+    def test_profiled_dry_run_stays_write_free(self):
+        """--dry-run must not write outputs or locks, profiled or not."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"dry{index}")
+                proc = self._run(script, case, outputs, extra_args=("--dry-run",))
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    # ---------- hostile regressions for the G002 architect blockers --------
+    #
+    # One test per blocking finding in .omx/reports/g002-architect-block-20260714.md.
+    # Each one is an *observable bypass* of an invariant the PRD already promises, so
+    # each must fail on the pre-repair runner and pass afterwards.  Every case runs on
+    # both the kit source and the packaged CLI (BENCH_SCRIPTS).
+
+    def test_profiled_task_rejects_the_direct_provider_path_before_any_invocation(self):
+        """Blocker 1 (CRITICAL): profile opt-in must not be ignorable by dropping --evidence-jsonl.
+
+        Profile validation only ever ran inside the ``--evidence-jsonl`` branch, so a
+        profiled task selected on the normal provider path executed the provider and
+        emitted a generic ``claim_status`` with no ``evaluation_profiles`` block at all.
+        The fixture below is armed to make that bypass observable: a *real*
+        ``success_command`` (so the placeholder guard cannot fire instead) and a *working*
+        provider binary that records its own execution.
+        """
+        real_success_command = "python3 -c \"raise SystemExit(0)\""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for dry_run in (False, True):
+                with self.subTest(script=script.name, dry_run=dry_run), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(
+                        root, self._default_rows(prompts), success_command=real_success_command,
+                    )
+                    outputs = self._output_paths(root, f"direct{index}")
+                    marker = root / "provider-was-invoked"
+                    claude_bin = self._recording_claude(root, marker)
+
+                    proc = self._run(
+                        script, case, outputs, claude_bin=claude_bin,
+                        extra_args=("--dry-run",) if dry_run else (),
+                    )
+
+                    self.assertNotEqual(
+                        proc.returncode, 0,
+                        "a profiled task must never run outside evidence replay",
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("profile_replay_required", combined, combined)
+                    # The provider runtime must be unreachable, not merely unsuccessful.
+                    self.assertFalse(
+                        marker.exists(),
+                        "the provider binary was executed for a profiled task",
+                    )
+                    self._assert_zero_writes(outputs)
+                    self._assert_no_leakage(combined, case)
+
+    def test_unprofiled_direct_run_still_invokes_the_provider_and_writes(self):
+        """The blocker-1 repair must not amputate the ordinary provider path.
+
+        Same fixture, same real success_command, same working provider -- but with no
+        ``evaluation_profile`` declared.  This must still run end to end, or the fix
+        for the profiled bypass has broken every generic benchmark run.
+        """
+        real_success_command = "python3 -c \"raise SystemExit(0)\""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = [
+                    self._row(variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=False,
+                              omission=False, profile=None, drop_controls=True),
+                    self._row(variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=False,
+                              omission=True, profile=None, drop_controls=True),
+                ]
+                case = self._write_case(
+                    root, rows, task_profile=None, success_command=real_success_command,
+                )
+                outputs = self._output_paths(root, f"unprofiled{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertTrue(marker.exists(), "the unprofiled provider path must still invoke the provider")
+                self.assertTrue(outputs["csv"].exists(), "the unprofiled provider path must still write its CSV")
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                self.assertNotIn("evaluation_profiles", report)
+
+    def test_profiled_resume_with_preexisting_csv_rejects_before_creating_a_lock_sidecar(self):
+        """Blocker 5 (HIGH): --resume read keys and took a CSV lock *before* profile preflight.
+
+        The combined hostile input is ``--resume`` **and** a pre-existing non-empty CSV.
+        Rejection must happen before the resume key snapshot, so the CSV stays
+        byte-identical and no ``.lock`` sidecar is ever created.  A lock sidecar left
+        behind is a write, and the profile contract promises zero writes on reject.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"resumepre{index}")
+                module = load_python_script_module(script, f"_bench_profile_resume_lock_{index}")
+
+                with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                    writer.writeheader()
+                    writer.writerow({column: "" for column in module.CSV_COLUMNS})
+                before = outputs["csv"].read_bytes()
+
+                proc = self._run(script, case, outputs, extra_args=("--resume",))
+
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fresh_output_required", proc.stdout + proc.stderr)
+                self.assertEqual(outputs["csv"].read_bytes(), before, "the pre-existing CSV was mutated")
+                csv_lock = outputs["csv"].with_name(outputs["csv"].name + ".lock")
+                self.assertFalse(
+                    csv_lock.exists(),
+                    "a CSV lock sidecar was created before the profile preflight rejected",
+                )
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists())
+                    self.assertFalse(outputs[label].with_name(outputs[label].name + ".lock").exists())
+
+    def test_profiled_replay_aborts_on_locked_freshness_recheck_without_partial_batch(self):
+        """Blocker 5 (HIGH), second half: no single locked batch freshness recheck existed.
+
+        Pure preflight passes against a fresh, absent CSV; then a concurrent writer
+        creates the CSV before the first batch write.  Without a locked freshness
+        recheck the runner happily appends replay rows onto a CSV it never validated,
+        silently mixing profiled and foreign rows.  The recheck must abort the batch
+        with the same stable id and leave the concurrent writer's CSV untouched.
+        """
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                outputs = self._output_paths(root, f"race{index}")
+                module = load_python_script_module(script, f"_bench_profile_freshness_race_{index}")
+
+                real_preflight = module.preflight_evaluation_profiles
+
+                def racing_preflight(*args, **kwargs):
+                    # Pure preflight sees a clean slate and passes...
+                    real_preflight(*args, **kwargs)
+                    # ...and only then does a concurrent writer create the results CSV.
+                    with outputs["csv"].open("w", encoding="utf-8", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                        writer.writeheader()
+                        writer.writerow({column: "" for column in module.CSV_COLUMNS})
+
+                argv = [
+                    str(script),
+                    "--tasks", str(case["tasks"]),
+                    "--variants", str(case["variants"]),
+                    "--evidence-jsonl", str(case["evidence"]),
+                    "--baseline-variant", self.BASELINE,
+                    "--claude-bin", "/definitely/missing/contextguard-claude",
+                    "--csv", str(outputs["csv"]),
+                    "--ledger-jsonl", str(outputs["ledger"]),
+                    "--report-json", str(outputs["report"]),
+                    "--dashboard-md", str(outputs["dashboard"]),
+                ]
+                saved_argv = sys.argv
+                module.preflight_evaluation_profiles = racing_preflight
+                sys.argv = argv
+                try:
+                    with self.assertRaises(SystemExit) as ctx:
+                        module.main()
+                finally:
+                    sys.argv = saved_argv
+                    module.preflight_evaluation_profiles = real_preflight
+
+                self.assertIn("profile_fresh_output_required", str(ctx.exception))
+                # Header + the concurrent writer's single row, and nothing appended after it.
+                surviving = outputs["csv"].read_text(encoding="utf-8").strip().splitlines()
+                self.assertEqual(
+                    len(surviving), 2,
+                    f"a partial profiled batch was appended to the raced CSV: {surviving}",
+                )
+                self.assertFalse(
+                    outputs["csv"].with_name(outputs["csv"].name + ".lock").exists(),
+                    "a rejected raced batch must not leave a CSV lock sidecar",
+                )
+                for label in ("ledger", "report", "dashboard"):
+                    self.assertFalse(outputs[label].exists(), f"{label} was written after a raced CSV")
+
+    def test_profiled_csv_rows_are_one_atomic_batch_against_lock_respecting_writers(self):
+        """Freshness validation and every profiled row share one transaction lock.
+
+        The hostile writer uses the runner's public ``append_csv`` path, so it obeys
+        the same lock protocol as a real concurrent runner.  Triggering it on the
+        first logical row models a writer immediately after the freshness gate;
+        triggering it on the second models a writer between the two profile rows.
+        In both cases it must remain blocked until the complete profile batch lands.
+        """
+        placements = (("after_freshness_gate", 1), ("between_logical_rows", 2))
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for placement, trigger_call in placements:
+                with self.subTest(script=script.name, placement=placement), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, self._default_rows(prompts))
+                    outputs = self._output_paths(root, f"atomic{index}-{placement}")
+                    module = load_python_script_module(
+                        script, f"_bench_profile_atomic_{index}_{placement}",
+                    )
+
+                    real_run_evidence_fixture = module.run_evidence_fixture
+                    call_count = 0
+                    attempted = threading.Event()
+                    completed = threading.Event()
+                    completed_inside_batch = False
+                    writer_errors = []
+                    writer_thread = None
+
+                    def instrumented_run_evidence_fixture(task, variant, evidence):
+                        nonlocal call_count, completed_inside_batch, writer_thread
+                        result = real_run_evidence_fixture(task, variant, evidence)
+                        call_count += 1
+                        if call_count == trigger_call:
+                            foreign_result = module.RunResult(**{
+                                **result.__dict__,
+                                "task_id": "foreign-writer-task",
+                                "variant": "foreign-writer-variant",
+                            })
+
+                            def foreign_writer():
+                                attempted.set()
+                                try:
+                                    module.append_csv(outputs["csv"], "foreign-writer", foreign_result)
+                                except BaseException as exc:  # captured for assertion on the main thread
+                                    writer_errors.append(exc)
+                                finally:
+                                    completed.set()
+
+                            writer_thread = threading.Thread(target=foreign_writer, daemon=True)
+                            writer_thread.start()
+                            self.assertTrue(attempted.wait(1), "foreign writer never attempted its append")
+                            completed_inside_batch = completed.wait(0.15)
+                        return result
+
+                    argv = [
+                        str(script),
+                        "--tasks", str(case["tasks"]),
+                        "--variants", str(case["variants"]),
+                        "--evidence-jsonl", str(case["evidence"]),
+                        "--baseline-variant", self.BASELINE,
+                        "--claude-bin", "/definitely/missing/contextguard-claude",
+                        "--csv", str(outputs["csv"]),
+                        "--ledger-jsonl", str(outputs["ledger"]),
+                        "--report-json", str(outputs["report"]),
+                        "--dashboard-md", str(outputs["dashboard"]),
+                    ]
+                    saved_argv = sys.argv
+                    module.run_evidence_fixture = instrumented_run_evidence_fixture
+                    sys.argv = argv
+                    try:
+                        self.assertEqual(module.main(), 0)
+                    finally:
+                        sys.argv = saved_argv
+                        module.run_evidence_fixture = real_run_evidence_fixture
+                    if writer_thread is not None:
+                        writer_thread.join(2)
+
+                    self.assertEqual(writer_errors, [])
+                    self.assertTrue(completed.is_set(), "foreign writer stayed blocked after the batch completed")
+                    self.assertFalse(completed_inside_batch, placement)
+                    with outputs["csv"].open(newline="", encoding="utf-8") as handle:
+                        task_ids = [row["task_id"] for row in csv.DictReader(handle)]
+                    self.assertEqual(
+                        task_ids[:2], [self.TASK_ID, self.TASK_ID],
+                        f"{placement} split the profiled batch: {task_ids}",
+                    )
+                    self.assertEqual(task_ids[2:], ["foreign-writer-task"])
+
+    def test_profiled_batch_requires_real_baseline_and_candidate_before_writes(self):
+        """A one-variant or ghost-baseline batch cannot pass on empty matched pairs."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id in ("baseline_only", "ghost_baseline"):
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    if case_id == "baseline_only":
+                        rows = [self._row(
+                            variant=self.BASELINE,
+                            prompt_path=prompts[self.BASELINE],
+                            measured=True,
+                            omission=False,
+                        )]
+                    else:
+                        rows = self._default_rows(prompts, measured=True, verified_fallback=False)
+                    case = self._write_case(root, rows)
+                    if case_id == "baseline_only":
+                        case["variants"].write_text(
+                            json.dumps([{"name": self.BASELINE, "extra_args": []}]),
+                            encoding="utf-8",
+                        )
+                        task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                        task["variant_prompt_files"] = {
+                            self.BASELINE: task["variant_prompt_files"][self.BASELINE],
+                        }
+                        case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                    outputs = self._output_paths(root, f"empty-pairs{index}-{case_id}")
+
+                    proc = self._run(
+                        script,
+                        case,
+                        outputs,
+                        baseline_variant=("ghost-profile-baseline" if case_id == "ghost_baseline" else None),
+                    )
+
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn("profile_batch_incomplete", proc.stdout + proc.stderr)
+                    self._assert_zero_writes(outputs)
+
+    def test_profile_fallback_retrieval_command_matches_imported_verifier_projection(self):
+        """The exact outer retrieval command is part of the verifier-bound proof unit."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+                # Outer command deliberately diverges from the bound proof unit.
+                rows[1]["evaluation_controls"]["exact_text_fallback"]["retrieval_command"] = (
+                    "echo unrelated-command-not-in-verifier-record"
+                )
+                case = self._write_case(root, rows)
+                outputs = self._output_paths(root, f"retrieval-mismatch{index}")
+
+                proc = self._run(script, case, outputs)
+
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_fallback_claim_inconsistent", proc.stdout + proc.stderr)
+                self._assert_zero_writes(outputs)
+
+    def test_unsupported_profile_error_redacts_secret_shaped_task_id(self):
+        """Task parsing must sanitize an attacker-controlled id before error output."""
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["evaluation_profile"] = "contextguard.bench.image-context-pack-evaluation.v999"
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"task-id-redaction{index}")
+
+                proc = self._run(script, case, outputs)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertNotIn(secret, combined)
+                self.assertNotIn("AKIAIOSFODNN7EXAMPLE", combined)
+                self.assertNotIn("sk-", combined)
+                self.assertIn("[REDACTED]", combined)
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_unsafe_prompt_path_redacts_secret_id_and_path(self):
+        """G005: supported-profile prompt-path validation must not echo attacker labels.
+
+        A v1 profiled task with a secret-shaped id and an unsafe ``variant_prompt_files``
+        path used to reach the generic path validator, which interpolated the raw task
+        id, variant name, and path into stderr. Both surfaces must reject with a
+        redacted profile owner, never write outputs/sidecars, and never invoke a
+        provider binary.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        unsafe_path = "../../etc/passwd"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["variant_prompt_files"] = {
+                    self.BASELINE: unsafe_path,
+                    self.CANDIDATE: unsafe_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-unsafe-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                # Direct path: proves the leak is in parse/validation, not only replay.
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    secret,
+                    "AKIAIOSFODNN7EXAMPLE",
+                    "sk-",
+                    unsafe_path,
+                    "etc/passwd",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_unknown_prompt_map_key_redacts_secret_id_and_variant(self):
+        """G005: supported-profile unknown prompt-map keys must not echo attacker labels.
+
+        An unknown ``variant_prompt_files`` key is attacker-controlled. The pre-repair
+        path echoed both the secret-shaped task id and the raw mapping key / variant
+        label. Reject must stay fail-closed, redacted, and write-free on both surfaces.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-task"
+        hostile_variant = "attacker-controlled-variant-AKIAIOSFODNN7EXAMPLE"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = secret
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    hostile_variant: "hostile-prompt.md",
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-unknown-key{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    secret,
+                    "AKIAIOSFODNN7EXAMPLE",
+                    "sk-",
+                    hostile_variant,
+                    "attacker-controlled-variant",
+                    "hostile-prompt.md",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_regex_safe_unknown_map_key_is_fully_opaque(self):
+        """G006: regex-safe task id + unknown map key must not appear in diagnostics.
+
+        G005 closed credential-shaped labels; regex-safe identifiers still survived
+        ``redact_profile_label``. Both surfaces must reject with a fully opaque owner
+        and never echo the task id or unknown map key.
+        """
+        hostile_task = "hostile-controlled-task"
+        evil_key = "evil-label"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    evil_key: "hostile-prompt.md",
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-opaque-unknown-key{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (hostile_task, evil_key, "hostile-prompt.md"):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_regex_safe_hostile_variant_unsafe_path_is_fully_opaque(self):
+        """G006: known regex-safe variant + unsafe path must stay fully opaque.
+
+        A supported-profile task whose known variant maps to an unsafe relative path
+        must reject without echoing the task id, variant label, or path on either
+        surface.
+        """
+        hostile_task = "hostile-controlled-task"
+        hostile_variant = "hostile-controlled-variant"
+        unsafe_path = "../../etc/passwd"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                variants = json.loads(case["variants"].read_text(encoding="utf-8"))
+                variants.append({"name": hostile_variant, "extra_args": []})
+                case["variants"].write_text(json.dumps(variants), encoding="utf-8")
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: prompts[self.BASELINE].name,
+                    self.CANDIDATE: prompts[self.CANDIDATE].name,
+                    hostile_variant: unsafe_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-opaque-unsafe-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    hostile_task,
+                    hostile_variant,
+                    unsafe_path,
+                    "etc/passwd",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_missing_task_id_is_stable_schema_reject(self):
+        """G006: supported-v1 task missing id must not raise raw KeyError/traceback."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                del task["id"]
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-missing-id{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in ("Traceback", "KeyError", self.TASK_ID):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_missing_task_prompt_is_stable_schema_reject(self):
+        """G006: supported-v1 task missing prompt must not raise raw KeyError/traceback."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                del task["prompt"]
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-missing-prompt{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_schema_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in ("Traceback", "KeyError", self.TASK_ID):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_embedded_nul_prompt_path_is_stable_binding_reject(self):
+        """G007: supported-v1 replay path with embedded NUL must not traceback.
+
+        JSON can carry ``\\u0000`` in ``variant_prompt_files``. Pre-repair validation
+        accepted it, then ``os.open`` raised ``ValueError`` outside the SystemExit
+        rewrite, so both CLIs leaked a full traceback. Reject must stay stable,
+        opaque, provider-free, and write-free.
+        """
+        hostile_task = "hostile-controlled-task"
+        nul_path = "prompt\x00hostile.md"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: nul_path,
+                    self.CANDIDATE: nul_path,
+                }
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-nul-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    hostile_task,
+                    self.BASELINE,
+                    self.CANDIDATE,
+                    "hostile.md",
+                    "\x00",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_supported_profile_lone_surrogate_prompt_path_is_stable_binding_reject(self):
+        """G007: supported-v1 replay path with a lone surrogate must not traceback.
+
+        A filesystem-encoding-invalid path such as ``\\ud800`` used to pass path
+        validation, then fail inside ``os.open`` as ``UnicodeEncodeError``. Both
+        surfaces must normalize to opaque ``profile_prompt_binding_invalid``.
+        """
+        hostile_task = "hostile-controlled-task"
+        surrogate_path = "prompt\ud800hostile.md"
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts))
+                task = json.loads(case["tasks"].read_text(encoding="utf-8"))[0]
+                task["id"] = hostile_task
+                task["variant_prompt_files"] = {
+                    self.BASELINE: surrogate_path,
+                    self.CANDIDATE: surrogate_path,
+                }
+                # Default ensure_ascii escapes the lone surrogate so the tasks file
+                # stays UTF-8; json.loads restores the filesystem-invalid code unit.
+                case["tasks"].write_text(json.dumps([task]), encoding="utf-8")
+                outputs = self._output_paths(root, f"profile-surrogate-path{index}")
+                marker = root / "provider-was-invoked"
+                claude_bin = self._recording_claude(root, marker)
+
+                proc = self._run(script, case, outputs, claude_bin=claude_bin)
+
+                combined = proc.stdout + proc.stderr
+                self.assertNotEqual(proc.returncode, 0, combined)
+                self.assertIn("profile_prompt_binding_invalid", combined)
+                self.assertIn("[REDACTED]", combined)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    hostile_task,
+                    self.BASELINE,
+                    self.CANDIDATE,
+                    "hostile.md",
+                    "\ud800",
+                ):
+                    self.assertNotIn(forbidden, combined, f"leaked {forbidden!r}")
+                self.assertFalse(marker.exists(), "provider binary must not run on reject")
+                self._assert_zero_writes(outputs)
+
+    def test_profile_prompt_path_boundary_normalizes_nul_and_surrogate(self):
+        """Unit-level: path validation + profile hash boundary reject encoding-invalid paths."""
+        module = load_module_from_path(
+            KIT_DIR / "benchmark_runner.py",
+            "_bench_runner_g007_path_boundary",
+        )
+        owner = module.profile_owner("hostile-controlled-task", "hostile-controlled-variant")
+        for bad_path in ("prompt\x00hostile.md", "prompt\ud800hostile.md"):
+            with self.subTest(path_kind=repr(bad_path)):
+                with self.assertRaises(SystemExit) as raised:
+                    module.validate_variant_prompt_file_path(bad_path, owner=owner)
+                message = str(raised.exception)
+                self.assertIn("variant_prompt_files path", message)
+                self.assertNotIn("Traceback", message)
+                self.assertNotIn("\x00", message)
+                self.assertNotIn("\ud800", message)
+                self.assertNotIn("hostile.md", message)
+
+                task = module.TaskFixture(
+                    id="hostile-controlled-task",
+                    prompt="sanitized",
+                    model="sonnet",
+                    effort="medium",
+                    max_turns=1,
+                    allowed_tools=[],
+                    success_command="true",
+                    success_cwd=".",
+                    variant_prompt_files={"hostile-controlled-variant": bad_path},
+                    evaluation_profile=IMAGE_CONTEXT_EVALUATION_PROFILE_ID,
+                )
+                with self.assertRaises(SystemExit) as profile_raised:
+                    module.profile_variant_prompt_sha256(
+                        task,
+                        "hostile-controlled-variant",
+                        task_file_dir=Path("."),
+                        owner=owner,
+                    )
+                profile_message = str(profile_raised.exception)
+                self.assertIn("profile_prompt_binding_invalid", profile_message)
+                self.assertIn("[REDACTED]", profile_message)
+                for forbidden in (
+                    "Traceback",
+                    "ValueError",
+                    "UnicodeError",
+                    "UnicodeEncodeError",
+                    "hostile-controlled-task",
+                    "hostile-controlled-variant",
+                    "hostile.md",
+                    "\x00",
+                    "\ud800",
+                ):
+                    self.assertNotIn(forbidden, profile_message, f"leaked {forbidden!r}")
+
+    def test_generic_quality_gate_regression_blocks_lane_readiness(self):
+        """Blocker 3 (HIGH): lane readiness hard-coded correction consistency to True.
+
+        The lane never read the generic quality verdict, so a profiled batch whose every
+        lane control is clean could reach ``ready_for_bounded_pilot_review`` while the
+        generic matched-pair gate reported ``corrections_regression``.  The invariant is
+        broader than any single gate name: a non-``pass`` generic quality gate must always
+        block the lane, whichever gate fired.
+        """
+        def corrections_regression(prompts):
+            # Every lane control is deliberately clean: verified fallback, deny review,
+            # completed missed-context review, measured provider and shifted cost.  The
+            # *only* defect is that the candidate needed two human corrections.
+            return [
+                self._row(
+                    variant=self.BASELINE, prompt_path=prompts[self.BASELINE], measured=True,
+                    omission=False, corrections=0, correction_reason="none", missed_present=False,
+                ),
+                self._row(
+                    variant=self.CANDIDATE, prompt_path=prompts[self.CANDIDATE], measured=True,
+                    omission=True, verified_fallback=True, corrections=2,
+                    correction_reason="reviewer twice restored the omitted acknowledgement context",
+                    missed_present=False, input_tokens=400, output_tokens=120, cost_usd=0.02,
+                    bytes_before=1000, bytes_after=400,
+                ),
+            ]
+
+        def candidate_failure(prompts):
+            rows = self._default_rows(prompts, measured=True, verified_fallback=True)
+            rows[1]["success"] = False
+            return rows
+
+        cases = (
+            ("corrections_regression", corrections_regression, "corrections_regression"),
+            # A failed candidate cannot reach failure_rate_regression in a one-task v1
+            # batch (insufficient_success precedes it), so only the invariant is asserted.
+            ("candidate_failure", candidate_failure, None),
+        )
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, build_rows, expected_blocker in cases:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    case = self._write_case(root, build_rows(prompts))
+                    outputs = self._output_paths(root, f"quality{index}")
+
+                    proc = self._run(script, case, outputs)
+                    # Well-formed negative evidence stays replayable: block, never reject.
+                    self.assertEqual(proc.returncode, 0, f"{case_id} must replay, not reject: {proc.stderr}")
+
+                    report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                    lane = report["evaluation_profiles"][IMAGE_CONTEXT_PROFILE_REPORT_KEY]
+                    quality_gate = report["comparisons"][0]["quality_gate"]
+
+                    self.assertNotEqual(quality_gate, "pass", f"{case_id} must trip a generic quality gate")
+                    if expected_blocker is not None:
+                        self.assertEqual(quality_gate, expected_blocker)
+                        self.assertIn(expected_blocker, lane["blocking_gate_ids"])
+                    # The invariant behind the blocker, independent of which gate fired.
+                    self.assertEqual(
+                        lane["status"], "blocked",
+                        f"lane reached {lane['status']} while the generic quality gate was {quality_gate}",
+                    )
+                    self.assertNotEqual(lane["status"], "ready_for_bounded_pilot_review")
+                    self.assertFalse(lane["public_claim_allowed"])
+                    self.assertFalse(lane["promotion_authority"])
+                    self.assertFalse(report["public_claim_eligible"])
+
+    def test_nested_replay_authority_is_clamped_in_every_report_surface(self):
+        """Blocker 4 (HIGH): nested replay_evidence claim authority stayed unclamped.
+
+        The clamp rewrote the top-level claim surfaces but not
+        ``replay_evidence.public_claim_status`` / ``public_claim_eligible``, so the
+        strongest profiled fixture still shipped a nested
+        ``provider_export_public_claim_candidate`` / ``true`` pair in the report JSON.
+        No authority-bearing key may survive anywhere in the document.
+        """
+        authority_false_keys = {
+            "public_claim_eligible",
+            "public_claim_allowed",
+            "promotion_authority",
+            "claim_allowed",
+            "report_claim_gates_allow_public_claim",
+            "token_savings_claim_allowed",
+            "shifted_cost_claim_allowed",
+            "hosted_api_token_savings_claim_allowed",
+            "hosted_api_cost_savings_claim_allowed",
+            "quality_non_inferiority_claim_allowed",
+        }
+
+        def walk(node, path="$"):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield path, key, value
+                    yield from walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for position, value in enumerate(node):
+                    yield from walk(value, f"{path}[{position}]")
+
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                # The strongest possible evidence: fully measured provider export with a
+                # verified fallback.  Pre-clamp this is a public-claim candidate.
+                case = self._write_case(root, self._default_rows(prompts, measured=True, verified_fallback=True))
+                outputs = self._output_paths(root, f"nested{index}")
+
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                report_text = outputs["report"].read_text(encoding="utf-8")
+                report = json.loads(report_text)
+                replay_evidence = report["replay_evidence"]
+
+                self.assertEqual(
+                    replay_evidence["public_claim_status"], IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS
+                )
+                self.assertFalse(replay_evidence["public_claim_eligible"])
+                self.assertFalse(replay_evidence["report_claim_gates_allow_public_claim"])
+
+                # Nothing anywhere in the document may still read as public-claim authority.
+                self.assertNotIn("provider_export_public_claim_candidate", report_text)
+                for path, key, value in walk(report):
+                    if key in authority_false_keys:
+                        self.assertIs(
+                            value, False,
+                            f"{path}.{key} grants authority for a profiled run: {value!r}",
+                        )
+                    if key == "public_claim_status":
+                        self.assertEqual(
+                            value, IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                            f"{path}.{key} is not clamped",
+                        )
+
+    def test_profile_schema_errors_fully_redact_secret_shaped_unknown_keys(self):
+        """Blocker 7 (MEDIUM): unknown *key names* are attacker-controlled and were echoed raw.
+
+        ``profile_reject`` interpolates ``', '.join(unknown)`` straight into stderr, so a
+        key named after a credential leaks it.  Partial redaction is not enough: the
+        generic secret patterns rewrite the ``AKIA...`` body but leave the ``sk-live-``
+        prefix standing, which is still a credential shape.  The whole offending key must
+        collapse to the redaction placeholder while the stable id survives.
+        """
+        secret = "sk-live-AKIAIOSFODNN7EXAMPLE-not-a-real-key"
+        placements = (
+            ("top_level_block", lambda controls: controls.__setitem__(secret, True)),
+            ("nested_block", lambda controls: controls["protected_zone_review"].__setitem__(secret, True)),
+        )
+        for index, script in enumerate(BENCH_SCRIPTS):
+            for case_id, place in placements:
+                with self.subTest(script=script.name, case=case_id), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    prompts = self._write_prompts(root)
+                    rows = self._default_rows(prompts)
+                    place(rows[1]["evaluation_controls"])
+                    case = self._write_case(root, rows)
+                    outputs = self._output_paths(root, f"redact{index}")
+
+                    proc = self._run(script, case, outputs)
+
+                    self.assertNotEqual(proc.returncode, 0)
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("profile_schema_invalid", combined)
+                    # No fragment of the credential-shaped key may survive.
+                    self.assertNotIn(secret, combined)
+                    self.assertNotIn("AKIAIOSFODNN7EXAMPLE", combined)
+                    self.assertNotIn("sk-", combined)
+                    self.assertIn("[REDACTED]", combined)
+                    self._assert_zero_writes(outputs)
+
+    # ---------- determinism + source/package parity -----------------------
+
+    def test_profiled_replay_outputs_are_identical_across_source_and_package(self):
+        """Kit and packaged CLI must agree byte-for-byte on a profiled replay."""
+        rendered = []
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prompts = self._write_prompts(root)
+                case = self._write_case(root, self._default_rows(prompts, measured=True, verified_fallback=True))
+                outputs = self._output_paths(root, "parity")
+                proc = self._run(script, case, outputs)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                with outputs["csv"].open(newline="", encoding="utf-8") as handle:
+                    csv_rows = [
+                        {key: value for key, value in row.items() if key != "date"}
+                        for row in csv.DictReader(handle)
+                    ]
+                report = json.loads(outputs["report"].read_text(encoding="utf-8"))
+                rendered.append((csv_rows, report, outputs["dashboard"].read_text(encoding="utf-8")))
+
+        self.assertEqual(rendered[0][0], rendered[1][0])
+        self.assertEqual(rendered[0][1], rendered[1][1])
+        self.assertEqual(rendered[0][2], rendered[1][2])
+
+    def test_profile_gate_and_error_id_ordering_is_deterministic_in_both_copies(self):
+        """Stable, identically ordered lane/error id constants in source and package."""
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script.name):
+                module = load_python_script_module(script, f"_bench_profile_constants_{index}")
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_EVALUATION_PROFILE_ID, IMAGE_CONTEXT_EVALUATION_PROFILE_ID
+                )
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_READINESS_SCHEMA_VERSION, IMAGE_CONTEXT_READINESS_SCHEMA_VERSION
+                )
+                self.assertEqual(
+                    module.IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                    IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS,
+                )
+                self.assertEqual(tuple(module.PROFILE_REJECT_ERROR_IDS), PROFILE_REJECT_ERROR_IDS)
+                self.assertEqual(tuple(module.IMAGE_CONTEXT_GATE_IDS), IMAGE_CONTEXT_GATE_IDS)
+
 
 if __name__ == "__main__":
     unittest.main()

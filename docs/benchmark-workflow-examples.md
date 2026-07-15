@@ -28,11 +28,27 @@ Use them to decide what evidence a workflow has and what it does **not** prove:
 5. Keep self-hosted local/model-server latency, memory, and quality metrics in the run-evidence ledger sidecar; do not fold them into hosted API token/cost savings claims unless provider-measured matched-task evidence separately supports that claim.
 6. For deterministic local replay, add `--evidence-jsonl ... --dashboard-md ...`. Synthetic/manual replay evidence regenerates CSV/report/dashboard artifacts, but the report is marked `replay_only_not_public_claim` or `unknown_mixed_csv` unless every report row has complete provider-export provenance. Public hosted savings claims must additionally have `public_claim_readiness.claim_allowed=true`, which requires matched successful tasks, provider-measured token/cost, quality non-inferiority, shifted-cost accounting, explicit confidence/failure notes, and complete provider-export provenance.
 
+## Reading a profiled image-context report
+
+If a task opts into `evaluation_profile: "contextguard.bench.image-context-pack-evaluation.v1"`, the report gains an additive `evaluation_profiles.image_context_pack` block and the dashboard gains a compact "Image-context evaluation" section. Read them as review evidence, never as authority:
+
+- `status` is either `blocked` or `ready_for_bounded_pilot_review`. There is no third, better value. `ready_for_bounded_pilot_review` means the imported evidence was complete and self-consistent enough for a bounded human pilot review — it is **not** promotion, runtime authority, quality proof, or a hosted API token/cost savings claim.
+- `blocking_gate_ids` names what to fix. The lane emits exactly these stable IDs, in report/dashboard order: `profile_and_prompt_binding`, `protected_zone_deny_review`, `exact_text_fallback_binding`, `missed_context_review`, `human_correction_consistency`, `generic_matched_success_and_measurement`, and `evaluation_only_promotion_boundary`. Do not confuse this lane-scoped field with the top-level `public_claim_readiness.blocking_gate_ids`, which is a different set and is where `shifted_cost_accounting` appears.
+- `evidence_levels` keeps modalities separate on purpose. `provider_measurement` (measured/unmeasured), `fallback_binding` (`imported_local_verifier_attestation`/missing/failed), `protected_zone` (review_attested/missing/failed), and `missed_context` (reviewed/missing) answer different questions; do not collapse them into one verdict. An `imported_local_verifier_attestation` proves local receipt/hash/command binding only — the runner does not authenticate who produced the record or reread the artifact.
+- `sample_adequacy` reports matched counts with `policy_status: not_defined_for_promotion`. It never grants readiness, and no sample-size threshold is defined yet.
+- Every public-authority field is clamped whenever a profile is present: `evaluation_only=true`, `promotion_authority=false`, `public_claim_allowed=false`, `public_claim_eligible=false`, `public_claim_readiness.claim_allowed=false`, profiled matched-pair claim flags false, and both `public_claim_status` and legacy `claim_status` set to `image_context_pack_evaluation_only_not_public_claim`. If you see a measured delta on a profiled report, it lives in `raw_metric_claim_status` and other explicitly metric-only fields; it is an observation, not a claim you may publish.
+
+The profile validates only the evidence you import. Provider runs, images, credentials, and corpus selection remain operator-owned, and the runner performs no rendering, OCR, provider call, network access, proxying, automatic omission, or runtime replacement to produce this block.
+
 ## Safe wording
 
 Use language like:
 
 > In this matched successful task set, primary token telemetry was observed for both variants and the report shows `token_savings_pct` for the optimized variant. Byte reductions and provider-cache fields are diagnostic context, not independent savings proof.
+
+For a profiled image-context report, use language like:
+
+> This profiled replay reached `ready_for_bounded_pilot_review`: the imported prompt binding, fallback attestation, protected-zone review, and missed-context review were complete and self-consistent. That authorizes a bounded human pilot review only. It is not promotion, not runtime authority, not quality proof, and not a hosted API token/cost savings claim.
 
 Avoid language like:
 

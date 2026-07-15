@@ -35,6 +35,48 @@ The included token-savings evidence file is deliberately `synthetic_fixture` pro
 
 This runner-native swap only proves command shape and prompt selection until the user supplies real sanitized tasks, success checks, and provider telemetry. It does **not** make dry-run output, artifact receipts, byte counts, or digest metadata into token/cost savings evidence. For real non-dry-run output-transform experiments, keep task IDs matched across baseline and digest variants and require provider-measured primary token/cost fields on matched successful tasks before making any comparison claim.
 
+## Optional image-context evaluation profile
+
+`context-guard-bench` supports an optional, versioned evaluation profile for image-context-pack replays. A task opts in with `"evaluation_profile": "contextguard.bench.image-context-pack-evaluation.v1"`, and every evidence row for that task repeats the same value plus an `evaluation_controls` block. Absence means today's generic behavior: a fixture, report, or workflow that does not opt in acquires no new required field and no changed claim decision.
+
+The profile is **evaluation-only**. It makes imported image-context evidence machine-reviewable; it adds no image renderer, OCR engine, image parser, provider client or SDK, credential handling, network access, proxy, daemon, subprocess transformer, automatic context omission, replacement runtime, or hosted savings claim. **Operators own the real work**: provider runs, images, credentials, and corpus selection stay with you. The runner only validates the evidence you import, and only against local, bounded checks.
+
+`evaluation_controls` carries bounded, typed fields:
+
+- `prompt_evidence` — SHA-256 of the selected variant prompt file plus a sanitized source label. The runner recomputes the hash with the existing no-follow bounded reader and compares it.
+- `source_omission` — whether any source text was omitted or transformed for this variant.
+- `exact_text_fallback` — receipt ID, content SHA-256, exact local retrieval command, and a bounded projection of one imported proof-verifier result. Required when `source_omission.present=true`. The runner labels this `imported_local_verifier_attestation`: it checks that the record is internally consistent and binds the same receipt/hash/command, but it does **not** authenticate who produced the record and does **not** reread the artifact.
+- `protected_zone_review` — `deny` policy, explicit review completion, zero included protected or prompt-like regions, reviewer/source label, and a review note. This is a human/tool attestation, not semantic proof.
+- `missed_context_review` — completion flag, presence flag, bounded summary, and correction-required flag.
+- `human_correction` — count and bounded reason; the count must equal the existing top-level `corrections` field.
+- `provider_usage` and `shifted_cost` — measurement flags that must agree with the generic normalized fields. Lane metadata can never upgrade an unmeasured value into a measured one.
+- `control_provenance` — bounded local verifier/review identifiers, kept separate from provider-export provenance.
+
+Every string, array, and nested block is bounded, and unknown keys are rejected for v1 so a typo cannot become a false pass. Schema evolution requires a new profile version.
+
+### Rejected before write versus accepted and blocked
+
+Evidence that cannot be interpreted safely or unambiguously is **rejected before anything is written** — no CSV, ledger, report, dashboard, or lock sidecar is created. Evidence that is well-formed but negative is **accepted and scored as blocked**, so a reviewer can still read why it failed.
+
+| Evidence condition | Outcome |
+| --- | --- |
+| Missing control block; wrong type, oversize, unknown v1 key or version; task/row profile mismatch; duplicate, mixed, or partial profile batch | rejected before write |
+| `--resume`, or a pre-existing non-empty CSV, for a profiled replay | rejected before write |
+| Missing or unsafe prompt mapping, or a prompt SHA mismatch | rejected before write |
+| Correction counts or measurement flags that contradict the generic fields | rejected before write |
+| A fallback record that claims verification while its own schema, status, blockers, replacement, receipt, hash, or command fields contradict that claim | rejected before write |
+| Explicitly unverified or failed fallback; non-`deny`, incomplete, or unknown protected-zone review; reported missed context; explicitly unmeasured provider or shifted cost; correction-burden or failure-rate regression | accepted, lane blocked |
+
+Errors are bounded and redacted: raw prompts, prompt paths, artifact directories, receipt contents, and secret-shaped values are never echoed. In v1 a profiled replay requires a fresh empty CSV and a complete baseline/candidate batch. Incremental replay is deliberately given up so profile context cannot silently vanish from a resumed or pre-existing report.
+
+### Status ceiling
+
+A profiled report exposes `evaluation_profiles.image_context_pack` with `status: blocked` or `status: ready_for_bounded_pilot_review`.
+
+**`ready_for_bounded_pilot_review` is the ceiling, and it is not an achievement.** It is not promotion, not runtime authority, not quality proof, and not a hosted API token/cost savings claim. It means only that the imported evidence was complete and internally consistent enough to justify a bounded human pilot review.
+
+For any profiled report the runner clamps every public-authority surface: `evaluation_only=true`, `promotion_authority=false`, `public_claim_allowed=false`, top-level `public_claim_eligible=false`, `public_claim_status` and legacy `claim_status` set to the stable non-candidate value `image_context_pack_evaluation_only_not_public_claim`, generic `public_claim_readiness.claim_allowed=false`, and profiled matched-pair `token_savings_claim_allowed` and `shifted_cost_claim_allowed` false. Pre-clamp measurements survive only in explicitly non-authoritative fields such as `raw_metric_claim_status`. The report also carries a `sample_adequacy` observation with matched counts and `policy_status: not_defined_for_promotion`: this feature defines no sample-size or promotion threshold, and a future consensus decision must.
+
 ## Included fixture sets
 
 | Fixture set | Task file | Variant file | Evidence replay file | Intended future experiment |
@@ -50,6 +92,8 @@ This runner-native swap only proves command shape and prompt selection until the
 The image-context-pack fixture is a deterministic replay over one task and two variants. The baseline supplies full sanitized textual evidence. The packed variant explicitly records that qualifying context was omitted at first, then records one **synthetic human correction** and retains the missed-context disclosure. Its full-text fallback is narrative/shape only and remains `verified=false`; the fixture does not retrieve an artifact or prove that the initial pack was complete.
 
 Both rows are plan-only, use protected-zone deny, and describe byte counts only as sanitized textual UTF-8 proxies—not image bytes or provider tokens. The fixture performs no renderer, OCR, image-parser, provider, model, network, or subprocess call; ships no replacement or runtime; and makes no hosted claim. A successful synthetic replay after one correction does not establish quality non-inferiority, token savings, or cost savings.
+
+The fixture opts into the image-context evaluation profile described above, so its known-negative evidence exercises the blocked path rather than the rejection path: the unverified fallback (`verified=false`) and the one recorded correction produce an explicitly **blocked** lane score with stable blocker IDs, not a parse failure and not a claim. It is a worked example of what negative-but-reviewable evidence looks like. Because it is provider-unmeasured synthetic evidence, it cannot reach `ready_for_bounded_pilot_review` no matter how its nested metadata is written.
 
 ## Visual/OCR fixture notes
 

@@ -140,6 +140,37 @@ re-expand CLI가 모두 검증된 경우에만 digest 변형으로 기록한다.
 재확장 가능성/프록시 증거이지 hosted API token/cost 절감 증거가 아니며, provider-measured
 primary token/cost와 matched successful task가 없으면 절감 claim을 만들지 않는다.
 
-## 7. Experimental radar 연계
+## 7. Image-context 평가 프로파일 (evaluation-only)
 
-`experimental-token-reduction-radar.md`의 learned, multimodal, self-hosted lane은 이 문서의 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting 원칙을 통과하기 전까지 hosted API token/cost 절감 주장으로 승격하지 않는다.
+`context-guard-bench`는 image-context-pack replay용 optional/versioned 평가 프로파일을 지원한다. task가
+`"evaluation_profile": "contextguard.bench.image-context-pack-evaluation.v1"`로 opt-in하고, 해당 task의 모든 evidence row가
+같은 값과 `evaluation_controls` 블록을 반복한다. 선언하지 않으면 기존 generic 동작이 그대로 유지되며, 새로 요구되는 필드는 없다.
+
+이 프로파일은 **평가 전용(evaluation-only)** 이다. imported evidence를 기계적으로 검토 가능하게 만들 뿐, renderer, OCR,
+image parser, provider client/SDK, credential 처리, network 접근, proxy, daemon, subprocess transformer, 자동 context 생략,
+replacement runtime을 추가하지 않는다. **실제 provider run, 이미지, credential, corpus 선정은 operator 소유**이며,
+runner는 operator가 import한 evidence만 로컬에서 검증한다.
+
+판정 규칙:
+
+- 구조적으로 해석 불가능한 evidence(필수 블록 누락, 타입/크기 위반, unknown key/version, task/row 프로파일 불일치,
+  중복·혼합·부분 batch, prompt SHA 불일치, correction/measurement 모순, 검증을 주장하지만 자기 필드와 모순되는 fallback record,
+  `--resume` 또는 비어 있지 않은 기존 CSV)는 **어떤 출력도 쓰기 전에 거부**한다. CSV/ledger/report/dashboard/lock sidecar가 생성되지 않는다.
+- 형식이 올바른 negative evidence(명시적 미검증·실패 fallback, `deny`가 아니거나 불완전한 protected-zone review, 보고된 missed context,
+  명시적으로 unmeasured인 provider/shifted cost, correction burden 또는 failure-rate 회귀)는 **수용하되 blocked lane score**로 보고한다.
+
+상태 상한은 `ready_for_bounded_pilot_review`이며, 이는 **승격도, runtime 권한도, 품질 증명도, hosted API token/cost 절감 주장도 아니다.**
+bounded human pilot review를 정당화할 만큼 imported evidence가 완전하고 자기모순이 없다는 뜻일 뿐이다. 프로파일이 포함된 report는
+`evaluation_only=true`, `promotion_authority=false`, `public_claim_allowed=false`, `public_claim_eligible=false`,
+`public_claim_readiness.claim_allowed=false`, profiled matched-pair claim flag false로 clamp되고, `public_claim_status`와 legacy
+`claim_status`는 `image_context_pack_evaluation_only_not_public_claim` 값으로 고정된다. clamp 이전 측정치는 `raw_metric_claim_status`
+같은 명시적 비권위 필드에만 남는다.
+
+`imported_local_verifier_attestation`은 local receipt/hash/command binding만 확인한다. 누가 그 record를 만들었는지 인증하지 않고
+artifact를 다시 읽지도 않으므로, semantic safety·protected-zone 정확성·이미지 충실도·task 품질·hosted 절감의 증거가 아니다.
+`sample_adequacy`는 matched count와 `policy_status: not_defined_for_promotion`만 보고하며, 승격 임계값을 정의하지 않는다.
+sample size/promotion 정책은 별도 consensus 결정이 필요하다.
+
+## 8. Experimental radar 연계
+
+`experimental-token-reduction-radar.md`의 learned, multimodal, self-hosted lane은 이 문서의 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting 원칙을 통과하기 전까지 hosted API token/cost 절감 주장으로 승격하지 않는다. image-context 평가 프로파일이 `ready_for_bounded_pilot_review`에 도달하더라도 이 승격 게이트는 그대로 유지된다.

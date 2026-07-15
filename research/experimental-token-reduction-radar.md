@@ -71,6 +71,8 @@ Future PR checklist:
 
 The gate requires explicit evaluation intent, exact text artifact fallback before any omitted text is relied on, protected-zone denial for code, diffs, identifiers, hashes, paths, numeric constants, JSON keys, stack frames, secrets, and prompt-like instructions, missed-context guardrails, and provider-measured matched successful tasks before any hosted savings claim. `visual-crop-ocr` remains the existing caller-supplied visual evidence-pack surface; its visual handles are not a verified exact binary/image fallback, and `image-context-pack` is not a duplicate visual evidence emitter.
 
+The companion evaluation surface is the optional `context-guard-bench` profile `contextguard.bench.image-context-pack-evaluation.v1`, documented in [`../docs/experimental-benchmark-fixtures.md`](../docs/experimental-benchmark-fixtures.md). A task opts in explicitly; unprofiled runs are unchanged. The profile validates **imported** evidence only — prompt SHA binding, a bounded `imported_local_verifier_attestation` projection, protected-zone deny review, missed-context review, correction consistency, and agreement with the generic provider/shifted-cost measurement flags — and it too renders nothing, runs no OCR, calls no provider, opens no network connection, proxies nothing, omits nothing automatically, and ships no runtime. Provider runs, images, credentials, and corpus selection stay operator-owned. Structurally unusable evidence is rejected before any output is written; well-formed negative evidence is accepted and scored as an explicitly blocked lane so it stays reviewable. Its status ceiling is `ready_for_bounded_pilot_review`, which is **not** promotion, runtime authority, quality proof, or a hosted API token/cost savings claim; every public-authority field on a profiled report is clamped to a non-candidate, evaluation-only value.
+
 Future PR checklist:
 - [ ] Keep the lane plan-only and default off until a separate future runtime plan is approved.
 - [ ] Require verified exact text fallback before any future image/context pack can replace omitted text.
@@ -190,6 +192,8 @@ Candidate methods include screenshot cropping before upload, local OCR to replac
 
 Recommended first experiments: keep `image-context-pack` as plan-only metadata until exact text fallback verification and provider-measured matched-task fields exist; separately add benchmark fixtures comparing full screenshot review versus cropped/OCR evidence on tasks with known visual answers.
 
+Imported evidence from such an experiment can now be reviewed with the optional `contextguard.bench.image-context-pack-evaluation.v1` benchmark profile, which checks prompt binding, fallback attestation, protected-zone denial, missed-context review, correction consistency, and measurement agreement. Reaching its `ready_for_bounded_pilot_review` ceiling authorizes a bounded human pilot review only; it does not satisfy this lane's promotion gate, does not grant runtime authority, and does not license a hosted API token/cost savings claim.
+
 ## Lane 3 — Self-hosted KV-cache, attention, and latent inference optimizations
 
 Candidate methods include PyramidKV, ChunkKV, FastKV, RocketKV, KV quantization, attention sparsity, latent/gist memory, and model-server prefix/KV reuse. These are relevant when ContextGuard supports or documents self-hosted local inference stacks.
@@ -218,6 +222,8 @@ First local runtime experiment: `context-guard experiments record self-hosted-me
 The package-visible image-context-pack benchmark fixture adds one deterministic matched task with a full sanitized textual baseline and a synthetic packed textual variant. The packed row admits that one qualifying context item was omitted initially, records one synthetic human correction, and keeps the missed-context disclosure plus an unverified full-text fallback narrative (`verified=false`). It does not treat successful completion after correction as proof that the initial pack was complete or quality-non-inferior.
 
 The two replay rows label byte counts as sanitized textual UTF-8 proxies only, never image bytes or provider tokens. They use synthetic fixture provenance, unmeasured provider and shifted-cost fields, and explicit claim denial. No renderer/OCR/image-parser/provider/model/network/subprocess call, artifact read, replacement, or runtime is introduced; no hosted token/cost claim is allowed. Future promotion still requires verified exact fallback, protected-zone denial, matched successful provider measurements, correction and failure-rate guardrails, and shifted-cost accounting.
+
+The fixture opts into the optional evaluation profile, so its unverified fallback and single correction are scored as an explicitly **blocked** lane with stable blocker IDs rather than failing to parse or drifting into a claim. It is the worked example of negative-but-reviewable evidence. Being provider-unmeasured synthetic evidence, it cannot reach `ready_for_bounded_pilot_review` regardless of what its nested metadata asserts — and that ceiling would itself be only a bounded review authorization, not promotion, runtime authority, quality proof, or a savings claim.
 
 ### Experimental semantic-GC plan gate
 
