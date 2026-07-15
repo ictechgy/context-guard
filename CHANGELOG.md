@@ -4,6 +4,13 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-07-15
+
+- Added conservative plan-only and evaluation-only proof-carrying-context, semantic-GC, and image-context-pack surfaces without enabling automatic omission, renderer/OCR/provider/proxy execution, promotion authority, or hosted savings claims.
+- Added deterministic matched image-context benchmark fixtures and the optional `contextguard.bench.image-context-pack-evaluation.v1` profile with prompt binding, imported fallback attestation, protected-zone review, missed-context/correction checks, provider/shifted-cost agreement, prewrite rejection, and authority clamps.
+- Added local proof verification, content-addressed pack and rolling-delta metadata, an opt-in sketch duplicate veto, local stdio MCP compress/retrieve/stats middleware, and bounded caller-supplied static relevance evidence.
+- Expanded hostile-input, concurrency, source/package parity, release-smoke, and cross-platform regression coverage while preserving default-off, local-first, no-new-dependency behavior.
+
 ## [0.4.14] - 2026-07-10
 
 - Added the default-off `semantic-checkpoint` experimental planning gate with deterministic readiness payloads, explicit scope/metric/rollback validation, prompt-cache caveats, and hosted-savings claim boundaries.
