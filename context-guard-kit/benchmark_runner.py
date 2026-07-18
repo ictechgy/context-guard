@@ -92,6 +92,7 @@ CSV_COLUMNS = [
     "provider_cached_tokens_measured",
     "cost_usd",
     "cost_measured",
+    "primary_cost_provenance",
     "wall_time_seconds",
     "turns",
     "hook_triggers",
@@ -164,6 +165,9 @@ PROVIDER_CACHE_DETAIL_KEYS = (
 )
 PROVIDER_CACHED_TOKEN_KEYS = ("cached_tokens", "cachedTokens")
 COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
+PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE = "client_estimate"
+PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT = "provider_export"
+PRIMARY_COST_PROVENANCE_UNAVAILABLE = "unavailable"
 SHIFT_METRIC_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("turns", ("turns", "num_turns", "total_turns")),
     ("hook_triggers", ("hook_triggers", "hookTriggerCount", "hook_trigger_count")),
@@ -188,7 +192,7 @@ MAX_EVIDENCE_JSONL_LINES = 100_000
 TOKEN_PROXY_BYTES_PER_TOKEN = 4
 BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
 MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
-MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v1"
+MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v2"
 DEFAULT_MATRIX_SCHEMA_VERSION = "contextguard.bench.default-matrix.v1"
 PUBLIC_CLAIM_READINESS_SCHEMA_VERSION = "contextguard.bench.public-claim-readiness.v1"
 SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
@@ -660,6 +664,7 @@ class RunResult:
     notes: str
     corrections: int = 0
     cost_measured: bool = False
+    primary_cost_provenance: str = PRIMARY_COST_PROVENANCE_UNAVAILABLE
     wall_time_seconds: float = 0.0
     turns: int = 0
     hook_triggers: int = 0
@@ -674,6 +679,23 @@ class RunResult:
     provider_cached_tokens_measured: bool = False
     primary_tokens_measured: bool = False
     self_hosted_metrics: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        self.validate_primary_cost_contract()
+
+    def validate_primary_cost_contract(self) -> None:
+        allowed = {
+            PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE,
+            PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
+            PRIMARY_COST_PROVENANCE_UNAVAILABLE,
+        }
+        if self.primary_cost_provenance not in allowed:
+            raise ValueError(f"invalid primary_cost_provenance: {self.primary_cost_provenance!r}")
+        provenance_is_measured = self.primary_cost_provenance == PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT
+        if self.cost_measured is not provenance_is_measured:
+            raise ValueError(
+                "primary_cost_provenance must be provider_export exactly when cost_measured=true"
+            )
 
 
 @dataclass
@@ -1644,7 +1666,7 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             success=False, notes=f"claude returned non-JSON: {exc.msg}",
             wall_time_seconds=elapsed_seconds_since(started_at),
         )
-    tokens, cost, cost_measured, primary_tokens_measured = collect_usage(payload)
+    tokens, cost, cost_available, primary_tokens_measured = collect_usage(payload)
     provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(payload)
     shift_metrics = collect_shift_metrics(payload)
     self_hosted_metrics = collect_self_hosted_metrics(payload)
@@ -1652,7 +1674,14 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
     return RunResult(
         task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
         tokens=tokens, cost_usd=cost, success=success, notes=success_note,
-        cost_measured=cost_measured,
+        # Claude Code's `total_cost_usd`/`modelUsage.costUSD` fields are local
+        # client estimates.  Keep the diagnostic value, but never promote it to
+        # authoritative provider-billing evidence.
+        cost_measured=False,
+        primary_cost_provenance=(
+            PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE
+            if cost_available else PRIMARY_COST_PROVENANCE_UNAVAILABLE
+        ),
         primary_tokens_measured=primary_tokens_measured,
         wall_time_seconds=elapsed_seconds_since(started_at),
         turns=int(shift_metrics["turns"]),
@@ -1801,6 +1830,7 @@ def append_csv_unlocked(
                 ),
                 "cost_usd": f"{result.cost_usd:.6f}",
                 "cost_measured": "true" if result.cost_measured else "false",
+                "primary_cost_provenance": sanitize_csv_cell(result.primary_cost_provenance),
                 "wall_time_seconds": f"{result.wall_time_seconds:.6f}",
                 "turns": result.turns,
                 "hook_triggers": result.hook_triggers,
@@ -1830,11 +1860,24 @@ def append_csv_unlocked(
 
 
 def cost_shift_measured(result: RunResult) -> bool:
+    result.validate_primary_cost_contract()
     return (
         result.cost_measured
         and result.external_tokens_measured
         and (result.external_tokens == 0 or result.external_cost_measured)
     )
+
+
+def primary_cost_display(result: RunResult) -> str:
+    """Format CLI diagnostics without overstating client-estimated billing data."""
+    result.validate_primary_cost_contract()
+    if result.primary_cost_provenance == PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE:
+        return f"cost_estimate=${result.cost_usd:.4f}"
+    if result.cost_measured:
+        return f"cost=${result.cost_usd:.4f}"
+    if result.cost_usd:
+        return f"cost_unmeasured=${result.cost_usd:.4f}"
+    return "cost=unavailable"
 
 
 def read_csv_header_unlocked(csv_path: Path) -> list[str] | None:
@@ -1893,6 +1936,7 @@ def append_cost_shift_ledger(
         "success": result.success,
         "primary_cost_measured": result.cost_measured,
         "primary_cost_usd": round(result.cost_usd, 6),
+        "primary_cost_provenance": result.primary_cost_provenance,
         "primary_tokens_measured": result.primary_tokens_measured,
         "provider_cached_tokens": result.provider_cached_tokens,
         "provider_cached_tokens_measured": result.provider_cached_tokens_measured,
@@ -1961,6 +2005,7 @@ def _read_existing_keys_unlocked(csv_path: Path) -> set[tuple[str, str]]:
             for index, row in enumerate(reader, start=1):
                 if index > MAX_CSV_ROWS:
                     raise SystemExit(f"CSV row limit exceeded for {csv_path}: > {MAX_CSV_ROWS}")
+                validate_primary_cost_row_contract(row, owner=f"CSV {csv_path} row {index}")
                 tid = row.get("task_id") or ""
                 var = row.get("variant") or ""
                 if tid and var:
@@ -2011,6 +2056,7 @@ def read_csv_rows(csv_path: Path) -> list[dict[str, str]]:
             for index, row in enumerate(reader, start=1):
                 if index > MAX_CSV_ROWS:
                     raise SystemExit(f"CSV row limit exceeded for {csv_path}: > {MAX_CSV_ROWS}")
+                validate_primary_cost_row_contract(row, owner=f"CSV {csv_path} row {index}")
                 rows.append(row)
             return rows
     finally:
@@ -2243,6 +2289,10 @@ def parse_evidence_row(raw_value: Any, *, owner: str, line_number: int) -> Evide
         notes=notes or f"evidence replay ({provenance['source_type']})",
         corrections=evidence_nonnegative_int(raw.get("corrections"), field="corrections", owner=owner),
         cost_measured=cost_measured,
+        primary_cost_provenance=(
+            PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT
+            if cost_measured else PRIMARY_COST_PROVENANCE_UNAVAILABLE
+        ),
         wall_time_seconds=evidence_nonnegative_float(
             raw.get("wall_time_seconds"),
             field="wall_time_seconds",
@@ -2437,13 +2487,54 @@ def row_bool(row: dict[str, str], key: str) -> bool:
     return str(row.get(key) or "").strip().lower() == "true"
 
 
+def row_primary_cost_provenance(row: dict[str, str]) -> str:
+    """Return a report-safe provenance value for possibly synthetic rows."""
+    provenance = str(row.get("primary_cost_provenance") or "").strip()
+    if provenance in {
+        PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE,
+        PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
+        PRIMARY_COST_PROVENANCE_UNAVAILABLE,
+    }:
+        return provenance
+    return PRIMARY_COST_PROVENANCE_UNAVAILABLE
+
+
+def row_primary_cost_measured(row: dict[str, str]) -> bool:
+    """Gate primary cost on both the measured flag and provider provenance."""
+    return (
+        row_bool(row, "cost_measured")
+        and row_primary_cost_provenance(row) == PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT
+    )
+
+
+def validate_primary_cost_row_contract(row: dict[str, str], *, owner: str) -> None:
+    """Fail closed when a persisted CSV row contradicts the v2 cost contract."""
+    raw_provenance = str(row.get("primary_cost_provenance") or "").strip()
+    allowed = {
+        PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE,
+        PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
+        PRIMARY_COST_PROVENANCE_UNAVAILABLE,
+    }
+    if raw_provenance and raw_provenance not in allowed:
+        raise SystemExit(
+            f"{owner}: primary_cost_provenance must be one of "
+            "client_estimate, provider_export, unavailable"
+        )
+    provenance = raw_provenance or PRIMARY_COST_PROVENANCE_UNAVAILABLE
+    if row_bool(row, "cost_measured") != (provenance == PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT):
+        raise SystemExit(
+            f"{owner}: cost_measured must be true exactly when "
+            "primary_cost_provenance is provider_export"
+        )
+
+
 def row_success(row: dict[str, str]) -> bool:
     return str(row.get("success") or "").strip().lower() == "true"
 
 
 def row_cost_shift_measured(row: dict[str, str]) -> bool:
     return (
-        row_bool(row, "cost_measured")
+        row_primary_cost_measured(row)
         and row_bool(row, "external_tokens_measured")
         and (row_int(row, "external_tokens") == 0 or row_bool(row, "external_cost_measured"))
     )
@@ -2452,14 +2543,21 @@ def row_cost_shift_measured(row: dict[str, str]) -> bool:
 def measurement_baseline_contract() -> dict[str, Any]:
     """Describe the benchmark report's current measurement baseline contract.
 
-    This block is descriptive. It does not change the CSV schema and does not
-    grant token/cost savings claims by itself; those remain gated by matched
-    successful tasks, measured primary tokens/costs, shifted-cost accounting,
-    and quality gates.
+    Version 2 records the append-only `primary_cost_provenance` CSV column.
+    Existing CSVs must start a new file or migrate their exact header before
+    append. This block does not grant token/cost savings claims by itself;
+    those remain gated by matched successful tasks, measured primary
+    tokens/costs, shifted-cost accounting, and quality gates.
     """
     return {
         "schema_version": MEASUREMENT_BASELINE_SCHEMA_VERSION,
-        "csv_schema_unchanged": True,
+        "csv_schema_unchanged": False,
+        "csv_schema_change": {
+            "change_type": "append_only_column",
+            "added_columns": ["primary_cost_provenance"],
+            "removed_columns": [],
+            "migration": "start_new_csv_or_migrate_exact_header_before_append",
+        },
         "csv_columns": list(CSV_COLUMNS),
         "captured_fields": {
             "task_identity": ["task_id", "variant"],
@@ -2472,7 +2570,7 @@ def measurement_baseline_contract() -> dict[str, Any]:
                 "total_tokens",
                 "primary_tokens_measured",
             ],
-            "primary_cost": ["cost_usd", "cost_measured"],
+            "primary_cost": ["cost_usd", "cost_measured", "primary_cost_provenance"],
             "provider_cache_telemetry": ["provider_cached_tokens", "provider_cached_tokens_measured"],
             "latency": ["wall_time_seconds"],
             "quality_and_result": ["success", "corrections", "notes"],
@@ -3434,7 +3532,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         bucket["provider_cached_tokens_all_runs"] += row_int(row, "provider_cached_tokens")
         if row_bool(row, "provider_cached_tokens_measured"):
             bucket["provider_cached_tokens_measured_runs"] += 1
-        if row_bool(row, "cost_measured"):
+        if row_primary_cost_measured(row):
             bucket["primary_cost_all_runs_usd"] += row_float(row, "cost_usd")
             bucket["primary_cost_measured_runs"] += 1
         shifted_cost = row_optional_float(row, "total_cost_with_shift_usd")
@@ -3456,7 +3554,7 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
         bucket["provider_cached_tokens_successful"] += row_int(row, "provider_cached_tokens")
         if row_bool(row, "provider_cached_tokens_measured"):
             bucket["provider_cached_tokens_measured_successful"] += 1
-        if row_bool(row, "cost_measured"):
+        if row_primary_cost_measured(row):
             bucket["primary_cost_successful_usd"] += row_float(row, "cost_usd")
             bucket["primary_cost_measured_successful"] += 1
         if row_bool(row, "external_tokens_measured") and (
@@ -3708,7 +3806,9 @@ def summarize_benchmark_rows(rows: list[dict[str, str]], baseline_variant: str) 
 
     def matched_side_evidence(variant: str, task_id: str, rows_for_task: list[dict[str, str]]) -> dict[str, Any]:
         primary_tokens_measured = all_rows_bool(rows_for_task, "primary_tokens_measured")
-        primary_cost_measured = all_rows_bool(rows_for_task, "cost_measured")
+        primary_cost_measured = bool(rows_for_task) and all(
+            row_primary_cost_measured(row) for row in rows_for_task
+        )
         shifted_cost_measured = all_rows_shifted_cost_measured(rows_for_task)
         provider_cache_measured = all_rows_bool(rows_for_task, "provider_cached_tokens_measured")
         external_tokens_measured = all_rows_bool(rows_for_task, "external_tokens_measured")
@@ -5114,7 +5214,7 @@ def main() -> int:
                 status = "ok" if result.success else "FAIL"
                 suffix = "" if wrote else " (CSV not updated; row already present)"
                 print(
-                    f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
+                    f"  {status} tokens={sum(result.tokens.values())} {primary_cost_display(result)} "
                     f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
                 )
         # Ledger/report/dashboard writes happen after the CSV batch lock so distinct
@@ -5204,7 +5304,7 @@ def main() -> int:
         else:
             suffix = ""
         print(
-            f"  {status} tokens={sum(result.tokens.values())} cost=${result.cost_usd:.4f} "
+            f"  {status} tokens={sum(result.tokens.values())} {primary_cost_display(result)} "
             f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
         )
     target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"

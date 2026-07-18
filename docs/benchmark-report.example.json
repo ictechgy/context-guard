@@ -377,7 +377,8 @@
       ],
       "primary_cost": [
         "cost_usd",
-        "cost_measured"
+        "cost_measured",
+        "primary_cost_provenance"
       ],
       "primary_token_buckets": [
         "input_tokens",
@@ -456,6 +457,7 @@
       "provider_cached_tokens_measured",
       "cost_usd",
       "cost_measured",
+      "primary_cost_provenance",
       "wall_time_seconds",
       "turns",
       "hook_triggers",
@@ -472,7 +474,15 @@
       "notes",
       "primary_tokens_measured"
     ],
-    "csv_schema_unchanged": true,
+    "csv_schema_change": {
+      "added_columns": [
+        "primary_cost_provenance"
+      ],
+      "change_type": "append_only_column",
+      "migration": "start_new_csv_or_migrate_exact_header_before_append",
+      "removed_columns": []
+    },
+    "csv_schema_unchanged": false,
     "missing_future_run_identity_fields": [
       "repo_revision",
       "agent_harness",
@@ -488,7 +498,7 @@
       "provider_cache": "diagnostic_telemetry_not_contextguard_token_reduction",
       "token_proxy": "chars_div_4_proxy_only"
     },
-    "schema_version": "contextguard.bench.measurement-baseline.v1"
+    "schema_version": "contextguard.bench.measurement-baseline.v2"
   },
   "public_claim_readiness": {
     "blocking_gate_ids": [
