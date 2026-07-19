@@ -1168,6 +1168,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
             "provider_cached_tokens",
             "provider_cached_tokens_measured",
             "cost_measured",
+            "primary_cost_provenance",
             "wall_time_seconds",
             "external_tokens",
             "external_tokens_measured",
@@ -1287,8 +1288,12 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
                 self.assertIsNone(report["comparisons"][0]["cost_savings_pct_with_shift"])
                 baseline = report["measurement_baseline"]
-                self.assertEqual(baseline["schema_version"], "contextguard.bench.measurement-baseline.v1")
-                self.assertTrue(baseline["csv_schema_unchanged"])
+                self.assertEqual(baseline["schema_version"], "contextguard.bench.measurement-baseline.v2")
+                self.assertFalse(baseline["csv_schema_unchanged"])
+                self.assertEqual(
+                    baseline["csv_schema_change"]["added_columns"],
+                    ["primary_cost_provenance"],
+                )
                 self.assertIn("total_cost_with_shift_usd", baseline["csv_columns"])
                 self.assertIn("primary_token_buckets", baseline["captured_fields"])
                 self.assertIn("primary_tokens_measured", baseline["captured_fields"]["primary_token_buckets"])
@@ -1310,6 +1315,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -1325,6 +1331,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.05",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "9",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -1400,6 +1407,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     tokens={"input_tokens": 1, "output_tokens": 1, "cache_read": 0, "cache_creation": 0},
                     cost_usd=0.01,
                     cost_measured=True,
+                    primary_cost_provenance=module.PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
                     success=True,
                     notes="ok",
                 )
@@ -1529,6 +1537,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         tokens={"input_tokens": 1, "output_tokens": 1, "cache_read": 0, "cache_creation": 0},
                         cost_usd=0.01,
                         cost_measured=True,
+                        primary_cost_provenance=module.PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
                         success=True,
                         notes="ok",
                     )
@@ -1844,6 +1853,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     parsed = module.read_evidence_jsonl(evidence_path)[0]
                     self.assertFalse(parsed.result.primary_tokens_measured)
                     self.assertFalse(parsed.result.cost_measured)
+                    self.assertEqual(parsed.result.primary_cost_provenance, "unavailable")
                     self.assertFalse(parsed.public_claim_eligible)
 
                     def provider_row(variant, *, input_tokens, output_tokens, cost_usd, corrections=0,
@@ -1892,6 +1902,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                                 "primary_tokens_measured": "true" if result.primary_tokens_measured else "false",
                                 "cost_usd": f"{result.cost_usd:.6f}",
                                 "cost_measured": "true" if result.cost_measured else "false",
+                                "primary_cost_provenance": result.primary_cost_provenance,
                                 "external_tokens": str(result.external_tokens),
                                 "external_tokens_measured": "true" if result.external_tokens_measured else "false",
                                 "external_cost_usd": f"{result.external_cost_usd:.6f}",
@@ -1973,6 +1984,11 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     provider_complete = module.read_evidence_jsonl(evidence_path)
+                    self.assertTrue(all(row.result.cost_measured for row in provider_complete))
+                    self.assertTrue(all(
+                        row.result.primary_cost_provenance == "provider_export"
+                        for row in provider_complete
+                    ))
                     complete_report = module.annotate_replay_report(
                         module.summarize_benchmark_rows(csv_rows_from_replay(provider_complete), "baseline"),
                         provider_complete,
@@ -2149,7 +2165,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertGreater(float(row["wall_time_seconds"]), 0)
                     self.assertAlmostEqual(float(row["cost_usd"]), 0.0123, places=4)
 
-    def test_benchmark_runner_writes_cost_shift_ledger_and_ab_report(self):
+    def test_benchmark_runner_labels_direct_cli_cost_as_client_estimate_and_blocks_shifted_claim(self):
         for script in BENCH_SCRIPTS:
             with self.subTest(script=script):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -2200,6 +2216,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         text=True, capture_output=True, check=True,
                     )
                     self.assertIn("report", proc.stdout)
+                    self.assertIn("cost_estimate=$0.0600", proc.stdout)
+                    self.assertNotIn(" cost=$", proc.stdout)
                     with csv_path.open(encoding="utf-8", newline="") as f:
                         rows = {row["variant"]: row for row in csv.DictReader(f)}
                     optimized = rows["optimized"]
@@ -2214,10 +2232,12 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(optimized["primary_tokens_measured"], "true")
                     self.assertGreater(float(optimized["wall_time_seconds"]), 0)
                     self.assertEqual(optimized["external_tokens_measured"], "true")
-                    self.assertEqual(optimized["cost_measured"], "true")
+                    self.assertEqual(optimized["cost_measured"], "false")
+                    self.assertEqual(optimized["primary_cost_provenance"], "client_estimate")
                     self.assertEqual(optimized["external_cost_measured"], "true")
                     self.assertAlmostEqual(float(optimized["external_cost_usd"]), 0.01, places=6)
-                    self.assertAlmostEqual(float(optimized["total_cost_with_shift_usd"]), 0.07, places=6)
+                    self.assertAlmostEqual(float(optimized["cost_usd"]), 0.06, places=6)
+                    self.assertEqual(optimized["total_cost_with_shift_usd"], "")
 
                     ledger_rows = [
                         json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
@@ -2226,20 +2246,23 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     optimized_ledger = next(item for item in ledger_rows if item["variant"] == "optimized")
                     self.assertEqual(optimized_ledger["schema_version"], "contextguard.bench.run-evidence.v1")
                     self.assertEqual(optimized_ledger["transform_id"], "optimized")
-                    self.assertTrue(optimized_ledger["primary_cost_measured"])
+                    self.assertFalse(optimized_ledger["primary_cost_measured"])
+                    self.assertEqual(optimized_ledger["primary_cost_provenance"], "client_estimate")
+                    self.assertAlmostEqual(optimized_ledger["primary_cost_usd"], 0.06, places=6)
                     self.assertTrue(optimized_ledger["primary_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_tokens_measured"])
                     self.assertTrue(optimized_ledger["external_cost_measured"])
-                    self.assertTrue(optimized_ledger["measurement_availability"]["shifted_cost"])
+                    self.assertFalse(optimized_ledger["measurement_availability"]["primary_cost"])
+                    self.assertFalse(optimized_ledger["measurement_availability"]["shifted_cost"])
                     self.assertEqual(optimized_ledger["proxy_metrics"]["claim_boundary"], "proxy_only_not_hosted_token_savings")
                     self.assertEqual(optimized_ledger["provider_cached_tokens"], 25)
                     self.assertTrue(optimized_ledger["provider_cached_tokens_measured"])
                     self.assertGreater(optimized_ledger["wall_time_seconds"], 0)
-                    self.assertAlmostEqual(optimized_ledger["total_cost_with_shift_usd"], 0.07, places=6)
+                    self.assertIsNone(optimized_ledger["total_cost_with_shift_usd"])
 
                     report = json.loads(report_path.read_text(encoding="utf-8"))
                     self.assertEqual(report["schema"], "context-guard-bench-report-v1")
-                    self.assertEqual(report["claim_status"], "token_and_shifted_cost_savings_observed")
+                    self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
                     self.assertEqual(
                         report["summary_by_variant"]["baseline"]["primary_tokens_measured_successful"],
                         1,
@@ -2252,6 +2275,8 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(comparison["quality_gate"], "pass")
                     self.assertEqual(comparison["matched_successful_task_count"], 1)
                     self.assertGreater(comparison["token_savings_pct"], 0)
+                    self.assertIsNone(comparison["cost_savings_pct_with_shift"])
+                    self.assertEqual(comparison["paired_cost_task_count"], 0)
                     pair = report["matched_pair_evidence"][0]
                     self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
                     self.assertEqual(pair["task_id"], "t01")
@@ -2259,7 +2284,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                     self.assertEqual(pair["measurements"]["baseline"]["run_count"], 1)
                     self.assertEqual(pair["measurements"]["variant"]["row_indices"], [2])
                     self.assertTrue(pair["claim_boundary"]["token_savings_claim_allowed"])
-                    self.assertTrue(pair["claim_boundary"]["shifted_cost_claim_allowed"])
+                    self.assertFalse(pair["claim_boundary"]["shifted_cost_claim_allowed"])
                     self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
                     self.assertEqual(pair["delta"]["token_savings_pct"], comparison["token_savings_pct"])
                     self.assertLess(pair["delta"]["bytes_after_total"], 0)
@@ -2575,6 +2600,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2592,6 +2618,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "false",
                             "cost_usd": "0.05",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "9",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2628,6 +2655,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2645,6 +2673,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.05",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2679,6 +2708,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "primary_tokens_measured": "true",
                         "cost_usd": "0.10",
                         "cost_measured": "true",
+                        "primary_cost_provenance": "provider_export",
                         "external_tokens": "0",
                         "external_tokens_measured": "true",
                         "external_cost_usd": "0",
@@ -2696,6 +2726,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "primary_tokens_measured": "true",
                         "cost_usd": "0.12",
                         "cost_measured": "true",
+                        "primary_cost_provenance": "provider_export",
                         "external_tokens": "0",
                         "external_tokens_measured": "true",
                         "external_cost_usd": "0",
@@ -2713,6 +2744,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "primary_tokens_measured": "true",
                         "cost_usd": "0.05",
                         "cost_measured": "true",
+                        "primary_cost_provenance": "provider_export",
                         "external_tokens": "0",
                         "external_tokens_measured": "true",
                         "external_cost_usd": "0",
@@ -2730,6 +2762,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                         "primary_tokens_measured": "true",
                         "cost_usd": "0.06",
                         "cost_measured": "true",
+                        "primary_cost_provenance": "provider_export",
                         "external_tokens": "0",
                         "external_tokens_measured": "true",
                         "external_cost_usd": "0",
@@ -2768,6 +2801,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2785,6 +2819,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.08",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2812,6 +2847,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.10",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2829,6 +2865,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                             "primary_tokens_measured": "true",
                             "cost_usd": "0.07",
                             "cost_measured": "true",
+                            "primary_cost_provenance": "provider_export",
                             "external_tokens": "0",
                             "external_tokens_measured": "true",
                             "external_cost_usd": "0",
@@ -2868,6 +2905,13 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertEqual(comparison["paired_wall_time_task_count"], 1)
         self.assertEqual(pair["schema_version"], "contextguard.bench.matched-pair.v1")
         self.assertFalse(pair["claim_boundary"]["raw_estimate_only_claim_allowed"])
+        measurement_baseline = sample["measurement_baseline"]
+        self.assertEqual(measurement_baseline["schema_version"], "contextguard.bench.measurement-baseline.v2")
+        self.assertFalse(measurement_baseline["csv_schema_unchanged"])
+        self.assertEqual(
+            measurement_baseline["csv_schema_change"]["added_columns"],
+            ["primary_cost_provenance"],
+        )
         self.assertEqual(pair["delta"]["proxy_measurement"], "chars_div_4_proxy_only")
         readiness = sample["public_claim_readiness"]
         self.assertEqual(readiness["schema_version"], "contextguard.bench.public-claim-readiness.v1")
@@ -3517,6 +3561,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 "primary_tokens_measured": "true",
                 "cost_usd": "0.120",
                 "cost_measured": "true",
+                "primary_cost_provenance": "provider_export",
                 "external_tokens": "0",
                 "external_tokens_measured": "true",
                 "external_cost_usd": "0",
@@ -3534,6 +3579,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
                 "primary_tokens_measured": "true",
                 "cost_usd": "0.080",
                 "cost_measured": "true",
+                "primary_cost_provenance": "provider_export",
                 "external_tokens": "40",
                 "external_tokens_measured": "true",
                 "external_cost_usd": "0.005",
@@ -4684,6 +4730,93 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertTrue(primary_tokens_measured)
         self.assertEqual(tokens["input_tokens"], 100)
         self.assertEqual(tokens["output_tokens"], 25)
+
+
+class PrimaryCostProvenanceContractTests(unittest.TestCase):
+    def test_benchmark_primary_cost_provenance_invariant_rejects_contradictory_states(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_primary_cost_invariant_{index}")
+                base = {
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "model": "sonnet",
+                    "effort": None,
+                    "tokens": {"input_tokens": 1, "output_tokens": 1, "cache_read": 0, "cache_creation": 0},
+                    "cost_usd": 0.01,
+                    "success": True,
+                    "notes": "ok",
+                }
+                with self.assertRaisesRegex(ValueError, "primary_cost_provenance"):
+                    module.RunResult(**base, cost_measured=True)
+                with self.assertRaisesRegex(ValueError, "primary_cost_provenance"):
+                    module.RunResult(
+                        **base,
+                        cost_measured=False,
+                        primary_cost_provenance=module.PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
+                    )
+                measured = module.RunResult(
+                    **base,
+                    cost_measured=True,
+                    primary_cost_provenance=module.PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT,
+                )
+                estimated = module.RunResult(
+                    **base,
+                    cost_measured=False,
+                    primary_cost_provenance=module.PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE,
+                )
+                self.assertEqual(module.primary_cost_display(measured), "cost=$0.0100")
+                self.assertEqual(module.primary_cost_display(estimated), "cost_estimate=$0.0100")
+
+    def test_benchmark_report_rejects_or_ignores_contradictory_csv_cost_provenance(self):
+        for index, script in enumerate(BENCH_SCRIPTS):
+            with self.subTest(script=script):
+                module = load_python_script_module(script, f"_bench_runner_csv_cost_contract_{index}")
+                contradictory = {column: "" for column in module.CSV_COLUMNS}
+                contradictory.update({
+                    "task_id": "t01",
+                    "variant": "baseline",
+                    "success": "true",
+                    "cost_usd": "0.10",
+                    "cost_measured": "true",
+                    "primary_cost_provenance": module.PRIMARY_COST_PROVENANCE_UNAVAILABLE,
+                })
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    csv_path = Path(tmp) / "migrated-v2.csv"
+                    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=module.CSV_COLUMNS)
+                        writer.writeheader()
+                        writer.writerow(contradictory)
+                    with self.assertRaisesRegex(SystemExit, "primary_cost_provenance"):
+                        module.read_csv_rows(csv_path)
+
+                report_rows = []
+                for variant, total_tokens, cost in (
+                    ("baseline", "100", "0.10"),
+                    ("optimized", "50", "0.05"),
+                ):
+                    report_rows.append({
+                        "task_id": "t01",
+                        "variant": variant,
+                        "success": "true",
+                        "total_tokens": total_tokens,
+                        "primary_tokens_measured": "true",
+                        "cost_usd": cost,
+                        "cost_measured": "true",
+                        "primary_cost_provenance": module.PRIMARY_COST_PROVENANCE_UNAVAILABLE,
+                        "external_tokens": "0",
+                        "external_tokens_measured": "true",
+                        "external_cost_usd": "0",
+                        "external_cost_measured": "true",
+                        "total_cost_with_shift_usd": cost,
+                        "corrections": "0",
+                    })
+                report = module.summarize_benchmark_rows(report_rows, "baseline")
+                comparison = report["comparisons"][0]
+                self.assertEqual(report["claim_status"], "token_savings_observed_cost_unmeasured")
+                self.assertIsNone(comparison["cost_savings_pct_with_shift"])
+                self.assertEqual(comparison["paired_cost_task_count"], 0)
 
 
 class StatuslineMergedWrapperTests(unittest.TestCase):
