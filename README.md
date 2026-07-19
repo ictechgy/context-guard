@@ -420,6 +420,11 @@ These fields can flag likely volatile content near the prompt prefix, stable-pre
   --dashboard-md bench/dashboard.md
 ```
 
+Each task fixture may set `output_format` to `json` (the default) or opt in to
+`stream-json`. Stream mode adds the runner-controlled `--verbose` flag and only
+accepts a bounded NDJSON stream whose final event is a valid terminal result.
+Its client-reported cost remains diagnostic and is not authoritative provider billing.
+
 For deterministic local replay before a live provider run, add `--evidence-jsonl docs/benchmark-fixtures/token-savings-12task.evidence.example.jsonl` and, for the 12-task fixture, `--baseline-variant baseline_full_context_fixture`. Replay mode skips provider and `success_command` execution, writes the same CSV/report/dashboard surfaces, and marks synthetic/manual evidence as non-public-claim-eligible.
 
 Read the report through its claim boundaries before writing any savings statement:

@@ -375,6 +375,11 @@ JSON 출력에는 여러 증거 surface가 포함될 수 있습니다.
   --ledger-jsonl bench/cost-shift.jsonl --report-json bench/report.json
 ```
 
+각 task fixture의 선택 필드 `output_format`은 기본값이 `json`이며 `json|stream-json`만
+허용합니다. `stream-json` 모드는 runner가 관리하는 `--verbose`를 추가하고 bounded NDJSON의
+마지막 event가 유효한 terminal result일 때만 성공으로 처리합니다. 이 경로의 client cost도
+provider billing을 authoritative하게 증명하지 않는 진단값입니다.
+
 보고서를 읽을 때는 먼저 주장 범위를 확인하세요.
 
 - 성공한 기준/변형 실행은 실제 토큰과 `cost_usd + external_cost_usd` 기준으로 비교하고, 바이트 감소는 간접 증거로만 기록합니다.
