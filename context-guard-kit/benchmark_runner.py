@@ -26,6 +26,7 @@ Task fixture (`tasks.json`): 각 task 는 다음 필드를 가진다.
     "effort": "medium",
     "max_turns": 3,
     "max_budget_usd": 1.0,
+    "output_format": "json",
     "allowed_tools": ["Read", "Edit", "Bash(npm test*)"],
     "variant_prompt_files": {"context_hygiene": "t01.context_hygiene.prompt.md"},
     "success_command": "npm test -- auth/session",
@@ -33,6 +34,11 @@ Task fixture (`tasks.json`): 각 task 는 다음 필드를 가진다.
   }
 ]
 ```
+
+`output_format`은 선택 필드이며 기본값은 `json`이다. 허용값은 `json`과
+`stream-json`뿐이다. `stream-json`은 runner가 `--verbose`를 함께 추가하고,
+마지막 terminal result를 bounded NDJSON으로 검증한다. 이 형식의 cost 값도
+provider 청구액을 authoritative하게 증명하지 않는다.
 
 Variant fixture (`variants.json`): 각 variant 는 `claude -p` 에 추가할 옵션 묶음을 정의한다.
 
@@ -120,6 +126,7 @@ PROTECTED_VARIANT_FLAGS = frozenset({
     "--model",
     "--max-turns",
     "--output-format",
+    "--verbose",
     "--allowedTools",
     "--allowed-tools",
     "--max-budget-usd",
@@ -316,6 +323,9 @@ MAX_VARIANT_PROMPT_FILE_BYTES = 128_000
 MAX_FIXTURE_FILE_BYTES = 1_000_000
 MAX_CLAUDE_PROMPT_ARG_BYTES = MAX_VARIANT_PROMPT_FILE_BYTES
 CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
+CLAUDE_STREAM_MAX_LINES = 10_000
+CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
+CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
@@ -644,6 +654,8 @@ class TaskFixture:
     variant_prompt_texts: dict[str, str] = field(default_factory=dict)
     # 선택적 evaluation profile opt-in. None 이면 기존 generic 동작을 그대로 유지한다.
     evaluation_profile: str | None = None
+    # 끝에 추가해 기존 positional TaskFixture 생성자의 필드 순서를 보존한다.
+    output_format: str = "json"
 
 
 @dataclass
@@ -743,6 +755,225 @@ class BoundedProcessResult:
     stderr: str
     timed_out: bool = False
     output_truncated: bool = False
+    # 끝에 추가해 기존 positional constructor의 timed_out/truncated 순서를 보존한다.
+    stdout_bytes: bytes = b""
+    stderr_bytes: bytes = b""
+
+
+@dataclass(frozen=True)
+class ClaudeStreamParseResult:
+    """Privacy-safe classification of one bounded Claude stream-json output."""
+
+    status: str
+    result_code: str
+    error_code: str | None
+    payload: dict[str, Any] | None
+
+
+class _StreamDuplicateKey(ValueError):
+    pass
+
+
+class _StreamNonfiniteNumber(ValueError):
+    pass
+
+
+def _stream_result(
+    status: str,
+    *,
+    result_code: str,
+    error_code: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> ClaudeStreamParseResult:
+    return ClaudeStreamParseResult(
+        status=status,
+        result_code=result_code,
+        error_code=error_code,
+        payload=payload,
+    )
+
+
+def _stream_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise _StreamDuplicateKey
+        obj[key] = value
+    return obj
+
+
+def _stream_reject_nonfinite(_value: str) -> Any:
+    raise _StreamNonfiniteNumber
+
+
+def _stream_contains_nonfinite(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_stream_contains_nonfinite(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_stream_contains_nonfinite(item) for item in value)
+    return False
+
+
+def parse_claude_stream_output(
+    stdout: bytes | str,
+    *,
+    max_total_bytes: int = CLAUDE_OUTPUT_MAX_BYTES,
+    max_lines: int = CLAUDE_STREAM_MAX_LINES,
+    max_line_bytes: int = CLAUDE_STREAM_MAX_LINE_BYTES,
+) -> ClaudeStreamParseResult:
+    """Parse bounded Claude stream-json without retaining provider event text.
+
+    The caller owns process timeout/truncation handling. This parser owns only
+    strict NDJSON grammar and the final terminal-result classification. All
+    failures return fixed codes rather than JSON excerpts or parse offsets.
+    """
+    if isinstance(stdout, str):
+        try:
+            raw = stdout.encode("utf-8", "strict")
+        except UnicodeEncodeError:
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_invalid_utf8",
+            )
+    elif isinstance(stdout, bytes):
+        raw = stdout
+    else:
+        raise TypeError("stdout must be bytes or str")
+
+    if not raw:
+        return _stream_result(
+            "missing_terminal",
+            result_code="missing_terminal",
+            error_code="stream_missing_terminal",
+        )
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return _stream_result(
+            "invalid_stream", result_code="invalid_stream", error_code="stream_bom",
+        )
+    if len(raw) > max_total_bytes:
+        return _stream_result(
+            "invalid_stream",
+            result_code="invalid_stream",
+            error_code="stream_total_size_limit",
+        )
+
+    physical_lines = raw.split(b"\n")
+    if physical_lines and physical_lines[-1] == b"":
+        physical_lines.pop()
+    if len(physical_lines) > max_lines:
+        return _stream_result(
+            "invalid_stream",
+            result_code="invalid_stream",
+            error_code="stream_line_count_limit",
+        )
+
+    terminal_payload: dict[str, Any] | None = None
+    terminal_result_code: str | None = None
+    terminal_status: str | None = None
+    for raw_line in physical_lines:
+        # CR in a CRLF record is a delimiter byte, not part of the JSON content.
+        line = raw_line[:-1] if raw_line.endswith(b"\r") else raw_line
+        if len(line) > max_line_bytes:
+            return _stream_result(
+                "invalid_stream",
+                result_code="invalid_stream",
+                error_code="stream_line_size_limit",
+            )
+        if not line or not line.strip(b" \t\r\v\f"):
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_blank_line",
+            )
+        try:
+            text = line.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_invalid_utf8",
+            )
+        try:
+            event = json.loads(
+                text,
+                object_pairs_hook=_stream_object_no_duplicates,
+                parse_constant=_stream_reject_nonfinite,
+            )
+        except _StreamDuplicateKey:
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_duplicate_key",
+            )
+        except _StreamNonfiniteNumber:
+            return _stream_result(
+                "invalid_stream",
+                result_code="invalid_stream",
+                error_code="stream_nonfinite_number",
+            )
+        except (json.JSONDecodeError, UnicodeError, ValueError, RecursionError):
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_malformed_json",
+            )
+        try:
+            contains_nonfinite = _stream_contains_nonfinite(event)
+        except RecursionError:
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_malformed_json",
+            )
+        if contains_nonfinite:
+            return _stream_result(
+                "invalid_stream",
+                result_code="invalid_stream",
+                error_code="stream_nonfinite_number",
+            )
+        if not isinstance(event, dict):
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_non_object",
+            )
+
+        is_result = event.get("type") == "result"
+        if terminal_payload is not None:
+            return _stream_result(
+                "invalid_stream",
+                result_code="invalid_stream",
+                error_code="stream_duplicate_result" if is_result else "stream_post_result",
+            )
+        if not is_result:
+            continue
+
+        subtype = event.get("subtype")
+        is_error = event.get("is_error")
+        if not isinstance(is_error, bool):
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_result_shape",
+            )
+        if subtype == "success" and not is_error:
+            terminal_status = "success"
+            terminal_result_code = "success"
+        elif subtype == "success" and is_error:
+            terminal_status = "terminal_error"
+            terminal_result_code = "success_is_error"
+        elif subtype in {
+            "error_during_execution",
+            "error_max_turns",
+            "error_max_budget_usd",
+            "error_max_structured_output_retries",
+        } and is_error:
+            terminal_status = "terminal_error"
+            terminal_result_code = str(subtype)
+        else:
+            return _stream_result(
+                "invalid_stream", result_code="invalid_stream", error_code="stream_result_shape",
+            )
+        terminal_payload = event
+
+    if terminal_payload is None or terminal_status is None or terminal_result_code is None:
+        return _stream_result(
+            "missing_terminal",
+            result_code="missing_terminal",
+            error_code="stream_missing_terminal",
+        )
+    return _stream_result(
+        terminal_status,
+        result_code=terminal_result_code,
+        payload=terminal_payload,
+    )
 
 
 def is_placeholder_success_command(command: str | None) -> bool:
@@ -1035,6 +1266,9 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
             max_turns = parse_positive_int(
                 item.get("max_turns", 3), field="max_turns", owner=owner,
             )
+            output_format = item.get("output_format", "json")
+            if not isinstance(output_format, str) or output_format not in CLAUDE_OUTPUT_FORMATS:
+                raise SystemExit(f"{owner} output_format must be 'json' or 'stream-json'")
             allowed_tools = parse_string_list(
                 item.get("allowed_tools", []),
                 field="allowed_tools",
@@ -1062,6 +1296,7 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
             effort=str(effort_raw) if effort_raw is not None else None,
             max_turns=max_turns,
             max_budget_usd=budget,
+            output_format=output_format,
             allowed_tools=allowed_tools,
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
@@ -1400,7 +1635,9 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     runner default 로 왜곡되지 않는다.
     """
     argv = [claude_bin, "-p", "--model", task.model,
-            "--max-turns", str(task.max_turns), "--output-format", "json"]
+            "--max-turns", str(task.max_turns), "--output-format", task.output_format]
+    if task.output_format == "stream-json":
+        argv.append("--verbose")
     if task.effort:
         argv.extend(["--effort", task.effort])
     if task.max_budget_usd is not None:
@@ -1536,10 +1773,14 @@ def run_bounded_command(
         returncode = 124
     elif output_truncated:
         returncode = 125
+    stdout_bytes = bytes(buffers["stdout"])
+    stderr_bytes = bytes(buffers["stderr"])
     return BoundedProcessResult(
         returncode=returncode,
-        stdout=bytes(buffers["stdout"]).decode("utf-8", "replace"),
-        stderr=bytes(buffers["stderr"]).decode("utf-8", "replace"),
+        stdout=stdout_bytes.decode("utf-8", "replace"),
+        stderr=stderr_bytes.decode("utf-8", "replace"),
+        stdout_bytes=stdout_bytes,
+        stderr_bytes=stderr_bytes,
         timed_out=timed_out,
         output_truncated=output_truncated,
     )
@@ -1650,22 +1891,56 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             success=False, notes=f"claude output limit exceeded ({CLAUDE_OUTPUT_MAX_BYTES} bytes)",
             wall_time_seconds=elapsed_seconds_since(started_at),
         )
-    if proc.returncode != 0:
-        return RunResult(
-            task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
-            tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
-            success=False, notes=f"claude exit={proc.returncode}: {proc.stderr[-200:].strip()}",
-            wall_time_seconds=elapsed_seconds_since(started_at),
-        )
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return RunResult(
-            task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
-            tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
-            success=False, notes=f"claude returned non-JSON: {exc.msg}",
-            wall_time_seconds=elapsed_seconds_since(started_at),
-        )
+    if task.output_format == "stream-json":
+        parsed_stream = parse_claude_stream_output(proc.stdout_bytes)
+        if parsed_stream.status == "terminal_error":
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False,
+                notes=f"claude stream terminal_error:{parsed_stream.result_code}",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        if parsed_stream.status in {"missing_terminal", "invalid_stream"}:
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False,
+                notes=f"claude stream protocol_error:{parsed_stream.error_code}",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        if proc.returncode != 0:
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False, notes="claude stream process_error:nonzero_exit_after_success",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        if parsed_stream.payload is None:  # Defensive: status=success always carries the result.
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False, notes="claude stream protocol_error:stream_result_shape",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        payload = parsed_stream.payload
+    else:
+        if proc.returncode != 0:
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False, notes=f"claude exit={proc.returncode}: {proc.stderr[-200:].strip()}",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            return RunResult(
+                task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
+                tokens={k: 0 for k, _ in USAGE_KEY_GROUPS}, cost_usd=0.0,
+                success=False, notes=f"claude returned non-JSON: {exc.msg}",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
     tokens, cost, cost_available, primary_tokens_measured = collect_usage(payload)
     provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(payload)
     shift_metrics = collect_shift_metrics(payload)

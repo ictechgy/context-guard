@@ -195,6 +195,376 @@ def _make_fake_claude(tmpdir: Path, usage: dict | None = None, exit_code: int = 
     return fake
 
 
+class BenchmarkStreamJsonTests(unittest.TestCase):
+    """Offline contract tests for the opt-in bounded stream-json runner path."""
+
+    def _module(self, script: Path, suffix: str):
+        return load_python_script_module(
+            script,
+            f"_bench_runner_stream_json_{suffix}_{BENCH_SCRIPTS.index(script)}",
+        )
+
+    def test_output_format_defaults_to_json_and_stream_json_adds_verbose(self):
+        for script in BENCH_SCRIPTS:
+            with self.subTest(script=script):
+                module = self._module(script, "fixture_argv")
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    tasks_path = root / "tasks.json"
+                    tasks_path.write_text(
+                        json.dumps([
+                            {"id": "legacy", "prompt": "legacy prompt", "max_turns": 1},
+                            {
+                                "id": "stream",
+                                "prompt": "stream prompt",
+                                "max_turns": 1,
+                                "output_format": "stream-json",
+                            },
+                        ]),
+                        encoding="utf-8",
+                    )
+                    legacy, stream = module.parse_tasks(tasks_path)
+                    variant = module.Variant(name="baseline", extra_args=[])
+
+                    self.assertEqual(legacy.output_format, "json")
+                    self.assertEqual(stream.output_format, "stream-json")
+                    positional = module.TaskFixture(
+                        "positional", "prompt", "sonnet", None, 2, None, ["Read"],
+                        "true", ".", {}, {}, None,
+                    )
+                    self.assertEqual(positional.allowed_tools, ["Read"])
+                    self.assertIsNone(positional.evaluation_profile)
+                    self.assertEqual(positional.output_format, "json")
+                    bounded_positional = module.BoundedProcessResult(1, "out", "err", True, True)
+                    self.assertTrue(bounded_positional.timed_out)
+                    self.assertTrue(bounded_positional.output_truncated)
+                    self.assertEqual(bounded_positional.stdout_bytes, b"")
+                    self.assertEqual(
+                        module.build_claude_argv("claude", legacy, variant),
+                        [
+                            "claude", "-p", "--model", "sonnet", "--max-turns", "1",
+                            "--output-format", "json", "--", "legacy prompt",
+                        ],
+                    )
+                    stream_argv = module.build_claude_argv("claude", stream, variant)
+                    self.assertEqual(stream_argv.count("--verbose"), 1)
+                    self.assertEqual(
+                        stream_argv,
+                        [
+                            "claude", "-p", "--model", "sonnet", "--max-turns", "1",
+                            "--output-format", "stream-json", "--verbose", "--", "stream prompt",
+                        ],
+                    )
+
+    def test_output_format_validation_and_verbose_variant_protection(self):
+        invalid_formats = ("", "STREAM-JSON", "text", None, 1, True, ["json"])
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "fixture_validation")
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tasks_path = root / "tasks.json"
+                for value in invalid_formats:
+                    with self.subTest(script=script, output_format=value):
+                        tasks_path.write_text(
+                            json.dumps([{"id": "t01", "prompt": "x", "output_format": value}]),
+                            encoding="utf-8",
+                        )
+                        with self.assertRaises(SystemExit) as ctx:
+                            module.parse_tasks(tasks_path)
+                        self.assertIn("output_format", str(ctx.exception))
+
+                for extra_args in (["--verbose"], ["--verbose=true"], ["--output-format=stream-json"]):
+                    with self.subTest(script=script, extra_args=extra_args):
+                        with self.assertRaises(SystemExit) as ctx:
+                            module.validate_variant_extra_args(extra_args, owner="variant test")
+                        self.assertIn("runner-controlled", str(ctx.exception))
+
+    def test_bounded_stream_parser_accepts_success_and_extracts_terminal_payload(self):
+        terminal = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+            "modelUsage": {
+                "claude-sonnet-5": {"inputTokens": 1},
+                "claude-sonnet-5-20260701": {"inputTokens": 7},
+            },
+            "total_cost_usd": 0.0123,
+        }
+        events = [
+            {"type": "system", "subtype": "init", "model": "claude-sonnet-5-20260701"},
+            {
+                "type": "assistant",
+                "parent_tool_use_id": None,
+                "message": {"model": "claude-sonnet-5-20260701"},
+            },
+            terminal,
+        ]
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "parse_success")
+            for separator, suffix in ((b"\n", b""), (b"\r\n", b"\r\n")):
+                with self.subTest(script=script, separator=separator):
+                    raw = separator.join(
+                        json.dumps(event, separators=(",", ":")).encode("utf-8")
+                        for event in events
+                    ) + suffix
+                    parsed = module.parse_claude_stream_output(raw)
+                    self.assertEqual(parsed.status, "success")
+                    self.assertEqual(parsed.result_code, "success")
+                    self.assertIsNone(parsed.error_code)
+                    self.assertEqual(parsed.payload, terminal)
+                    tokens, cost, cost_available, tokens_available = module.collect_usage(parsed.payload)
+                    self.assertEqual(tokens["input_tokens"], 7)
+                    self.assertEqual(tokens["output_tokens"], 3)
+                    self.assertEqual(cost, 0.0123)
+                    self.assertTrue(cost_available)
+                    self.assertTrue(tokens_available)
+            with self.subTest(script=script, integration="run_fixture"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    fake = _make_fake_claude(
+                        root,
+                        stdout="\n".join(json.dumps(event, separators=(",", ":")) for event in events),
+                    )
+                    result = module.run_fixture(
+                        module.TaskFixture(
+                            id="t01",
+                            prompt="x",
+                            output_format="stream-json",
+                            success_command="true",
+                        ),
+                        module.Variant(name="baseline", extra_args=[]),
+                        str(fake),
+                        root,
+                        False,
+                    )
+                    self.assertTrue(result.success)
+                    self.assertEqual(result.tokens["input_tokens"], 7)
+                    self.assertEqual(result.tokens["output_tokens"], 3)
+                    self.assertEqual(result.cost_usd, 0.0123)
+                    self.assertFalse(result.cost_measured)
+
+    def test_bounded_stream_parser_rejects_invalid_grammar_with_fixed_codes(self):
+        success = json.dumps(
+            {"type": "result", "subtype": "success", "is_error": False},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        cases = (
+            (b"", "missing_terminal", "stream_missing_terminal", {}),
+            (b" \n", "invalid_stream", "stream_blank_line", {}),
+            (b"\v\f \n", "invalid_stream", "stream_blank_line", {}),
+            (b"\xef\xbb\xbf" + success, "invalid_stream", "stream_bom", {}),
+            (b"{\"type\":\"system\",\"x\":\xff}\n" + success, "invalid_stream", "stream_invalid_utf8", {}),
+            (b"{broken}\n" + success, "invalid_stream", "stream_malformed_json", {}),
+            (b"[]\n" + success, "invalid_stream", "stream_non_object", {}),
+            (b'{"type":"system","x":1,"x":2}\n' + success, "invalid_stream", "stream_duplicate_key", {}),
+            (b'{"type":"system","x":{"a":1,"a":2}}\n' + success, "invalid_stream", "stream_duplicate_key", {}),
+            (b'{"type":"system","x":NaN}\n' + success, "invalid_stream", "stream_nonfinite_number", {}),
+            (b'{"type":"system","x":{"value":1e400}}\n' + success, "invalid_stream", "stream_nonfinite_number", {}),
+            (b'{"type":"system","x":1}', "missing_terminal", "stream_missing_terminal", {}),
+            (success + b"\n{}", "invalid_stream", "stream_post_result", {}),
+            (success + b"\n" + success, "invalid_stream", "stream_duplicate_result", {}),
+            (b'{"type":"result","subtype":"unknown","is_error":true}', "invalid_stream", "stream_result_shape", {}),
+            (b"{}\n{}\n" + success, "invalid_stream", "stream_line_count_limit", {"max_lines": 2}),
+            (b"{}\n" + success, "invalid_stream", "stream_line_size_limit", {"max_line_bytes": 3}),
+            (b"{}\n" + success, "invalid_stream", "stream_total_size_limit", {"max_total_bytes": 4}),
+        )
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "parse_invalid")
+            for raw, status, error_code, limits in cases:
+                with self.subTest(script=script, error_code=error_code):
+                    parsed = module.parse_claude_stream_output(raw, **limits)
+                    self.assertEqual(parsed.status, status)
+                    self.assertEqual(parsed.error_code, error_code)
+                    self.assertIsNone(parsed.payload)
+                    raw_text = raw.decode("utf-8", "ignore")
+                    if raw_text:
+                        self.assertNotIn(raw_text, parsed.error_code)
+
+    def test_stream_parser_maps_runtime_decode_limits_to_fixed_codes(self):
+        success = b'{"type":"result","subtype":"success","is_error":false}'
+        huge_integer = b'{"type":"system","value":' + (b"1" * 5_000) + b"}\n" + success
+        deeply_nested = (
+            b'{"type":"system","value":'
+            + (b"[" * 2_000)
+            + b"0"
+            + (b"]" * 2_000)
+            + b"}\n"
+            + success
+        )
+        cases = (
+            (huge_integer, "stream_malformed_json"),
+            (deeply_nested, "stream_malformed_json"),
+            ("\ud800", "stream_invalid_utf8"),
+        )
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "runtime_decode_limits")
+            for raw, expected_code in cases:
+                with self.subTest(script=script, expected_code=expected_code):
+                    parsed = module.parse_claude_stream_output(raw)
+                    self.assertEqual(parsed.status, "invalid_stream")
+                    self.assertEqual(parsed.result_code, "invalid_stream")
+                    self.assertEqual(parsed.error_code, expected_code)
+                    self.assertIsNone(parsed.payload)
+
+    def test_stream_line_byte_limit_has_lf_crlf_boundary_parity(self):
+        success = b'{"type":"result","subtype":"success","is_error":false}'
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "line_boundary_parity")
+            for delimiter in (b"\n", b"\r\n"):
+                with self.subTest(script=script, delimiter=delimiter, boundary="exact"):
+                    parsed = module.parse_claude_stream_output(
+                        success + delimiter,
+                        max_line_bytes=len(success),
+                    )
+                    self.assertEqual(parsed.status, "success")
+                    self.assertEqual(parsed.result_code, "success")
+                with self.subTest(script=script, delimiter=delimiter, boundary="over"):
+                    parsed = module.parse_claude_stream_output(
+                        success + delimiter,
+                        max_line_bytes=len(success) - 1,
+                    )
+                    self.assertEqual(parsed.status, "invalid_stream")
+                    self.assertEqual(parsed.error_code, "stream_line_size_limit")
+
+    def test_stream_terminal_error_matrix_is_distinct_from_missing_terminal(self):
+        cases = (
+            ("success", True, "success_is_error"),
+            ("error_during_execution", True, "error_during_execution"),
+            ("error_max_turns", True, "error_max_turns"),
+            ("error_max_budget_usd", True, "error_max_budget_usd"),
+            ("error_max_structured_output_retries", True, "error_max_structured_output_retries"),
+        )
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "terminal_errors")
+            for subtype, is_error, result_code in cases:
+                with self.subTest(script=script, subtype=subtype):
+                    raw = json.dumps(
+                        {"type": "result", "subtype": subtype, "is_error": is_error},
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    parsed = module.parse_claude_stream_output(raw)
+                    self.assertEqual(parsed.status, "terminal_error")
+                    self.assertEqual(parsed.result_code, result_code)
+                    self.assertIsNone(parsed.error_code)
+
+            for subtype, is_error in (("error_max_turns", False), ("success", "false"), ("success", None)):
+                with self.subTest(script=script, invalid_subtype=subtype, is_error=is_error):
+                    payload = {"type": "result", "subtype": subtype}
+                    if is_error is not None:
+                        payload["is_error"] = is_error
+                    parsed = module.parse_claude_stream_output(
+                        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                    )
+                    self.assertEqual(parsed.status, "invalid_stream")
+                    self.assertEqual(parsed.error_code, "stream_result_shape")
+
+    def test_run_fixture_combines_stream_process_and_protocol_outcomes(self):
+        scenarios = (
+            (
+                "terminal_error_nonzero",
+                {"type": "result", "subtype": "error_max_turns", "is_error": True},
+                1,
+                "claude stream terminal_error:error_max_turns",
+            ),
+            ("missing_exit_zero", {"type": "system"}, 0, "claude stream protocol_error:stream_missing_terminal"),
+            ("missing_nonzero", {"type": "system"}, 1, "claude stream protocol_error:stream_missing_terminal"),
+            (
+                "success_nonzero",
+                {"type": "result", "subtype": "success", "is_error": False},
+                1,
+                "claude stream process_error:nonzero_exit_after_success",
+            ),
+        )
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "process_protocol")
+            for name, payload, exit_code, expected_note in scenarios:
+                with self.subTest(script=script, scenario=name):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        fake = _make_fake_claude(
+                            root,
+                            stdout=json.dumps(payload, separators=(",", ":")),
+                            exit_code=exit_code,
+                        )
+                        result = module.run_fixture(
+                            module.TaskFixture(
+                                id="t01",
+                                prompt="x",
+                                max_turns=1,
+                                output_format="stream-json",
+                                success_command="true",
+                            ),
+                            module.Variant(name="baseline", extra_args=[]),
+                            str(fake),
+                            root,
+                            False,
+                        )
+                        self.assertFalse(result.success)
+                        self.assertEqual(result.notes, expected_note)
+
+    def test_stream_timeout_and_truncation_cannot_be_overridden_by_apparent_success(self):
+        raw = b'{"type":"result","subtype":"success","is_error":false}'
+        for script in BENCH_SCRIPTS:
+            module = self._module(script, "process_fail_closed")
+            original = module.run_bounded_command
+            try:
+                for name, process_result, expected in (
+                    (
+                        "timeout",
+                        module.BoundedProcessResult(
+                            returncode=124,
+                            stdout=raw.decode("utf-8"),
+                            stderr="",
+                            stdout_bytes=raw,
+                            stderr_bytes=b"",
+                            timed_out=True,
+                        ),
+                        "claude timed out",
+                    ),
+                    (
+                        "truncated",
+                        module.BoundedProcessResult(
+                            returncode=125,
+                            stdout=raw.decode("utf-8"),
+                            stderr="",
+                            stdout_bytes=raw,
+                            stderr_bytes=b"",
+                            output_truncated=True,
+                        ),
+                        "claude output limit exceeded",
+                    ),
+                ):
+                    with self.subTest(script=script, scenario=name):
+                        module.run_bounded_command = lambda *args, _result=process_result, **kwargs: _result
+                        result = module.run_fixture(
+                            module.TaskFixture(id="t01", prompt="x", output_format="stream-json"),
+                            module.Variant(name="baseline", extra_args=[]),
+                            "claude",
+                            ROOT,
+                            False,
+                        )
+                        self.assertFalse(result.success)
+                        self.assertIn(expected, result.notes)
+            finally:
+                module.run_bounded_command = original
+
+    def test_public_fixture_docs_describe_stream_json_without_changing_report_example(self):
+        doc_paths = (ROOT / "README.md", ROOT / "README.ko.md", KIT_DIR / "README.md")
+        for path in doc_paths:
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                for required in ("output_format", "stream-json", "--verbose", "terminal result"):
+                    self.assertIn(required, text)
+        runner_doc = (KIT_DIR / "benchmark_runner.py").read_text(encoding="utf-8")[:5000]
+        for required in ("output_format", "stream-json", "--verbose", "terminal result"):
+            self.assertIn(required, runner_doc)
+        self.assertEqual(
+            hashlib.sha256((ROOT / "docs/benchmark-report.example.json").read_bytes()).hexdigest(),
+            "4a5f4b1ac7fce81a052815d4854445235d32fa9d0463fa7b27db1e007e315fc8",
+        )
+
+
 class BenchmarkRunnerTests(unittest.TestCase):
     """benchmark runner 의 fixture parsing, CSV append, fake claude 호출 시나리오 검증."""
 
