@@ -32,8 +32,7 @@ HELPER_PAIRS = (('hook_secret_patterns.py', 'lib/hook_secret_patterns.py'),
  ('credential_policy.py', 'lib/credential_policy.py'),
  ('context_guard_commands.py', 'lib/context_guard_commands.py'),
  ('context_guard_command_manifest_loader.py',
-  'lib/context_guard_command_manifest_loader.py'),
- ('transcript_usage_reducer.py', 'lib/transcript_usage_reducer.py'))
+  'lib/context_guard_command_manifest_loader.py'))
 
 NPM_BINS = ('context-guard',
  'context-guard-cost',
@@ -241,5 +240,4 @@ EXPECTED_COMMAND_PACK_FILES = ('plugins/context-guard/bin/claude-read-symbol',
  'plugins/context-guard/lib/credential_policy.py',
  'plugins/context-guard/lib/context_guard_command_manifest_loader.py',
  'plugins/context-guard/lib/context_guard_commands.py',
- 'plugins/context-guard/lib/hook_secret_patterns.py',
- 'plugins/context-guard/lib/transcript_usage_reducer.py')
+ 'plugins/context-guard/lib/hook_secret_patterns.py')
