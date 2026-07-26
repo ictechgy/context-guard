@@ -143,8 +143,15 @@ class UnsafeAdjacentModuleError(RuntimeError):
 
 
 class FallbackLineSanitizer:
-    def __init__(self, *, show_paths: bool = False, diagnostic: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        show_paths: bool = False,
+        context: str = "unknown_text",
+        diagnostic: str | None = None,
+    ) -> None:
         self.show_paths = show_paths
+        self.context = context
         self.diagnostic = diagnostic
         self.diagnostic_emitted = False
         self.redactions = 0
@@ -154,8 +161,6 @@ class FallbackLineSanitizer:
             print(f"context-guard-kit: sanitizer fallback active: {self.diagnostic}", file=sys.stderr)
             self.diagnostic_emitted = True
         line = strip_ansi(raw_line)
-        if not self.show_paths:
-            line = anonymize_absolute_paths(line)
         original = line
         auth_match = FALLBACK_AUTH_HEADER_RE.match(line)
         if auth_match:
@@ -223,11 +228,31 @@ def load_adjacent_python_module(script_dir: Path, name: str, *, module_prefix: s
     module = types.ModuleType(module_name)
     module.__file__ = str(script_dir / name)
     module.__package__ = ""
-    exec(compile(source, str(script_dir / name), "exec"), module.__dict__)
+    sys.modules[module_name] = module
+    try:
+        exec(compile(source, str(script_dir / name), "exec"), module.__dict__)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
-def load_line_sanitizer(show_paths: bool) -> object:
+def instantiate_line_sanitizer(factory: object, *, show_paths: bool, context: str) -> object:
+    try:
+        return factory(show_paths=show_paths, context=context)  # type: ignore[operator]
+    except TypeError:
+        if context != "unknown_text":
+            raise RuntimeError(
+                "adjacent sanitizer does not support required explicit context"
+            )
+        # One compatibility window for unknown-text adjacent sanitizer stubs.
+        return factory(show_paths=show_paths)  # type: ignore[operator]
+
+
+def load_line_sanitizer(
+    show_paths: bool,
+    context: str = "unknown_text",
+) -> object:
     """Reuse the stronger sanitizer when it is shipped next to this wrapper."""
     script_dir = Path(__file__).resolve().parent
     load_errors: list[str] = []
@@ -240,14 +265,22 @@ def load_line_sanitizer(show_paths: bool) -> object:
             )
             if module is None:
                 continue
-            return module.LineSanitizer(show_paths=show_paths)
+            return instantiate_line_sanitizer(
+                module.LineSanitizer,
+                show_paths=show_paths,
+                context=context,
+            )
         except UnsafeAdjacentModuleError:
             raise
         except Exception as exc:
             load_errors.append(f"{name} failed to load: {exc.__class__.__name__}: {exc}")
             continue
     diagnostic = "; ".join(load_errors) if load_errors else "strong sanitizer not found next to trim wrapper"
-    return FallbackLineSanitizer(show_paths=show_paths, diagnostic=diagnostic)
+    return FallbackLineSanitizer(
+        show_paths=show_paths,
+        context=context,
+        diagnostic=diagnostic,
+    )
 
 
 def load_artifact_store_module() -> object:
@@ -508,7 +541,7 @@ def compact_item(
 ) -> str:
     """Normalize a failure-summary item without letting one log line dominate memory/output."""
     if sanitizer is None:
-        sanitizer = load_line_sanitizer(show_paths)
+        sanitizer = load_line_sanitizer(show_paths, context="unknown_text")
     sanitized, _ = sanitizer.sanitize(text)  # type: ignore[attr-defined]
     item = re.sub(r"\s+", " ", strip_ansi(sanitized).strip())
     if len(item) <= limit:
@@ -529,7 +562,7 @@ class RunnerFailureSummary:
     def __init__(self, max_items_per_runner: int, *, show_paths: bool = False) -> None:
         self.max_items_per_runner = max(0, max_items_per_runner)
         self.show_paths = show_paths
-        self.sanitizer = load_line_sanitizer(show_paths)
+        self.sanitizer = load_line_sanitizer(show_paths, context="unknown_text")
         self.items: dict[str, list[str]] = collections.defaultdict(list)
         self.seen: dict[str, set[str]] = collections.defaultdict(set)
         self.jest_active = False
@@ -1533,7 +1566,10 @@ def main() -> int:
         return 2
 
     try:
-        line_sanitizer = load_line_sanitizer(args.show_paths)
+        line_sanitizer = load_line_sanitizer(
+            args.show_paths,
+            context="unknown_text",
+        )
     except UnsafeAdjacentModuleError as exc:
         print(f"context-guard-kit: unsafe adjacent helper: {exc}", file=sys.stderr)
         return 2

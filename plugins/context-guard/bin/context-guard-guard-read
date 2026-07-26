@@ -19,7 +19,7 @@ import shlex
 import stat
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -59,6 +59,18 @@ MAX_BYTES_ENV = "CONTEXT_GUARD_READ_GUARD_MAX_BYTES"
 LEGACY_MAX_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_BYTES"
 MAX_LINE_RANGE_ENV = "CONTEXT_GUARD_READ_GUARD_MAX_LINES"
 LEGACY_MAX_LINE_RANGE_ENV = "CLAUDE_TOKEN_READ_GUARD_MAX_LINES"
+READ_PROOF_BYTES_ENV = "CONTEXT_GUARD_READ_GUARD_PROOF_BYTES"
+LEGACY_READ_PROOF_BYTES_ENV = "CLAUDE_TOKEN_READ_GUARD_PROOF_BYTES"
+DEFAULT_READ_PROOF_BYTES = 8 * 1024 * 1024
+MIN_READ_PROOF_BYTES = 64 * 1024
+MAX_READ_PROOF_BYTES = 64 * 1024 * 1024
+READ_PROOF_CHUNK_BYTES = 64 * 1024
+MAX_READ_RANGE_INTEGER = (1 << 63) - 1
+ALLOWED_ENV_TEMPLATE_BASENAMES = frozenset({
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+})
 PATH_LABEL_MAX_CHARS = 160
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -110,6 +122,16 @@ def max_line_range() -> int:
     )
 
 
+def read_proof_bytes() -> int:
+    return bounded_env_int(
+        READ_PROOF_BYTES_ENV,
+        LEGACY_READ_PROOF_BYTES_ENV,
+        DEFAULT_READ_PROOF_BYTES,
+        MIN_READ_PROOF_BYTES,
+        MAX_READ_PROOF_BYTES,
+    )
+
+
 def tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     value = payload.get("tool_input") or payload.get("toolInput") or {}
     return value if isinstance(value, dict) else {}
@@ -145,25 +167,48 @@ def anonymized_path_label(path: Path) -> str:
     return f"redacted-path#path:{digest}"
 
 
-def bounded_line_range_requested(payload: dict[str, Any]) -> bool:
-    data = tool_input(payload)
-    raw_limit = data.get("limit")
-    if raw_limit is None:
-        return False
+def strict_integer(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not re.fullmatch(r"[+-]?[0-9]+", normalized):
+        return None
     try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError):
-        return False
+        return int(normalized)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def large_read_range(payload: dict[str, Any]) -> tuple[int, int] | None:
+    data = tool_input(payload)
+    limit = strict_integer(data.get("limit"))
+    if limit is None:
+        return None
     if limit <= 0 or limit > max_line_range():
-        return False
-    raw_offset = data.get("offset")
-    if raw_offset is not None:
-        try:
-            if int(raw_offset) < 0:
-                return False
-        except (TypeError, ValueError):
-            return False
-    return True
+        return None
+    raw_offset = data.get("offset", 0)
+    offset = strict_integer(raw_offset)
+    if offset is None or offset < 0 or offset > MAX_READ_RANGE_INTEGER:
+        return None
+    if limit > MAX_READ_RANGE_INTEGER - offset:
+        return None
+    return offset, limit
+
+
+def bounded_line_range_requested(payload: dict[str, Any]) -> bool:
+    return large_read_range(payload) is not None
+
+
+def read_env_file_denied(path: Path) -> bool:
+    basename = path.name
+    return (
+        basename.casefold().startswith(".env")
+        and basename not in ALLOWED_ENV_TEMPLATE_BASENAMES
+    )
 
 
 def safe_label(path: Path, root: Path) -> str:
@@ -362,6 +407,79 @@ def regular_file_size_no_symlink(path: Path) -> int:
         os.close(fd)
 
 
+class ReadRangeProof(NamedTuple):
+    outcome: str
+    charged_bytes: int
+    scanned_bytes: int
+
+
+def stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int]:
+    mtime_ns = getattr(
+        stat_result,
+        "st_mtime_ns",
+        int(stat_result.st_mtime * 1_000_000_000),
+    )
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        mtime_ns,
+    )
+
+
+def prove_raw_read_range(
+    fd: int,
+    *,
+    file_size: int,
+    offset: int,
+    limit: int,
+    content_budget: int,
+    proof_budget: int,
+) -> ReadRangeProof:
+    """Prove a zero-based logical-line range from raw bytes on one open fd."""
+    if (
+        file_size < 0
+        or offset < 0
+        or limit <= 0
+        or content_budget < 0
+        or proof_budget <= 0
+        or offset > MAX_READ_RANGE_INTEGER
+        or limit > MAX_READ_RANGE_INTEGER - offset
+    ):
+        raise ValueError("invalid raw Read proof parameters")
+
+    selected_end = offset + limit
+    line_index = 0
+    charged_bytes = 0
+    scanned_bytes = 0
+    os.lseek(fd, 0, os.SEEK_SET)
+
+    while scanned_bytes < file_size and scanned_bytes < proof_budget:
+        remaining = min(
+            READ_PROOF_CHUNK_BYTES,
+            file_size - scanned_bytes,
+            proof_budget - scanned_bytes,
+        )
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            return ReadRangeProof("file_changed_during_proof", charged_bytes, scanned_bytes)
+        for byte in chunk:
+            scanned_bytes += 1
+            if byte == 0x0A:
+                line_index += 1
+                if line_index >= selected_end:
+                    return ReadRangeProof("allowed", charged_bytes, scanned_bytes)
+                continue
+            if offset <= line_index < selected_end:
+                charged_bytes += 1
+                if charged_bytes > content_budget:
+                    return ReadRangeProof("content_budget_exceeded", charged_bytes, scanned_bytes)
+
+    if scanned_bytes >= file_size:
+        return ReadRangeProof("allowed", charged_bytes, scanned_bytes)
+    return ReadRangeProof("proof_budget_exhausted", charged_bytes, scanned_bytes)
+
+
 def find_read_symbol_command() -> str:
     script_dir = Path(__file__).resolve().parent
     if (script_dir / "context-guard-read-symbol").exists():
@@ -473,10 +591,19 @@ def line_estimate(prefix: str, size: int, truncated: bool) -> str:
     return f"~{estimated} (estimated from first {lines})"
 
 
-def progressive_read_ladder(path: Path, label: str, size: int, limit: int, read_symbol: str) -> str:
+def progressive_read_ladder(
+    path: Path,
+    label: str,
+    size: int,
+    limit: int,
+    read_symbol: str,
+    *,
+    command_path: str | None = None,
+) -> str:
     prefix, prefix_truncated = read_prefix_for_outline(path)
     items = outline_items(path, prefix)
-    rg_cmd, symbol_cmd = suggested_commands(label, read_symbol)
+    actionable_path = command_path if command_path is not None else label
+    rg_cmd, symbol_cmd = suggested_commands(actionable_path, read_symbol)
     range_limit = min(max_line_range(), 120)
     parts = [
         f"[context-guard-kit] Large Read blocked for {label} ({size} bytes > {limit} byte guard).",
@@ -485,7 +612,7 @@ def progressive_read_ladder(path: Path, label: str, size: int, limit: int, read_
     ]
     if items:
         first_name = items[0].split(" ", 3)[-1].split(" ", 1)[-1]
-        read_parts = shlex.split(read_symbol) + [label, first_name]
+        read_parts = shlex.split(read_symbol) + [actionable_path, first_name]
         parts.append(f"2) Read a symbol slice: `{shlex.join(read_parts)}` (or `{symbol_cmd}`)")
     else:
         parts.append(f"2) Read a symbol slice when you know the name: `{symbol_cmd}`")
@@ -501,12 +628,111 @@ def progressive_read_ladder(path: Path, label: str, size: int, limit: int, read_
     return " ".join(parts)
 
 
-def read_guard_fingerprint(path: Path, label: str, size: int) -> str:
+def project_relative_path(path: Path, root: Path) -> str | None:
     try:
-        stat_result = path.stat()
-        mtime = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
-    except OSError:
+        normalized_path = Path(os.path.abspath(os.fspath(path)))
+        normalized_root = Path(os.path.abspath(os.fspath(root)))
+        return normalized_path.relative_to(normalized_root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def project_relative_command_path(path: Path, root: Path) -> str | None:
+    relative = project_relative_path(path, root)
+    if relative is None:
+        return None
+    if (
+        not relative
+        or len(relative) > PATH_LABEL_MAX_CHARS
+        or CONTROL_CHAR_RE.search(relative)
+        or hook_label_has_sensitive_evidence(relative)
+    ):
+        return None
+    return relative
+
+
+def read_proof_denial_reason(
+    outcome: str,
+    *,
+    path: Path,
+    root: Path,
+    size: int,
+    content_limit: int,
+    read_symbol: str,
+) -> str:
+    relative_project_path = project_relative_path(path, root)
+    relative_path = project_relative_command_path(path, root)
+    if outcome == "file_changed_during_proof":
+        if relative_project_path is None:
+            target = "an out-of-project file"
+        elif relative_path is None:
+            target = safe_label(path, root)
+        else:
+            target = f"project file `{shlex.quote(relative_path)}`"
+        return (
+            f"[context-guard-kit] Read blocked for {target}: file_changed_during_proof. "
+            "The same open file changed identity, size, or modification time during the bounded proof. "
+            "Stabilize the file and retry with a smaller positive limit. A later Read uses a separate open, "
+            "so replacement after this hook returns remains a TOCTOU limitation."
+        )
+
+    outcome_detail = {
+        "invalid_read_range": (
+            "Large files require a positive integer limit within the configured maximum and a "
+            "zero-based, nonnegative, nonoverflowing integer offset."
+        ),
+        "proof_budget_exhausted": (
+            "The guard could not prove the requested start/end boundary or EOF within the raw-byte proof budget."
+        ),
+        "content_budget_exceeded": (
+            "The selected logical-line content exceeds the byte guard; LF terminators are not charged, "
+            "but CR and EOF-final content bytes are."
+        ),
+    }.get(outcome, "The bounded raw-byte Read proof could not safely allow this request.")
+
+    if relative_project_path is None:
+        return (
+            f"[context-guard-kit] Large Read blocked for an out-of-project file "
+            f"({size} bytes > {content_limit} byte guard): {outcome}. {outcome_detail} "
+            "Use a smaller positive limit and lower zero-based offset, or first perform an explicitly "
+            "user-authorized path-visible operation. No executable path suggestion is emitted for path privacy."
+        )
+    if relative_path is None:
+        return (
+            f"[context-guard-kit] Large Read blocked for {safe_label(path, root)} "
+            f"({size} bytes > {content_limit} byte guard): {outcome}. {outcome_detail} "
+            "Use a smaller positive limit and lower zero-based offset. No executable path suggestion is emitted "
+            "because this project-relative path contains privacy-sensitive or non-command-safe bytes."
+        )
+
+    label = safe_label(path, root)
+    ladder = progressive_read_ladder(
+        path,
+        label,
+        size,
+        content_limit,
+        read_symbol,
+        command_path=relative_path,
+    )
+    return f"{ladder} Read proof outcome={outcome}. {outcome_detail}"
+
+
+def read_guard_fingerprint(
+    path: Path,
+    label: str,
+    size: int,
+    *,
+    stat_result: os.stat_result | None = None,
+) -> str:
+    if stat_result is None:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            stat_result = None
+    if stat_result is None:
         mtime = 0
+    else:
+        mtime = getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
     basis = f"{label}\0{size}\0{mtime}"
     return hashlib.sha256(basis.encode("utf-8", errors="replace")).hexdigest()[:16]
 
@@ -634,11 +860,21 @@ def main() -> int:
         print("{}")
         return 0
     root = Path.cwd().resolve()
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    path = normalize_allowed_first_absolute_symlink(path)
-    if has_symlink_component(path):
+    try:
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        path = Path(os.path.abspath(os.fspath(path)))
+        path = normalize_allowed_first_absolute_symlink(path)
+        traverses_symlink = has_symlink_component(path)
+    except (OSError, RuntimeError, ValueError):
+        reason = (
+            "[context-guard-kit] Read blocked because the requested file path could not be normalized safely. "
+            "Retry with a valid, explicit file path."
+        )
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
+        return 0
+    if traverses_symlink:
         label = safe_label(path, root)
         reason = (
             f"[context-guard-kit] Read blocked for {label}: requested path traverses a symlink. "
@@ -646,10 +882,52 @@ def main() -> int:
         )
         print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
+    if read_env_file_denied(path):
+        reason = (
+            "[context-guard-kit] Read blocked by the Read-only environment-file policy: the normalized basename "
+            "begins with .env and is not exactly .env.example, .env.sample, or .env.template. "
+            "This hook protects Claude Read only; Glob name listings, Grep, and Bash/process access are out of scope."
+        )
+        print(json.dumps(deny_response(reason), ensure_ascii=False))
+        return 0
+    content_limit = max_bytes()
+    size = 0
+    initial_stat: os.stat_result | None = None
+    outcome = "invalid_read_range"
+    fd = -1
     try:
-        size = regular_file_size_no_symlink(path)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
+        fd = open_regular_no_symlink(path)
+        initial_stat = os.fstat(fd)
+        size = initial_stat.st_size
+        if size <= content_limit:
+            print("{}")
+            return 0
+
+        requested_range = large_read_range(payload)
+        if requested_range is not None:
+            offset, line_limit = requested_range
+            try:
+                proof = prove_raw_read_range(
+                    fd,
+                    file_size=size,
+                    offset=offset,
+                    limit=line_limit,
+                    content_budget=content_limit,
+                    proof_budget=read_proof_bytes(),
+                )
+                outcome = proof.outcome
+            except (OSError, ValueError):
+                outcome = "read_proof_failed"
+            try:
+                final_stat = os.fstat(fd)
+            except OSError:
+                outcome = "file_changed_during_proof"
+            else:
+                if stat_identity(initial_stat) != stat_identity(final_stat):
+                    outcome = "file_changed_during_proof"
+    except (OSError, ValueError) as exc:
+        error_number = getattr(exc, "errno", None)
+        if error_number == errno.ELOOP:
             label = safe_label(path, root)
             reason = (
                 f"[context-guard-kit] Read blocked for {label}: requested path traverses a symlink. "
@@ -657,34 +935,49 @@ def main() -> int:
             )
             print(json.dumps(deny_response(reason), ensure_ascii=False))
             return 0
-        if exc.errno in {errno.EINVAL, errno.ENOTDIR, errno.ENOENT}:
+        if error_number == errno.ENOENT:
             print("{}")
             return 0
         label = safe_label(path, root)
-        detail = compact_hook_text(exc.strerror or exc.__class__.__name__, 80)
+        detail = compact_hook_text(getattr(exc, "strerror", "") or exc.__class__.__name__, 80)
         print(f"context-guard-guard-read: could not safely inspect requested file: {detail}", file=sys.stderr)
-        reason = (
-            f"[context-guard-kit] Read blocked for {label}: the guard could not safely inspect the file "
-            f"({detail}). Use a bounded line range or verify the path locally first."
-        )
+        if error_number in {errno.EINVAL, errno.ENOTDIR, errno.EISDIR}:
+            reason = (
+                f"[context-guard-kit] Read blocked for {label}: requested path is not a regular file. "
+                "Use a real, non-symlink file path before reading."
+            )
+        else:
+            reason = (
+                f"[context-guard-kit] Read blocked for {label}: the guard could not safely inspect the file "
+                f"({detail}). Use a bounded line range or verify the path locally first."
+            )
         print(json.dumps(deny_response(reason), ensure_ascii=False))
         return 0
+    finally:
+        if fd != -1:
+            os.close(fd)
 
-    limit = max_bytes()
-    if size <= limit:
-        print("{}")
-        return 0
-    if bounded_line_range_requested(payload):
+    if outcome == "allowed":
         print("{}")
         return 0
 
     label = safe_label(path, root)
     read_symbol = find_read_symbol_command()
     try:
-        attempt_count = record_read_guard_attempt(root, read_guard_fingerprint(path, label, size))
+        attempt_count = record_read_guard_attempt(
+            root,
+            read_guard_fingerprint(path, label, size, stat_result=initial_stat),
+        )
     except Exception:
         attempt_count = 1
-    reason = progressive_read_ladder(path, label, size, limit, read_symbol) + repeated_read_hint(attempt_count)
+    reason = read_proof_denial_reason(
+        outcome,
+        path=path,
+        root=root,
+        size=size,
+        content_limit=content_limit,
+        read_symbol=read_symbol,
+    ) + repeated_read_hint(attempt_count)
     print(json.dumps(deny_response(reason), ensure_ascii=False))
     return 0
 

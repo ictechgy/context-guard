@@ -193,15 +193,13 @@ Claude Code 자체는 `cache_control` TTL을 사용자가 직접 지정하지 �
       "Read(./build/**)",
       "Read(./coverage/**)",
       "Read(./tmp/**)",
-      "Read(./logs/**)",
-      "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./logs/**)"
     ]
   }
 }
 ```
 
-민감 파일 차단은 보안과 토큰 절감이 동시에 된다.
+`.env*` 내용 정책은 위의 `permissions.deny` 예시가 아니라 설치된 Claude Code `PreToolUse`의 `Read` matcher 훅이 담당한다. 이 훅은 basename이 `.env`로 시작하는 root/중첩 경로를 차단하되 정확한 템플릿 이름 `.env.example`, `.env.sample`, `.env.template`은 허용한다. `Glob`은 이름을 나열할 수 있고, `Grep`과 `Bash`는 파일 내용을 읽을 수 있지만 이 Read 훅의 범위 밖이다. 따라서 이는 범용 `.env` 또는 Bash 보호가 아니다. 훅이 no-follow로 연 descriptor를 재검증한 뒤에도 실제 Claude `Read`가 별도로 파일을 다시 열므로 post-hook TOCTOU 구간은 남는다.
 
 ### 3.3 MCP를 “기본 off, 필요할 때 on”으로
 
@@ -359,9 +357,7 @@ python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --t
       "Read(./build/**)",
       "Read(./coverage/**)",
       "Read(./logs/**)",
-      "Read(./tmp/**)",
-      "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./tmp/**)"
     ]
   },
   "hooks": {
@@ -372,6 +368,15 @@ python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --t
           {
             "type": "command",
             "command": "python3 context-guard-kit/rewrite_bash_for_token_budget.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 context-guard-kit/guard_large_read.py"
           }
         ]
       }

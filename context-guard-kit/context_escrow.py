@@ -144,8 +144,14 @@ def compact_items(lines: Iterable[str], *, limit: int, max_chars: int = MAX_LINE
 
 
 class FallbackLineSanitizer:
-    def __init__(self, *, show_paths: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        show_paths: bool = False,
+        context: str = "unknown_text",
+    ) -> None:
         self.show_paths = show_paths
+        self.context = context
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -161,7 +167,32 @@ class FallbackLineSanitizer:
         return line, bool(count)
 
 
-def load_line_sanitizer(show_paths: bool) -> object:
+def instantiate_line_sanitizer(
+    factory: object,
+    *,
+    show_paths: bool,
+    context: str,
+    private_roots: tuple[str, ...] = (),
+) -> object:
+    try:
+        return factory(  # type: ignore[operator]
+            show_paths=show_paths,
+            context=context,
+            private_roots=private_roots,
+        )
+    except TypeError:
+        if context != "unknown_text" or private_roots:
+            raise RuntimeError(
+                "adjacent sanitizer does not support required explicit context"
+            )
+        return factory(show_paths=show_paths)  # type: ignore[operator]
+
+
+def load_line_sanitizer(
+    show_paths: bool,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> object:
     script_dir = Path(__file__).resolve().parent
     for name in ("sanitize_output.py", "context-guard-sanitize-output", "claude-sanitize-output"):
         candidate = script_dir / name
@@ -173,15 +204,35 @@ def load_line_sanitizer(show_paths: bool) -> object:
             if spec is None:
                 raise RuntimeError("import spec unavailable")
             module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
-            return module.LineSanitizer(show_paths=show_paths)
+            sys.modules[loader.name] = module
+            try:
+                loader.exec_module(module)
+            except Exception:
+                sys.modules.pop(loader.name, None)
+                raise
+            return instantiate_line_sanitizer(
+                module.LineSanitizer,
+                show_paths=show_paths,
+                context=context,
+                private_roots=private_roots,
+            )
         except Exception as exc:
             raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
-    return FallbackLineSanitizer(show_paths=show_paths)
+    return FallbackLineSanitizer(show_paths=show_paths, context=context)
 
 
-def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
-    sanitizer = load_line_sanitizer(show_paths)
+def sanitize_text(
+    text: str,
+    *,
+    show_paths: bool = False,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> tuple[str, int]:
+    sanitizer = load_line_sanitizer(
+        show_paths,
+        context=context,
+        private_roots=private_roots,
+    )
     redacted = 0
     out: list[str] = []
     for line in text.splitlines(True):
@@ -193,7 +244,11 @@ def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
 
 
 def sanitize_one_line(text: str, *, show_paths: bool = False) -> str:
-    sanitized, _ = sanitize_text(text + "\n", show_paths=show_paths)
+    sanitized, _ = sanitize_text(
+        text + "\n",
+        show_paths=show_paths,
+        context="unknown_text",
+    )
     return cap_utf8_bytes(cap_line(" ".join(sanitized.strip().split())), MAX_COMMAND_PREVIEW_BYTES)
 
 
@@ -1103,7 +1158,12 @@ def store_command(args: argparse.Namespace) -> int:
     directory = normalize_allowed_first_absolute_symlink(Path(args.dir).expanduser())
     max_bytes = bounded_int(args.max_bytes, DEFAULT_MAX_BYTES, 1, MAX_MAX_BYTES)
     raw_text, input_truncated, input_bytes = read_bounded_stdin(max_bytes)
-    sanitized_text, redacted_lines = sanitize_text(raw_text, show_paths=args.show_paths)
+    sanitized_text, redacted_lines = sanitize_text(
+        raw_text,
+        show_paths=args.show_paths,
+        context=args.sanitize_context,
+        private_roots=tuple(args.private_root),
+    )
     content_bytes = len(sanitized_text.encode("utf-8", errors="replace"))
     content_sha = hashlib.sha256(sanitized_text.encode("utf-8", errors="replace")).hexdigest()
     command_preview = sanitize_one_line(args.command or "", show_paths=args.show_paths) if args.command else None
@@ -1125,6 +1185,10 @@ def store_command(args: argparse.Namespace) -> int:
         "created_at": int(time.time()),
         "command_preview": command_preview,
         "content_type": content_type,
+        "sanitization": {
+            "context": args.sanitize_context,
+            "redacted_lines": redacted_lines,
+        },
         "input": {
             "bytes_read": input_bytes,
             "truncated": input_truncated,
@@ -1681,6 +1745,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-paths",
         action="store_true",
         help="show raw absolute paths instead of path hashes; local debugging only because private paths may be exposed",
+    )
+    store.add_argument(
+        "--sanitize-context",
+        choices=(
+            "unknown_text",
+            "command_search_diff",
+            "filesystem_listing",
+            "source_code",
+        ),
+        default="unknown_text",
+        help="persist the declared input origin used for sanitization",
+    )
+    store.add_argument(
+        "--private-root",
+        action="append",
+        default=[],
+        help="private root for filesystem_listing sanitization; may be repeated",
     )
     store.add_argument("--json", action="store_true", help="emit receipt JSON")
     store.set_defaults(func=store_command)

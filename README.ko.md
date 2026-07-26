@@ -95,6 +95,18 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 사전 정의된 세 레벨이 [`plugins/context-guard/brief/`](plugins/context-guard/brief/)에 포함됩니다: `lite`, `standard`, `ultra`. 각 레벨은 에이전트 규칙·지시 파일(`AGENTS.md`, `CLAUDE.md`, Cursor 규칙 파일, Copilot 지시 등)에 들어가는 마커 구분 블록입니다. `context-guard setup --agent codex --scope project --brief-mode standard --plan`으로 미리 보고, 적용은 `--yes`로 다시 실행하며, 제거는 `--brief-mode off`를 사용하세요. 자세한 내용은 [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md)를 참고하세요.
 
+## Claude 조용한 진행 설명 (안내용)
+
+조용한 진행 설명은 기본적으로 꺼져 있는 별도의 Claude 전용 규칙입니다. 선택적 사전 설명, 도구별 진행 중계, 군더더기, 반복 중간 요약은 줄이지만 승인·결정 요청, 차단 요인, 실패, 파괴적 작업·보안 경고, 상위 우선순위가 요구하는 진행 보고, 최종 결과, 변경 파일, 검증 결과는 유지합니다. 최종 답변의 간결성이나 추론 깊이와는 별개인 최선 노력 규칙이며, 토큰·비용 절감을 **보장하지 않습니다.**
+
+```bash
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --plan
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --yes
+context-guard setup --rules-only --agent claude --scope project --narration-mode default --yes
+```
+
+이 격리된 작업은 프로젝트 `CLAUDE.md` 안의 ContextGuard narration 구간만 관리합니다. Claude settings, hook, permission, statusline, model default 또는 다른 에이전트 규칙 파일은 읽거나 바꾸지 않습니다. brief mode, 초기화, skill 생성 또는 일반 setup 작업과 함께 사용할 수 없습니다. Gate C는 정적 규칙과 setup 부작용만 검증하며 모델의 준수나 수치 절감 주장을 증명하지 않습니다.
+
 ## 직접 측정하는 방법
 
 절감 수치가 필요하면 실제 작업에서 직접 측정하세요.
@@ -233,6 +245,19 @@ context-guard setup --agent claude --scope user --verify --json
 ```
 
 선택형 Read 가드는 큰 파일에 대해 검색 → 심볼 구간 → 작은 줄 범위 순서의 단계적 축소 전략을 제안합니다. 가능하면 제한된 최상위 개요도 함께 보여줍니다. 같은 대용량 파일을 반복해서 전체 읽으려 하면 중복 읽기 경고를 표시해 같은 컨텍스트 낭비 경로를 반복하지 않게 합니다.
+
+적용 범위는 의도적으로 Claude Code `PreToolUse`의 `Read` matcher 훅으로 한정됩니다.
+
+이 Read 가드를 선택하면 setup은 기존 deny 값 중 정확히 `Read(./.env)`와 `Read(./.env.*)`만 제거합니다. 비슷한 permission 항목과 그 상대적 순서는 유지합니다.
+
+| Claude 도구 | 보호 범위 |
+| --- | --- |
+| `Read` | 제한된 대용량 파일 범위를 검사하고, basename이 `.env`로 시작하면 차단합니다. 단, 정확히 `.env.example`, `.env.sample`, `.env.template`인 템플릿 이름은 허용합니다. 중첩 경로도 포함하며 symlink 여부가 모호하면 닫힌 상태로 실패합니다. |
+| `Glob` | 일치하는 이름을 나열할 수 있습니다. 이 `Read` 훅을 통해 파일 내용을 읽지는 않습니다. |
+| `Grep` | 이 훅의 범위 밖이며 일치하는 파일 내용을 읽을 수 있습니다. |
+| `Bash` | 이 훅의 범위 밖이며 파일 내용을 읽을 수 있습니다. |
+
+이는 Claude `Read` 보호이지 범용 `.env` 보호나 Bash 보호가 아닙니다. 훅은 symlink를 따라가지 않고 직접 연 파일 descriptor의 상태를 다시 검증하지만, 실제 Claude `Read`는 훅이 반환된 뒤 파일을 다시 엽니다. 그 사이 파일이 교체될 수 있는 post-hook 구간은 문서화된 TOCTOU 한계입니다.
 
 ### 큰 로그를 로컬에 저장하고 필요한 부분만 조회
 

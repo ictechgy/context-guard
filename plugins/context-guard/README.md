@@ -119,6 +119,12 @@ Opt-in `build`/`auto --sketch-duplicate-veto` applies a rank-stable pre-budget g
 - **Repeated-failure nudge** warns after repeated Bash failures so the agent switches strategy instead of retrying the same context-heavy path.
 - **Benchmark helper** records matched baseline/variant runs with real token and cost fields, separate byte-reduction proxy evidence, diagnostic `wall_time_seconds`, `provider_cached_tokens`, provider-cache availability telemetry, a report-level measurement-baseline contract, file-backed `variant_prompt_files`, and optional per-run `self_hosted_metrics` JSONL ledger sidecars that stay out of hosted API savings claims.
 
+### Exact Claude Read surface
+
+The installed guard is a Claude Code `PreToolUse` hook with matcher `Read`. When selected, setup removes only the exact legacy deny values `Read(./.env)` and `Read(./.env.*)` while preserving similar entries and their relative order. The hook checks bounded large-file ranges and denies root or nested paths whose basename begins `.env`, except the exact template names `.env.example`, `.env.sample`, and `.env.template`; ambiguous symlink paths fail closed. `Glob` can still list names. `Grep` and `Bash` can read file contents and are outside this hook. This is not universal `.env` or Bash protection.
+
+The hook opens without following symlinks and revalidates identity, size, and modification time on that descriptor. Claude performs the actual `Read` with a separate open after the hook returns, so replacement during that post-hook window remains a documented TOCTOU limitation.
+
 Cost guard creates its local HMAC key automatically at `.context-guard/cost-ledger/hmac.key`. If you provision that file yourself, it must contain exactly one canonical URL-safe base64 32-byte key with required padding and no trailing newline or whitespace. Reports never emit the key or raw prompt text, and the local ledger does not replace Anthropic/provider prompt caching.
 
 ## Brief mode (advisory)
@@ -126,6 +132,18 @@ Cost guard creates its local HMAC key automatically at `.context-guard/cost-ledg
 Brief mode ships agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee any token or cost savings.
 
 Three deterministic levels — `lite`, `standard`, `ultra` — live under [`brief/`](brief/). Each is a single marker-delimited block for an agent's rule/instruction file (such as `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Use `context-guard setup --agent codex --scope project --brief-mode standard --plan`, apply with `--yes`, and remove with `--brief-mode off`. See [`brief/README.md`](brief/README.md).
+
+## Quiet narration for Claude (advisory)
+
+Quiet narration is a separate, default-off Claude-only rule that suppresses discretionary preambles, per-tool narration, filler, and repeated interim summaries while preserving approvals and decisions, blockers, failures, destructive or security warnings, required progress, the final result, changed files, and verification.
+
+```bash
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --plan
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --yes
+context-guard setup --rules-only --agent claude --scope project --narration-mode default --yes
+```
+
+The isolated operation manages only ContextGuard's narration span in project `CLAUDE.md`; it does not read or change settings, hooks, or other agents' files and cannot be combined with normal setup actions. The rule is best-effort, independent of final-answer brevity or reasoning depth, and Gate C makes no model-compliance or savings claim.
 
 ## Conservative claims
 

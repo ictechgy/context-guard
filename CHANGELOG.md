@@ -4,6 +4,8 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Added a default-off, Claude-only quiet-narration rule managed through a dedicated rules-only setup path. It suppresses discretionary narration while preserving approvals, blockers, failures, safety warnings, final results, changed files, and verification; it does not activate settings or hooks or claim guaranteed savings.
+
 ## [0.4.15] - 2026-07-15
 
 - Added conservative plan-only and evaluation-only proof-carrying-context, semantic-GC, and image-context-pack surfaces without enabling automatic omission, renderer/OCR/provider/proxy execution, promotion authority, or hosted savings claims.

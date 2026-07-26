@@ -160,6 +160,10 @@ def build_copy_specs(root: Path = ROOT) -> list[CopySpec]:
         CopySpec(kit_dir / kit_name, plugin_dir / rel, 0o644, root)
         for kit_name, rel in prepublish_check.HELPER_PAIRS
     )
+    specs.extend(
+        CopySpec(kit_dir / kit_rel, plugin_dir / plugin_rel, 0o644, root)
+        for kit_rel, plugin_rel in prepublish_check.ASSET_PAIRS
+    )
     return specs
 
 

@@ -110,6 +110,12 @@ context-guard-statusline-merged
 - **반복 실패 알림**은 Bash 실패가 반복될 때 같은 경로를 계속 재시도하지 않고 전략을 바꾸도록 안내합니다.
 - **벤치마크 헬퍼**는 기준/변형 실행을 대응해 실제 토큰·비용 필드, 별도의 바이트 감소 간접 증거, 진단용 `wall_time_seconds`, `provider_cached_tokens`, provider-cache 사용 가능성 텔레메트리, report-level measurement-baseline contract, 파일 기반 `variant_prompt_files`, 선택적 run별 `self_hosted_metrics` JSONL ledger sidecar를 기록합니다. 이 sidecar는 hosted API 절감 주장에 합치지 않습니다.
 
+### Claude Read의 정확한 적용 범위
+
+설치되는 가드는 Claude Code `PreToolUse`의 `Read` matcher 훅입니다. 이 가드를 선택하면 setup은 기존 deny 값 중 정확히 `Read(./.env)`와 `Read(./.env.*)`만 제거하고, 비슷한 항목과 상대적 순서는 유지합니다. 훅은 제한된 대용량 파일 범위를 검사하고, root 또는 중첩 경로의 basename이 `.env`로 시작하면 차단합니다. 단, 정확히 `.env.example`, `.env.sample`, `.env.template`인 템플릿 이름은 허용하며 symlink 여부가 모호하면 차단합니다. `Glob`은 이름을 나열할 수 있습니다. `Grep`과 `Bash`는 파일 내용을 읽을 수 있고 이 훅의 범위 밖입니다. 이는 범용 `.env` 보호나 Bash 보호가 아닙니다.
+
+훅은 symlink를 따라가지 않고 파일을 열어 같은 descriptor의 identity, size, modification time을 다시 검증합니다. 실제 Claude `Read`는 훅 반환 뒤 별도로 파일을 열기 때문에, 그 post-hook 구간의 파일 교체 가능성은 문서화된 TOCTOU 한계로 남습니다.
+
 비용 가드의 로컬 HMAC 키는 기본적으로 `.context-guard/cost-ledger/hmac.key`에 자동 생성됩니다. 관리자가 직접 주입하는 경우 파일에는 필수 padding을 포함한 canonical URL-safe base64 32바이트 키만 정확히 들어 있어야 하며, trailing newline이나 공백은 허용하지 않습니다. 리포트는 키와 원문 프롬프트를 출력하지 않고, 로컬 ledger는 Anthropic/provider prompt cache를 대체하지 않습니다.
 
 ## brief 모드 (안내용)
@@ -117,6 +123,18 @@ context-guard-statusline-merged
 brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되, 증거(파일 경로, 명령, 명령 출력과 오류, 코드 블록, 검증 상태, 변경 파일, 남은 과제, 주의사항)는 유지하게 돕는 에이전트 중립·안내용 규칙 스니펫을 제공합니다. 강제가 아니라 최선 노력 안내이며, 토큰·비용 절감을 **보장하지 않습니다.**
 
 세 가지 고정 레벨(`lite`, `standard`, `ultra`)이 [`brief/`](brief/)에 있습니다. 각 레벨은 에이전트 규칙·지시 파일(`AGENTS.md`, `CLAUDE.md`, Cursor 규칙 파일, Copilot 지시 등)에 들어가는 마커 구분 블록입니다. `context-guard setup --agent codex --scope project --brief-mode standard --plan`으로 미리 보고, `--yes`로 적용하며, 제거는 `--brief-mode off`를 사용하세요. 자세한 내용은 [`brief/README.md`](brief/README.md)를 참고하세요.
+
+## Claude 조용한 진행 설명 (안내용)
+
+조용한 진행 설명은 기본적으로 꺼져 있는 별도의 Claude 전용 규칙입니다. 선택적 사전 설명, 도구별 진행 중계, 군더기, 반복 중간 요약은 줄이되 승인·결정, 차단 요인, 실패, 파괴적 작업·보안 경고, 필수 진행 보고, 최종 결과, 변경 파일, 검증 결과는 유지합니다.
+
+```bash
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --plan
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --yes
+context-guard setup --rules-only --agent claude --scope project --narration-mode default --yes
+```
+
+이 격리된 작업은 프로젝트 `CLAUDE.md`의 ContextGuard narration 구간만 관리하며 settings, hook 또는 다른 에이전트 파일을 읽거나 바꾸지 않고 일반 setup 작업과 함께 사용할 수 없습니다. 최종 답변의 간결성·추론 깊이와 별개인 최선 노력 규칙이며, Gate C는 모델 준수나 절감 효과를 주장하지 않습니다.
 
 ## 절감 수치를 과장하지 않습니다
 

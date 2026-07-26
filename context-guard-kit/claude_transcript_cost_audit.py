@@ -23,6 +23,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REDUCER_DIR = _SCRIPT_DIR
+if not (_REDUCER_DIR / "transcript_usage_reducer.py").is_file():
+    _REDUCER_DIR = _SCRIPT_DIR.parent / "lib"
+if str(_REDUCER_DIR) not in sys.path:
+    sys.path.insert(0, str(_REDUCER_DIR))
+
+from transcript_usage_reducer import (  # noqa: E402
+    REDUCER_SCHEMA,
+    UsageReducer,
+    hash_file_identity,
+)
+
 TOKEN_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("input", ("input_tokens",)),
     ("output", ("output_tokens",)),
@@ -188,6 +201,9 @@ class UsageSummary:
     cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     positive_cache_record_timestamps: list[_dt.datetime] = field(default_factory=list)
     prompt_cache_audit: PromptCacheAudit = field(default_factory=PromptCacheAudit)
+    usage_reducer_schema: str = REDUCER_SCHEMA
+    usage_reducer_counters: Counter[str] = field(default_factory=Counter)
+    usage_reducer_partial: bool = False
     cache_friendliness_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
     cache_diagnostics_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
     cache_layout_advice_cache: dict[str, Any] | None = field(default=None, init=False, repr=False)
@@ -242,11 +258,7 @@ def iter_jsonl_files(paths: Iterable[str]) -> Iterable[Path]:
         if path.is_file() and path.suffix in {".jsonl", ".json"}:
             candidates = [path]
         elif path.is_dir():
-            candidates = (
-                candidate
-                for pattern in ("*.jsonl", "*.json")
-                for candidate in path.rglob(pattern)
-            )
+            candidates = sorted(path.rglob("*.jsonl"))
         else:
             continue
         for candidate in candidates:
@@ -720,53 +732,9 @@ def add_usage(
     show_paths: bool = False,
     show_commands: bool = False,
 ) -> RecordUsage:
-    root_model = None
-    root_query_source = None
-    parsed_timestamp = None
-    if isinstance(root, dict):
-        root_model = first_string(root, MODEL_KEYS)
-        root_query_source = first_string(root, QUERY_SOURCE_KEYS)
-        parsed_timestamp = record_timestamp(root)
-
     record = RecordUsage()
-    cache_telemetry_present = False
-    positive_cache_telemetry_present = False
     summary.prompt_cache_audit.observe(root)
     for d in walk(root):
-        local_tokens: Counter[str] = Counter()
-        present_buckets = add_token_groups(local_tokens, d)
-
-        # OpenTelemetry-style records sometimes use {name, value, attributes.type}.
-        name = d.get("name") or d.get("metric")
-        if name == "claude_code.token.usage":
-            value = d.get("value")
-            if value is None:
-                value = d.get("sum")
-            if value is None:
-                value = d.get("count")
-            attrs = d.get("attributes") or {}
-            token_type = attrs.get("type", "unknown") if isinstance(attrs, dict) else "unknown"
-            metric = finite_nonnegative_number(value, clamp_negative=True)
-            if metric is not None:
-                bucket = normalize_token_bucket(str(token_type))
-                local_tokens[bucket] += int(metric)
-                present_buckets.add(bucket)
-
-        for bucket in present_buckets:
-            summary.token_field_presence[bucket] += 1
-        if "cache_read" in present_buckets or "cache_creation" in present_buckets:
-            cache_telemetry_present = True
-            if local_tokens.get("cache_read", 0) > 0 or local_tokens.get("cache_creation", 0) > 0:
-                positive_cache_telemetry_present = True
-
-        if local_tokens:
-            summary.tokens.update(local_tokens)
-            record.tokens.update(local_tokens)
-            model = sanitize_label(first_string(d, MODEL_KEYS) or root_model or "unknown", 80)
-            query_source = sanitize_label(first_string(d, QUERY_SOURCE_KEYS) or root_query_source or "unknown", 80)
-            summary.by_model[model].update(local_tokens)
-            summary.by_query_source[query_source].update(local_tokens)
-
         for key in COST_KEYS:
             val = d.get(key)
             metric = finite_nonnegative_number(val, clamp_negative=False)
@@ -776,17 +744,11 @@ def add_usage(
                 record.cost_usd += cost
                 summary.cost_field_count += 1
                 break
-    if parsed_timestamp is not None and cache_telemetry_present:
-        summary.cache_record_timestamps.append(parsed_timestamp)
-    if parsed_timestamp is not None and positive_cache_telemetry_present:
-        summary.positive_cache_record_timestamps.append(parsed_timestamp)
     commands, tools = collect_record_hints(root, show_commands=show_commands)
     record.commands = commands
     record.tools = tools
-    record_total = sum(record.tokens.values())
-    if file is not None and (record_total or record.cost_usd):
+    if file is not None and record.cost_usd:
         file_key = path_label(file, show_paths=show_paths)
-        summary.by_file[file_key] += record_total
         summary.cost_by_file[file_key] += record.cost_usd
     for command in commands:
         summary.by_command[command] += 1
@@ -805,6 +767,42 @@ def parse_json_line(line: str) -> Any:
     return json.loads(line)
 
 
+def _apply_usage_reduction(
+    summary: UsageSummary,
+    reducer: UsageReducer,
+    row_metadata: dict[int, tuple[Path, str]],
+    *,
+    show_paths: bool,
+) -> None:
+    reduction = reducer.finalize()
+    summary.usage_reducer_schema = reduction.schema
+    summary.usage_reducer_counters.update(reduction.counters)
+    summary.usage_reducer_partial = reduction.partial
+    summary.tokens.update(reduction.tokens)
+    for selection in reduction.selections:
+        local_tokens = Counter(selection.tokens)
+        for bucket in selection.present_buckets:
+            summary.token_field_presence[bucket] += 1
+        if local_tokens:
+            model = sanitize_label(selection.model, 80)
+            summary.by_model[model].update(local_tokens)
+        metadata = row_metadata.get(selection.row_ordinal)
+        if metadata is not None:
+            file, query_source = metadata
+            if local_tokens:
+                summary.by_query_source[query_source].update(local_tokens)
+                summary.by_file[path_label(file, show_paths=show_paths)] += sum(local_tokens.values())
+        cache_present = bool({"cache_read", "cache_creation"} & set(selection.present_buckets))
+        positive_cache = (
+            selection.tokens.get("cache_read", 0) > 0
+            or selection.tokens.get("cache_creation", 0) > 0
+        )
+        if selection.timestamp is not None and cache_present:
+            summary.cache_record_timestamps.append(selection.timestamp)
+        if selection.timestamp is not None and positive_cache:
+            summary.positive_cache_record_timestamps.append(selection.timestamp)
+
+
 def scan(
     paths: list[str],
     show_paths: bool = False,
@@ -813,6 +811,38 @@ def scan(
 ) -> UsageSummary:
     limits = limits or ScanLimits()
     summary = UsageSummary()
+    reducer = UsageReducer()
+    row_metadata: dict[int, tuple[Path, str]] = {}
+    file_identities: dict[Path, str] = {}
+    next_ordinal = 0
+
+    def observe_row(file: Path, obj: Any, location: str) -> None:
+        nonlocal next_ordinal
+        if not isinstance(obj, dict):
+            summary.skipped_records += 1
+            reducer.note_invalid_row()
+            summary.note_error(
+                f"{path_label(file, show_paths=show_paths)}:{location}: "
+                "skipped non-object transcript row"
+            )
+            return
+        ordinal = next_ordinal
+        next_ordinal += 1
+        summary.records += 1
+        query_source = sanitize_label(first_string(obj, QUERY_SOURCE_KEYS) or "unknown", 80)
+        file_identity = file_identities.get(file)
+        if file_identity is None:
+            file_identity = hash_file_identity(file)
+            file_identities[file] = file_identity
+        accepted = reducer.observe(
+            obj,
+            file_identity=file_identity,
+            row_ordinal=ordinal,
+        )
+        if accepted:
+            row_metadata[ordinal] = (file, query_source)
+        add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
+
     for file in iter_jsonl_files(paths):
         if summary.files >= limits.max_files:
             summary.skipped_files += 1
@@ -834,9 +864,35 @@ def scan(
                         f"({size} bytes > {limits.max_file_bytes})"
                     )
                     continue
+                if file.suffix == ".json":
+                    try:
+                        raw = handle.read(size + 1)
+                        parsed = parse_json_line(raw.decode("utf-8", errors="strict"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        summary.skipped_records += 1
+                        reducer.note_invalid_row()
+                        reason = "invalid UTF-8" if isinstance(exc, UnicodeDecodeError) else exc.msg
+                        summary.note_error(
+                            f"{path_label(file, show_paths=show_paths)}: JSON parse error: {reason}"
+                        )
+                        continue
+                    except RecursionError:
+                        summary.skipped_records += 1
+                        reducer.note_invalid_row()
+                        summary.note_error(
+                            f"{path_label(file, show_paths=show_paths)}: "
+                            "JSON parse error: nested JSON exceeds supported depth"
+                        )
+                        continue
+                    rows = parsed if isinstance(parsed, list) else [parsed]
+                    for index, obj in enumerate(rows):
+                        observe_row(file, obj, f"item-{index}")
+                    continue
+
                 for line_no, line in iter_bounded_lines(handle, limits.max_line_bytes):
                     if line is None:
                         summary.skipped_records += 1
+                        reducer.note_invalid_row()
                         summary.note_error(
                             f"{path_label(file, show_paths=show_paths)}:{line_no}: "
                             f"skipped oversized JSONL record (> {limits.max_line_bytes} bytes)"
@@ -849,18 +905,26 @@ def scan(
                         obj = parse_json_line(line)
                     except json.JSONDecodeError as exc:
                         summary.skipped_records += 1
-                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: {exc.msg}")
+                        reducer.note_invalid_row()
+                        summary.note_error(
+                            f"{path_label(file, show_paths=show_paths)}:{line_no}: "
+                            f"JSON parse error: {exc.msg}"
+                        )
                         continue
-                    except RecursionError as exc:
+                    except RecursionError:
                         summary.skipped_records += 1
-                        summary.note_error(f"{path_label(file, show_paths=show_paths)}:{line_no}: JSON parse error: nested JSON exceeds supported depth")
+                        reducer.note_invalid_row()
+                        summary.note_error(
+                            f"{path_label(file, show_paths=show_paths)}:{line_no}: "
+                            "JSON parse error: nested JSON exceeds supported depth"
+                        )
                         continue
-                    summary.records += 1
-                    add_usage(summary, obj, file, show_paths=show_paths, show_commands=show_commands)
+                    observe_row(file, obj, f"line-{line_no}")
         except OSError as exc:
             summary.skipped_files += 1
             summary.note_error(f"{path_label(file, show_paths=show_paths)}: read error: {os_error_summary(exc)}")
             continue
+    _apply_usage_reduction(summary, reducer, row_metadata, show_paths=show_paths)
     return summary
 
 
@@ -933,7 +997,7 @@ def build_headroom_availability(summary: UsageSummary) -> dict[str, Any]:
 
 def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
     skipped = summary.skipped_files + summary.skipped_records
-    complete = skipped == 0 and not summary.parse_errors
+    complete = skipped == 0 and not summary.parse_errors and not summary.usage_reducer_partial
     return {
         "status": "complete" if complete else "partial",
         "files_scanned": summary.files,
@@ -943,6 +1007,12 @@ def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
         "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_error_count": len(summary.parse_errors),
+        "usage_reducer_schema": summary.usage_reducer_schema,
+        "usage_reducer_partial": summary.usage_reducer_partial,
+        "usage_conflict": summary.usage_reducer_counters.get("usage_conflict", 0),
+        "numeric_overflow": summary.usage_reducer_counters.get("numeric_overflow", 0),
+        "invalid_numeric": summary.usage_reducer_counters.get("invalid_numeric", 0),
+        "no_id_fallback": summary.usage_reducer_counters.get("no_id_fallback", 0),
         "complete": complete,
         "reason": (
             "All candidate transcript files/records were parsed within configured limits."
@@ -1987,7 +2057,8 @@ def build_recommendations(summary: UsageSummary, top: int) -> list[dict[str, Any
                 rec["confidence"] = finding.get("confidence")
             recs.append(rec)
             break
-    if output_tokens >= 5_000 or output_ratio >= 0.35:
+    has_command_or_tool_evidence = bool(summary.by_command or summary.by_tool)
+    if has_command_or_tool_evidence and (output_tokens >= 5_000 or output_ratio >= 0.35):
         recs.append(recommendation(
             "trim-output-heavy-sessions",
             "Output tokens are a major hotspot",
@@ -2171,6 +2242,7 @@ def summary_json(
         "scan_truncated": summary.scan_truncated,
         "skipped_records": summary.skipped_records,
         "parse_errors": summary.parse_errors,
+        "scan_integrity": scan_integrity(summary),
         "scan_limits": {
             "max_file_bytes": limits.max_file_bytes,
             "max_line_bytes": limits.max_line_bytes,
@@ -2178,6 +2250,23 @@ def summary_json(
         },
         "total_tokens": summary.total_tokens,
         "tokens": dict(summary.tokens),
+        "usage_reducer": {
+            "schema": summary.usage_reducer_schema,
+            "partial": summary.usage_reducer_partial,
+            **{
+                key: summary.usage_reducer_counters.get(key, 0)
+                for key in (
+                    "observed_rows",
+                    "eligible_candidates",
+                    "selected_candidates",
+                    "usage_conflict",
+                    "numeric_overflow",
+                    "invalid_numeric",
+                    "invalid_row",
+                    "no_id_fallback",
+                )
+            },
+        },
         "cache_metrics": {
             "cache_hit_rate": round(summary.cache_hit_rate, 4),
             "cache_amortization": round(summary.cache_amortization, 4),
@@ -2281,6 +2370,13 @@ def main() -> int:
     print(
         f"scan_limits=max_file_bytes:{limits.max_file_bytes} "
         f"max_line_bytes:{limits.max_line_bytes} max_files:{limits.max_files}"
+    )
+    print(
+        f"usage_reducer={summary.usage_reducer_schema} "
+        f"partial={str(summary.usage_reducer_partial).lower()} "
+        f"conflicts={summary.usage_reducer_counters.get('usage_conflict', 0)} "
+        f"overflows={summary.usage_reducer_counters.get('numeric_overflow', 0)} "
+        f"no_id_fallback={summary.usage_reducer_counters.get('no_id_fallback', 0)}"
     )
     print(f"observed_total_tokens={summary.total_tokens}")
     if summary.cost_usd:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -19,6 +20,7 @@ import stat
 import sys
 import time
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any, NoReturn
 
 TOOL_NAME = "context-guard-tool-prune"
@@ -67,9 +69,6 @@ SECRET_RE = re.compile(
     r"[?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sig|access_token|refresh_token|id_token|auth|authorization|api[_-]?key|apikey|token|secret|password|client[_-]?secret|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|awsaccesskeyid)=[^&#\s,}\]]+|"
     r"(?<![A-Za-z0-9])(?:api[_-]?key|apikey|token|secret|password|client[_-]?secret|authorization|credential|signature|sig|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|awsaccesskeyid)\s*[:=]\s*[^\s,}\]]+"
     r")"
-)
-SENSITIVE_KEY_RE = re.compile(
-    r"(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|client[_-]?secret|credential|signature|sig|x-amz-signature|x-amz-credential|awsaccesskeyid|(?:aws[_-]?)?access[_-]?key(?:[_-]?id)?|private[_-]?key|privatekey|pgp[_-]?private[_-]?key|pgpprivatekey|ssh[_-]?key|sshkey)"
 )
 VALUE_BEARING_KEY_RE = re.compile(r"(?i)^(default|const|enum|example|examples|value|values)$")
 
@@ -135,20 +134,52 @@ def cap_text(value: object, limit: int = MAX_LABEL_CHARS) -> str:
     return text[: max(0, limit - len(marker))] + marker
 
 
+def load_credential_policy() -> ModuleType:
+    script_dir = Path(__file__).resolve().parent
+    candidate = (
+        script_dir.parent / "lib" / "credential_policy.py"
+        if script_dir.name == "bin"
+        else script_dir / "credential_policy.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_context_guard_tool_prune_credential_policy",
+        candidate,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load credential policy: {candidate}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_CREDENTIAL_POLICY = load_credential_policy()
+normalize_sensitive_key = _CREDENTIAL_POLICY.normalize_sensitive_key
+is_sensitive_key = _CREDENTIAL_POLICY.is_sensitive_key
+redact_high_confidence_credentials = _CREDENTIAL_POLICY.redact_high_confidence_credentials
+
+
 def redact_string(value: str) -> tuple[str, int]:
+    value, redactions = redact_high_confidence_credentials(value)
+
     def repl(match: re.Match[str]) -> str:
+        nonlocal redactions
         text = match.group(0)
+        replacement = "[REDACTED]"
         if "=" in text:
             key = text.split("=", 1)[0]
-            if SENSITIVE_KEY_RE.search(key):
-                return key + "=[REDACTED]"
-        if ":" in text:
+            if not is_sensitive_key(key):
+                return text
+            replacement = key + "=[REDACTED]"
+        elif ":" in text:
             key = text.split(":", 1)[0]
-            if SENSITIVE_KEY_RE.search(key):
-                return key + ": [REDACTED]"
-        return "[REDACTED]"
+            if not is_sensitive_key(key):
+                return text
+            replacement = key + ": [REDACTED]"
+        if replacement != text:
+            redactions += 1
+        return replacement
 
-    return SECRET_RE.subn(repl, value)
+    return SECRET_RE.sub(repl, value), redactions
 
 
 def redact_whole_value(value: Any) -> tuple[Any, int]:
@@ -169,6 +200,8 @@ def redact_whole_value(value: Any) -> tuple[Any, int]:
             out.append(sanitized)
             count += item_redactions
         return out, count
+    if value == "[REDACTED]":
+        return value, 0
     return "[REDACTED]", 1
 
 
@@ -191,7 +224,7 @@ def sanitize_value(value: Any, *, sensitive_context: bool = False, sensitive_sch
         for key, item in value.items():
             raw_key = str(key)
             safe_key, key_redactions = redact_string(raw_key)
-            key_sensitive = bool(SENSITIVE_KEY_RE.search(raw_key))
+            key_sensitive = is_sensitive_key(raw_key)
             value_bearing = bool(VALUE_BEARING_KEY_RE.search(raw_key))
             if key_sensitive and not isinstance(item, dict):
                 sanitized, item_redactions = sanitize_value(item, sensitive_context=True)
