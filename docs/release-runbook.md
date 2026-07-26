@@ -126,7 +126,13 @@ Gate B has an executable history proof rather than a hunk-by-hunk rollback recip
 python3 scripts/verify_gate_b_rollback.py --json
 ```
 
-The proof checks the immutable B1 nudge/FSM and B2 usage-reducer feature commits against their exact owned canonical, packaged, and dedicated-test paths. In disposable clones it applies and reverts each feature independently from the same pre-B base, verifies the reverted tree equals that base, proves each feature can be reverted alone from the current head, and finally proves the integrated rollback order `B1 -> B2 -> shared integration`. It fails when the checkout is shallow, a component path set changes, either feature needs hunk surgery, or shared integration cannot be reverted last. CI therefore uses full Git history. Treat the emitted commit and tree hashes as the release evidence; do not substitute a successful source-only test for the mechanical history proof.
+The rollback proof requires the merge-preserved Gate-B proof commits and a
+full-history checkout. An unavailable history is reported separately as JSON
+`status: "unavailable"` with exit code `2`; it is not reported as a failed
+rollback. CI uses `fetch-depth: 0`. If a release checkout is shallow, fetch the
+full history and rerun the command before publishing.
+
+The proof checks the immutable B1 nudge/FSM and B2 usage-reducer feature commits against their exact owned canonical, packaged, and dedicated-test paths. In disposable clones it applies and reverts each feature independently from the same pre-B base, verifies the reverted tree equals that base, proves each feature can be reverted alone from the current head, and finally proves the integrated rollback order `B1 -> B2 -> shared integration`. It reports unavailable when the checkout lacks the required history, and fails when a component path set changes, either feature needs hunk surgery, or shared integration cannot be reverted last. CI therefore uses full Git history. Treat the emitted commit and tree hashes as the release evidence; do not substitute a successful source-only test for the mechanical history proof.
 
 ## Rollback notes
 
