@@ -84,13 +84,23 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('node-version: "24"', workflow)
         self.assertIn('registry-url: "https://registry.npmjs.org"', workflow)
         self.assertIn("package-manager-cache: false", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
         self.assertIn("python3 scripts/sync_plugin_copies.py --check", workflow)
+        self.assertIn("python3 scripts/verify_gate_b_rollback.py --json", workflow)
         self.assertIn("python3 scripts/prepublish_check.py", workflow)
         self.assertIn("python3 scripts/release_smoke.py", workflow)
         self.assertIn('npm publish --dry-run --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn('npm publish --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn("confirm_publish=true", workflow)
         self.assertIn("release tag {tag} does not match package version", workflow)
+        self.assertLess(
+            workflow.index("name: Verify Gate-B rollback history proof"),
+            workflow.index("name: Run prepublish release gate"),
+        )
+        self.assertLess(
+            workflow.index("name: Verify Gate-B rollback history proof"),
+            workflow.index("name: Publish npm package with trusted publishing"),
+        )
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")

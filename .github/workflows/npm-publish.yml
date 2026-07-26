@@ -40,6 +40,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -172,6 +173,10 @@ jobs:
 
       - name: Verify synchronized package sources
         run: python3 scripts/sync_plugin_copies.py --check
+
+      - name: Verify Gate-B rollback history proof
+        timeout-minutes: 5
+        run: python3 scripts/verify_gate_b_rollback.py --json
 
       - name: Run prepublish release gate
         timeout-minutes: 15
