@@ -38,6 +38,7 @@ EXACT_SENSITIVE_KEYS = frozenset(
         "csrf_token",
         "google_application_credentials",
         "id_token",
+        "jsessionid",
         "jwt",
         "password",
         "passwd",
@@ -76,8 +77,14 @@ SENSITIVE_KEY_SUFFIXES = (
     "_private_key",
     "_refresh_token",
     "_secret",
+    "_secret_key",
     "_session_token",
     "_token",
+)
+SENSITIVE_KEY_QUALIFIER_RE = re.compile(
+    r"(?:^|_)(?:api_?key|apikey|token|secret|password|passwd|pwd|"
+    r"private_key|access_key|client_secret|credential|signature|sig|"
+    r"session_id|session_token)(?:_(?:v\d+|prod|production|dev|test|backup))?$"
 )
 INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
@@ -110,7 +117,11 @@ def normalize_sensitive_key(key: str) -> str:
 
 def is_sensitive_key(key: str) -> bool:
     normalized = normalize_sensitive_key(key.strip().strip("\"'"))
-    return normalized in EXACT_SENSITIVE_KEYS or normalized.endswith(SENSITIVE_KEY_SUFFIXES)
+    return (
+        normalized in EXACT_SENSITIVE_KEYS
+        or normalized.endswith(SENSITIVE_KEY_SUFFIXES)
+        or SENSITIVE_KEY_QUALIFIER_RE.search(normalized) is not None
+    )
 
 
 def redact_url_like_secret_params(line: str) -> tuple[str, bool]:
@@ -130,7 +141,18 @@ def redact_url_like_secret_params(line: str) -> tuple[str, bool]:
 
         return URL_SECRET_PARAM_RE.sub(param_repl, match.group(0))
 
-    return URL_LIKE_RE.sub(url_repl, line), redacted
+    line = URL_LIKE_RE.sub(url_repl, line)
+
+    def fragment_repl(param_match: re.Match[str]) -> str:
+        nonlocal redacted
+        prefix = param_match.group(1)
+        key = prefix[1:].split("=", 1)[0]
+        if not is_sensitive_key(key):
+            return param_match.group(0)
+        redacted = True
+        return prefix + "[REDACTED]"
+
+    return URL_SECRET_PARAM_RE.sub(fragment_repl, line), redacted
 
 
 def redact_high_confidence_credentials(text: str) -> tuple[str, int]:

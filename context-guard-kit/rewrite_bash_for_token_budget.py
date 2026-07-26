@@ -377,7 +377,7 @@ def _denied_minishell(command: str, consumed: int, reason: str) -> MiniShellPars
 def _dollar_starts_expansion(command: str, index: int) -> bool:
     if index + 1 >= len(command):
         return False
-    return command[index + 1] in "({$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz?!#*@-"
+    return command[index + 1] in "\"'({$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz?!#*@-"
 
 
 def parse_minishell(command: str) -> MiniShellParse:

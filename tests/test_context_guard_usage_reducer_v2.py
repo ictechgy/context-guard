@@ -28,6 +28,7 @@ STATUSLINE_PATHS = (
     KIT_DIR / "statusline.sh",
     PLUGIN_BIN / "context-guard-statusline",
 )
+MERGED_STATUSLINE_PATH = KIT_DIR / "statusline_merged.sh"
 
 
 def load_reducer(path: Path, name: str):
@@ -242,6 +243,8 @@ class UsageReducerV2Tests(unittest.TestCase):
         result = self.reduce(rows)
         self.assertEqual(result.tokens, {"input": 50})
         self.assertEqual(result.counters["eligible_candidates"], 1)
+        self.assertEqual(result.counters["ineligible_usage_shape"], 4)
+        self.assertTrue(result.partial)
 
     def test_properties_duplication_permutation_idempotence_and_content_invariance(self):
         rng = random.Random(3272)
@@ -334,6 +337,45 @@ class UsageReducerConsumerTests(unittest.TestCase):
                 self.assertTrue(data["usage_reducer"]["partial"])
                 self.assertEqual(data["scan_integrity"]["status"], "partial")
 
+    def test_noncanonical_usage_shape_is_excluded_and_disclosed_as_partial(self):
+        for script in AUDIT_PATHS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                transcript = Path(tmp) / "schema-drift.jsonl"
+                transcript.write_text(
+                    json.dumps({"response": {"usage": {"input_tokens": 900}}})
+                    + "\n"
+                    + json.dumps(usage_row("canonical", input_tokens=50))
+                    + "\n",
+                    encoding="utf-8",
+                )
+                data = run_audit(script, transcript)
+                self.assertEqual(data["tokens"], {"input": 50})
+                self.assertEqual(data["usage_reducer"]["ineligible_usage_shape"], 1)
+                self.assertTrue(data["usage_reducer"]["partial"])
+                self.assertEqual(data["scan_integrity"]["status"], "partial")
+
+    def test_statusline_discloses_ineligible_usage_shape_as_partial(self):
+        for script in STATUSLINE_PATHS:
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                transcript = root / "schema-drift.jsonl"
+                rows = [
+                    {"response": {"usage": {"input_tokens": 900}}},
+                    usage_row(
+                        "canonical",
+                        input_tokens=100,
+                        cache_read=800,
+                        cache_creation=100,
+                    ),
+                ]
+                transcript.write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows),
+                    encoding="utf-8",
+                )
+                proc = run_statusline(script, transcript, home=root / "home")
+                self.assertIn("cache 80%", proc.stdout)
+                self.assertIn("usage_tail_v2 window_partial=true", proc.stdout)
+
     def test_audit_and_statusline_share_selected_usage(self):
         for audit_script, statusline_script in zip(AUDIT_PATHS, STATUSLINE_PATHS):
             with (
@@ -375,7 +417,7 @@ class UsageReducerConsumerTests(unittest.TestCase):
                 self.assertIn("cache 25%", statusline.stdout)
                 self.assertIn("reuse 1.0x", statusline.stdout)
                 self.assertIn("usage_tail_v2", statusline.stdout)
-                self.assertIn("window_partial=false", statusline.stdout)
+                self.assertIn("window_partial=true", statusline.stdout)
 
     def test_statusline_marks_bounded_record_window_and_v2_cache(self):
         for script in STATUSLINE_PATHS:
@@ -472,6 +514,95 @@ class UsageReducerConsumerTests(unittest.TestCase):
             self.assertNotIn("cache ", proc.stdout)
             self.assertIn("usage reducer unavailable", proc.stderr)
             self.assertLessEqual(len(proc.stderr.encode("utf-8")), 160)
+
+    def test_npm_style_statusline_symlink_loads_only_packaged_reducer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            bin_dir = project / "node_modules" / ".bin"
+            bin_dir.mkdir(parents=True)
+            linked = bin_dir / "context-guard-statusline"
+            linked.symlink_to(PLUGIN_BIN / "context-guard-statusline")
+            canary = project / "untrusted-imported"
+            (project / "transcript_usage_reducer.py").write_text(
+                "from pathlib import Path\n"
+                f"Path({str(canary)!r}).write_text('imported')\n"
+                "raise RuntimeError('untrusted cwd module imported')\n",
+                encoding="utf-8",
+            )
+            transcript = project / "session.jsonl"
+            transcript.write_text(
+                json.dumps(
+                    usage_row(
+                        "id",
+                        input_tokens=100,
+                        cache_read=800,
+                        cache_creation=100,
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "model": {"display_name": "Sonnet"},
+                "context_window": {"used_percentage": 42},
+                "cost": {"total_cost_usd": 0.123},
+                "workspace": {"current_dir": str(project)},
+                "transcript_path": str(transcript),
+            }
+            env = os.environ.copy()
+            env["HOME"] = str(root / "home")
+            proc = subprocess.run(
+                ["bash", str(linked)],
+                cwd=project,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            self.assertIn("cache 80%", proc.stdout)
+            self.assertIn("usage_tail_v2 window_partial=false", proc.stdout)
+            self.assertFalse(canary.exists())
+            self.assertNotIn("UNTRUSTED", proc.stderr)
+
+    def test_merged_statusline_preserves_usage_window_disclosure(self):
+        for partial in ("true", "false"):
+            with self.subTest(partial=partial), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                fake_bin = root / "bin"
+                fake_bin.mkdir()
+                node = fake_bin / "node"
+                node.write_text("#!/usr/bin/env bash\nprintf '[omc] hud\\n'\n", encoding="utf-8")
+                node.chmod(0o755)
+                omc = root / "omc-hud.mjs"
+                omc.write_text("// test fixture\n", encoding="utf-8")
+                token_statusline = root / "context-guard-statusline"
+                token_statusline.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "cat >/dev/null\n"
+                    f"printf '[Sonnet] project | ctx 42%% | cost $0.123 | cache 80%% | reuse 8.0x | usage_tail_v2 window_partial={partial}\\n'\n",
+                    encoding="utf-8",
+                )
+                token_statusline.chmod(0o755)
+                env = os.environ.copy()
+                env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+                env["OMC_HUD_SCRIPT"] = str(omc)
+                env["CONTEXT_GUARD_STATUSLINE_BIN"] = str(token_statusline)
+                proc = subprocess.run(
+                    ["bash", str(MERGED_STATUSLINE_PATH)],
+                    input='{"session_id":"test"}',
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                    env=env,
+                )
+                self.assertIn("[omc] hud", proc.stdout)
+                self.assertIn("cache 80%", proc.stdout)
+                self.assertIn(
+                    f"usage_tail_v2 window_partial={partial}",
+                    proc.stdout,
+                )
 
     def test_consumer_pairs_are_byte_identical(self):
         self.assertEqual(AUDIT_PATHS[0].read_bytes(), AUDIT_PATHS[1].read_bytes())

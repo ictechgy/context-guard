@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Best-effort Claude Code transcript usage auditor.
 
-Claude Code transcript schemas may change. This script scans JSONL objects for
-common token/cost fields rather than relying on one exact schema. It reports
-parse/read skips so totals are not mistaken for billing-authoritative data.
+Claude Code transcript schemas may change. Token totals use the deterministic
+``row.message.usage`` contract; other bounded usage-like shapes mark results
+partial instead of being silently counted. Cost and diagnostic metadata retain
+their bounded schema-tolerant scans. Parse/read skips are reported so totals are
+not mistaken for billing-authoritative data.
 """
 from __future__ import annotations
 
@@ -1013,6 +1015,9 @@ def scan_integrity(summary: UsageSummary) -> dict[str, Any]:
         "numeric_overflow": summary.usage_reducer_counters.get("numeric_overflow", 0),
         "invalid_numeric": summary.usage_reducer_counters.get("invalid_numeric", 0),
         "no_id_fallback": summary.usage_reducer_counters.get("no_id_fallback", 0),
+        "ineligible_usage_shape": summary.usage_reducer_counters.get(
+            "ineligible_usage_shape", 0
+        ),
         "complete": complete,
         "reason": (
             "All candidate transcript files/records were parsed within configured limits."
@@ -2264,6 +2269,7 @@ def summary_json(
                     "invalid_numeric",
                     "invalid_row",
                     "no_id_fallback",
+                    "ineligible_usage_shape",
                 )
             },
         },
@@ -2376,7 +2382,8 @@ def main() -> int:
         f"partial={str(summary.usage_reducer_partial).lower()} "
         f"conflicts={summary.usage_reducer_counters.get('usage_conflict', 0)} "
         f"overflows={summary.usage_reducer_counters.get('numeric_overflow', 0)} "
-        f"no_id_fallback={summary.usage_reducer_counters.get('no_id_fallback', 0)}"
+        f"no_id_fallback={summary.usage_reducer_counters.get('no_id_fallback', 0)} "
+        f"ineligible_usage_shape={summary.usage_reducer_counters.get('ineligible_usage_shape', 0)}"
     )
     print(f"observed_total_tokens={summary.total_tokens}")
     if summary.cost_usd:

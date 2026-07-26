@@ -11,14 +11,18 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-statusline_dir=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
-if [[ -f "$statusline_dir/transcript_usage_reducer.py" ]]; then
-  export CONTEXT_GUARD_USAGE_REDUCER_DIR="$statusline_dir"
-elif [[ -f "$statusline_dir/../lib/transcript_usage_reducer.py" ]]; then
-  export CONTEXT_GUARD_USAGE_REDUCER_DIR="$statusline_dir/../lib"
-else
-  export CONTEXT_GUARD_USAGE_REDUCER_DIR=""
-fi
+statusline_path=$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null || true)
+statusline_dir=$(CDPATH= cd -P -- "$(dirname -- "${statusline_path:-$0}")" && pwd)
+usage_reducer_file=''
+for candidate in \
+  "$statusline_dir/transcript_usage_reducer.py" \
+  "$statusline_dir/../lib/transcript_usage_reducer.py"; do
+  if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+    usage_reducer_file=$(CDPATH= cd -P -- "$(dirname -- "$candidate")" && printf '%s/%s\n' "$PWD" "$(basename -- "$candidate")")
+    break
+  fi
+done
+export CONTEXT_GUARD_USAGE_REDUCER_FILE="$usage_reducer_file"
 
 read -r -d '' CONTEXT_GUARD_STATUSLINE_PY <<'PYEOF' || true
 from __future__ import annotations
@@ -31,6 +35,7 @@ import re
 import stat
 import sys
 import time
+import types
 from typing import Any
 
 TAIL_BYTES = 1024 * 1024
@@ -41,6 +46,7 @@ USAGE_METRIC_LABEL = "usage_tail_v2"
 DEFAULT_CACHE_TTL_SECONDS = 2.0
 MAX_CACHE_TTL_SECONDS = 30.0
 MAX_CACHE_BYTES = 4096
+MAX_REDUCER_BYTES = 512 * 1024
 METRIC_RE = re.compile(r"^\d+(?:\.\d)?$")
 SECRET_RE = re.compile(
     r"(gh[pousr]_|github_pat_|glpat-|xox[abprs]-|AKIA|ASIA|sk-|npm_|AIza|Bearer\s|Basic\s)",
@@ -50,14 +56,43 @@ OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 CSI_RE = re.compile(r"\x1b[@-_][0-?]*[ -/]*[@-~]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
-_usage_reducer_dir = os.environ.get("CONTEXT_GUARD_USAGE_REDUCER_DIR", "")
-if _usage_reducer_dir and os.path.isabs(_usage_reducer_dir):
-    sys.path.insert(0, _usage_reducer_dir)
-try:
-    from transcript_usage_reducer import REDUCER_SCHEMA, UsageReducer
-except Exception:
-    REDUCER_SCHEMA = CACHE_REDUCER_SCHEMA
-    UsageReducer = None
+def _load_usage_reducer(path: str) -> tuple[str, Any | None]:
+    if not path or not os.path.isabs(path):
+        return CACHE_REDUCER_SCHEMA, None
+    fd = -1
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_REDUCER_BYTES:
+            return CACHE_REDUCER_SCHEMA, None
+        source = os.read(fd, opened.st_size + 1)
+        if len(source) != opened.st_size:
+            return CACHE_REDUCER_SCHEMA, None
+        module_name = "_context_guard_statusline_usage_reducer"
+        module = types.ModuleType(module_name)
+        module.__file__ = path
+        sys.modules[module_name] = module
+        exec(compile(source, path, "exec"), module.__dict__)
+        schema = getattr(module, "REDUCER_SCHEMA", "")
+        reducer = getattr(module, "UsageReducer", None)
+        if not isinstance(schema, str) or reducer is None:
+            return CACHE_REDUCER_SCHEMA, None
+        return schema, reducer
+    except Exception:
+        return CACHE_REDUCER_SCHEMA, None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+REDUCER_SCHEMA, UsageReducer = _load_usage_reducer(
+    os.environ.get("CONTEXT_GUARD_USAGE_REDUCER_FILE", "")
+)
 
 
 def _bounded_int_env(primary: str, legacy: str, default: int, *, lower: int, upper: int) -> int:
@@ -478,6 +513,7 @@ def transcript_metrics(path: str, workspace_dir: str) -> str | None:
                 row_ordinal=ordinal,
             )
         reduced = reducer.finalize()
+        window_partial = window_partial or reduced.partial
         input_tokens = reduced.tokens.get("input", 0)
         cache_read = reduced.tokens.get("cache_read", 0)
         cache_creation = reduced.tokens.get("cache_creation", 0)
@@ -597,4 +633,4 @@ except BrokenPipeError:
     raise SystemExit(0)
 PYEOF
 
-exec python3 -c "$CONTEXT_GUARD_STATUSLINE_PY" "$@"
+exec python3 -I -c "$CONTEXT_GUARD_STATUSLINE_PY" "$@"

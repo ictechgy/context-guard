@@ -150,13 +150,23 @@ CONTINUATION_OPERATOR_RE = re.compile(
 )
 SAFE_UNQUOTED_VALUES = {
     "[redacted]",
+    "bool",
+    "boolean",
+    "bytes",
     "false",
+    "float",
+    "int",
+    "integer",
     "none",
     "null",
+    "object",
     "os.getenv",
     "process.env",
+    "str",
+    "string",
     "true",
     "undefined",
+    "unknown",
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
 SAFE_ENV_LOOKUP_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get)\(\s*[\"'][A-Za-z0-9_.-]{1,80}[\"']\s*\)$")
@@ -436,11 +446,14 @@ def should_redact_unquoted_secret_value(
         return False
     if value.lower() in SAFE_UNQUOTED_VALUES:
         return False
+    if re.search(r":\s*$", prefix):
+        return not (
+            context.mode == "source_code"
+            and SOURCE_SAFE_VALUE_RE.match(value) is not None
+        )
     if IDENTIFIER_CHAIN_RE.match(value):
         return False
     if SAFE_ENV_LOOKUP_CALL_RE.match(value) or SAFE_RE_COMPILE_CALL_RE.match(value):
-        return False
-    if re.search(r":\s*$", prefix) and SOURCE_SAFE_VALUE_RE.match(value):
         return False
     if context.mode == "source_code" and SOURCE_SAFE_VALUE_RE.match(value):
         return False

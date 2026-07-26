@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Deterministic transcript usage reduction shared by audit and statusline.
 
-The reducer intentionally recognizes one Claude transcript shape:
-``row.message.usage`` with the model at ``row.message.model``.  It groups
-repeated response rows before summing so snapshots, streaming updates, and
+Token totals intentionally recognize one Claude transcript shape:
+``row.message.usage`` with the model at ``row.message.model``.  Other bounded
+usage-like shapes are not summed, but are recorded as ineligible and make the
+result partial so schema drift cannot silently look complete.  Repeated
+response rows are grouped before summing so snapshots, streaming updates, and
 nested usage lookalikes cannot be counted as independent usage.
 """
 from __future__ import annotations
@@ -38,7 +40,11 @@ COUNTER_KEYS = (
     "invalid_numeric",
     "invalid_row",
     "no_id_fallback",
+    "ineligible_usage_shape",
 )
+USAGE_LIKE_NODE_LIMIT = 4096
+USAGE_LIKE_DEPTH_LIMIT = 64
+TOKEN_FIELD_ALIASES = frozenset(alias for _bucket, aliases in TOKEN_FIELDS for alias in aliases)
 
 
 def hash_file_identity(path: str | os.PathLike[str]) -> str:
@@ -155,6 +161,35 @@ def _usage_values(usage: dict[str, Any]) -> tuple[tuple[str, int], ...] | None:
     return tuple(values)
 
 
+def _contains_usage_like_tokens(root: Any) -> bool:
+    """Boundedly detect token-bearing shapes outside ``row.message.usage``."""
+    stack: list[tuple[Any, int]] = [(root, 0)]
+    seen: set[int] = set()
+    visited = 0
+    while stack and visited < USAGE_LIKE_NODE_LIMIT:
+        value, depth = stack.pop()
+        visited += 1
+        if isinstance(value, dict):
+            identity = id(value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if TOKEN_FIELD_ALIASES.intersection(value):
+                return True
+            if value.get("name") == "claude_code.token.usage":
+                return True
+            if depth < USAGE_LIKE_DEPTH_LIMIT:
+                stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            identity = id(value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if depth < USAGE_LIKE_DEPTH_LIMIT:
+                stack.extend((child, depth + 1) for child in value)
+    return False
+
+
 @dataclass(frozen=True)
 class UsageSelection:
     file_identity: str
@@ -225,9 +260,15 @@ class UsageReducer:
             return False
         message = row.get("message")
         if not isinstance(message, dict):
+            if _contains_usage_like_tokens(row):
+                self._counters["ineligible_usage_shape"] += 1
+                self._partial = True
             return False
         usage = message.get("usage")
         if not isinstance(usage, dict):
+            if _contains_usage_like_tokens(row):
+                self._counters["ineligible_usage_shape"] += 1
+                self._partial = True
             return False
         usage_items = _usage_values(usage)
         if usage_items is None:

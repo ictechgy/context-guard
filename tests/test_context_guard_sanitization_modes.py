@@ -150,6 +150,32 @@ class SanitizationModeTests(unittest.TestCase):
         self.assertEqual(twice, once)
         self.assertEqual(sanitizer.redactions, 1)
 
+    def test_unknown_text_redacts_bareword_colon_secrets_and_qualified_keys(self) -> None:
+        raw = (
+            "password: hunter2pass\n"
+            "api_key: abc123def456\n"
+            "jsessionid: opaque-session-value\n"
+            "stripe_secret_key: stripe-value\n"
+            "apikey_v2: versioned-value\n"
+            "mysql_root_password_prod: production-value\n"
+            "token_backup: backup-value\n"
+            "request /login?token=query-secret&state=visible\n"
+        )
+        output, sanitizer = self.sanitize_lines(raw, context="unknown_text")
+        for secret in (
+            "hunter2pass",
+            "abc123def456",
+            "opaque-session-value",
+            "stripe-value",
+            "versioned-value",
+            "production-value",
+            "backup-value",
+            "query-secret",
+        ):
+            self.assertNotIn(secret, output)
+        self.assertIn("state=visible", output)
+        self.assertGreaterEqual(sanitizer.redactions, 8)
+
     def test_search_context_only_anonymizes_strict_location_fields(self) -> None:
         raw = (
             "GET /api/v1/users\n"

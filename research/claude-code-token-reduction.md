@@ -297,7 +297,7 @@ Claude Code는 `claude_code.token.usage`, `claude_code.cost.usage` 같은 metric
 
 ### 7.2 Transcript 감사
 
-Claude Code session은 로컬 JSONL transcript로 저장된다. 구조는 버전별로 달라질 수 있으니, 이 repo의 `context-guard-kit/claude_transcript_cost_audit.py`는 알려진 usage/cost field를 재귀적으로 찾아 합산한다.
+Claude Code session은 로컬 JSONL transcript로 저장된다. 이 repo의 `context-guard-kit/claude_transcript_cost_audit.py`는 토큰 합계에는 결정적인 `row.message.usage` 계약만 사용하고, 다른 usage-like 형태가 보이면 합산하지 않은 채 결과를 partial로 표시한다. 비용과 진단 메타데이터는 bounded schema-tolerant scan을 유지한다.
 
 ```bash
 python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 20
