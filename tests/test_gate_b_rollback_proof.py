@@ -36,7 +36,7 @@ class GateBRollbackProofTests(unittest.TestCase):
             rollback_proof.run_git(
                 ROOT,
                 "rev-parse",
-                f"{rollback_proof.BASE_COMMIT}^{{tree}}",
+                f"{result['durable_commits']['bless']}^{{tree}}",
             ).stdout.strip(),
         )
         self.assertEqual(
