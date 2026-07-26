@@ -21,7 +21,11 @@ class GateBRollbackProofTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(
             result["schema_version"],
-            "contextguard.gate-b-rollback-proof.v2",
+            "contextguard.gate-b-rollback-proof.v3",
+        )
+        self.assertEqual(
+            set(result["durable_commits"]),
+            {"bless", "b1", "b2", "shared-integration"},
         )
         self.assertEqual(
             result["revert_order"],

@@ -380,9 +380,12 @@ def _dollar_starts_expansion(
     *,
     allow_quoted_literal: bool = False,
 ) -> bool:
-    if index + 1 >= len(command):
+    cursor = index + 1
+    while command.startswith("\\\n", cursor):
+        cursor += 2
+    if cursor >= len(command):
         return False
-    following = command[index + 1]
+    following = command[cursor]
     if allow_quoted_literal and following in {'"', "'"}:
         return True
     return following in "({$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz?!#*@-"

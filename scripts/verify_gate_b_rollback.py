@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Mechanically prove the Gate-B component apply/revert contract.
+"""Mechanically prove durable Gate-B component apply/revert behavior.
 
-The published PR may be squashed or cloned without unpublished intermediate
-commits.  This proof therefore derives path-scoped component patches from the
-immutable PR base and the checked-out source head instead of depending on local
-development-history object IDs.
+The proof consumes a reachable, path-separated reapplication sequence carried
+by the PR itself.  Its parent is a Gate-B-free residual that retains unrelated
+hook-safety and quiet-narration work.  This avoids depending on unpublished
+objects and avoids deriving destructive whole-path patches from ``base..HEAD``.
 """
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = "6aac7d8e10d3e2bc8e6cc94973af142a68e911ec"
+BLESS_SUBJECT = "proof: establish Gate-B-free residual"
+B1_SUBJECT = "proof: reapply Gate-B nudge component"
+B2_SUBJECT = "proof: reapply Gate-B usage component"
+SHARED_SUBJECT = "proof: reapply Gate-B integration component"
 
 B1_PATHS = frozenset(
     {
@@ -49,11 +53,14 @@ SHARED_INTEGRATION_PATHS = frozenset(
         "tests/test_context_guard_kit.py",
     }
 )
-COMPONENTS = (
-    ("b1", B1_PATHS),
-    ("b2", B2_PATHS),
-    ("shared-integration", SHARED_INTEGRATION_PATHS),
-)
+ALL_COMPONENT_PATHS = B1_PATHS | B2_PATHS | SHARED_INTEGRATION_PATHS
+RESIDUAL_MARKERS = {
+    "context-guard-kit/setup_wizard.py": (
+        "NARRATION_MODE_CHOICES",
+        "def parse_managed_bytes",
+    ),
+    "scripts/release_smoke.py": ("def run_quiet_narration_smoke",),
+}
 
 
 class ProofError(RuntimeError):
@@ -81,8 +88,6 @@ def run_git(
     repo: Path,
     *args: str,
     check: bool = True,
-    env: dict[str, str] | None = None,
-    input_data: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         [
@@ -95,11 +100,10 @@ def run_git(
             str(repo),
             *args,
         ],
-        input=input_data,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=env or proof_environment(),
+        env=proof_environment(),
         check=False,
     )
     if check and proc.returncode:
@@ -108,104 +112,155 @@ def run_git(
     return proc
 
 
-def changed_paths(repo: Path, base: str, source: str, paths: frozenset[str]) -> frozenset[str]:
-    proc = run_git(repo, "diff", "--name-only", base, source, "--", *sorted(paths))
+def commit_paths(repo: Path, commit: str) -> frozenset[str]:
+    proc = run_git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", commit)
     return frozenset(line for line in proc.stdout.splitlines() if line)
 
 
-def component_patch(repo: Path, base: str, source: str, paths: frozenset[str]) -> str:
-    patch = run_git(repo, "diff", "--binary", base, source, "--", *sorted(paths)).stdout
-    if not patch:
-        raise ProofError(f"component patch is empty: {sorted(paths)!r}")
-    return patch
+def changed_paths(repo: Path, left: str, right: str) -> frozenset[str]:
+    proc = run_git(repo, "diff", "--name-only", left, right)
+    return frozenset(line for line in proc.stdout.splitlines() if line)
 
 
-def assert_history_contract(repo: Path, source_head: str) -> None:
-    for commit in (BASE_COMMIT, source_head):
-        if run_git(repo, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode:
-            raise ProofError(f"required Gate-B commit {commit} is unavailable")
-    if run_git(
+def find_unique_subject(repo: Path, source_head: str, subject: str) -> str:
+    proc = run_git(
         repo,
-        "merge-base",
-        "--is-ancestor",
-        BASE_COMMIT,
-        source_head,
-        check=False,
-    ).returncode:
-        raise ProofError(f"Gate-B base {BASE_COMMIT} is not an ancestor of {source_head}")
-    path_sets = [paths for _name, paths in COMPONENTS]
-    for index, left in enumerate(path_sets):
-        for right in path_sets[index + 1 :]:
-            overlap = left & right
-            if overlap:
-                raise ProofError(f"Gate-B component path sets overlap: {sorted(overlap)!r}")
-    for name, expected in COMPONENTS:
-        actual = changed_paths(repo, BASE_COMMIT, source_head, expected)
+        "log",
+        "--format=%H%x00%s",
+        f"{BASE_COMMIT}..{source_head}",
+    )
+    matches = []
+    for raw in proc.stdout.splitlines():
+        commit, separator, actual_subject = raw.partition("\0")
+        if separator and actual_subject == subject:
+            matches.append(commit)
+    if len(matches) != 1:
+        raise ProofError(
+            f"expected exactly one reachable commit named {subject!r}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def file_at(repo: Path, commit: str, path: str) -> str:
+    return run_git(repo, "show", f"{commit}:{path}").stdout
+
+
+def assert_residual_contract(repo: Path, bless: str) -> None:
+    for path, markers in RESIDUAL_MARKERS.items():
+        content = file_at(repo, bless, path)
+        for marker in markers:
+            if marker not in content:
+                raise ProofError(
+                    f"Gate-B-free residual lost unrelated feature marker {marker!r} in {path}"
+                )
+
+
+def resolve_history(repo: Path, source_head: str) -> dict[str, str]:
+    commits = {
+        "bless": find_unique_subject(repo, source_head, BLESS_SUBJECT),
+        "b1": find_unique_subject(repo, source_head, B1_SUBJECT),
+        "b2": find_unique_subject(repo, source_head, B2_SUBJECT),
+        "shared-integration": find_unique_subject(repo, source_head, SHARED_SUBJECT),
+    }
+    expected_parents = (
+        (commits["b1"], commits["bless"]),
+        (commits["b2"], commits["b1"]),
+        (commits["shared-integration"], commits["b2"]),
+    )
+    for commit, expected_parent in expected_parents:
+        parent = run_git(repo, "rev-parse", f"{commit}^").stdout.strip()
+        if parent != expected_parent:
+            raise ProofError(f"Gate-B proof parent mismatch: {commit}^={parent}, expected {expected_parent}")
+    expected_paths = {
+        "bless": ALL_COMPONENT_PATHS,
+        "b1": B1_PATHS,
+        "b2": B2_PATHS,
+        "shared-integration": SHARED_INTEGRATION_PATHS,
+    }
+    for name, expected in expected_paths.items():
+        actual = commit_paths(repo, commits[name])
         if actual != expected:
             raise ProofError(
                 f"Gate-B {name} path set changed: actual={sorted(actual)!r} "
                 f"expected={sorted(expected)!r}"
             )
+    post_component_changes = changed_paths(repo, commits["shared-integration"], source_head)
+    overlap = post_component_changes & ALL_COMPONENT_PATHS
+    if overlap:
+        raise ProofError(f"component paths changed after durable reapplication: {sorted(overlap)!r}")
+    assert_residual_contract(repo, commits["bless"])
+    return commits
 
 
 def checkout(repo: Path, commit: str) -> None:
     run_git(repo, "checkout", "--quiet", "--detach", commit)
 
 
-def commit_index(repo: Path, message: str) -> str:
-    run_git(repo, "commit", "--quiet", "-m", message)
-    return run_git(repo, "rev-parse", "HEAD").stdout.strip()
-
-
 def apply_then_revert(
     repo: Path,
-    *,
-    name: str,
     base: str,
-    patch: str,
+    component: str,
 ) -> dict[str, str]:
     checkout(repo, base)
     base_tree = run_git(repo, "rev-parse", f"{base}^{{tree}}").stdout.strip()
-    run_git(repo, "apply", "--index", "--binary", "-", input_data=patch)
-    applied_commit = commit_index(repo, f"proof: apply Gate-B {name}")
+    run_git(repo, "cherry-pick", component)
+    applied_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     applied_tree = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     run_git(repo, "revert", "--no-edit", applied_commit)
     reverted_tree = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     if reverted_tree != base_tree:
         raise ProofError(
-            f"apply/revert tree mismatch for {name}: {reverted_tree} != {base_tree}"
+            f"apply/revert tree mismatch for {component}: {reverted_tree} != {base_tree}"
         )
     return {
-        "applied_commit": applied_commit,
+        "source_commit": component,
         "applied_tree": applied_tree,
         "reverted_tree": reverted_tree,
     }
 
 
-def reverse_component(repo: Path, name: str, patch: str) -> str:
-    run_git(repo, "apply", "--reverse", "--index", "--binary", "-", input_data=patch)
-    commit_index(repo, f"proof: revert Gate-B {name}")
-    return run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
-
-
 def prove_current_revert_order(
     repo: Path,
     source_head: str,
-    patches: dict[str, str],
+    commits: dict[str, str],
 ) -> dict[str, str]:
     checkout(repo, source_head)
-    b1_only = reverse_component(repo, "b1", patches["b1"])
-    checkout(repo, source_head)
-    b2_only = reverse_component(repo, "b2", patches["b2"])
+    run_git(repo, "revert", "--no-edit", commits["b1"])
+    b1_only = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
 
     checkout(repo, source_head)
-    after_b1 = reverse_component(repo, "b1", patches["b1"])
-    after_b2 = reverse_component(repo, "b2", patches["b2"])
-    after_shared = reverse_component(
+    run_git(repo, "revert", "--no-edit", commits["b2"])
+    b2_only = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    checkout(repo, source_head)
+    run_git(repo, "revert", "--no-edit", commits["b1"])
+    after_b1 = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    run_git(repo, "revert", "--no-edit", commits["b2"])
+    after_b2 = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    run_git(repo, "revert", "--no-edit", commits["shared-integration"])
+    after_shared_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    after_shared = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    residual_delta = run_git(
         repo,
-        "shared-integration",
-        patches["shared-integration"],
-    )
+        "diff",
+        "--name-only",
+        commits["bless"],
+        after_shared_commit,
+        "--",
+        *sorted(ALL_COMPONENT_PATHS),
+    ).stdout.splitlines()
+    if residual_delta:
+        raise ProofError(
+            f"ordered Gate-B rollback does not restore durable residual: {residual_delta!r}"
+        )
+    rollback_delta = changed_paths(repo, source_head, after_shared_commit)
+    if rollback_delta != ALL_COMPONENT_PATHS:
+        raise ProofError(
+            f"ordered rollback changed paths outside exact Gate-B set: "
+            f"actual={sorted(rollback_delta)!r} expected={sorted(ALL_COMPONENT_PATHS)!r}"
+        )
+    assert_residual_contract(repo, after_shared_commit)
     return {
         "b1_only_revert_tree": b1_only,
         "b2_only_revert_tree": b2_only,
@@ -218,39 +273,30 @@ def prove_current_revert_order(
 def run_proof(repo: Path = ROOT) -> dict[str, object]:
     repo = repo.resolve()
     source_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert_history_contract(repo, source_head)
-    patches = {
-        name: component_patch(repo, BASE_COMMIT, source_head, paths)
-        for name, paths in COMPONENTS
-    }
+    if run_git(repo, "merge-base", "--is-ancestor", BASE_COMMIT, source_head, check=False).returncode:
+        raise ProofError(f"Gate-B base {BASE_COMMIT} is not an ancestor of {source_head}")
+    commits = resolve_history(repo, source_head)
     with tempfile.TemporaryDirectory(prefix="context-guard-gate-b-proof-") as tmp:
         proof_repo = Path(tmp) / "repo"
         run_git(repo, "clone", "--quiet", "--no-hardlinks", str(repo), str(proof_repo))
-        independent = {
-            name: apply_then_revert(
-                proof_repo,
-                name=name,
-                base=BASE_COMMIT,
-                patch=patches[name],
-            )
-            for name in ("b1", "b2")
-        }
-        revert_order = prove_current_revert_order(proof_repo, source_head, patches)
+        b1 = apply_then_revert(proof_repo, commits["bless"], commits["b1"])
+        b2 = apply_then_revert(proof_repo, commits["bless"], commits["b2"])
+        revert_order = prove_current_revert_order(proof_repo, source_head, commits)
     return {
-        "schema_version": "contextguard.gate-b-rollback-proof.v2",
+        "schema_version": "contextguard.gate-b-rollback-proof.v3",
         "status": "ok",
         "source_head": source_head,
         "base_commit": BASE_COMMIT,
-        **independent,
+        "durable_commits": commits,
+        "b1": b1,
+        "b2": b2,
         "revert_order": ["b1", "b2", "shared-integration"],
         **revert_order,
     }
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="prove path-scoped Gate-B B1/B2 apply/revert behavior"
-    )
+    parser = argparse.ArgumentParser(description="prove durable Gate-B component rollback")
     parser.add_argument("--json", action="store_true", help="emit machine-readable evidence")
     args = parser.parse_args()
     try:
@@ -259,7 +305,7 @@ def main() -> int:
         if args.json:
             print(
                 json.dumps(
-                    {"schema_version": "contextguard.gate-b-rollback-proof.v2", "status": "fail", "error": str(exc)},
+                    {"schema_version": "contextguard.gate-b-rollback-proof.v3", "status": "fail", "error": str(exc)},
                     sort_keys=True,
                     separators=(",", ":"),
                 )
