@@ -174,6 +174,9 @@ def load_command_manifest():
 COMMAND_MANIFEST = load_command_manifest()
 IMPLEMENTATION_PAIRS = COMMAND_MANIFEST.IMPLEMENTATION_PAIRS
 HELPER_PAIRS = COMMAND_MANIFEST.HELPER_PAIRS
+ASSET_PAIRS = (
+    ("brief/narration-mode.quiet.md", "brief/narration-mode.quiet.md"),
+)
 
 FORBIDDEN_PACKAGE_NAMES = {
     ".DS_Store",
@@ -286,6 +289,7 @@ BASE_EXPECTED_NPM_PACK_FILES = {
     "plugins/context-guard/brief/brief-mode.lite.md",
     "plugins/context-guard/brief/brief-mode.standard.md",
     "plugins/context-guard/brief/brief-mode.ultra.md",
+    "plugins/context-guard/brief/narration-mode.quiet.md",
     "plugins/context-guard/skills/audit/SKILL.md",
     "plugins/context-guard/skills/optimize/SKILL.md",
     "plugins/context-guard/skills/setup/SKILL.md",
@@ -713,6 +717,21 @@ def check_bin_copies() -> None:
         mode = stat.S_IMODE(plugin_helper.stat().st_mode)
         if mode & 0o111 != 0:
             fail(f"plugin helper must not be executable: {safe_path_label(plugin_helper)} mode={oct(mode)}")
+    for kit_rel, plugin_rel in ASSET_PAIRS:
+        kit_asset = KIT_DIR / kit_rel
+        plugin_asset = PLUGIN_DIR / plugin_rel
+        if not kit_asset.exists():
+            fail(f"missing kit asset: {safe_path_label(kit_asset)}")
+        if not plugin_asset.exists():
+            fail(f"missing plugin asset copy: {safe_path_label(plugin_asset)}")
+        if kit_asset.read_bytes() != plugin_asset.read_bytes():
+            fail(
+                "plugin asset is not synchronized with source: "
+                f"{safe_path_label(plugin_asset)} != {safe_path_label(kit_asset)}"
+            )
+        mode = stat.S_IMODE(plugin_asset.stat().st_mode)
+        if mode & 0o111 != 0:
+            fail(f"plugin asset must not be executable: {safe_path_label(plugin_asset)} mode={oct(mode)}")
 
 
 def package_symlink_scan_roots() -> tuple[Path, ...]:

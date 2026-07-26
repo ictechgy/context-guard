@@ -1,0 +1,8 @@
+```md
+<!-- BEGIN context-guard:repo-rules version=1 -->
+<!-- END context-guard:repo-rules -->
+```
+~~~ example
+<!-- contextguard:begin -->
+<!-- contextguard:end -->
+~~~~

@@ -1,0 +1,4942 @@
+{
+  "byte_range_cases": [
+    {
+      "case_id": "range-canonical-lf-first-line-616c7068610a62657461-ca4235dae4",
+      "coverage": [
+        "lf_charge",
+        "zero_based_offset"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 6,
+      "expected_range_bytes": 5,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "616c706861",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 5,
+      "name": "lf-first-line",
+      "offset": 0,
+      "ordinal": 0,
+      "payload_bytes": 11,
+      "payload_hex": "616c7068610a626574610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-lf-second-line-616c7068610a62657461-aaf2c84d1b",
+      "coverage": [
+        "lf_charge",
+        "zero_based_offset"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 11,
+      "expected_range_bytes": 4,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "62657461",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 4,
+      "name": "lf-second-line",
+      "offset": 1,
+      "ordinal": 1,
+      "payload_bytes": 11,
+      "payload_hex": "616c7068610a626574610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-crlf-charges-both-by-610d0a62620d0a-585f332c9f",
+      "coverage": [
+        "cr_charge",
+        "lf_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "610d",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 2,
+      "name": "crlf-charges-both-bytes",
+      "offset": 0,
+      "ordinal": 2,
+      "payload_bytes": 7,
+      "payload_hex": "610d0a62620d0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-bare-cr-is-not-line--610d620a63-78189a073c",
+      "coverage": [
+        "cr_charge",
+        "lf_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 4,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "610d62",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "bare-cr-is-not-line-break",
+      "offset": 0,
+      "ordinal": 3,
+      "payload_bytes": 5,
+      "payload_hex": "610d620a63",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-eof-without-lf-616263-de420b89b5",
+      "coverage": [
+        "eof_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "616263",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "eof-without-lf",
+      "offset": 0,
+      "ordinal": 4,
+      "payload_bytes": 3,
+      "payload_hex": "616263",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-empty-line-0a0a78-b803633bad",
+      "coverage": [
+        "lf_charge",
+        "empty_line"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 0,
+      "name": "empty-line",
+      "offset": 1,
+      "ordinal": 5,
+      "payload_bytes": 3,
+      "payload_hex": "0a0a78",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-utf8-counted-as-raw--ed959c0a7a-280d93837c",
+      "coverage": [
+        "raw_bytes",
+        "lf_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 4,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ed959c",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "utf8-counted-as-raw-bytes",
+      "offset": 0,
+      "ordinal": 6,
+      "payload_bytes": 5,
+      "payload_hex": "ed959c0a7a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-invalid-utf8-remains-fffe0a7a-012591c7db",
+      "coverage": [
+        "raw_bytes",
+        "invalid_utf8"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "fffe",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 2,
+      "name": "invalid-utf8-remains-raw",
+      "offset": 0,
+      "ordinal": 7,
+      "payload_bytes": 4,
+      "payload_hex": "fffe0a7a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-single-line-over-byt-78787878787878787878-9ef7bfbee1",
+      "coverage": [
+        "range_byte_limit"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 17,
+      "expected_range_bytes": 17,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "7878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 16,
+      "name": "single-line-over-byte-limit",
+      "offset": 0,
+      "ordinal": 8,
+      "payload_bytes": 18,
+      "payload_hex": "78787878787878787878787878787878780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-proof-budget-before--610a610a610a610a610a-d2d7a059f0",
+      "coverage": [
+        "proof_budget",
+        "offset_proof"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "proof-budget-before-offset",
+      "offset": 40,
+      "ordinal": 9,
+      "payload_bytes": 100,
+      "payload_hex": "610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-proof-budget-before--78787878787878787878-d24a935dec",
+      "coverage": [
+        "proof_budget",
+        "range_end_proof"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 128,
+      "name": "proof-budget-before-line-end",
+      "offset": 0,
+      "ordinal": 10,
+      "payload_bytes": 65,
+      "payload_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-newline-at-proof-bou-78787878787878787878-e64e42fc62",
+      "coverage": [
+        "proof_boundary",
+        "lf_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": 31,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "78787878787878787878787878787878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 31,
+      "name": "newline-at-proof-boundary",
+      "offset": 0,
+      "ordinal": 11,
+      "payload_bytes": 36,
+      "payload_hex": "787878787878787878787878787878787878787878787878787878787878780a5441494c",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-eof-at-proof-boundar-78787878787878787878-d3c8832cf0",
+      "coverage": [
+        "proof_boundary",
+        "eof_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": 32,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "7878787878787878787878787878787878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 32,
+      "name": "eof-at-proof-boundary",
+      "offset": 0,
+      "ordinal": 12,
+      "payload_bytes": 32,
+      "payload_hex": "7878787878787878787878787878787878787878787878787878787878787878",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-negative-offset-780a-5b4ff2873f",
+      "coverage": [
+        "invalid_range"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "negative-offset",
+      "offset": -1,
+      "ordinal": 13,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-zero-limit-780a-577f020974",
+      "coverage": [
+        "invalid_range"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 0,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "zero-limit",
+      "offset": 0,
+      "ordinal": 14,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-decimal-string-offse-780a-f9da9f53c8",
+      "coverage": [
+        "decimal_string",
+        "compatibility"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 1,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "78",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "decimal-string-offset",
+      "offset": "0",
+      "ordinal": 15,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-nonnumeric-string-of-780a-62d61e6221",
+      "coverage": [
+        "invalid_range",
+        "type_confusion"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "nonnumeric-string-offset",
+      "offset": "zero",
+      "ordinal": 16,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-boolean-limit-780a-2ea5cc31ba",
+      "coverage": [
+        "invalid_range",
+        "type_confusion"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": true,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "boolean-limit",
+      "offset": 0,
+      "ordinal": 17,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-line-limit-over-poli-780a-2276ffe307",
+      "coverage": [
+        "invalid_range",
+        "line_limit"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 401,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "line-limit-over-policy",
+      "offset": 0,
+      "ordinal": 18,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-offset-at-eof-780a-1415097a19",
+      "coverage": [
+        "empty_range",
+        "eof_charge"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "offset-at-eof",
+      "offset": 1,
+      "ordinal": 19,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-00-range-limi-00fe2041800dff7f00fe-5540bcd875",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 11,
+      "expected_range_bytes": 11,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "00fe2041800dff7f00fe41",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 11,
+      "max_range_bytes": 10,
+      "name": "seeded-00-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 20,
+      "payload_bytes": 11,
+      "payload_hex": "00fe2041800dff7f00fe41",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-01-proof-limi-ff0a207f20fefeff8080-8f97cc1e1a",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 50,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 50,
+      "max_range_bytes": 7,
+      "name": "seeded-01-proof_limit_minus_one",
+      "offset": 4,
+      "ordinal": 21,
+      "payload_bytes": 68,
+      "payload_hex": "ff0a207f20fefeff8080ff007f00000dfe0a2041410dfe207f41ff00ff0d0d202020fe000a418020ff800a20fe007f80ff0d0a41410020410d0d7f7f41804180207f7f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-02-exact-boun-ffff008020200aff80fe-84704cb2f4",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 7,
+      "expected_range_bytes": 6,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ffff00802020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 7,
+      "max_range_bytes": 6,
+      "name": "seeded-02-exact_boundaries",
+      "offset": 0,
+      "ordinal": 22,
+      "payload_bytes": 40,
+      "payload_hex": "ffff008020200aff80fe7fff0a7fffff20ffff207f80ff0a41802000ff20fe800a0dfe0d80417f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-03-range-limi-002000fe807f00004180-ee9eb35fc1",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 53,
+      "expected_range_bytes": 18,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "0d7fff417f800d7f20ff200dfe20807ffefe",
+      "generated": true,
+      "limit": 3,
+      "max_line_range": 400,
+      "max_proof_bytes": 53,
+      "max_range_bytes": 17,
+      "name": "seeded-03-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 23,
+      "payload_bytes": 53,
+      "payload_hex": "002000fe807f0000418020200d800a7ffe0d008080200d0d417f80800d0d0a800a0d7fff417f800d7f20ff200dfe200a800a7ffefe",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-04-proof-limi-800a0080ff417f0a80fe-43eb6748d1",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 15,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 15,
+      "max_range_bytes": 7,
+      "name": "seeded-04-proof_limit_minus_one",
+      "offset": 2,
+      "ordinal": 24,
+      "payload_bytes": 39,
+      "payload_hex": "800a0080ff417f0a80fefe0dff7f0d0a0d414120ff7fff807f000d7f0a4100800d2020ff00000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-05-exact-boun-80fe414141feff0dff20-d5557c4901",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 54,
+      "expected_range_bytes": 35,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ff410d7f41ff800dff207f80ff7f7ffe410d7fff0d410041feff0d00feffff0d80ff7f",
+      "generated": true,
+      "limit": 4,
+      "max_line_range": 400,
+      "max_proof_bytes": 54,
+      "max_range_bytes": 35,
+      "name": "seeded-05-exact_boundaries",
+      "offset": 1,
+      "ordinal": 25,
+      "payload_bytes": 54,
+      "payload_hex": "80fe414141feff0dff20fe200d410aff410d7f410aff800dff207f800aff7f7ffe410d7fff0d410041fe0aff0d00feffff0d80ff7f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-06-range-limi-0d800d2080200dff7f41-f1b08d55ab",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 31,
+      "expected_range_bytes": 12,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "0d0041000dff7f4180002041",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 54,
+      "max_range_bytes": 11,
+      "name": "seeded-06-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 26,
+      "payload_bytes": 54,
+      "payload_hex": "0d800d2080200dff7f41200a0a0020410d7f0a0d0041000dff7f41800020410aff7f0080000d80fe008000fe7f0d807f000a80ff0dff",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-07-proof-limi-ff7f0dff41ff0041ff0a-865246908f",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 9,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 9,
+      "max_range_bytes": 9,
+      "name": "seeded-07-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 27,
+      "payload_bytes": 10,
+      "payload_hex": "ff7f0dff41ff0041ff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-08-exact-boun-0000fe0d20fe0dfeff20-bfdb51f6c1",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 48,
+      "expected_range_bytes": 32,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "8000ff20ff410080410d000d0dff2000ff20fe007f7f80fe7f7f807f00414100",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 48,
+      "max_range_bytes": 32,
+      "name": "seeded-08-exact_boundaries",
+      "offset": 1,
+      "ordinal": 28,
+      "payload_bytes": 48,
+      "payload_hex": "0000fe0d20fe0dfeff204120800a8000ff20ff410080410d000d0dff20000aff20fe007f7f80fe7f7f807f004141000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-09-range-limi-ff807f20fefe41410020-972ea8e710",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 10,
+      "expected_range_bytes": 10,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "ff807f20fefe41410020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 12,
+      "max_range_bytes": 9,
+      "name": "seeded-09-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 29,
+      "payload_bytes": 12,
+      "payload_hex": "ff807f20fefe414100200a80",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-10-proof-limi-0a000d0a7f0dfe7f8080-0ab4d20880",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 19,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 19,
+      "max_range_bytes": 6,
+      "name": "seeded-10-proof_limit_minus_one",
+      "offset": 3,
+      "ordinal": 30,
+      "payload_bytes": 38,
+      "payload_hex": "0a000d0a7f0dfe7f8080fe000a20fffefe00800a000dfeff41feff8041808000fe200d000d0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-11-exact-boun-41000d7ffffe7f80800d-68b5564198",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 34,
+      "expected_range_bytes": 16,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ff20fe00202020200dfeffff7f00fe00",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 34,
+      "max_range_bytes": 16,
+      "name": "seeded-11-exact_boundaries",
+      "offset": 1,
+      "ordinal": 31,
+      "payload_bytes": 34,
+      "payload_hex": "41000d7ffffe7f80800d007f007ffffe0aff20fe00202020200dfeffff7f00fe000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-12-range-limi-7ffe0d800a20417f4120-9b69075ca2",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 42,
+      "expected_range_bytes": 14,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "fe007ffefefefe000d41ff7f8020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 42,
+      "max_range_bytes": 13,
+      "name": "seeded-12-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 32,
+      "payload_bytes": 42,
+      "payload_hex": "7ffe0d800a20417f4120807f7ffefeff007fff0d0affff00ff0d7f0afe007ffefefefe000d41ff7f8020",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-13-proof-limi-7f417f0dff7f000a-b0e01f7e5e",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 7,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 7,
+      "max_range_bytes": 7,
+      "name": "seeded-13-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 33,
+      "payload_bytes": 8,
+      "payload_hex": "7f417f0dff7f000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-14-exact-boun-ff20ffff007ffffffe00-6f79306dbe",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 34,
+      "expected_range_bytes": 15,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "20800dff00807ffefe410d00002080",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 34,
+      "max_range_bytes": 15,
+      "name": "seeded-14-exact_boundaries",
+      "offset": 1,
+      "ordinal": 34,
+      "payload_bytes": 53,
+      "payload_hex": "ff20ffff007ffffffe008000fe41feff0d0a20800dff00807ffefe410d000020800a0d418080fe000020fffe7f20800dff7f41410a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-15-range-limi-00fffeff0d0d000d0a41-3a72316bc6",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 8,
+      "expected_range_bytes": 8,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "00fffeff0d0d000d",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 13,
+      "max_range_bytes": 7,
+      "name": "seeded-15-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 35,
+      "payload_bytes": 13,
+      "payload_hex": "00fffeff0d0d000d0a41ffff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-16-proof-limi-feff2000ff2020fe2000-69fd01cdc8",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 25,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 25,
+      "max_range_bytes": 10,
+      "name": "seeded-16-proof_limit_minus_one",
+      "offset": 1,
+      "ordinal": 36,
+      "payload_bytes": 26,
+      "payload_hex": "feff2000ff2020fe20007fff7f000a7f7ffe41800d0dffffff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-17-exact-boun-0d0dff0d0080ff800041-ef4390f3e0",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 69,
+      "expected_range_bytes": 22,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "2020418000fe800d0d4141200d808041fe7fffff4180",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 69,
+      "max_range_bytes": 22,
+      "name": "seeded-17-exact_boundaries",
+      "offset": 3,
+      "ordinal": 37,
+      "payload_bytes": 69,
+      "payload_hex": "0d0dff0d0080ff800041feff20200d7f00410a7f00800dff8041ffff007f4180ff804141000a0080ff800d0d0a2020418000fe800d0d4141200d0a808041fe7fffff41800a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-18-range-limi-0041410020204141fe00-bc3c3bea69",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 40,
+      "expected_range_bytes": 13,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "fe0dff7f0041fe807f800dfe80",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 52,
+      "max_range_bytes": 12,
+      "name": "seeded-18-range_limit_minus_one",
+      "offset": 2,
+      "ordinal": 38,
+      "payload_bytes": 52,
+      "payload_hex": "0041410020204141fe000a20000dff0d414141ff4180417fff0afe0dff7f0041fe807f0a800dfe800afe800d8080ffff0d808020",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-19-proof-limi-7f20fe207f804100fe0a-2c37cfebbc",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 9,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 9,
+      "max_range_bytes": 9,
+      "name": "seeded-19-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 39,
+      "payload_bytes": 10,
+      "payload_hex": "7f20fe207f804100fe0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-20-exact-boun-fe80ff0dffff0dfe7ffe-3f97b6ae54",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 14,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 14,
+      "max_range_bytes": 1,
+      "name": "seeded-20-exact_boundaries",
+      "offset": 1,
+      "ordinal": 40,
+      "payload_bytes": 14,
+      "payload_hex": "fe80ff0dffff0dfe7ffe20800a0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-21-range-limi-007f0a00ff00000d2080-f81f20dc78",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "007f",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 21,
+      "max_range_bytes": 1,
+      "name": "seeded-21-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 41,
+      "payload_bytes": 21,
+      "payload_hex": "007f0a00ff00000d2080207f00ff80ff7f20ff0041",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-22-proof-limi-fe00feffff0d41007f0d-82cb80b1be",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 44,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 44,
+      "max_range_bytes": 14,
+      "name": "seeded-22-proof_limit_minus_one",
+      "offset": 2,
+      "ordinal": 42,
+      "payload_bytes": 45,
+      "payload_hex": "fe00feffff0d41007f0d2020204180000a41fefe0d7fff20ff412000fe0a0020004180fe7ffe007f0dfefe410a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-canonical-seeded-23-exact-boun-7f0a20410afe20410a-8d28a007f2",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 1,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "7f",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 2,
+      "max_range_bytes": 1,
+      "name": "seeded-23-exact_boundaries",
+      "offset": 0,
+      "ordinal": 43,
+      "payload_bytes": 9,
+      "payload_hex": "7f0a20410afe20410a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-lf-first-line-616c7068610a62657461-754d9c2c6f",
+      "coverage": [
+        "lf_charge",
+        "zero_based_offset"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 6,
+      "expected_range_bytes": 5,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "616c706861",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 5,
+      "name": "lf-first-line",
+      "offset": 0,
+      "ordinal": 0,
+      "payload_bytes": 11,
+      "payload_hex": "616c7068610a626574610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-lf-second-line-616c7068610a62657461-5711645c8c",
+      "coverage": [
+        "lf_charge",
+        "zero_based_offset"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 11,
+      "expected_range_bytes": 4,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "62657461",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 4,
+      "name": "lf-second-line",
+      "offset": 1,
+      "ordinal": 1,
+      "payload_bytes": 11,
+      "payload_hex": "616c7068610a626574610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-crlf-charges-both-by-610d0a62620d0a-2baed4bace",
+      "coverage": [
+        "cr_charge",
+        "lf_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "610d",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 2,
+      "name": "crlf-charges-both-bytes",
+      "offset": 0,
+      "ordinal": 2,
+      "payload_bytes": 7,
+      "payload_hex": "610d0a62620d0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-bare-cr-is-not-line--610d620a63-90fce84c36",
+      "coverage": [
+        "cr_charge",
+        "lf_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 4,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "610d62",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "bare-cr-is-not-line-break",
+      "offset": 0,
+      "ordinal": 3,
+      "payload_bytes": 5,
+      "payload_hex": "610d620a63",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-eof-without-lf-616263-0abbb92092",
+      "coverage": [
+        "eof_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "616263",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "eof-without-lf",
+      "offset": 0,
+      "ordinal": 4,
+      "payload_bytes": 3,
+      "payload_hex": "616263",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-empty-line-0a0a78-24de316acb",
+      "coverage": [
+        "lf_charge",
+        "empty_line"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 0,
+      "name": "empty-line",
+      "offset": 1,
+      "ordinal": 5,
+      "payload_bytes": 3,
+      "payload_hex": "0a0a78",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-utf8-counted-as-raw--ed959c0a7a-450466006a",
+      "coverage": [
+        "raw_bytes",
+        "lf_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 4,
+      "expected_range_bytes": 3,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ed959c",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 3,
+      "name": "utf8-counted-as-raw-bytes",
+      "offset": 0,
+      "ordinal": 6,
+      "payload_bytes": 5,
+      "payload_hex": "ed959c0a7a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-invalid-utf8-remains-fffe0a7a-6192d127b4",
+      "coverage": [
+        "raw_bytes",
+        "invalid_utf8"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 3,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "fffe",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 2,
+      "name": "invalid-utf8-remains-raw",
+      "offset": 0,
+      "ordinal": 7,
+      "payload_bytes": 4,
+      "payload_hex": "fffe0a7a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-single-line-over-byt-78787878787878787878-c5bb5ff41f",
+      "coverage": [
+        "range_byte_limit"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 17,
+      "expected_range_bytes": 17,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "7878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 64,
+      "max_range_bytes": 16,
+      "name": "single-line-over-byte-limit",
+      "offset": 0,
+      "ordinal": 8,
+      "payload_bytes": 18,
+      "payload_hex": "78787878787878787878787878787878780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-proof-budget-before--610a610a610a610a610a-5aa8210140",
+      "coverage": [
+        "proof_budget",
+        "offset_proof"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "proof-budget-before-offset",
+      "offset": 40,
+      "ordinal": 9,
+      "payload_bytes": 100,
+      "payload_hex": "610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a610a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-proof-budget-before--78787878787878787878-6ccd12c819",
+      "coverage": [
+        "proof_budget",
+        "range_end_proof"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 128,
+      "name": "proof-budget-before-line-end",
+      "offset": 0,
+      "ordinal": 10,
+      "payload_bytes": 65,
+      "payload_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-newline-at-proof-bou-78787878787878787878-13d55da145",
+      "coverage": [
+        "proof_boundary",
+        "lf_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": 31,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "78787878787878787878787878787878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 31,
+      "name": "newline-at-proof-boundary",
+      "offset": 0,
+      "ordinal": 11,
+      "payload_bytes": 36,
+      "payload_hex": "787878787878787878787878787878787878787878787878787878787878780a5441494c",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-eof-at-proof-boundar-78787878787878787878-a6d5b04b60",
+      "coverage": [
+        "proof_boundary",
+        "eof_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 32,
+      "expected_range_bytes": 32,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "7878787878787878787878787878787878787878787878787878787878787878",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 32,
+      "name": "eof-at-proof-boundary",
+      "offset": 0,
+      "ordinal": 12,
+      "payload_bytes": 32,
+      "payload_hex": "7878787878787878787878787878787878787878787878787878787878787878",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-negative-offset-780a-270eca1c9e",
+      "coverage": [
+        "invalid_range"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "negative-offset",
+      "offset": -1,
+      "ordinal": 13,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-zero-limit-780a-521b7f19d8",
+      "coverage": [
+        "invalid_range"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 0,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "zero-limit",
+      "offset": 0,
+      "ordinal": 14,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-decimal-string-offse-780a-afe8679a66",
+      "coverage": [
+        "decimal_string",
+        "compatibility"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 1,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "78",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "decimal-string-offset",
+      "offset": "0",
+      "ordinal": 15,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-nonnumeric-string-of-780a-a959dbf343",
+      "coverage": [
+        "invalid_range",
+        "type_confusion"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "nonnumeric-string-offset",
+      "offset": "zero",
+      "ordinal": 16,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-boolean-limit-780a-1806daeeee",
+      "coverage": [
+        "invalid_range",
+        "type_confusion"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": true,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "boolean-limit",
+      "offset": 0,
+      "ordinal": 17,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-line-limit-over-poli-780a-823f4ab993",
+      "coverage": [
+        "invalid_range",
+        "line_limit"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 0,
+      "expected_range_bytes": null,
+      "expected_reason": "invalid_range",
+      "expected_selected_hex": null,
+      "limit": 401,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "line-limit-over-policy",
+      "offset": 0,
+      "ordinal": 18,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-offset-at-eof-780a-ab12f0f2eb",
+      "coverage": [
+        "empty_range",
+        "eof_charge"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 32,
+      "max_range_bytes": 16,
+      "name": "offset-at-eof",
+      "offset": 1,
+      "ordinal": 19,
+      "payload_bytes": 2,
+      "payload_hex": "780a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-00-range-limi-00fe2041800dff7f00fe-36e10c16e1",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 11,
+      "expected_range_bytes": 11,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "00fe2041800dff7f00fe41",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 11,
+      "max_range_bytes": 10,
+      "name": "seeded-00-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 20,
+      "payload_bytes": 11,
+      "payload_hex": "00fe2041800dff7f00fe41",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-01-proof-limi-ff0a207f20fefeff8080-6afe4843e6",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 50,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 50,
+      "max_range_bytes": 7,
+      "name": "seeded-01-proof_limit_minus_one",
+      "offset": 4,
+      "ordinal": 21,
+      "payload_bytes": 68,
+      "payload_hex": "ff0a207f20fefeff8080ff007f00000dfe0a2041410dfe207f41ff00ff0d0d202020fe000a418020ff800a20fe007f80ff0d0a41410020410d0d7f7f41804180207f7f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-02-exact-boun-ffff008020200aff80fe-aadd70e54f",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 7,
+      "expected_range_bytes": 6,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ffff00802020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 7,
+      "max_range_bytes": 6,
+      "name": "seeded-02-exact_boundaries",
+      "offset": 0,
+      "ordinal": 22,
+      "payload_bytes": 40,
+      "payload_hex": "ffff008020200aff80fe7fff0a7fffff20ffff207f80ff0a41802000ff20fe800a0dfe0d80417f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-03-range-limi-002000fe807f00004180-aef49e357a",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 53,
+      "expected_range_bytes": 18,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "0d7fff417f800d7f20ff200dfe20807ffefe",
+      "generated": true,
+      "limit": 3,
+      "max_line_range": 400,
+      "max_proof_bytes": 53,
+      "max_range_bytes": 17,
+      "name": "seeded-03-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 23,
+      "payload_bytes": 53,
+      "payload_hex": "002000fe807f0000418020200d800a7ffe0d008080200d0d417f80800d0d0a800a0d7fff417f800d7f20ff200dfe200a800a7ffefe",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-04-proof-limi-800a0080ff417f0a80fe-0edab6684a",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 15,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 15,
+      "max_range_bytes": 7,
+      "name": "seeded-04-proof_limit_minus_one",
+      "offset": 2,
+      "ordinal": 24,
+      "payload_bytes": 39,
+      "payload_hex": "800a0080ff417f0a80fefe0dff7f0d0a0d414120ff7fff807f000d7f0a4100800d2020ff00000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-05-exact-boun-80fe414141feff0dff20-2569865b84",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 54,
+      "expected_range_bytes": 35,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ff410d7f41ff800dff207f80ff7f7ffe410d7fff0d410041feff0d00feffff0d80ff7f",
+      "generated": true,
+      "limit": 4,
+      "max_line_range": 400,
+      "max_proof_bytes": 54,
+      "max_range_bytes": 35,
+      "name": "seeded-05-exact_boundaries",
+      "offset": 1,
+      "ordinal": 25,
+      "payload_bytes": 54,
+      "payload_hex": "80fe414141feff0dff20fe200d410aff410d7f410aff800dff207f800aff7f7ffe410d7fff0d410041fe0aff0d00feffff0d80ff7f0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-06-range-limi-0d800d2080200dff7f41-1f5bc44919",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 31,
+      "expected_range_bytes": 12,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "0d0041000dff7f4180002041",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 54,
+      "max_range_bytes": 11,
+      "name": "seeded-06-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 26,
+      "payload_bytes": 54,
+      "payload_hex": "0d800d2080200dff7f41200a0a0020410d7f0a0d0041000dff7f41800020410aff7f0080000d80fe008000fe7f0d807f000a80ff0dff",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-07-proof-limi-ff7f0dff41ff0041ff0a-4809603973",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 9,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 9,
+      "max_range_bytes": 9,
+      "name": "seeded-07-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 27,
+      "payload_bytes": 10,
+      "payload_hex": "ff7f0dff41ff0041ff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-08-exact-boun-0000fe0d20fe0dfeff20-ffedaaf60a",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 48,
+      "expected_range_bytes": 32,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "8000ff20ff410080410d000d0dff2000ff20fe007f7f80fe7f7f807f00414100",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 48,
+      "max_range_bytes": 32,
+      "name": "seeded-08-exact_boundaries",
+      "offset": 1,
+      "ordinal": 28,
+      "payload_bytes": 48,
+      "payload_hex": "0000fe0d20fe0dfeff204120800a8000ff20ff410080410d000d0dff20000aff20fe007f7f80fe7f7f807f004141000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-09-range-limi-ff807f20fefe41410020-b01f742a36",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 10,
+      "expected_range_bytes": 10,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "ff807f20fefe41410020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 12,
+      "max_range_bytes": 9,
+      "name": "seeded-09-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 29,
+      "payload_bytes": 12,
+      "payload_hex": "ff807f20fefe414100200a80",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-10-proof-limi-0a000d0a7f0dfe7f8080-16b65f03c0",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 19,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 19,
+      "max_range_bytes": 6,
+      "name": "seeded-10-proof_limit_minus_one",
+      "offset": 3,
+      "ordinal": 30,
+      "payload_bytes": 38,
+      "payload_hex": "0a000d0a7f0dfe7f8080fe000a20fffefe00800a000dfeff41feff8041808000fe200d000d0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-11-exact-boun-41000d7ffffe7f80800d-3deb9ba038",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 34,
+      "expected_range_bytes": 16,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "ff20fe00202020200dfeffff7f00fe00",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 34,
+      "max_range_bytes": 16,
+      "name": "seeded-11-exact_boundaries",
+      "offset": 1,
+      "ordinal": 31,
+      "payload_bytes": 34,
+      "payload_hex": "41000d7ffffe7f80800d007f007ffffe0aff20fe00202020200dfeffff7f00fe000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-12-range-limi-7ffe0d800a20417f4120-2bcbc5ccbe",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 42,
+      "expected_range_bytes": 14,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "fe007ffefefefe000d41ff7f8020",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 42,
+      "max_range_bytes": 13,
+      "name": "seeded-12-range_limit_minus_one",
+      "offset": 3,
+      "ordinal": 32,
+      "payload_bytes": 42,
+      "payload_hex": "7ffe0d800a20417f4120807f7ffefeff007fff0d0affff00ff0d7f0afe007ffefefefe000d41ff7f8020",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-13-proof-limi-7f417f0dff7f000a-7bd4a05e56",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 7,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 7,
+      "max_range_bytes": 7,
+      "name": "seeded-13-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 33,
+      "payload_bytes": 8,
+      "payload_hex": "7f417f0dff7f000a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-14-exact-boun-ff20ffff007ffffffe00-26de62cf74",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 34,
+      "expected_range_bytes": 15,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "20800dff00807ffefe410d00002080",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 34,
+      "max_range_bytes": 15,
+      "name": "seeded-14-exact_boundaries",
+      "offset": 1,
+      "ordinal": 34,
+      "payload_bytes": 53,
+      "payload_hex": "ff20ffff007ffffffe008000fe41feff0d0a20800dff00807ffefe410d000020800a0d418080fe000020fffe7f20800dff7f41410a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-15-range-limi-00fffeff0d0d000d0a41-3ba4fb5134",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 8,
+      "expected_range_bytes": 8,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "00fffeff0d0d000d",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 13,
+      "max_range_bytes": 7,
+      "name": "seeded-15-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 35,
+      "payload_bytes": 13,
+      "payload_hex": "00fffeff0d0d000d0a41ffff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-16-proof-limi-feff2000ff2020fe2000-ff18449e6c",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 25,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 25,
+      "max_range_bytes": 10,
+      "name": "seeded-16-proof_limit_minus_one",
+      "offset": 1,
+      "ordinal": 36,
+      "payload_bytes": 26,
+      "payload_hex": "feff2000ff2020fe20007fff7f000a7f7ffe41800d0dffffff0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-17-exact-boun-0d0dff0d0080ff800041-277055de71",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 69,
+      "expected_range_bytes": 22,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "2020418000fe800d0d4141200d808041fe7fffff4180",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 69,
+      "max_range_bytes": 22,
+      "name": "seeded-17-exact_boundaries",
+      "offset": 3,
+      "ordinal": 37,
+      "payload_bytes": 69,
+      "payload_hex": "0d0dff0d0080ff800041feff20200d7f00410a7f00800dff8041ffff007f4180ff804141000a0080ff800d0d0a2020418000fe800d0d4141200d0a808041fe7fffff41800a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-18-range-limi-0041410020204141fe00-97a5ef39dc",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 40,
+      "expected_range_bytes": 13,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "fe0dff7f0041fe807f800dfe80",
+      "generated": true,
+      "limit": 2,
+      "max_line_range": 400,
+      "max_proof_bytes": 52,
+      "max_range_bytes": 12,
+      "name": "seeded-18-range_limit_minus_one",
+      "offset": 2,
+      "ordinal": 38,
+      "payload_bytes": 52,
+      "payload_hex": "0041410020204141fe000a20000dff0d414141ff4180417fff0afe0dff7f0041fe807f0a800dfe800afe800d8080ffff0d808020",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-19-proof-limi-7f20fe207f804100fe0a-c433ce34e9",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 9,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 9,
+      "max_range_bytes": 9,
+      "name": "seeded-19-proof_limit_minus_one",
+      "offset": 0,
+      "ordinal": 39,
+      "payload_bytes": 10,
+      "payload_hex": "7f20fe207f804100fe0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-20-exact-boun-fe80ff0dffff0dfe7ffe-2b17ddb5e9",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 14,
+      "expected_range_bytes": 0,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 14,
+      "max_range_bytes": 1,
+      "name": "seeded-20-exact_boundaries",
+      "offset": 1,
+      "ordinal": 40,
+      "payload_bytes": 14,
+      "payload_hex": "fe80ff0dffff0dfe7ffe20800a0a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-21-range-limi-007f0a00ff00000d2080-d33e895835",
+      "coverage": [
+        "seeded_property",
+        "range_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 2,
+      "expected_reason": "range_byte_limit_exceeded",
+      "expected_selected_hex": "007f",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 21,
+      "max_range_bytes": 1,
+      "name": "seeded-21-range_limit_minus_one",
+      "offset": 0,
+      "ordinal": 41,
+      "payload_bytes": 21,
+      "payload_hex": "007f0a00ff00000d2080207f00ff80ff7f20ff0041",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-22-proof-limi-fe00feffff0d41007f0d-c0a9a005d5",
+      "coverage": [
+        "seeded_property",
+        "proof_limit_minus_one",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_proof_bytes": 44,
+      "expected_range_bytes": null,
+      "expected_reason": "proof_budget_exceeded",
+      "expected_selected_hex": null,
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 44,
+      "max_range_bytes": 14,
+      "name": "seeded-22-proof_limit_minus_one",
+      "offset": 2,
+      "ordinal": 42,
+      "payload_bytes": 45,
+      "payload_hex": "fe00feffff0d41007f0d2020204180000a41fefe0d7fff20ff412000fe0a0020004180fe7ffe007f0dfefe410a",
+      "seed": 10616833
+    },
+    {
+      "case_id": "range-packaged-seeded-23-exact-boun-7f0a20410afe20410a-a56ebeaa98",
+      "coverage": [
+        "seeded_property",
+        "exact_boundaries",
+        "raw_bytes"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_proof_bytes": 2,
+      "expected_range_bytes": 1,
+      "expected_reason": "range_proven",
+      "expected_selected_hex": "7f",
+      "generated": true,
+      "limit": 1,
+      "max_line_range": 400,
+      "max_proof_bytes": 2,
+      "max_range_bytes": 1,
+      "name": "seeded-23-exact_boundaries",
+      "offset": 0,
+      "ordinal": 43,
+      "payload_bytes": 9,
+      "payload_hex": "7f0a20410afe20410a",
+      "seed": 10616833
+    }
+  ],
+  "counts": {
+    "byte_range": 88,
+    "env_path": 44,
+    "migration": 16,
+    "privacy": 12,
+    "proof_budget_env": 26,
+    "proof_race": 18,
+    "surface": 12
+  },
+  "entrypoints": [
+    "canonical",
+    "packaged"
+  ],
+  "env_path_cases": [
+    {
+      "basename": ".env.production",
+      "case_id": "env-canonical-env-production-false-48c00e7b5a",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 0,
+      "path": ".env.production",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "example.env",
+      "case_id": "env-canonical-example-env-false-feb62aca9f",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 1,
+      "path": "example.env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.sample",
+      "case_id": "env-canonical-config--env-sample-false-4b1cab791e",
+      "coverage": [
+        "nested",
+        "exception"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 2,
+      "path": "config/.env.sample",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".environment",
+      "case_id": "env-canonical-environment-false-6d9cdf3ee5",
+      "coverage": [
+        "prefix",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 3,
+      "path": ".environment",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".venv",
+      "case_id": "env-canonical-venv-false-bf97287198",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 4,
+      "path": ".venv",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.production",
+      "case_id": "env-canonical-linked--env-producti-true-4a04be6329",
+      "coverage": [
+        "symlink",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 5,
+      "path": "linked/.env.production",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env.example.bak",
+      "case_id": "env-canonical-env-example-bak-false-23dbf49b28",
+      "coverage": [
+        "near_miss",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 6,
+      "path": ".env.example.bak",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".ENV",
+      "case_id": "env-canonical-env-false-1b95a31066",
+      "coverage": [
+        "casefold",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 7,
+      "path": ".ENV",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env_example",
+      "case_id": "env-canonical-env-example-false-30a46b2fc3",
+      "coverage": [
+        "near_miss",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 8,
+      "path": ".env_example",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.template",
+      "case_id": "env-canonical-config--env-template-false-06995cb026",
+      "coverage": [
+        "separator",
+        "exception"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 9,
+      "path": "config\\.env.template",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.test",
+      "case_id": "env-canonical-config----secrets--e-false-4926da07a2",
+      "coverage": [
+        "nested",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 10,
+      "path": "config/../secrets/.env.test",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.example",
+      "case_id": "env-canonical-env-example-false-fafeea9685",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 11,
+      "path": ".env.example",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".envrc",
+      "case_id": "env-canonical-envrc-false-50747b7edc",
+      "coverage": [
+        "prefix",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 12,
+      "path": ".envrc",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "README.md",
+      "case_id": "env-canonical-linked-readme-md-true-3b43a00a46",
+      "coverage": [
+        "symlink",
+        "benign_basename"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 13,
+      "path": "linked/README.md",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env",
+      "case_id": "env-canonical-env-false-bd8bda62fb",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 14,
+      "path": ".env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "env",
+      "case_id": "env-canonical-env-false-1f54c541ba",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 15,
+      "path": "env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.template",
+      "case_id": "env-canonical-env-template-false-63d0d06b5c",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 16,
+      "path": ".env.template",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env",
+      "case_id": "env-canonical-config--env-false-0b1c05384c",
+      "coverage": [
+        "nested",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 17,
+      "path": "config/.env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.example",
+      "case_id": "env-canonical-linked--env-example-true-0447ad41f2",
+      "coverage": [
+        "symlink",
+        "exception_precedence"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 18,
+      "path": "linked/.env.example",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env.local",
+      "case_id": "env-canonical-env-local-false-4e69e58add",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 19,
+      "path": ".env.local",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.sample",
+      "case_id": "env-canonical-env-sample-false-11eb848fe2",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 20,
+      "path": ".env.sample",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".ENV.EXAMPLE",
+      "case_id": "env-canonical-env-example-false-a20dad2e23",
+      "coverage": [
+        "casefold",
+        "exact_exception_near_miss",
+        "protected"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 21,
+      "path": ".ENV.EXAMPLE",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.production",
+      "case_id": "env-packaged-env-production-false-da5dfa1b27",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 0,
+      "path": ".env.production",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "example.env",
+      "case_id": "env-packaged-example-env-false-73f1edc719",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 1,
+      "path": "example.env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.sample",
+      "case_id": "env-packaged-config--env-sample-false-11e505be56",
+      "coverage": [
+        "nested",
+        "exception"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 2,
+      "path": "config/.env.sample",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".environment",
+      "case_id": "env-packaged-environment-false-3e9bc4a715",
+      "coverage": [
+        "prefix",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 3,
+      "path": ".environment",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".venv",
+      "case_id": "env-packaged-venv-false-f38f5597e4",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 4,
+      "path": ".venv",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.production",
+      "case_id": "env-packaged-linked--env-producti-true-cadc51dad8",
+      "coverage": [
+        "symlink",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 5,
+      "path": "linked/.env.production",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env.example.bak",
+      "case_id": "env-packaged-env-example-bak-false-7ec2d27ba2",
+      "coverage": [
+        "near_miss",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 6,
+      "path": ".env.example.bak",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".ENV",
+      "case_id": "env-packaged-env-false-21d6df79d8",
+      "coverage": [
+        "casefold",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 7,
+      "path": ".ENV",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env_example",
+      "case_id": "env-packaged-env-example-false-b06af7a260",
+      "coverage": [
+        "near_miss",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 8,
+      "path": ".env_example",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.template",
+      "case_id": "env-packaged-config--env-template-false-6775c00054",
+      "coverage": [
+        "separator",
+        "exception"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 9,
+      "path": "config\\.env.template",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.test",
+      "case_id": "env-packaged-config----secrets--e-false-afe50c2073",
+      "coverage": [
+        "nested",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 10,
+      "path": "config/../secrets/.env.test",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.example",
+      "case_id": "env-packaged-env-example-false-190d13b5e7",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 11,
+      "path": ".env.example",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".envrc",
+      "case_id": "env-packaged-envrc-false-9abd49d4a7",
+      "coverage": [
+        "prefix",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 12,
+      "path": ".envrc",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "README.md",
+      "case_id": "env-packaged-linked-readme-md-true-92f9c9d4c5",
+      "coverage": [
+        "symlink",
+        "benign_basename"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 13,
+      "path": "linked/README.md",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env",
+      "case_id": "env-packaged-env-false-00e9f85de7",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 14,
+      "path": ".env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": "env",
+      "case_id": "env-packaged-env-false-217a170f87",
+      "coverage": [
+        "benign"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "not_protected_env_basename",
+      "ordinal": 15,
+      "path": "env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.template",
+      "case_id": "env-packaged-env-template-false-06e11e8ed9",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 16,
+      "path": ".env.template",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env",
+      "case_id": "env-packaged-config--env-false-b6ffd953f3",
+      "coverage": [
+        "nested",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 17,
+      "path": "config/.env",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.example",
+      "case_id": "env-packaged-linked--env-example-true-de414be536",
+      "coverage": [
+        "symlink",
+        "exception_precedence"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "symlink_ambiguous",
+      "ordinal": 18,
+      "path": "linked/.env.example",
+      "seed": 10616834,
+      "symlink_ambiguous": true
+    },
+    {
+      "basename": ".env.local",
+      "case_id": "env-packaged-env-local-false-16eb2a182a",
+      "coverage": [
+        "root",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 19,
+      "path": ".env.local",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".env.sample",
+      "case_id": "env-packaged-env-sample-false-1efc140d80",
+      "coverage": [
+        "root",
+        "exception"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "exact_example_exception",
+      "ordinal": 20,
+      "path": ".env.sample",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    },
+    {
+      "basename": ".ENV.EXAMPLE",
+      "case_id": "env-packaged-env-example-false-bff91abb3f",
+      "coverage": [
+        "casefold",
+        "exact_exception_near_miss",
+        "protected"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "protected_env_basename",
+      "ordinal": 21,
+      "path": ".ENV.EXAMPLE",
+      "seed": 10616834,
+      "symlink_ambiguous": false
+    }
+  ],
+  "migration_cases": [
+    {
+      "before": [
+        "Read(./dist/**)",
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "Read(./logs/**)"
+      ],
+      "case_id": "migration-canonical-remove-two-exact-rul-read---dist--------r-55f6d8574f",
+      "coverage": [
+        "exact_removal",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": "removed 2 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 2,
+      "name": "remove-two-exact-rules",
+      "ordinal": 0,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-canonical-read-guard-disabled-read----env-----read-963f196fe9",
+      "coverage": [
+        "gating",
+        "read_guard_disabled"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "read-guard-disabled",
+      "ordinal": 1,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": false,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "case_id": "migration-canonical-already-migrated-ide-read---dist--------r-37b7d51fa1",
+      "coverage": [
+        "idempotence",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "already-migrated-idempotent",
+      "ordinal": 2,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-canonical-denies-disabled-read----env-----read-d721e8ab08",
+      "coverage": [
+        "gating",
+        "denies_disabled"
+      ],
+      "denies_enabled": false,
+      "entrypoint": "canonical",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "denies-disabled",
+      "ordinal": 3,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(.env)",
+        "Read(./.env**)",
+        "Read(./.env.example)",
+        "Read(./nested/.env)",
+        "read(./.env)",
+        "Read(./.env) "
+      ],
+      "case_id": "migration-canonical-preserve-similar-use-read--env-----read---2f2ea30260",
+      "coverage": [
+        "similar_preserved",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": null,
+      "expected_after": [
+        "Read(.env)",
+        "Read(./.env**)",
+        "Read(./.env.example)",
+        "Read(./nested/.env)",
+        "read(./.env)",
+        "Read(./.env) "
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "preserve-similar-user-rules",
+      "ordinal": 4,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./src/**)",
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-canonical-remove-duplicates-read----env-----read-63e2096305",
+      "coverage": [
+        "exact_removal",
+        "duplicates",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": "removed 3 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        "Read(./src/**)"
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 3,
+      "name": "remove-duplicates",
+      "ordinal": 5,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        {
+          "rule": "Read(./.env)"
+        },
+        7,
+        null,
+        "Read(./.env)"
+      ],
+      "case_id": "migration-canonical-preserve-non-string--rule----read----env--862e12812a",
+      "coverage": [
+        "non_string_preserved",
+        "exact_removal"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": "removed 1 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        {
+          "rule": "Read(./.env)"
+        },
+        7,
+        null
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 1,
+      "name": "preserve-non-string-values",
+      "ordinal": 6,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [],
+      "case_id": "migration-canonical-empty-idempotent-case-70e0f1cfc8",
+      "coverage": [
+        "idempotence",
+        "empty"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "canonical",
+      "expected_action": null,
+      "expected_after": [],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "empty-idempotent",
+      "ordinal": 7,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./dist/**)",
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "Read(./logs/**)"
+      ],
+      "case_id": "migration-packaged-remove-two-exact-rul-read---dist--------r-dc5028d474",
+      "coverage": [
+        "exact_removal",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": "removed 2 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 2,
+      "name": "remove-two-exact-rules",
+      "ordinal": 0,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-packaged-read-guard-disabled-read----env-----read-b1b4104052",
+      "coverage": [
+        "gating",
+        "read_guard_disabled"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "read-guard-disabled",
+      "ordinal": 1,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": false,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "case_id": "migration-packaged-already-migrated-ide-read---dist--------r-33928f03cd",
+      "coverage": [
+        "idempotence",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./dist/**)",
+        "Read(./logs/**)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "already-migrated-idempotent",
+      "ordinal": 2,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-packaged-denies-disabled-read----env-----read-242249d1fa",
+      "coverage": [
+        "gating",
+        "denies_disabled"
+      ],
+      "denies_enabled": false,
+      "entrypoint": "packaged",
+      "expected_action": null,
+      "expected_after": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "denies-disabled",
+      "ordinal": 3,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(.env)",
+        "Read(./.env**)",
+        "Read(./.env.example)",
+        "Read(./nested/.env)",
+        "read(./.env)",
+        "Read(./.env) "
+      ],
+      "case_id": "migration-packaged-preserve-similar-use-read--env-----read---671bbafd7c",
+      "coverage": [
+        "similar_preserved",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": null,
+      "expected_after": [
+        "Read(.env)",
+        "Read(./.env**)",
+        "Read(./.env.example)",
+        "Read(./nested/.env)",
+        "read(./.env)",
+        "Read(./.env) "
+      ],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "preserve-similar-user-rules",
+      "ordinal": 4,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        "Read(./.env)",
+        "Read(./src/**)",
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "case_id": "migration-packaged-remove-duplicates-read----env-----read-9369819fce",
+      "coverage": [
+        "exact_removal",
+        "duplicates",
+        "order"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": "removed 3 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        "Read(./src/**)"
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 3,
+      "name": "remove-duplicates",
+      "ordinal": 5,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [
+        {
+          "rule": "Read(./.env)"
+        },
+        7,
+        null,
+        "Read(./.env)"
+      ],
+      "case_id": "migration-packaged-preserve-non-string--rule----read----env--df5b54971e",
+      "coverage": [
+        "non_string_preserved",
+        "exact_removal"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": "removed 1 obsolete permissions.deny rules now enforced by the Claude Read hook",
+      "expected_after": [
+        {
+          "rule": "Read(./.env)"
+        },
+        7,
+        null
+      ],
+      "expected_changed": true,
+      "expected_removed_count": 1,
+      "name": "preserve-non-string-values",
+      "ordinal": 6,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    },
+    {
+      "before": [],
+      "case_id": "migration-packaged-empty-idempotent-case-a459df4596",
+      "coverage": [
+        "idempotence",
+        "empty"
+      ],
+      "denies_enabled": true,
+      "entrypoint": "packaged",
+      "expected_action": null,
+      "expected_after": [],
+      "expected_changed": false,
+      "expected_removed_count": 0,
+      "name": "empty-idempotent",
+      "ordinal": 7,
+      "product_owned_exact_rules": [
+        "Read(./.env)",
+        "Read(./.env.*)"
+      ],
+      "read_guard": true,
+      "seed": 10616838
+    }
+  ],
+  "policy_version": "a2-read-env-v1",
+  "privacy_scan_cases": [
+    {
+      "case_id": "privacy-canonical-sensitive-basename-r-home-a2-fixture-secr-ee3c354906",
+      "coverage": [
+        "path",
+        "sensitive_basename",
+        "stderr"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/home/a2-fixture/secrets/client_secret.txt",
+        "client_secret.txt"
+      ],
+      "name": "sensitive-basename-redaction",
+      "ordinal": 0,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable."
+      },
+      "seed": 10616836,
+      "source": "/home/a2-fixture/secrets/client_secret.txt",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-canonical-secret-redaction-sk-a2-fixture-abcdef-baf1dd5298",
+      "coverage": [
+        "secret",
+        "stdout",
+        "stderr"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "sk-a2-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+      ],
+      "name": "secret-redaction",
+      "ordinal": 1,
+      "safe_output": "[context-guard-kit] Read blocked: sensitive value [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: sensitive value [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: sensitive value [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: sensitive value [redacted]."
+      },
+      "seed": 10616836,
+      "source": "sk-a2-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-canonical-control-character-pa-tmp-a2-private-api-k-018686e05e",
+      "coverage": [
+        "path",
+        "control_character",
+        "secret"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/tmp/a2-private\napi_key=A2_CONTROL_SECRET",
+        "A2_CONTROL_SECRET"
+      ],
+      "name": "control-character-path",
+      "ordinal": 2,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path."
+      },
+      "seed": 10616836,
+      "source": "/tmp/a2-private\napi_key=A2_CONTROL_SECRET",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-canonical-authorization-redact-authorization--beare-558afd79a2",
+      "coverage": [
+        "secret",
+        "authorization",
+        "hook_reason"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "Authorization: Bearer A2_SYNTHETIC_BEARER_0123456789",
+        "A2_SYNTHETIC_BEARER_0123456789"
+      ],
+      "name": "authorization-redaction",
+      "ordinal": 3,
+      "safe_output": "[context-guard-kit] Read blocked: authorization [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: authorization [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: authorization [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: authorization [redacted]."
+      },
+      "seed": 10616836,
+      "source": "Authorization: Bearer A2_SYNTHETIC_BEARER_0123456789",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-canonical-private-path-redacti-users-a2-fixture-pri-b69380b4e1",
+      "coverage": [
+        "path",
+        "env",
+        "hook_reason"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/Users/a2-fixture/private/.env.production"
+      ],
+      "name": "private-path-redaction",
+      "ordinal": 4,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file."
+      },
+      "seed": 10616836,
+      "source": "/Users/a2-fixture/private/.env.production",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-canonical-assignment-redaction-api-key-a2-synthetic-235babdcae",
+      "coverage": [
+        "secret",
+        "assignment",
+        "hook_reason"
+      ],
+      "entrypoint": "canonical",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "api_key=A2_SYNTHETIC_SECRET_0123456789",
+        "A2_SYNTHETIC_SECRET_0123456789"
+      ],
+      "name": "assignment-redaction",
+      "ordinal": 5,
+      "safe_output": "[context-guard-kit] Read blocked: credential [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: credential [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: credential [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: credential [redacted]."
+      },
+      "seed": 10616836,
+      "source": "api_key=A2_SYNTHETIC_SECRET_0123456789",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-sensitive-basename-r-home-a2-fixture-secr-6a8bf9d7ab",
+      "coverage": [
+        "path",
+        "sensitive_basename",
+        "stderr"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/home/a2-fixture/secrets/client_secret.txt",
+        "client_secret.txt"
+      ],
+      "name": "sensitive-basename-redaction",
+      "ordinal": 0,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:abcdef012345: proof unavailable."
+      },
+      "seed": 10616836,
+      "source": "/home/a2-fixture/secrets/client_secret.txt",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-secret-redaction-sk-a2-fixture-abcdef-9886f289b7",
+      "coverage": [
+        "secret",
+        "stdout",
+        "stderr"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "sk-a2-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+      ],
+      "name": "secret-redaction",
+      "ordinal": 1,
+      "safe_output": "[context-guard-kit] Read blocked: sensitive value [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: sensitive value [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: sensitive value [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: sensitive value [redacted]."
+      },
+      "seed": 10616836,
+      "source": "sk-a2-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-control-character-pa-tmp-a2-private-api-k-fa8e1aa13d",
+      "coverage": [
+        "path",
+        "control_character",
+        "secret"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/tmp/a2-private\napi_key=A2_CONTROL_SECRET",
+        "A2_CONTROL_SECRET"
+      ],
+      "name": "control-character-path",
+      "ordinal": 2,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:deadbeefcafe: invalid path."
+      },
+      "seed": 10616836,
+      "source": "/tmp/a2-private\napi_key=A2_CONTROL_SECRET",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-authorization-redact-authorization--beare-82bf5070e0",
+      "coverage": [
+        "secret",
+        "authorization",
+        "hook_reason"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "Authorization: Bearer A2_SYNTHETIC_BEARER_0123456789",
+        "A2_SYNTHETIC_BEARER_0123456789"
+      ],
+      "name": "authorization-redaction",
+      "ordinal": 3,
+      "safe_output": "[context-guard-kit] Read blocked: authorization [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: authorization [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: authorization [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: authorization [redacted]."
+      },
+      "seed": 10616836,
+      "source": "Authorization: Bearer A2_SYNTHETIC_BEARER_0123456789",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-private-path-redacti-users-a2-fixture-pri-c835ea530c",
+      "coverage": [
+        "path",
+        "env",
+        "hook_reason"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "/Users/a2-fixture/private/.env.production"
+      ],
+      "name": "private-path-redaction",
+      "ordinal": 4,
+      "safe_output": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file.",
+        "stdout": "[context-guard-kit] Read blocked for redacted-path#path:0123456789ab: protected env file."
+      },
+      "seed": 10616836,
+      "source": "/Users/a2-fixture/private/.env.production",
+      "synthetic_only": true
+    },
+    {
+      "case_id": "privacy-packaged-assignment-redaction-api-key-a2-synthetic-961254be16",
+      "coverage": [
+        "secret",
+        "assignment",
+        "hook_reason"
+      ],
+      "entrypoint": "packaged",
+      "expected_findings": [],
+      "expected_findings_by_surface": {
+        "hook_json": [],
+        "state_tree": [],
+        "stderr": [],
+        "stdout": []
+      },
+      "forbidden_fragments": [
+        "api_key=A2_SYNTHETIC_SECRET_0123456789",
+        "A2_SYNTHETIC_SECRET_0123456789"
+      ],
+      "name": "assignment-redaction",
+      "ordinal": 5,
+      "safe_output": "[context-guard-kit] Read blocked: credential [redacted].",
+      "safe_outputs": {
+        "hook_json": "{\"permissionDecisionReason\": \"[context-guard-kit] Read blocked: credential [redacted].\"}",
+        "state_tree": "{\"attempts\": {\"redacted-fingerprint\": {\"count\": 1}}}",
+        "stderr": "[context-guard-kit] Read blocked: credential [redacted].",
+        "stdout": "[context-guard-kit] Read blocked: credential [redacted]."
+      },
+      "seed": 10616836,
+      "source": "api_key=A2_SYNTHETIC_SECRET_0123456789",
+      "synthetic_only": true
+    }
+  ],
+  "proof_budget_env_cases": [
+    {
+      "canonical_env": "65536",
+      "case_id": "proof-env-canonical-canonical-minimum-65536-e03a0828e3",
+      "coverage": [
+        "canonical",
+        "minimum"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 65536,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-minimum",
+      "ordinal": 0,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "67108864",
+      "case_id": "proof-env-canonical-canonical-maximum-67108864-7ad8b28e7b",
+      "coverage": [
+        "canonical",
+        "maximum"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 67108864,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-maximum",
+      "ordinal": 1,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "-1",
+      "case_id": "proof-env-canonical-canonical-negative-1-efd9cfa98b",
+      "coverage": [
+        "canonical",
+        "clamp_min",
+        "negative"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-negative",
+      "ordinal": 2,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "invalid",
+      "case_id": "proof-env-canonical-invalid-canonical-st-invalid-20a8a8445a",
+      "coverage": [
+        "canonical",
+        "precedence",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 8388608,
+      "expected_source": "canonical_invalid_default",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "invalid-canonical-still-precedes-legacy",
+      "ordinal": 3,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "",
+      "case_id": "proof-env-canonical-empty-canonical-stil-case-f47d2f91dd",
+      "coverage": [
+        "canonical",
+        "precedence",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 8388608,
+      "expected_source": "canonical_invalid_default",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "empty-canonical-still-precedes-legacy",
+      "ordinal": 4,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "67108865",
+      "case_id": "proof-env-canonical-canonical-above-maxi-67108865-fe0c319425",
+      "coverage": [
+        "canonical",
+        "clamp_max"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 67108864,
+      "expected_source": "canonical_clamped_max",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-above-maximum",
+      "ordinal": 5,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "  3145728  ",
+      "case_id": "proof-env-canonical-canonical-whitespace-3145728-710cfb556c",
+      "coverage": [
+        "canonical",
+        "whitespace"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 3145728,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-whitespace-integer",
+      "ordinal": 6,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-canonical-unset-default-none-f1ca5a3973",
+      "coverage": [
+        "default"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 8388608,
+      "expected_source": "default",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "unset-default",
+      "ordinal": 7,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "65535",
+      "case_id": "proof-env-canonical-canonical-below-mini-65535-840096802f",
+      "coverage": [
+        "canonical",
+        "clamp_min"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-below-minimum",
+      "ordinal": 8,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-canonical-legacy-invalid-defau-none-ad790dfb23",
+      "coverage": [
+        "legacy",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 8388608,
+      "expected_source": "legacy_invalid_default",
+      "legacy_env": "not-an-integer",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "legacy-invalid-default",
+      "ordinal": 9,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-canonical-legacy-fallback-none-0a7f455363",
+      "coverage": [
+        "legacy"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 4194304,
+      "expected_source": "legacy",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "legacy-fallback",
+      "ordinal": 10,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "0",
+      "case_id": "proof-env-canonical-canonical-zero-clamp-0-c1bcff3e7c",
+      "coverage": [
+        "canonical",
+        "clamp_min",
+        "zero"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-zero-clamps-minimum",
+      "ordinal": 11,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "2097152",
+      "case_id": "proof-env-canonical-canonical-precedes-l-2097152-d0c111c7ec",
+      "coverage": [
+        "canonical",
+        "precedence"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "canonical",
+      "expected_bytes": 2097152,
+      "expected_source": "canonical",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-precedes-legacy",
+      "ordinal": 12,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "65536",
+      "case_id": "proof-env-packaged-canonical-minimum-65536-f03ff0f17c",
+      "coverage": [
+        "canonical",
+        "minimum"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 65536,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-minimum",
+      "ordinal": 0,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "67108864",
+      "case_id": "proof-env-packaged-canonical-maximum-67108864-b84782aeef",
+      "coverage": [
+        "canonical",
+        "maximum"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 67108864,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-maximum",
+      "ordinal": 1,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "-1",
+      "case_id": "proof-env-packaged-canonical-negative-1-548b97949f",
+      "coverage": [
+        "canonical",
+        "clamp_min",
+        "negative"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-negative",
+      "ordinal": 2,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "invalid",
+      "case_id": "proof-env-packaged-invalid-canonical-st-invalid-fcac520638",
+      "coverage": [
+        "canonical",
+        "precedence",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 8388608,
+      "expected_source": "canonical_invalid_default",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "invalid-canonical-still-precedes-legacy",
+      "ordinal": 3,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "",
+      "case_id": "proof-env-packaged-empty-canonical-stil-case-865f12f8cf",
+      "coverage": [
+        "canonical",
+        "precedence",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 8388608,
+      "expected_source": "canonical_invalid_default",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "empty-canonical-still-precedes-legacy",
+      "ordinal": 4,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "67108865",
+      "case_id": "proof-env-packaged-canonical-above-maxi-67108865-be4db5212c",
+      "coverage": [
+        "canonical",
+        "clamp_max"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 67108864,
+      "expected_source": "canonical_clamped_max",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-above-maximum",
+      "ordinal": 5,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "  3145728  ",
+      "case_id": "proof-env-packaged-canonical-whitespace-3145728-91f452f09b",
+      "coverage": [
+        "canonical",
+        "whitespace"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 3145728,
+      "expected_source": "canonical",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-whitespace-integer",
+      "ordinal": 6,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-packaged-unset-default-none-5a6882ab56",
+      "coverage": [
+        "default"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 8388608,
+      "expected_source": "default",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "unset-default",
+      "ordinal": 7,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "65535",
+      "case_id": "proof-env-packaged-canonical-below-mini-65535-6cda22ce84",
+      "coverage": [
+        "canonical",
+        "clamp_min"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-below-minimum",
+      "ordinal": 8,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-packaged-legacy-invalid-defau-none-1643e07c24",
+      "coverage": [
+        "legacy",
+        "invalid"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 8388608,
+      "expected_source": "legacy_invalid_default",
+      "legacy_env": "not-an-integer",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "legacy-invalid-default",
+      "ordinal": 9,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": null,
+      "case_id": "proof-env-packaged-legacy-fallback-none-e3a0b38b57",
+      "coverage": [
+        "legacy"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 4194304,
+      "expected_source": "legacy",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "legacy-fallback",
+      "ordinal": 10,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "0",
+      "case_id": "proof-env-packaged-canonical-zero-clamp-0-1ce9ccc0f9",
+      "coverage": [
+        "canonical",
+        "clamp_min",
+        "zero"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 65536,
+      "expected_source": "canonical_clamped_min",
+      "legacy_env": null,
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-zero-clamps-minimum",
+      "ordinal": 11,
+      "seed": 10616837
+    },
+    {
+      "canonical_env": "2097152",
+      "case_id": "proof-env-packaged-canonical-precedes-l-2097152-72f7530e49",
+      "coverage": [
+        "canonical",
+        "precedence"
+      ],
+      "default_bytes": 8388608,
+      "entrypoint": "packaged",
+      "expected_bytes": 2097152,
+      "expected_source": "canonical",
+      "legacy_env": "4194304",
+      "maximum_bytes": 67108864,
+      "minimum_bytes": 65536,
+      "name": "canonical-precedes-legacy",
+      "ordinal": 12,
+      "seed": 10616837
+    }
+  ],
+  "proof_race_cases": [
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-mtime-changed-mtime-changed-50ab6e0476",
+      "coverage": [
+        "race",
+        "mtime"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "mtime_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000002,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "mtime-changed",
+      "ordinal": 0,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-stable-stable-proof-c81e5cb42b",
+      "coverage": [
+        "stable_proof"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "allow",
+      "expected_reason": "stable_proof",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "stable",
+      "ordinal": 1,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-inode-replaced-identity-changed-cde7c33c85",
+      "coverage": [
+        "race",
+        "identity"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "identity_changed",
+      "final": {
+        "dev": 11,
+        "ino": 102,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "inode-replaced",
+      "ordinal": 2,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 63,
+      "case_id": "proof-canonical-short-read-stable-me-short-proof-read-dd7c146d57",
+      "coverage": [
+        "short_read",
+        "proof"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "short_proof_read",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "short-read-stable-metadata",
+      "ordinal": 3,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-final-directory-not-regular-file-44bad6184e",
+      "coverage": [
+        "race",
+        "file_type"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "not_regular_file",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 16832,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "final-directory",
+      "ordinal": 4,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 63,
+      "case_id": "proof-canonical-size-shrank-size-changed-d58e84b9ff",
+      "coverage": [
+        "race",
+        "size",
+        "short_read"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "size_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 63
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "size-shrank",
+      "ordinal": 5,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-initial-directory-not-regular-file-8f6116f194",
+      "coverage": [
+        "file_type"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "not_regular_file",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 16832,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "initial-directory",
+      "ordinal": 6,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-size-grew-size-changed-36092a3888",
+      "coverage": [
+        "race",
+        "size"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "size_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 65
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "size-grew",
+      "ordinal": 7,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-canonical-device-replaced-identity-changed-8280d9b2f5",
+      "coverage": [
+        "race",
+        "identity"
+      ],
+      "entrypoint": "canonical",
+      "expected_decision": "deny",
+      "expected_reason": "identity_changed",
+      "final": {
+        "dev": 12,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "device-replaced",
+      "ordinal": 8,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-mtime-changed-mtime-changed-5a45dc747c",
+      "coverage": [
+        "race",
+        "mtime"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "mtime_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000002,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "mtime-changed",
+      "ordinal": 0,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-stable-stable-proof-75fed2d2b0",
+      "coverage": [
+        "stable_proof"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "allow",
+      "expected_reason": "stable_proof",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "stable",
+      "ordinal": 1,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-inode-replaced-identity-changed-9da2430b60",
+      "coverage": [
+        "race",
+        "identity"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "identity_changed",
+      "final": {
+        "dev": 11,
+        "ino": 102,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "inode-replaced",
+      "ordinal": 2,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 63,
+      "case_id": "proof-packaged-short-read-stable-me-short-proof-read-cbe9402514",
+      "coverage": [
+        "short_read",
+        "proof"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "short_proof_read",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "short-read-stable-metadata",
+      "ordinal": 3,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-final-directory-not-regular-file-6cdf599be7",
+      "coverage": [
+        "race",
+        "file_type"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "not_regular_file",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 16832,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "final-directory",
+      "ordinal": 4,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 63,
+      "case_id": "proof-packaged-size-shrank-size-changed-93dde80602",
+      "coverage": [
+        "race",
+        "size",
+        "short_read"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "size_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 63
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "size-shrank",
+      "ordinal": 5,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-initial-directory-not-regular-file-087b69588f",
+      "coverage": [
+        "file_type"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "not_regular_file",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 16832,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "initial-directory",
+      "ordinal": 6,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-size-grew-size-changed-754d5d3f79",
+      "coverage": [
+        "race",
+        "size"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "size_changed",
+      "final": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 65
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "size-grew",
+      "ordinal": 7,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    },
+    {
+      "bytes_read": 64,
+      "case_id": "proof-packaged-device-replaced-identity-changed-01c78dd675",
+      "coverage": [
+        "race",
+        "identity"
+      ],
+      "entrypoint": "packaged",
+      "expected_decision": "deny",
+      "expected_reason": "identity_changed",
+      "final": {
+        "dev": 12,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "initial": {
+        "dev": 11,
+        "ino": 101,
+        "mode": 33152,
+        "mtime_ns": 1700000000000000001,
+        "size": 64
+      },
+      "name": "device-replaced",
+      "ordinal": 8,
+      "required_proof_bytes": 64,
+      "seed": 10616835
+    }
+  ],
+  "schema_version": 1,
+  "seeds": {
+    "byte_range": 10616833,
+    "env_path": 10616834,
+    "migration": 10616838,
+    "privacy": 10616836,
+    "proof_budget_env": 10616837,
+    "proof_race": 10616835,
+    "surface": 10616839
+  },
+  "surface_claim_cases": [
+    {
+      "case_id": "surface-canonical-claude-read-env-poli-claude-read-cf16607d95",
+      "claim_scope": "case-insensitive .env* basename protection with exact lowercase .env.example/.env.sample/.env.template exceptions",
+      "coverage": [
+        "read",
+        "exact_scope"
+      ],
+      "enforced": true,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "universal environment-file protection",
+        "all tools are protected"
+      ],
+      "mechanism": "PreToolUse Read hook",
+      "name": "claude-read-env-policy",
+      "ordinal": 0,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Read-only environment-file policy",
+        "protects Claude Read only",
+        "Glob name listings, Grep, and Bash/process access are out of scope"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Read"
+    },
+    {
+      "case_id": "surface-canonical-bash-not-protected-claude-bash-process-7e0053f80e",
+      "claim_scope": "Bash and process access are not blocked by the Read hook",
+      "coverage": [
+        "bash",
+        "limitation",
+        "no_universal_protection"
+      ],
+      "enforced": false,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "Bash is protected by the Read hook",
+        "process access is universally blocked"
+      ],
+      "mechanism": "out of scope",
+      "name": "bash-not-protected",
+      "ordinal": 1,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Bash/process access are out of scope"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Bash/process"
+    },
+    {
+      "case_id": "surface-canonical-proof-race-boundary-raw-read-range-proof-0ceb5b8f5d",
+      "claim_scope": "detects proof-time dev/inode/size/mtime changes and short reads",
+      "coverage": [
+        "proof",
+        "race",
+        "toctou_caveat"
+      ],
+      "enforced": true,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "eliminates every filesystem race",
+        "universal TOCTOU protection"
+      ],
+      "mechanism": "anchored no-follow fd plus initial/final fstat",
+      "name": "proof-race-boundary",
+      "ordinal": 2,
+      "package_parity_required": true,
+      "required_phrases": [
+        "initial/final",
+        "dev/inode/size/mtime"
+      ],
+      "seed": 10616839,
+      "surface": "raw Read range proof"
+    },
+    {
+      "case_id": "surface-canonical-setup-exact-migratio-claude-setup-migrati-e11b443920",
+      "claim_scope": "removes only exact Read(./.env) and Read(./.env.*) product-owned deny strings when denies and the Read guard are enabled",
+      "coverage": [
+        "migration",
+        "exact_scope",
+        "user_rules_preserved"
+      ],
+      "enforced": true,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "removes all env-like deny rules",
+        "rewrites similar user rules"
+      ],
+      "mechanism": "managed settings transaction",
+      "name": "setup-exact-migration",
+      "ordinal": 3,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "exact"
+      ],
+      "seed": 10616839,
+      "surface": "Claude setup migration"
+    },
+    {
+      "case_id": "surface-canonical-glob-not-content-pro-claude-glob-ec705d4f12",
+      "claim_scope": "Glob name listings are not blocked by the Read hook",
+      "coverage": [
+        "glob",
+        "limitation"
+      ],
+      "enforced": false,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "Glob is protected by the Read hook"
+      ],
+      "mechanism": "out of scope",
+      "name": "glob-not-content-protected",
+      "ordinal": 4,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Glob name listings"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Glob"
+    },
+    {
+      "case_id": "surface-canonical-grep-not-protected-claude-grep-3a07525be5",
+      "claim_scope": "Grep access is not blocked by the Read hook",
+      "coverage": [
+        "grep",
+        "limitation"
+      ],
+      "enforced": false,
+      "entrypoint": "canonical",
+      "forbidden_claims": [
+        "Grep is protected by the Read hook"
+      ],
+      "mechanism": "out of scope",
+      "name": "grep-not-protected",
+      "ordinal": 5,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Grep"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Grep"
+    },
+    {
+      "case_id": "surface-packaged-claude-read-env-poli-claude-read-9afe93806c",
+      "claim_scope": "case-insensitive .env* basename protection with exact lowercase .env.example/.env.sample/.env.template exceptions",
+      "coverage": [
+        "read",
+        "exact_scope"
+      ],
+      "enforced": true,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "universal environment-file protection",
+        "all tools are protected"
+      ],
+      "mechanism": "PreToolUse Read hook",
+      "name": "claude-read-env-policy",
+      "ordinal": 0,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Read-only environment-file policy",
+        "protects Claude Read only",
+        "Glob name listings, Grep, and Bash/process access are out of scope"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Read"
+    },
+    {
+      "case_id": "surface-packaged-bash-not-protected-claude-bash-process-8b3fca0052",
+      "claim_scope": "Bash and process access are not blocked by the Read hook",
+      "coverage": [
+        "bash",
+        "limitation",
+        "no_universal_protection"
+      ],
+      "enforced": false,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "Bash is protected by the Read hook",
+        "process access is universally blocked"
+      ],
+      "mechanism": "out of scope",
+      "name": "bash-not-protected",
+      "ordinal": 1,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Bash/process access are out of scope"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Bash/process"
+    },
+    {
+      "case_id": "surface-packaged-proof-race-boundary-raw-read-range-proof-ebbbb87df8",
+      "claim_scope": "detects proof-time dev/inode/size/mtime changes and short reads",
+      "coverage": [
+        "proof",
+        "race",
+        "toctou_caveat"
+      ],
+      "enforced": true,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "eliminates every filesystem race",
+        "universal TOCTOU protection"
+      ],
+      "mechanism": "anchored no-follow fd plus initial/final fstat",
+      "name": "proof-race-boundary",
+      "ordinal": 2,
+      "package_parity_required": true,
+      "required_phrases": [
+        "initial/final",
+        "dev/inode/size/mtime"
+      ],
+      "seed": 10616839,
+      "surface": "raw Read range proof"
+    },
+    {
+      "case_id": "surface-packaged-setup-exact-migratio-claude-setup-migrati-6611fb8a6b",
+      "claim_scope": "removes only exact Read(./.env) and Read(./.env.*) product-owned deny strings when denies and the Read guard are enabled",
+      "coverage": [
+        "migration",
+        "exact_scope",
+        "user_rules_preserved"
+      ],
+      "enforced": true,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "removes all env-like deny rules",
+        "rewrites similar user rules"
+      ],
+      "mechanism": "managed settings transaction",
+      "name": "setup-exact-migration",
+      "ordinal": 3,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "exact"
+      ],
+      "seed": 10616839,
+      "surface": "Claude setup migration"
+    },
+    {
+      "case_id": "surface-packaged-glob-not-content-pro-claude-glob-6ef93a12e8",
+      "claim_scope": "Glob name listings are not blocked by the Read hook",
+      "coverage": [
+        "glob",
+        "limitation"
+      ],
+      "enforced": false,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "Glob is protected by the Read hook"
+      ],
+      "mechanism": "out of scope",
+      "name": "glob-not-content-protected",
+      "ordinal": 4,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Glob name listings"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Glob"
+    },
+    {
+      "case_id": "surface-packaged-grep-not-protected-claude-grep-bcb0449008",
+      "claim_scope": "Grep access is not blocked by the Read hook",
+      "coverage": [
+        "grep",
+        "limitation"
+      ],
+      "enforced": false,
+      "entrypoint": "packaged",
+      "forbidden_claims": [
+        "Grep is protected by the Read hook"
+      ],
+      "mechanism": "out of scope",
+      "name": "grep-not-protected",
+      "ordinal": 5,
+      "package_parity_required": true,
+      "required_phrases": [
+        "Grep"
+      ],
+      "seed": 10616839,
+      "surface": "Claude Grep"
+    }
+  ]
+}

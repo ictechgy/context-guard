@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -46,8 +47,6 @@ RECOMMENDED_DENIES = [
     "Read(./vendor/**)",
     "Read(./.context-guard/**)",
     "Read(./.claude-token-optimizer/**)",
-    "Read(./.env)",
-    "Read(./.env.*)",
     "Read(./.npmrc)",
     "Read(./.pypirc)",
     "Read(./.netrc)",
@@ -57,6 +56,10 @@ RECOMMENDED_DENIES = [
     "Read(~/.kube/**)",
     "Read(~/.docker/**)",
 ]
+PRODUCT_OWNED_ENV_READ_DENIES = frozenset({
+    "Read(./.env)",
+    "Read(./.env.*)",
+})
 HELPER_STATUSLINE = "context-guard-statusline-merged"
 HELPER_REWRITE_BASH = "context-guard-rewrite-bash"
 HELPER_GUARD_READ = "context-guard-guard-read"
@@ -165,14 +168,19 @@ class SetupResult:
 # - native-skill / report-only agents are never written to; they are reported.
 # It never sends work to external providers and never promises token/cost savings.
 
-ADAPTER_RULE_BLOCK_BEGIN = "<!-- contextguard:begin -->"
-ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
+LEGACY_ADAPTER_RULE_BLOCK_BEGIN = "<!-- contextguard:begin -->"
+LEGACY_ADAPTER_RULE_BLOCK_END = "<!-- contextguard:end -->"
+ADAPTER_RULE_BLOCK_BEGIN = "<!-- BEGIN context-guard:repo-rules version=1 -->"
+ADAPTER_RULE_BLOCK_END = "<!-- END context-guard:repo-rules -->"
 CODEX_SKILL_REL = ".agents/skills/context-guard/SKILL.md"
-CODEX_SKILL_MARKER_BEGIN = "<!-- contextguard:codex-skill:begin -->"
-CODEX_SKILL_MARKER_END = "<!-- contextguard:codex-skill:end -->"
+LEGACY_CODEX_SKILL_MARKER_BEGIN = "<!-- contextguard:codex-skill:begin -->"
+LEGACY_CODEX_SKILL_MARKER_END = "<!-- contextguard:codex-skill:end -->"
+CODEX_SKILL_MARKER_BEGIN = "<!-- BEGIN context-guard:codex-skill version=1 -->"
+CODEX_SKILL_MARKER_END = "<!-- END context-guard:codex-skill -->"
 BRIEF_MODE_LEVELS = ("lite", "standard", "ultra")
 BRIEF_MODE_OFF = "off"
 BRIEF_MODE_CHOICES = (*BRIEF_MODE_LEVELS, BRIEF_MODE_OFF)
+NARRATION_MODE_CHOICES = ("quiet", "default")
 BRIEF_MODE_BLOCK_END = "<!-- END context-guard:brief-mode -->"
 BRIEF_MODE_BEGIN_RE = re.compile(
     r"<!-- BEGIN context-guard:brief-mode level=(?P<level>[a-z]+) version=1 -->"
@@ -185,6 +193,214 @@ BRIEF_MODE_BLOCK_RE = re.compile(
     r"(?:\n{0,2})?",
     re.DOTALL,
 )
+
+LEGACY_REPO_RULE_MARKER_BEGIN = LEGACY_ADAPTER_RULE_BLOCK_BEGIN.encode("ascii")
+LEGACY_REPO_RULE_MARKER_END = LEGACY_ADAPTER_RULE_BLOCK_END.encode("ascii")
+REPO_RULE_MARKER_V1_BEGIN = ADAPTER_RULE_BLOCK_BEGIN.encode("ascii")
+REPO_RULE_MARKER_V1_END = ADAPTER_RULE_BLOCK_END.encode("ascii")
+LEGACY_CODEX_SKILL_MARKER_V0_BEGIN = LEGACY_CODEX_SKILL_MARKER_BEGIN.encode("ascii")
+LEGACY_CODEX_SKILL_MARKER_V0_END = LEGACY_CODEX_SKILL_MARKER_END.encode("ascii")
+CODEX_SKILL_MARKER_V1_BEGIN = CODEX_SKILL_MARKER_BEGIN.encode("ascii")
+CODEX_SKILL_MARKER_V1_END = CODEX_SKILL_MARKER_END.encode("ascii")
+BRIEF_MODE_MARKER_END = BRIEF_MODE_BLOCK_END.encode("ascii")
+NARRATION_MODE_MARKER_BEGIN = b"<!-- BEGIN context-guard:narration-mode mode=quiet version=1 -->"
+NARRATION_MODE_MARKER_END = b"<!-- END context-guard:narration-mode -->"
+
+
+@dataclass(frozen=True)
+class ManagedMarker:
+    kind: str
+    version: int
+    begin: bytes
+    end: bytes
+    variant: str | None = None
+
+
+MANAGED_MARKERS = (
+    ManagedMarker(
+        "repo-rules",
+        0,
+        LEGACY_REPO_RULE_MARKER_BEGIN,
+        LEGACY_REPO_RULE_MARKER_END,
+        "legacy",
+    ),
+    ManagedMarker(
+        "repo-rules",
+        1,
+        REPO_RULE_MARKER_V1_BEGIN,
+        REPO_RULE_MARKER_V1_END,
+    ),
+    ManagedMarker(
+        "codex-skill",
+        0,
+        LEGACY_CODEX_SKILL_MARKER_V0_BEGIN,
+        LEGACY_CODEX_SKILL_MARKER_V0_END,
+        "legacy",
+    ),
+    ManagedMarker(
+        "codex-skill",
+        1,
+        CODEX_SKILL_MARKER_V1_BEGIN,
+        CODEX_SKILL_MARKER_V1_END,
+    ),
+    *(
+        ManagedMarker(
+            "brief-mode",
+            1,
+            f"<!-- BEGIN context-guard:brief-mode level={level} version=1 -->".encode("ascii"),
+            BRIEF_MODE_MARKER_END,
+            level,
+        )
+        for level in BRIEF_MODE_LEVELS
+    ),
+    ManagedMarker(
+        "narration-mode",
+        1,
+        NARRATION_MODE_MARKER_BEGIN,
+        NARRATION_MODE_MARKER_END,
+        "quiet",
+    ),
+)
+_MANAGED_BEGIN_MARKERS = {marker.begin: marker for marker in MANAGED_MARKERS}
+_MANAGED_END_MARKERS: dict[bytes, tuple[ManagedMarker, ...]] = {}
+for _marker in MANAGED_MARKERS:
+    _MANAGED_END_MARKERS[_marker.end] = (*_MANAGED_END_MARKERS.get(_marker.end, ()), _marker)
+
+
+@dataclass(frozen=True)
+class ManagedSpan:
+    kind: str
+    version: int
+    variant: str | None
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class ManagedParseResult:
+    status: str
+    spans: tuple[ManagedSpan, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ManagedFileSnapshot:
+    data: bytes | None
+    metadata: tuple[int, int, int, int, int] | None
+
+
+class ManagedFileConflictError(OSError):
+    """Raised when a managed target no longer matches its planned snapshot."""
+
+
+def _iter_binary_lines(data: bytes):
+    offset = 0
+    while offset < len(data):
+        newline = data.find(b"\n", offset)
+        if newline < 0:
+            yield offset, len(data), data[offset:], b""
+            return
+        end = newline + 1
+        if newline > offset and data[newline - 1 : newline] == b"\r":
+            content, ending = data[offset : newline - 1], b"\r\n"
+        else:
+            content, ending = data[offset:newline], b"\n"
+        yield offset, end, content, ending
+        offset = end
+
+
+def _fence_open(content: bytes) -> tuple[int, int] | None:
+    match = re.match(rb"^ {0,3}(`{3,}|~{3,}).*$", content)
+    if not match:
+        return None
+    run = match.group(1)
+    return run[0], len(run)
+
+
+def _fence_close(content: bytes, fence: tuple[int, int]) -> bool:
+    char, minimum = fence
+    match = re.match(rb"^ {0,3}([`~]+) *$", content)
+    if not match:
+        return False
+    run = match.group(1)
+    return bool(run and run[0] == char and len(run) >= minimum and all(byte == char for byte in run))
+
+
+def _looks_like_contextguard_marker(content: bytes) -> bool:
+    lowered = content.lstrip(b" \t").lower()
+    return (
+        lowered.startswith(b"<!--")
+        and b"-->" in lowered
+        and (b"contextguard:" in lowered or b"context-guard:" in lowered)
+    )
+
+
+def _scan_managed_spans(data: bytes) -> ManagedParseResult:
+    spans: list[ManagedSpan] = []
+    open_marker: tuple[ManagedMarker, int] | None = None
+    fence: tuple[int, int] | None = None
+    unsupported = False
+    malformed = False
+    for start, end, content, ending in _iter_binary_lines(data):
+        if fence is not None:
+            if _fence_close(content, fence):
+                fence = None
+            continue
+        opener = _fence_open(content)
+        if opener is not None:
+            fence = opener
+            continue
+        marker = _MANAGED_BEGIN_MARKERS.get(content) if ending else None
+        end_markers = _MANAGED_END_MARKERS.get(content, ()) if ending else ()
+        if marker is not None:
+            if open_marker is not None:
+                malformed = True
+            else:
+                open_marker = (marker, start)
+            continue
+        if end_markers:
+            if open_marker is None:
+                malformed = True
+                continue
+            active, span_start = open_marker
+            if active.end != content:
+                malformed = True
+                open_marker = None
+                continue
+            spans.append(
+                ManagedSpan(
+                    kind=active.kind,
+                    version=active.version,
+                    variant=active.variant,
+                    start=span_start,
+                    end=end,
+                )
+            )
+            open_marker = None
+            continue
+        if _looks_like_contextguard_marker(content):
+            unsupported = True
+    if open_marker is not None:
+        malformed = True
+    if malformed:
+        return ManagedParseResult("malformed", tuple(spans), "malformed managed marker structure")
+    if unsupported:
+        return ManagedParseResult("unsupported", tuple(spans), "unsupported managed marker literal")
+    return ManagedParseResult("valid" if spans else "absent", tuple(spans))
+
+
+def parse_managed_bytes(data: bytes, *, kind: str | None = None) -> ManagedParseResult:
+    """Classify exact ContextGuard-managed raw-byte spans without decoding user bytes."""
+    scanned = _scan_managed_spans(data)
+    if scanned.status in {"malformed", "unsupported"}:
+        return scanned
+    spans = tuple(span for span in scanned.spans if kind is None or span.kind == kind)
+    by_kind: dict[str, int] = {}
+    for span in spans:
+        by_kind[span.kind] = by_kind.get(span.kind, 0) + 1
+    if any(count > 1 for count in by_kind.values()) or (kind is None and len(spans) > 1):
+        return ManagedParseResult("ambiguous", spans, "multiple managed spans")
+    return ManagedParseResult("valid" if spans else "absent", spans)
 
 
 class CapabilityClass:
@@ -375,15 +591,14 @@ def render_repo_rule_block() -> str:
     ])
 
 
-def render_codex_skill() -> str:
-    """Render the optional project-local Codex skill for ContextGuard."""
+def _render_codex_skill_with_markers(begin: str, end: str) -> str:
     return "\n".join([
         "---",
         "name: context-guard",
         "description: Use ContextGuard helpers to keep Codex context focused with local-first setup, audit, trimming, and artifact commands.",
         "---",
         "",
-        CODEX_SKILL_MARKER_BEGIN,
+        begin,
         "# ContextGuard for Codex",
         "",
         "Use this skill when a task would otherwise paste large files, long logs, or repeated setup context into Codex.",
@@ -400,9 +615,36 @@ def render_codex_skill() -> str:
         "- If `context-guard` is not on PATH, install it explicitly or run via `npx @ictechgy/context-guard`.",
         "",
         "Do not claim fixed token or cost savings from these helpers; treat byte reductions as local proxy evidence only.",
-        CODEX_SKILL_MARKER_END,
+        end,
         "",
     ])
+
+
+def render_codex_skill() -> str:
+    """Render the v1 project-local Codex skill."""
+    return _render_codex_skill_with_markers(CODEX_SKILL_MARKER_BEGIN, CODEX_SKILL_MARKER_END)
+
+
+def render_legacy_codex_skill_v0() -> str:
+    """Render the exact legacy whole-file image released before managed-span v1."""
+    return _render_codex_skill_with_markers(
+        LEGACY_CODEX_SKILL_MARKER_BEGIN,
+        LEGACY_CODEX_SKILL_MARKER_END,
+    )
+
+
+LEGACY_CODEX_SKILL_SHA256_ALLOWLIST = {
+    hashlib.sha256(render_legacy_codex_skill_v0().encode("utf-8")).hexdigest(): "legacy-v0-current",
+}
+
+
+def render_codex_skill_block_bytes() -> bytes:
+    rendered = render_codex_skill().encode("utf-8")
+    start = rendered.index(CODEX_SKILL_MARKER_V1_BEGIN)
+    end = rendered.index(CODEX_SKILL_MARKER_V1_END, start) + len(CODEX_SKILL_MARKER_V1_END)
+    if rendered[end : end + 1] == b"\n":
+        end += 1
+    return rendered[start:end]
 
 
 def _brief_mode_source_candidates(level: str) -> list[Path]:
@@ -476,6 +718,39 @@ def render_brief_mode_block(level: str) -> str:
     return render_fallback_brief_mode_block(level)
 
 
+def render_quiet_narration_block() -> str:
+    """Render embedded canonical bytes without opening any non-target file."""
+    return "\n".join([
+        NARRATION_MODE_MARKER_BEGIN.decode("ascii"),
+        "## ContextGuard quiet narration (advisory)",
+        "",
+        "Best effort: reduce only discretionary intermediate narration. Skip routine preambles,",
+        "per-tool narration, filler, and repeated interim summaries when they add no useful",
+        "information.",
+        "",
+        "Always preserve required user-facing communication:",
+        "",
+        "- user approvals and decisions;",
+        "- blockers and failures;",
+        "- destructive-risk and security warnings;",
+        "- progress required by higher-priority instructions;",
+        "- the final result;",
+        "- changed files; and",
+        "- verification evidence.",
+        "",
+        "This mode does not require a shorter final answer and does not change reasoning effort.",
+        "It asks Claude to reduce discretionary narration; it does not guarantee token or cost savings,",
+        "and no numeric savings should be claimed without matched provider evidence.",
+        NARRATION_MODE_MARKER_END.decode("ascii"),
+    ])
+
+
+def _append_narration_block_bytes(existing: bytes, block: bytes) -> bytes:
+    """Append one deterministic separator that default-mode removes with the span."""
+    block = block.rstrip(b"\r\n") + b"\n"
+    return block if not existing else existing + b"\n" + block
+
+
 def _brief_mode_levels_in_text(text: str) -> list[str]:
     return [match.group("level") for match in BRIEF_MODE_BLOCK_RE.finditer(text)]
 
@@ -494,37 +769,107 @@ def _append_managed_block(existing: str, block: str) -> str:
     return block + "\n"
 
 
+def _managed_block_bytes(block: str) -> bytes:
+    return block.encode("utf-8").rstrip(b"\r\n") + b"\n"
+
+
+def _append_managed_block_bytes(existing: bytes, block: bytes) -> bytes:
+    block = block.rstrip(b"\r\n") + b"\n"
+    if not existing:
+        return block
+    if existing.endswith(b"\n\n"):
+        separator = b""
+    elif existing.endswith(b"\n"):
+        separator = b"\n"
+    else:
+        separator = b"\n\n"
+    return existing + separator + block
+
+
+def _managed_span_for_kind(data: bytes, kind: str) -> ManagedSpan | None:
+    parsed = parse_managed_bytes(data, kind=kind)
+    if parsed.status == "absent":
+        return None
+    if parsed.status != "valid":
+        raise ValueError(parsed.reason or f"{parsed.status} managed {kind} markers")
+    return parsed.spans[0]
+
+
+def _replace_managed_span(data: bytes, span: ManagedSpan, block: bytes) -> bytes:
+    return data[: span.start] + block.rstrip(b"\r\n") + b"\n" + data[span.end :]
+
+
+def _brief_mode_levels_in_bytes(data: bytes) -> list[str]:
+    parsed = _scan_managed_spans(data)
+    return [
+        str(span.variant)
+        for span in parsed.spans
+        if span.kind == "brief-mode" and span.variant in BRIEF_MODE_LEVELS
+    ]
+
+
+def compose_rule_file_bytes(
+    existing: bytes | None,
+    *,
+    with_init: bool,
+    brief_mode: str | None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Compose rule-file mutations from exact owned spans, preserving all other bytes."""
+    data = existing or b""
+    original = data
+    before_brief = _brief_mode_levels_in_bytes(data)
+    meta: dict[str, Any] = {
+        "init_changed": False,
+        "init_present_before": False,
+        "init_migrated_legacy": False,
+        "brief_levels_before": before_brief,
+        "brief_changed": False,
+    }
+    repo_span = _managed_span_for_kind(data, "repo-rules")
+    meta["init_present_before"] = repo_span is not None
+    if with_init:
+        block = _managed_block_bytes(render_repo_rule_block())
+        if repo_span is None:
+            data = _append_managed_block_bytes(data, block)
+            meta["init_changed"] = True
+        elif data[repo_span.start : repo_span.end] != block:
+            data = _replace_managed_span(data, repo_span, block)
+            meta["init_changed"] = True
+            meta["init_migrated_legacy"] = repo_span.version == 0
+
+    if brief_mode:
+        span = _managed_span_for_kind(data, "brief-mode")
+        removed = [str(span.variant)] if span is not None and span.variant else []
+        meta["brief_levels_removed"] = removed
+        if brief_mode == BRIEF_MODE_OFF:
+            if span is not None:
+                data = data[: span.start] + data[span.end :]
+                meta["brief_changed"] = True
+        else:
+            block = _managed_block_bytes(render_brief_mode_block(brief_mode))
+            if span is None:
+                data = _append_managed_block_bytes(data, block)
+                meta["brief_changed"] = True
+            elif data[span.start : span.end] != block:
+                data = _replace_managed_span(data, span, block)
+                meta["brief_changed"] = True
+    meta["changed"] = data != original
+    return data, meta
+
+
 def compose_rule_file_text(
     existing: str | None,
     *,
     with_init: bool,
     brief_mode: str | None,
 ) -> tuple[str, dict[str, Any]]:
-    """Compose final repo rule text for combined init and brief-mode mutations."""
-    text = existing or ""
-    original_text = text
-    existing_brief_levels = _brief_mode_levels_in_text(text)
-    meta: dict[str, Any] = {
-        "init_changed": False,
-        "init_present_before": ADAPTER_RULE_BLOCK_BEGIN in text,
-        "brief_levels_before": existing_brief_levels,
-        "brief_changed": False,
-    }
-    if with_init and ADAPTER_RULE_BLOCK_BEGIN not in text:
-        text = _append_managed_block(text, render_repo_rule_block())
-        meta["init_changed"] = True
-    if brief_mode:
-        stripped, removed_levels = _remove_brief_mode_blocks(text)
-        if brief_mode == BRIEF_MODE_OFF:
-            text = stripped
-            meta["brief_changed"] = bool(removed_levels)
-        else:
-            block = render_brief_mode_block(brief_mode)
-            text = _append_managed_block(stripped, block)
-            meta["brief_changed"] = removed_levels != [brief_mode] or text != original_text
-        meta["brief_levels_removed"] = removed_levels
-    meta["changed"] = text != original_text
-    return text, meta
+    """Compatibility text wrapper around the byte-exact managed composer."""
+    rendered, meta = compose_rule_file_bytes(
+        existing.encode("utf-8") if existing is not None else None,
+        with_init=with_init,
+        brief_mode=brief_mode,
+    )
+    return rendered.decode("utf-8"), meta
 
 
 def plan_or_write_rule_file_blocks(
@@ -534,7 +879,7 @@ def plan_or_write_rule_file_blocks(
     brief_mode: str | None,
     applied: bool,
 ) -> dict[str, Any]:
-    """Plan or apply managed rule-file blocks with one original backup per changed existing write."""
+    """Plan/apply exact managed spans through the shared cooperative writer."""
     result: dict[str, Any] = {
         "status": None,
         "planned_actions": [],
@@ -551,27 +896,38 @@ def plan_or_write_rule_file_blocks(
         result["planned_actions"].append(reason)
         return result
 
-    existing = state.get("text")
-    existing_text = str(existing or "")
-    result["brief_mode_existing_levels"] = _brief_mode_levels_in_text(existing_text)
-    rule_present = existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing_text
-    planned_meta: dict[str, Any] | None = None
-    if brief_mode:
-        _, planned_meta = compose_rule_file_text(existing, with_init=with_init, brief_mode=brief_mode)
+    existing = state.get("bytes")
+    snapshot = state["snapshot"]
+    existing_bytes = bytes(existing or b"")
+    result["brief_mode_existing_levels"] = _brief_mode_levels_in_bytes(existing_bytes)
+    repo_state = parse_managed_bytes(existing_bytes, kind="repo-rules")
+    rule_present = repo_state.status == "valid"
+    try:
+        final_bytes, planned_meta = compose_rule_file_bytes(
+            existing,
+            with_init=with_init,
+            brief_mode=brief_mode,
+        )
+    except ValueError as exc:
+        reason = f"refused unsafe managed rule state in {path.name}: {exc}"
+        result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
+        result["planned_actions"].append(reason)
+        return result
 
     if with_init:
-        if rule_present:
+        if rule_present and not planned_meta["init_changed"]:
             result["status"] = "exists"
             result["planned_actions"].append("advisory ContextGuard rules already present")
         elif not applied:
             result["status"] = "planned"
-            result["planned_actions"].append("would add advisory ContextGuard rules")
+            verb = "migrate" if planned_meta.get("init_migrated_legacy") else "add"
+            result["planned_actions"].append(f"would {verb} advisory ContextGuard rules")
     elif not brief_mode:
         result["status"] = "planned"
         result["planned_actions"].append("run with --with-init to add advisory ContextGuard rules")
 
     if brief_mode:
-        brief_changed = bool(planned_meta and planned_meta.get("brief_changed"))
+        brief_changed = bool(planned_meta.get("brief_changed"))
         if brief_mode == BRIEF_MODE_OFF:
             if brief_changed:
                 result["brief_mode_status"] = "planned" if not applied else None
@@ -595,7 +951,7 @@ def plan_or_write_rule_file_blocks(
             result["status"] = "planned" if result["planned_actions"] else "unchanged"
         return result
 
-    final_text, meta = compose_rule_file_text(existing, with_init=with_init, brief_mode=brief_mode)
+    meta = planned_meta
     if not meta["changed"]:
         if result["status"] is None:
             result["status"] = "exists" if rule_present else "unchanged"
@@ -603,33 +959,29 @@ def plan_or_write_rule_file_blocks(
             result["brief_mode_status"] = "absent" if brief_mode == BRIEF_MODE_OFF else "exists"
         return result
 
-    backup_path = None
-    if existing is not None:
-        try:
-            backup_path = backup_existing(path)
-        except OSError as exc:
-            reason = f"could not back up repo rule file {path.name}: {exc.__class__.__name__}"
-            result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
-            result["planned_actions"] = [reason]
-            return result
-    durability_warning = None
-    try:
-        atomic_write(
-            path,
-            final_text,
-            existing_mode_or_default(path, 0o644) if existing is not None else 0o644,
-            dir_mode=0o755,
-        )
-    except AtomicWriteDurabilityError as exc:
-        durability_warning = str(exc)
-    except OSError as exc:
-        reason = f"could not write repo rule file {path.name}: {exc.__class__.__name__}"
-        result.update({"status": "skipped", "brief_mode_status": "skipped", "reason": reason})
+    write_result = write_managed_file(
+        path,
+        expected=snapshot,
+        desired=final_bytes,
+        mode=0o644,
+        dir_mode=0o755,
+    )
+    if write_result["status"] not in {"applied", "applied-durability-uncertain"}:
+        reason = write_result.get("reason") or f"could not write repo rule file {path.name}"
+        result.update({
+            "status": write_result["status"],
+            "brief_mode_status": write_result["status"],
+            "reason": reason,
+        })
         result["planned_actions"] = [reason]
         return result
-
-    if backup_path:
-        result["brief_mode_backup_path"] = str(backup_path)
+    if write_result.get("backup_path"):
+        result["brief_mode_backup_path"] = write_result["backup_path"]
+    durability_warning = (
+        write_result.get("reason")
+        if write_result["status"] == "applied-durability-uncertain"
+        else None
+    )
     if durability_warning:
         result["status"] = "applied-durability-uncertain"
         result["reason"] = durability_warning
@@ -641,7 +993,7 @@ def plan_or_write_rule_file_blocks(
         else:
             result["planned_actions"].append("advisory ContextGuard rules already present")
     elif result["status"] is None:
-        result["status"] = "unchanged"
+        result["status"] = "applied"
     if brief_mode:
         if brief_mode == BRIEF_MODE_OFF:
             result["brief_mode_status"] = "removed" if meta["brief_changed"] else "absent"
@@ -686,6 +1038,7 @@ def _existing_rule_parent_issue(path: Path) -> str | None:
     because plan/apply must agree and must never follow an attacker-swapped rule
     directory outside the project.
     """
+    path = _normalize_allowed_first_absolute_symlink(path)
     parts = path.parts[1:-1] if path.is_absolute() else path.parts[:-1]
     if not parts:
         return None
@@ -706,14 +1059,20 @@ def _existing_rule_parent_issue(path: Path) -> str | None:
 
 
 def _rule_file_state(path: Path) -> dict[str, Any]:
-    """Return a non-throwing state for project rule/skill files."""
+    """Return a non-throwing exact-byte snapshot for project rule/skill files."""
     parent_issue = _existing_rule_parent_issue(path)
     if parent_issue:
         return {"status": "unsafe", "text": None, "reason": parent_issue}
     try:
         st = os.lstat(path)
     except FileNotFoundError:
-        return {"status": "missing", "text": None, "reason": None}
+        return {
+            "status": "missing",
+            "text": None,
+            "bytes": None,
+            "snapshot": ManagedFileSnapshot(None, None),
+            "reason": None,
+        }
     except OSError as exc:
         return {"status": "unsafe", "text": None, "reason": f"could not inspect rule file: {exc.__class__.__name__}"}
     if stat.S_ISLNK(st.st_mode):
@@ -721,20 +1080,35 @@ def _rule_file_state(path: Path) -> dict[str, Any]:
     if stat.S_ISDIR(st.st_mode):
         return {"status": "directory", "text": None, "reason": f"refused to replace directory rule target: {path.name}"}
     try:
-        text = _read_text_no_follow(path)
+        snapshot = read_managed_file_snapshot(path)
     except OSError as exc:
         return {
             "status": "unsafe",
             "text": None,
+            "bytes": None,
             "reason": f"could not read rule file without following symlinks: {exc.__class__.__name__}",
         }
-    return {"status": "file", "text": text, "reason": None}
+    data = snapshot.data or b""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    return {
+        "status": "file",
+        "text": text,
+        "bytes": data,
+        "snapshot": snapshot,
+        "reason": None,
+    }
 
 
 def repo_rule_block_present(path: Path) -> bool:
     """True when the advisory ContextGuard block already exists in the rule file."""
     state = _rule_file_state(path)
-    return state["status"] == "file" and ADAPTER_RULE_BLOCK_BEGIN in str(state.get("text") or "")
+    return (
+        state["status"] == "file"
+        and parse_managed_bytes(bytes(state.get("bytes") or b""), kind="repo-rules").status == "valid"
+    )
 
 
 def write_repo_rule_init(path: Path) -> dict[str, Any]:
@@ -747,36 +1121,24 @@ def write_repo_rule_init(path: Path) -> dict[str, Any]:
     state = _rule_file_state(path)
     if state["status"] not in {"missing", "file"}:
         return {"status": "skipped", "reason": state.get("reason") or f"refused unsafe rule target: {path.name}"}
-    existing = state.get("text")
-    if existing is not None and ADAPTER_RULE_BLOCK_BEGIN in existing:
-        return {"status": "exists"}
-    block = render_repo_rule_block()
-    if existing:
-        new_text = existing.rstrip("\n") + "\n\n" + block + "\n"
-    else:
-        new_text = block + "\n"
-    mode = existing_mode_or_default(path, 0o644) if existing is not None else 0o644
-    backup_path = None
-    if existing is not None:
-        try:
-            backup_path = backup_existing(path)
-        except OSError as exc:
-            return {"status": "skipped", "reason": f"could not back up repo rule file {path.name}: {exc.__class__.__name__}"}
-    durability_warning = None
     try:
-        atomic_write(path, new_text, mode, dir_mode=0o755)
-    except AtomicWriteDurabilityError as exc:
-        durability_warning = str(exc)
-    except OSError as exc:
-        result = {"status": "skipped", "reason": f"could not write repo rule file {path.name}: {exc.__class__.__name__}"}
-        if backup_path:
-            result["backup_path"] = str(backup_path)
-        return result
-    result = {"status": "applied", "backup_path": str(backup_path) if backup_path else None}
-    if durability_warning:
-        result["status"] = "applied-durability-uncertain"
-        result["reason"] = durability_warning
-    return result
+        final, meta = compose_rule_file_bytes(
+            state.get("bytes"),
+            with_init=True,
+            brief_mode=None,
+        )
+    except ValueError as exc:
+        return {"status": "skipped", "reason": f"refused unsafe managed rule state: {exc}"}
+    if not meta["changed"]:
+        return {"status": "exists"}
+    write_result = write_managed_file(
+        path,
+        expected=state["snapshot"],
+        desired=final,
+        mode=0o644,
+        dir_mode=0o755,
+    )
+    return write_result
 
 
 def codex_skill_status(path: Path) -> str:
@@ -785,10 +1147,17 @@ def codex_skill_status(path: Path) -> str:
         return "missing"
     if state["status"] != "file":
         return "unsafe"
-    text = str(state.get("text") or "")
-    if text == render_codex_skill():
+    data = bytes(state.get("bytes") or b"")
+    if data == render_codex_skill().encode("utf-8"):
         return "exists"
-    if CODEX_SKILL_MARKER_BEGIN in text and CODEX_SKILL_MARKER_END in text:
+    parsed = parse_managed_bytes(data, kind="codex-skill")
+    if parsed.status != "valid":
+        return "foreign"
+    span = parsed.spans[0]
+    if span.version == 0:
+        digest = hashlib.sha256(data).hexdigest()
+        return "update-needed" if digest in LEGACY_CODEX_SKILL_SHA256_ALLOWLIST else "foreign"
+    if span.version == 1:
         return "update-needed"
     return "foreign"
 
@@ -806,11 +1175,29 @@ def write_codex_project_skill(path: Path) -> dict[str, Any]:
             "status": "skipped",
             "reason": f"refused to overwrite non-ContextGuard Codex skill file: {path}",
         }
-    try:
-        atomic_write(path, render_codex_skill(), 0o644, dir_mode=0o755)
-    except OSError as exc:
-        return {"status": "skipped", "reason": f"could not write Codex skill file {path}: {exc.__class__.__name__}"}
-    return {"status": "updated" if status == "update-needed" else "applied"}
+    existing = state.get("bytes")
+    if status == "missing":
+        desired = render_codex_skill().encode("utf-8")
+    else:
+        data = bytes(existing or b"")
+        parsed = parse_managed_bytes(data, kind="codex-skill")
+        span = parsed.spans[0]
+        if span.version == 0:
+            desired = render_codex_skill().encode("utf-8")
+        else:
+            desired = _replace_managed_span(data, span, render_codex_skill_block_bytes())
+    result = write_managed_file(
+        path,
+        expected=state["snapshot"],
+        desired=desired,
+        mode=0o644,
+        dir_mode=0o755,
+    )
+    if result["status"] == "applied":
+        result["status"] = "updated" if status == "update-needed" else "applied"
+    elif result["status"] == "applied-durability-uncertain":
+        result["change_kind"] = "updated" if status == "update-needed" else "applied"
+    return result
 
 
 def adapter_rule_path(root: Path, adapter: AgentAdapter) -> Path | None:
@@ -1005,14 +1392,23 @@ def build_adapter_plan(
                     entry["planned_actions"].append(
                         f"would generate project Codex skill at {adapter.project_skill_rel}"
                     )
+                elif entry["status"] == "applied-durability-uncertain":
+                    entry["project_skill_status"] = "blocked-durability-uncertain"
+                    entry["planned_actions"].append(
+                        "blocked project Codex skill write because the preceding rule-file "
+                        "commit has uncertain directory durability"
+                    )
                 else:
                     skill_result = write_codex_project_skill(skill_path)
                     entry["project_skill_status"] = skill_result["status"]
-                    if skill_result["status"] in {"applied", "updated"}:
+                    if skill_result["status"] in {"applied", "updated", "applied-durability-uncertain"}:
                         action = f"wrote project Codex skill to {adapter.project_skill_rel}"
                         entry["applied_actions"].append(action)
                         entry["planned_actions"].append(action)
-                        if entry["status"] in {"planned", "exists", "unchanged"}:
+                        if skill_result["status"] == "applied-durability-uncertain":
+                            entry["status"] = "applied-durability-uncertain"
+                            entry["reason"] = skill_result.get("reason")
+                        elif entry["status"] in {"planned", "exists", "unchanged"}:
                             entry["status"] = "applied"
                     elif skill_result["status"] == "exists":
                         entry["planned_actions"].append(
@@ -1272,15 +1668,56 @@ def _ensure_directory_no_symlink(path: Path, mode: int | None = None, *, parents
         raise
 
 
-def _read_text_no_follow(path: Path) -> str:
+def _read_bytes_no_follow(path: Path) -> bytes:
     fd = _open_regular_no_symlink(path)
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        with os.fdopen(fd, "rb") as handle:
             fd = -1
             return handle.read()
     finally:
         if fd != -1:
             os.close(fd)
+
+
+def _read_text_no_follow(path: Path) -> str:
+    return _read_bytes_no_follow(path).decode("utf-8")
+
+
+def _snapshot_metadata(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(st.st_dev),
+        int(st.st_ino),
+        int(st.st_mode),
+        int(st.st_size),
+        int(st.st_mtime_ns),
+    )
+
+
+def read_managed_file_snapshot(path: Path) -> ManagedFileSnapshot:
+    """Read an exact byte+metadata snapshot without following target/parent links."""
+    try:
+        fd = _open_regular_no_symlink(path)
+    except FileNotFoundError:
+        return ManagedFileSnapshot(None, None)
+    try:
+        before = os.fstat(fd)
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read()
+            after = os.fstat(handle.fileno())
+        if _snapshot_metadata(before) != _snapshot_metadata(after) or len(data) != after.st_size:
+            raise ManagedFileConflictError(f"managed target changed during read: {path}")
+        return ManagedFileSnapshot(data, _snapshot_metadata(after))
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+def _verify_expected_snapshot(path: Path, expected: ManagedFileSnapshot) -> ManagedFileSnapshot:
+    current = read_managed_file_snapshot(path)
+    if current != expected:
+        raise ManagedFileConflictError(f"managed target changed since planning: {path}")
+    return current
 
 
 def _read_optional_text_no_follow(path: Path) -> str | None:
@@ -1318,7 +1755,12 @@ def load_json_object(path: Path) -> dict[str, Any]:
     return _parse_json_object_text(_read_optional_text_no_follow(path), path)
 
 
-def ensure_permissions(settings: dict[str, Any], actions: list[str]) -> None:
+def ensure_permissions(
+    settings: dict[str, Any],
+    actions: list[str],
+    *,
+    migrate_env_read_denies: bool = False,
+) -> None:
     permissions = settings.get("permissions")
     if permissions is None:
         permissions = {}
@@ -1331,6 +1773,21 @@ def ensure_permissions(settings: dict[str, Any], actions: list[str]) -> None:
         permissions["deny"] = deny
     if not isinstance(deny, list):
         raise SystemExit("Refusing to replace non-list settings.permissions.deny; repair it manually first.")
+    if migrate_env_read_denies:
+        retained = [
+            rule
+            for rule in deny
+            if not (
+                isinstance(rule, str)
+                and rule in PRODUCT_OWNED_ENV_READ_DENIES
+            )
+        ]
+        removed = len(deny) - len(retained)
+        if removed:
+            deny[:] = retained
+            actions.append(
+                f"removed {removed} obsolete permissions.deny rules now enforced by the Claude Read hook"
+            )
     added = 0
     for rule in RECOMMENDED_DENIES:
         if rule not in deny:
@@ -1647,6 +2104,16 @@ def ensure_pre_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command
 
 def ensure_post_tool_hook(settings: dict[str, Any], hook: dict[str, Any], command: str, label: str, actions: list[str]) -> None:
     _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUse")
+
+
+def ensure_post_tool_failure_hook(
+    settings: dict[str, Any],
+    hook: dict[str, Any],
+    command: str,
+    label: str,
+    actions: list[str],
+) -> None:
+    _ensure_tool_hook(settings, hook, command, label, actions, event="PostToolUseFailure")
 
 
 def _ensure_tool_hook(
@@ -2136,7 +2603,11 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
         elif settings.get("statusLine") != statusline:
             actions.append("kept existing statusLine; add context-guard-statusline-merged manually if desired")
     if choices.denies:
-        ensure_permissions(settings, actions)
+        ensure_permissions(
+            settings,
+            actions,
+            migrate_env_read_denies=choices.read_guard,
+        )
     if choices.bash_hook:
         bash_hook = bash_hook_setting(allow_path_fallback=allow_path_fallback)
         bash_command = bash_hook["hooks"][0]["command"]
@@ -2149,10 +2620,24 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
         nudge_hook = failed_nudge_setting(allow_path_fallback=allow_path_fallback)
         nudge_command = nudge_hook["hooks"][0]["command"]
         ensure_post_tool_hook(settings, nudge_hook, nudge_command, "failed-attempt /clear nudge", actions)
+        ensure_post_tool_failure_hook(
+            settings,
+            nudge_hook,
+            nudge_command,
+            "failed-attempt /clear nudge",
+            actions,
+        )
     return actions
 
 
-def atomic_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = PRIVATE_DIR_MODE) -> None:
+def atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    mode: int = 0o600,
+    *,
+    dir_mode: int = PRIVATE_DIR_MODE,
+    expected: ManagedFileSnapshot | None = None,
+) -> None:
     if os.rename not in os.supports_dir_fd or os.unlink not in os.supports_dir_fd:
         raise OSError("platform does not support directory-relative atomic writes")
     parent_fd = _ensure_directory_no_symlink(path.parent, dir_mode, parents_mode=dir_mode)
@@ -2162,12 +2647,14 @@ def atomic_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = PR
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(fd, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "wb") as f:
             fd = -1
-            f.write(text)
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.fsync(parent_fd)
+        if expected is not None:
+            _verify_expected_snapshot(path, expected)
         os.rename(tmp_name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         try:
             os.fsync(parent_fd)
@@ -2182,6 +2669,37 @@ def atomic_write(path: Path, text: str, mode: int = 0o600, *, dir_mode: int = PR
             os.unlink(tmp_name, dir_fd=parent_fd)
         except FileNotFoundError:
             pass
+        os.close(parent_fd)
+
+
+def atomic_write(
+    path: Path,
+    content: str | bytes,
+    mode: int = 0o600,
+    *,
+    dir_mode: int = PRIVATE_DIR_MODE,
+) -> None:
+    data = content if isinstance(content, bytes) else content.encode("utf-8")
+    atomic_write_bytes(path, data, mode, dir_mode=dir_mode)
+
+
+def _atomic_remove_expected(
+    path: Path,
+    expected: ManagedFileSnapshot,
+    *,
+    dir_mode: int,
+) -> None:
+    parent_fd = _ensure_directory_no_symlink(path.parent, dir_mode, parents_mode=dir_mode)
+    try:
+        _verify_expected_snapshot(path, expected)
+        os.unlink(path.name, dir_fd=parent_fd)
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            raise AtomicWriteDurabilityError(
+                f"remove committed but parent directory durability is uncertain: {path}"
+            ) from exc
+    finally:
         os.close(parent_fd)
 
 
@@ -2208,6 +2726,175 @@ def backup_existing(path: Path) -> Path | None:
     backup = path.with_name(f"{path.name}.bak-{stamp}-{uuid.uuid4().hex[:8]}")
     atomic_write(backup, text, mode)
     return backup
+
+
+def managed_lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+def acquire_managed_file_lock(path: Path, *, dir_mode: int = PRIVATE_DIR_MODE) -> int:
+    """Acquire the shared sibling lock used by all managed forward/rollback writers."""
+    if fcntl is None:
+        raise OSError("platform does not support advisory file locks")
+    parent_fd = _ensure_directory_no_symlink(path.parent, dir_mode, parents_mode=dir_mode)
+    lock_name = managed_lock_path(path).name
+    flags = os.O_CREAT | os.O_RDWR | _no_follow_flag()
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd: int | None = None
+    try:
+        for attempt in range(3):
+            try:
+                fd = os.open(lock_name, flags, 0o600, dir_fd=parent_fd)
+                break
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.001)
+    except OSError as exc:
+        raise OSError(f"could not open cooperative lock {managed_lock_path(path)}: {exc}") from exc
+    finally:
+        os.close(parent_fd)
+    if fd is None:
+        raise OSError(f"could not open cooperative lock {managed_lock_path(path)}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"cooperative lock is not a regular file: {managed_lock_path(path)}")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def release_managed_file_lock(fd: int) -> None:
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _managed_backup(path: Path, data: bytes, *, dir_mode: int) -> Path:
+    stamp = _dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    backup = path.with_name(f"{path.name}.bak-{stamp}-{uuid.uuid4().hex[:8]}")
+    atomic_write_bytes(backup, data, 0o600, dir_mode=dir_mode)
+    return backup
+
+
+def write_managed_file(
+    path: Path,
+    *,
+    expected: ManagedFileSnapshot,
+    desired: bytes | None,
+    mode: int = 0o644,
+    dir_mode: int = 0o755,
+    create_backup: bool = True,
+    prepare_commit: Any = None,
+) -> dict[str, Any]:
+    """Apply one cooperative byte-exact transaction or return a fail-closed status."""
+    if desired == expected.data:
+        return {"status": "unchanged", "backup_path": None}
+    try:
+        lock_fd = acquire_managed_file_lock(path, dir_mode=dir_mode)
+    except OSError as exc:
+        return {"status": "skipped", "reason": f"could not acquire cooperative lock: {exc}"}
+    backup_path: Path | None = None
+    try:
+        try:
+            current = _verify_expected_snapshot(path, expected)
+        except ManagedFileConflictError as exc:
+            return {"status": "conflict", "reason": str(exc), "backup_path": None}
+
+        target_mode = mode
+        if current.metadata is not None:
+            target_mode = stat.S_IMODE(current.metadata[2])
+        if current.data is not None and create_backup:
+            try:
+                backup_path = _managed_backup(path, current.data, dir_mode=dir_mode)
+            except OSError as exc:
+                return {
+                    "status": "skipped",
+                    "reason": f"could not create private managed-file backup: {exc}",
+                    "backup_path": None,
+                }
+        try:
+            if desired is None:
+                if prepare_commit is not None:
+                    prepare_commit(backup_path)
+                _atomic_remove_expected(path, current, dir_mode=dir_mode)
+            else:
+                _verify_expected_snapshot(path, current)
+                if prepare_commit is not None:
+                    prepare_commit(backup_path)
+                atomic_write(
+                    path,
+                    desired,
+                    target_mode,
+                    dir_mode=dir_mode,
+                )
+        except ManagedFileConflictError as exc:
+            return {
+                "status": "conflict",
+                "reason": str(exc),
+                "backup_path": str(backup_path) if backup_path else None,
+            }
+        except AtomicWriteDurabilityError as exc:
+            return {
+                "status": "applied-durability-uncertain",
+                "reason": str(exc),
+                "backup_path": str(backup_path) if backup_path else None,
+                "residual_risk": (
+                    "A non-cooperating editor can still race after the final comparison; "
+                    "automatic follow-on mutation is blocked."
+                ),
+            }
+        except OSError as exc:
+            return {
+                "status": "skipped",
+                "reason": f"could not commit managed file: {exc}",
+                "backup_path": str(backup_path) if backup_path else None,
+            }
+        return {
+            "status": "applied",
+            "backup_path": str(backup_path) if backup_path else None,
+            "residual_risk": (
+                "Cooperating ContextGuard writers serialize; a non-cooperating editor can still race "
+                "after the final comparison and before atomic replace."
+            ),
+        }
+    finally:
+        release_managed_file_lock(lock_fd)
+
+
+def rollback_managed_file(
+    path: Path,
+    *,
+    expected_post: ManagedFileSnapshot,
+    restore: bytes | None,
+    kind: str,
+    mode: int = 0o644,
+    dir_mode: int = 0o755,
+) -> dict[str, Any]:
+    """Rollback only a still-matching post-image with the same parser/lock authority."""
+    if expected_post.data is None:
+        return {"status": "skipped", "reason": "rollback post-image is missing"}
+    ownership = parse_managed_bytes(expected_post.data, kind=kind)
+    if ownership.status != "valid":
+        return {
+            "status": "skipped",
+            "reason": f"rollback lacks valid {kind} ownership: {ownership.status}",
+        }
+    return write_managed_file(
+        path,
+        expected=expected_post,
+        desired=restore,
+        mode=mode,
+        dir_mode=dir_mode,
+    )
 
 
 def rollback_restore_guidance(settings_path: Path, backup_path: Path | None, original_existed: bool) -> str:
@@ -2320,7 +3007,7 @@ def interactive_choices(defaults: Choices) -> Choices:
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
-            "Enable failed-attempt /clear nudge? (PostToolUse hook on Bash; recommended default)",
+            "Enable failed-attempt /clear nudge? (Bash terminal-event hooks; recommended default)",
             defaults.failed_attempt_nudge,
         ),
     )
@@ -2396,6 +3083,201 @@ def render_text(result: SetupResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def validate_rules_only_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> bool:
+    """Validate and identify the isolated Claude quiet-narration CLI branch."""
+    rules_only = bool(getattr(args, "rules_only", False))
+    narration_mode = getattr(args, "narration_mode", None)
+    if narration_mode and not rules_only:
+        parser.error("--narration-mode requires --rules-only")
+    if rules_only and not narration_mode:
+        parser.error("--rules-only requires a rule operation such as --narration-mode")
+    if not rules_only:
+        return False
+
+    if getattr(args, "scope", "project") != "project":
+        parser.error("quiet narration rules support only --scope project")
+    selected = [item.lower() for item in (explicit_agent_selection(args) or [])]
+    if selected != ["claude"] or not getattr(args, "agent", None) or getattr(args, "only", None):
+        parser.error("quiet narration rules require exactly one explicit --agent claude")
+    action_count = sum(
+        bool(value)
+        for value in (
+            getattr(args, "yes", False),
+            getattr(args, "plan", False),
+            getattr(args, "dry_run", False),
+        )
+    )
+    if action_count != 1:
+        parser.error("quiet narration rules require exactly one of --plan, --dry-run, or --yes")
+
+    conflicting = [
+        flag
+        for attr, flag in (
+            ("allow_home_settings", "--allow-home-settings"),
+            ("verify", "--verify"),
+            ("no_backup", "--no-backup"),
+            ("no_denies", "--no-denies"),
+            ("no_statusline", "--no-statusline"),
+            ("no_bash_hook", "--no-bash-hook"),
+            ("no_read_guard", "--no-read-guard"),
+            ("no_model_defaults", "--no-model-defaults"),
+            ("no_diet_scan", "--no-diet-scan"),
+            ("allow_path_helper_fallback", "--allow-path-helper-fallback"),
+            ("with_init", "--with-init"),
+            ("with_skill", "--with-skill"),
+            ("brief_mode", "--brief-mode"),
+            ("list_adapters", "--list-adapters"),
+        )
+        if getattr(args, attr, False)
+    ]
+    if getattr(args, "failed_attempt_nudge", None) is not None:
+        conflicting.append(
+            "--failed-attempt-nudge"
+            if args.failed_attempt_nudge
+            else "--no-failed-attempt-nudge"
+        )
+    if conflicting:
+        parser.error(
+            "quiet narration rules cannot be combined with settings, hook, adapter, "
+            f"or setup flags: {', '.join(conflicting)}"
+        )
+    return True
+
+
+def run_quiet_narration_rules(args: argparse.Namespace) -> dict[str, Any]:
+    """Plan/apply the isolated Claude/project CLAUDE.md narration span."""
+    require_no_follow_file_ops_supported()
+    root = resolve_setup_root(args.root)
+    rule_path = root / "CLAUDE.md"
+    state = _rule_file_state(rule_path)
+    if state["status"] not in {"missing", "file"}:
+        raise SystemExit(
+            state.get("reason")
+            or f"refused unsafe quiet narration rule target: {rule_path}"
+        )
+    existing = bytes(state.get("bytes") or b"")
+    parsed = parse_managed_bytes(existing, kind="narration-mode")
+    if parsed.status not in {"absent", "valid"}:
+        raise SystemExit(
+            f"refused unsafe managed narration state in {rule_path.name}: "
+            f"{parsed.reason or parsed.status}"
+        )
+
+    mode = str(args.narration_mode)
+    span = parsed.spans[0] if parsed.status == "valid" else None
+    desired = existing
+    if mode == "quiet":
+        block = _managed_block_bytes(render_quiet_narration_block())
+        if span is None:
+            desired = _append_narration_block_bytes(existing, block)
+        elif existing[span.start : span.end] != block:
+            desired = _replace_managed_span(existing, span, block)
+    elif span is not None:
+        removal_start = span.start
+        if removal_start > 0 and existing[removal_start - 1 : removal_start] == b"\n":
+            removal_start -= 1
+        desired = existing[:removal_start] + existing[span.end :]
+
+    changed = desired != existing
+    apply_requested = bool(args.yes)
+    if not changed:
+        status = "exists" if mode == "quiet" else "absent"
+        return {
+            "schema_version": "contextguard.narration-rules.v1",
+            "operation": "quiet-narration",
+            "mode": mode,
+            "root": str(root),
+            "rule_file": str(rule_path),
+            "marker_state_before": parsed.status,
+            "status": status,
+            "changed": False,
+            "applied": False,
+            "apply_requested": apply_requested,
+            "backup_path": None,
+            "actions": [
+                "quiet narration rules already present"
+                if mode == "quiet"
+                else "quiet narration rules already absent"
+            ],
+            "claim_boundary": "static setup result only; no model-compliance or savings claim",
+        }
+
+    planned_status = "planned"
+    action = (
+        ("add" if span is None else "refresh") + " quiet narration rules"
+        if mode == "quiet"
+        else "remove quiet narration rules"
+    )
+    if not apply_requested:
+        return {
+            "schema_version": "contextguard.narration-rules.v1",
+            "operation": "quiet-narration",
+            "mode": mode,
+            "root": str(root),
+            "rule_file": str(rule_path),
+            "marker_state_before": parsed.status,
+            "status": planned_status,
+            "changed": True,
+            "applied": False,
+            "apply_requested": False,
+            "backup_path": None,
+            "actions": [f"would {action}"],
+            "claim_boundary": "static setup result only; no model-compliance or savings claim",
+        }
+
+    write_result = write_managed_file(
+        rule_path,
+        expected=state["snapshot"],
+        desired=desired,
+        mode=existing_mode_or_default(rule_path, 0o644),
+        dir_mode=0o755,
+    )
+    if write_result["status"] not in {"applied", "applied-durability-uncertain"}:
+        raise SystemExit(
+            write_result.get("reason")
+            or f"could not safely update quiet narration rules in {rule_path}"
+        )
+    status = (
+        write_result["status"]
+        if write_result["status"] == "applied-durability-uncertain"
+        else ("removed" if mode == "default" else ("applied" if span is None else "updated"))
+    )
+    payload = {
+        "schema_version": "contextguard.narration-rules.v1",
+        "operation": "quiet-narration",
+        "mode": mode,
+        "root": str(root),
+        "rule_file": str(rule_path),
+        "marker_state_before": parsed.status,
+        "status": status,
+        "changed": True,
+        "applied": True,
+        "apply_requested": True,
+        "backup_path": write_result.get("backup_path"),
+        "actions": [action],
+        "claim_boundary": "static setup result only; no model-compliance or savings claim",
+    }
+    if write_result.get("reason"):
+        payload["warning"] = write_result["reason"]
+    if write_result.get("residual_risk"):
+        payload["residual_risk"] = write_result["residual_risk"]
+    return payload
+
+
+def render_quiet_narration_text(result: dict[str, Any]) -> str:
+    lines = [
+        f"ContextGuard quiet narration ({result['status']})",
+        f"root={result['root']}",
+        f"rule_file={result['rule_file']}",
+        f"mode={result['mode']}",
+    ]
+    if result.get("backup_path"):
+        lines.append(f"backup={result['backup_path']}")
+    lines.extend(f"- {action}" for action in result.get("actions", []))
+    lines.append(str(result["claim_boundary"]))
+    return "\n".join(lines) + "\n"
+
+
 def run(args: argparse.Namespace) -> SetupResult:
     require_no_follow_file_ops_supported()
     scope = normalize_scope(getattr(args, "scope", "project"))
@@ -2416,10 +3298,21 @@ def run(args: argparse.Namespace) -> SetupResult:
     if claude_targeted:
         validate_settings_target(root, settings_path, allow_home_settings=(args.allow_home_settings or scope == "user"))
         original_text = _read_optional_text_no_follow(settings_path)
+        settings_snapshot = read_managed_file_snapshot(settings_path)
+        snapshot_text = (
+            settings_snapshot.data.decode("utf-8")
+            if settings_snapshot.data is not None
+            else None
+        )
+        if snapshot_text != original_text:
+            raise SystemExit(
+                f"Settings changed while setup was preparing changes; re-run setup to merge latest file: {settings_path}"
+            )
         original = _parse_json_object_text(original_text, settings_path)
         settings = json.loads(json.dumps(original))
     else:
         original_text = None
+        settings_snapshot = ManagedFileSnapshot(None, None)
         original = {}
         settings = {}
 
@@ -2471,31 +3364,45 @@ def run(args: argparse.Namespace) -> SetupResult:
     if claude_targeted and apply_requested and changed:
         if scope == "user" and original_text is not None and args.no_backup:
             raise SystemExit("Refusing --no-backup for user-scope changes to existing Claude settings.")
-        lock_fd = acquire_settings_lock(settings_path)
-        try:
-            current_text = _read_optional_text_no_follow(settings_path)
-            if current_text != original_text:
-                raise SystemExit(
-                    f"Settings changed while setup was preparing changes; re-run setup to merge latest file: {settings_path}"
-                )
-            if original_text is not None and not args.no_backup and settings != original:
-                backup_path = backup_existing(settings_path)
-            if settings != original:
-                rollback_id, rollback_path = write_rollback_record(
-                    root=root,
-                    scope=scope,
-                    settings_path=settings_path,
-                    backup_path=backup_path,
-                    original_existed=(original_text is not None),
-                )
-                atomic_write(
-                    settings_path,
-                    json.dumps(settings, indent=2, sort_keys=True) + "\n",
-                    existing_mode_or_default(settings_path, 0o600),
-                )
-                claude_settings_written = True
-        finally:
-            release_settings_lock(lock_fd)
+        rollback_state: dict[str, Any] = {}
+
+        def prepare_settings_commit(managed_backup_path: Path | None) -> None:
+            prepared_rollback_id, prepared_rollback_path = write_rollback_record(
+                root=root,
+                scope=scope,
+                settings_path=settings_path,
+                backup_path=managed_backup_path,
+                original_existed=(original_text is not None),
+            )
+            rollback_state.update({
+                "rollback_id": prepared_rollback_id,
+                "rollback_path": prepared_rollback_path,
+            })
+
+        desired_settings = (
+            json.dumps(settings, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        write_result = write_managed_file(
+            settings_path,
+            expected=settings_snapshot,
+            desired=desired_settings,
+            mode=existing_mode_or_default(settings_path, 0o600),
+            dir_mode=PRIVATE_DIR_MODE,
+            create_backup=not args.no_backup,
+            prepare_commit=prepare_settings_commit,
+        )
+        if write_result["status"] not in {"applied", "applied-durability-uncertain"}:
+            reason = write_result.get("reason") or "managed settings transaction was not applied"
+            raise SystemExit(f"Could not safely update {settings_path}: {reason}")
+        if write_result.get("backup_path"):
+            backup_path = Path(write_result["backup_path"])
+        rollback_id = rollback_state.get("rollback_id")
+        rollback_path = rollback_state.get("rollback_path")
+        if write_result["status"] == "applied-durability-uncertain" and write_result.get("reason"):
+            warnings.append(str(write_result["reason"]))
+        if write_result.get("residual_risk"):
+            warnings.append(str(write_result["residual_risk"]))
+        claude_settings_written = True
 
     # Build the per-adapter plan; repo-rule writes happen here when an applying
     # run (--yes) requested --with-init or project-scope --brief-mode.
@@ -2559,6 +3466,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="alias for --plan")
     parser.add_argument("--verify", action="store_true", help="run a read-only setup health check; never writes or prompts")
     parser.add_argument("--json", action="store_true", help="print machine-readable result")
+    parser.add_argument(
+        "--rules-only",
+        action="store_true",
+        help="run an isolated rule-file operation without reading or changing settings/hooks",
+    )
+    parser.add_argument(
+        "--narration-mode",
+        choices=NARRATION_MODE_CHOICES,
+        default=None,
+        help="with --rules-only, add quiet Claude narration guidance or restore default behavior",
+    )
     parser.add_argument("--no-backup", action="store_true", help="do not create .bak-* before modifying existing settings")
     parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
     parser.add_argument("--no-statusline", action="store_true", help="skip token statusline")
@@ -2613,7 +3531,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="failed_attempt_nudge",
         action="store_true",
         default=None,
-        help="enable PostToolUse Bash hook that suggests /clear when the same command fails twice in a row (recommended default)",
+        help="enable Bash terminal-event hooks that suggest /clear when the same command fails twice in a row (recommended default)",
     )
     nudge_group.add_argument(
         "--no-failed-attempt-nudge",
@@ -2628,6 +3546,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    rules_only = validate_rules_only_args(parser, args)
+    if rules_only:
+        result = run_quiet_narration_rules(args)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(render_quiet_narration_text(result), end="")
+        return 0
     if args.dry_run:
         args.plan = True
     if args.verify and args.yes:

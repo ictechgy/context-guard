@@ -6664,7 +6664,11 @@ def local_proxy_store_response_artifact(
 ) -> dict[str, Any]:
     artifact = load_local_proxy_artifact_module()
     directory = artifact.normalize_allowed_first_absolute_symlink(Path(artifact_dir).expanduser())
-    sanitized_text, redacted_lines = artifact.sanitize_text(response_text, show_paths=show_artifact_paths)
+    sanitized_text, redacted_lines = artifact.sanitize_text(
+        response_text,
+        show_paths=show_artifact_paths,
+        context="unknown_text",
+    )
     content_bytes = len(sanitized_text.encode("utf-8", errors="replace"))
     content_sha = hashlib.sha256(sanitized_text.encode("utf-8", errors="replace")).hexdigest()
     command_preview = f"local-proxy response sandbox upstream_status={upstream_status}"

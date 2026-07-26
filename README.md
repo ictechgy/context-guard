@@ -80,7 +80,7 @@ ContextGuard complements provider and semantic caches, and works alongside promp
 | Provider prompt/context caching | Reusing stable prompt prefixes. | Complementary; ContextGuard helps keep the changing tail of context smaller and cleaner, `context-guard-audit` can flag likely volatile prefix layouts, and `context-guard cost` can warn when an Anthropic request is likely to cache-write instead of cache-read. |
 | Semantic response cache | Reusing answers to identical or similar requests. | Complementary; ContextGuard does not serve cached AI answers. |
 | Prompt/context compression | Shortening text that is already selected for the model. | Adjacent; ContextGuard trims and summarizes local output, but does not promise lossless semantic compression. |
-| Experimental planners and local runtimes | Default-off and explicit-command-only; covers plan-only `image-context-pack` and `semantic-checkpoint` gates plus local-proxy plans/gate records and narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | `image-context-pack` and `semantic-checkpoint` are dry-run planning gates only: they do not emit replacements, call models/providers, proxy traffic, write files, or make hosted token/cost savings claims. `semantic-checkpoint` additionally requires exact context fallback/re-expand metadata, provenance review acknowledgement, provider-boundary acknowledgement, protected-zone denial, and missed-context notes before the JSON payload reports readiness. The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request; `--response-sandbox` can replace a safe UTF-8 upstream body with a compact local artifact rehydration envelope. Compressor/model execution, OCR/crop services, external forwarding, credential persistence, runtime checkpoint replacement, and hosted-savings claims stay out of scope until a separate evidence gate and future PR allow them. |
+| Experimental planners and local runtimes | Default-off and explicit-command-only; covers plan-only `image-context-pack` and `semantic-checkpoint` gates plus local-proxy plans/gate records and narrow local runtimes for caller-supplied context-diff, visual evidence-pack, learned-compression, and self-hosted metrics evidence. | `image-context-pack` is a pxpipe-inspired dry-run planning gate only: it does not render images, run OCR, emit replacements, store binary image artifacts, call providers, or proxy traffic, and it requires exact text fallback plus provider-measured matched-task evidence before claims. `semantic-checkpoint` likewise emits planning metadata only, writes no files or replacement context, and requires exact fallback/re-expand metadata, provenance review acknowledgement, provider-boundary acknowledgement, protected-zone denial, and missed-context notes before reporting readiness. The local proxy `record` command starts no listener and forwards no traffic; `serve local-proxy` binds and forwards only literal loopback IPs for one bounded request; `--response-sandbox` can replace a safe UTF-8 upstream body with a compact local artifact rehydration envelope. Compressor/model execution, OCR/crop services, external forwarding, credential persistence, runtime checkpoint replacement, and hosted-savings claims stay out of scope until a separate evidence gate and future PR allow them. |
 | ContextGuard | Avoiding unnecessary files, logs, repeated failures, and noisy output before they enter agent context. | Local guardrails, reversible artifacts, and measurement. |
 
 Related patterns that informed the design:
@@ -96,6 +96,18 @@ Related patterns that informed the design:
 Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding agent to cut filler while preserving reviewer evidence: file paths, commands, command output and errors, code blocks, verification status, changed files, known gaps, and caveats. It is best-effort guidance, not enforcement, and does **not** guarantee token or cost savings.
 
 Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block for an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Manage it through setup with `context-guard setup --agent codex --scope project --brief-mode standard --plan`, rerun with `--yes` to apply, and use `--brief-mode off` to remove the managed block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
+
+## Quiet narration for Claude (advisory)
+
+Quiet narration is a separate, default-off Claude-only rule for reducing discretionary preambles, per-tool narration, filler, and repeated interim summaries. It still requires approvals and decisions, blockers, failures, destructive or security warnings, higher-priority progress updates, the final result, changed files, and verification. It is best-effort guidance, independent of final-answer brevity or reasoning depth, and does **not** guarantee token or cost savings.
+
+```bash
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --plan
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --yes
+context-guard setup --rules-only --agent claude --scope project --narration-mode default --yes
+```
+
+This isolated operation manages only ContextGuard's narration span in the project's `CLAUDE.md`. It does not read or change Claude settings, hooks, permissions, statusline, model defaults, or other agents' rule files. It cannot be combined with brief mode, initialization, skill generation, or normal setup actions. Gate C verifies the static rule and setup side effects only; it does not prove model compliance or authorize a numeric savings claim.
 
 ## What to measure
 
@@ -246,6 +258,19 @@ The structural-waste doctor is opt-in and read-only. It reuses the diet scanner'
 ```
 
 The optional Read guard uses a progressive path for oversized files: search first, then symbol slices, then small line ranges. When possible, it also returns a bounded top-level outline. Repeated attempts to full-read the same oversized file get a deduplicated warning instead of repeating the same context-heavy path.
+
+Its enforcement surface is deliberately limited to the installed Claude Code `PreToolUse` hook whose matcher is `Read`:
+
+When that Read guard is selected, setup removes only the exact legacy deny values `Read(./.env)` and `Read(./.env.*)`; similar permission entries and their relative order are preserved.
+
+| Claude tool | Covered behavior |
+| --- | --- |
+| `Read` | The hook checks bounded large-file ranges and denies a basename beginning with `.env`, except the exact template names `.env.example`, `.env.sample`, and `.env.template`. Nested paths are included; ambiguous symlink paths fail closed. |
+| `Glob` | May list matching names. It does not read file contents through this `Read` hook. |
+| `Grep` | Out of scope for this hook and may read matching file contents. |
+| `Bash` | Out of scope for this hook and may read file contents. |
+
+This is Claude `Read` protection, not universal `.env` or Bash protection. The hook proves the file state it opens without following symlinks and revalidates that same descriptor, but Claude performs the actual `Read` with a later open after the hook returns. A replacement in that post-hook window is a documented TOCTOU limitation.
 
 ### Store and query large logs locally
 

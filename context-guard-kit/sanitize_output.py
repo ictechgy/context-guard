@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import codecs
 import collections
+from dataclasses import dataclass
 import hashlib
+import importlib.util
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import queue
 import re
 import signal
@@ -20,7 +22,36 @@ import subprocess
 import sys
 import threading
 import time
+from types import ModuleType
 from typing import BinaryIO, Iterable, Iterator, TextIO
+
+
+def load_credential_policy() -> ModuleType:
+    script_dir = Path(__file__).resolve().parent
+    candidate = (
+        script_dir.parent / "lib" / "credential_policy.py"
+        if script_dir.name == "bin"
+        else script_dir / "credential_policy.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_context_guard_sanitize_credential_policy",
+        candidate,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load credential policy: {candidate}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_CREDENTIAL_POLICY = load_credential_policy()
+SECRET_KEY = _CREDENTIAL_POLICY.SECRET_KEY
+CAMEL_ACRONYM_BOUNDARY_RE = _CREDENTIAL_POLICY.CAMEL_ACRONYM_BOUNDARY_RE
+CAMEL_WORD_BOUNDARY_RE = _CREDENTIAL_POLICY.CAMEL_WORD_BOUNDARY_RE
+normalize_sensitive_key = _CREDENTIAL_POLICY.normalize_sensitive_key
+is_sensitive_key = _CREDENTIAL_POLICY.is_sensitive_key
+redact_url_like_secret_params = _CREDENTIAL_POLICY.redact_url_like_secret_params
+redact_high_confidence_credentials = _CREDENTIAL_POLICY.redact_high_confidence_credentials
 
 TERMINAL_CONTROL_RE = re.compile(
     r"(?:"
@@ -40,6 +71,22 @@ ABSOLUTE_PATH_RE = re.compile(
 WINDOWS_PATH_RE = re.compile(
     rf"(?P<prefix>^|[\s('\"=])(?P<path>[A-Za-z]:\\(?:{PATH_SEGMENT}\\)+{PATH_SEGMENT})"
 )
+TRACEBACK_PATH_RE = re.compile(
+    rf"(?P<prefix>\bFile\s+[\"'])(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
+    r"(?P<suffix>[\"'],\s+line\s+\d+)"
+)
+LOCATION_PATH_RE = re.compile(
+    rf"(?P<prefix>^(?:\s*[+-]\s*)?)(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
+    r"(?P<suffix>:\d+(?::\d+)?(?=[:\s]|$))"
+)
+DIFF_PATH_RE = re.compile(
+    rf"(?P<prefix>^(?:---|\+\+\+)\s+)(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
+    r"(?P<suffix>(?:\t.*)?$)"
+)
+LISTING_PATH_RE = re.compile(
+    rf"(?P<prefix>^\s*)(?P<path>/(?:{PATH_SEGMENT}/)+{PATH_SEGMENT})"
+    r"(?P<suffix>/?(?:\s+->\s+\S+)?\s*$)"
+)
 PRIVATE_KEY_BEGIN_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|OPENSSH PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----"
 )
@@ -51,17 +98,6 @@ AUTH_HEADER_RE = re.compile(
 )
 COOKIE_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
-)
-SESSION_SECRET_KEY = (
-    r"(?:session(?:[_-]?(?:id|token))?|sessionid|sid|jsessionid|"
-    r"csrf(?:[_-]?token)?|xsrf(?:[_-]?token)?)"
-)
-SECRET_KEY = (
-    r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
-    r"private[_-]?key|access[_-]?key|client[_-]?secret)[A-Za-z0-9_.-]*"
-    rf"|{SESSION_SECRET_KEY}"
-    r"|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
-    r"GOOGLE_APPLICATION_CREDENTIALS|AZURE_CLIENT_SECRET"
 )
 INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
@@ -112,25 +148,31 @@ UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
 CONTINUATION_OPERATOR_RE = re.compile(
     r"(?i)(?:\\|\|\||&&|\?\?|[+*/%&|^?,]|\?|:|\bor\b|\band\b|\belse\b)\s*(?://.*|#.*)?$"
 )
-URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
-URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
 SAFE_UNQUOTED_VALUES = {
     "[redacted]",
+    "bool",
+    "boolean",
+    "bytes",
     "false",
+    "float",
+    "int",
+    "integer",
     "none",
     "null",
+    "object",
     "os.getenv",
     "process.env",
+    "str",
+    "string",
     "true",
     "undefined",
+    "unknown",
 }
 IDENTIFIER_CHAIN_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$")
 SAFE_ENV_LOOKUP_CALL_RE = re.compile(r"^(?:os\.getenv|os\.environ\.get)\(\s*[\"'][A-Za-z0-9_.-]{1,80}[\"']\s*\)$")
 SAFE_RE_COMPILE_CALL_RE = re.compile(r"^re\.compile\([^;\n]*\)$")
 SAFE_CODE_EXPRESSION_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\(\s*(?:{CODE_IDENTIFIER}(?:\s*,\s*{CODE_IDENTIFIER})*)?\s*\)$")
 GETTER_CALL_RE = re.compile(rf"^{CODE_IDENTIFIER}\.get\(\s*[\"'](?P<key>[A-Za-z0-9_.-]{{1,80}})[\"']\s*\)$")
-CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
-CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 SAFE_GETTER_KEY_NAMES = {
     "access_key",
     "access_token",
@@ -162,26 +204,18 @@ SAFE_GETTER_KEY_NAMES = {
     "sid",
     "token",
 }
-INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
-    (re.compile(rf"(?i)([?&#](?:{SECRET_KEY})=)[^\s&#;]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)\s+)\S+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(--(?:api[_-]?key|token|secret|password|client[_-]?secret)=)\S+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)((?:-p|-u|--user)\s+)\S+:\S+"), r"\1[REDACTED]"),
-    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED]"),
-    (re.compile(r"glpat-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
-    (re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}"), "[REDACTED]"),
-    (re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"), "[REDACTED]"),
-    (re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"), "[REDACTED]"),
-    (re.compile(r"sk-(?:ant|proj)-[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
-    (re.compile(r"sk-[A-Za-z0-9][A-Za-z0-9_-]{20,}"), "[REDACTED]"),
-    (re.compile(r"npm_[A-Za-z0-9]{20,}"), "[REDACTED]"),
-    (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED]"),
-    (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
-    (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED]"),
-    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
+ASSIGNMENT_KEY_RE = re.compile(
+    r"(?P<key>[A-Za-z_$][A-Za-z0-9_$.-]*)[\"']?\s*[:=]\s*$"
+)
+SOURCE_SAFE_VALUE_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*|"
+    r"[A-Za-z_$][A-Za-z0-9_$]*(?:\[[A-Za-z0-9_$., |]+\])+|"
+    r"\d+(?:\.\d+)?|"
+    r"\$\{[A-Za-z0-9_.-]+\}|"
+    r"<[A-Za-z0-9_.-]+>|"
+    r"(?:YOUR|REPLACE|EXAMPLE|PLACEHOLDER)_[A-Z0-9_]+"
+    r")$"
 )
 ANCHOR_RE = re.compile(
     r"^(?:diff --git |index [0-9a-f]|--- |\+\+\+ |@@ |Binary files |(?:[^:\n]+):\d+(?::\d+)?:)",
@@ -198,6 +232,55 @@ TIMEOUT_EXIT_CODE = 124
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
 RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS = 1_024
+
+
+SANITIZATION_MODES = (
+    "unknown_text",
+    "command_search_diff",
+    "filesystem_listing",
+    "source_code",
+)
+
+
+@dataclass(frozen=True)
+class SanitizationContext:
+    mode: str = "unknown_text"
+    private_roots: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.mode not in SANITIZATION_MODES:
+            raise ValueError(f"unsupported sanitization context: {self.mode}")
+        object.__setattr__(
+            self,
+            "private_roots",
+            tuple(str(root) for root in self.private_roots),
+        )
+
+
+def coerce_sanitization_context(
+    value: SanitizationContext | str,
+    *,
+    private_roots: Iterable[str] = (),
+) -> SanitizationContext:
+    if isinstance(value, SanitizationContext):
+        supplied_roots = tuple(str(root) for root in private_roots)
+        normalized_context_roots = _normalized_private_roots(value.private_roots)
+        if supplied_roots and _normalized_private_roots(
+            supplied_roots
+        ) != normalized_context_roots:
+            raise ValueError(
+                "private_roots must be declared inside SanitizationContext "
+                "when a context object is supplied"
+            )
+        roots = normalized_context_roots
+        mode = value.mode
+    else:
+        roots = tuple(str(root) for root in private_roots)
+        mode = str(value)
+    return SanitizationContext(
+        mode=mode,
+        private_roots=_normalized_private_roots(roots),
+    )
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -231,16 +314,98 @@ def stable_hash(value: str, length: int = 12) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:length]
 
 
-def anonymize_absolute_paths(text: str) -> str:
+def anonymized_path(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    name = PurePosixPath(normalized).name or "path"
+    return f"{name}#path:{stable_hash(path)}"
+
+
+def anonymize_absolute_paths_with_count(text: str) -> tuple[str, int]:
+    count = 0
+
     def repl(match: re.Match[str]) -> str:
+        nonlocal count
         prefix = match.group("prefix")
         path = match.group("path")
-        normalized = path.replace("\\", "/")
-        name = PurePosixPath(normalized).name or "path"
-        return f"{prefix}{name}#path:{stable_hash(path)}"
+        count += 1
+        return f"{prefix}{anonymized_path(path)}"
 
     text = ABSOLUTE_PATH_RE.sub(repl, text)
-    return WINDOWS_PATH_RE.sub(repl, text)
+    return WINDOWS_PATH_RE.sub(repl, text), count
+
+
+def anonymize_absolute_paths(text: str) -> str:
+    return anonymize_absolute_paths_with_count(text)[0]
+
+
+def _replace_named_paths(text: str, pattern: re.Pattern[str]) -> tuple[str, int]:
+    count = 0
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return (
+            match.group("prefix")
+            + anonymized_path(match.group("path"))
+            + match.group("suffix")
+        )
+
+    return pattern.sub(repl, text), count
+
+
+def _normalized_private_roots(private_roots: Iterable[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for root in private_roots:
+        value = os.path.normpath(os.path.abspath(os.path.expanduser(str(root))))
+        if value not in normalized:
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def _is_under_private_root(path: str, private_roots: tuple[str, ...]) -> bool:
+    normalized = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    return any(
+        normalized == root or normalized.startswith(root.rstrip(os.sep) + os.sep)
+        for root in private_roots
+    )
+
+
+def anonymize_private_root_paths(
+    text: str,
+    private_roots: tuple[str, ...],
+) -> tuple[str, int]:
+    if not private_roots:
+        return text, 0
+    count = 0
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal count
+        path = match.group("path")
+        if not _is_under_private_root(path, private_roots):
+            return match.group(0)
+        count += 1
+        return match.group("prefix") + anonymized_path(path)
+
+    return ABSOLUTE_PATH_RE.sub(repl, text), count
+
+
+def anonymize_paths_for_context(
+    text: str,
+    *,
+    context: SanitizationContext,
+) -> tuple[str, int]:
+    if context.mode in {"unknown_text", "source_code"}:
+        return text, 0
+
+    total = 0
+    if context.mode == "filesystem_listing":
+        text, count = anonymize_private_root_paths(text, context.private_roots)
+        total += count
+
+    for pattern in (TRACEBACK_PATH_RE, LOCATION_PATH_RE, DIFF_PATH_RE):
+        text, count = _replace_named_paths(text, pattern)
+        total += count
+    return text, total
 
 
 def cap_line(line: str, max_line_chars: int) -> tuple[str, bool]:
@@ -260,20 +425,37 @@ def normalize_getter_key(key: str) -> str:
     return re.sub(r"_+", "_", key).strip("_").lower()
 
 
+def assignment_key(prefix: str) -> str | None:
+    match = ASSIGNMENT_KEY_RE.search(prefix)
+    return match.group("key") if match is not None else None
+
+
 def is_safe_getter_key(key: str) -> bool:
     return normalize_getter_key(key) in SAFE_GETTER_KEY_NAMES
 
 
-def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool:
+def should_redact_unquoted_secret_value(
+    line: str,
+    match: re.Match[str],
+    *,
+    context: SanitizationContext,
+) -> bool:
     value = match.group("value").strip()
     prefix = match.group("prefix")
     if not value:
         return False
     if value.lower() in SAFE_UNQUOTED_VALUES:
         return False
+    if re.search(r":\s*$", prefix):
+        return not (
+            context.mode == "source_code"
+            and SOURCE_SAFE_VALUE_RE.match(value) is not None
+        )
     if IDENTIFIER_CHAIN_RE.match(value):
         return False
     if SAFE_ENV_LOOKUP_CALL_RE.match(value) or SAFE_RE_COMPILE_CALL_RE.match(value):
+        return False
+    if context.mode == "source_code" and SOURCE_SAFE_VALUE_RE.match(value):
         return False
     getter_match = GETTER_CALL_RE.match(value)
     if re.search(r"\s[:=]\s*$", prefix) and (
@@ -284,30 +466,27 @@ def should_redact_unquoted_secret_value(line: str, match: re.Match[str]) -> bool
     return True
 
 
-def redact_url_like_secret_params(line: str) -> tuple[str, bool]:
-    redacted = False
-
-    def url_repl(match: re.Match[str]) -> str:
-        nonlocal redacted
-        url, count = URL_SECRET_PARAM_RE.subn(r"\1[REDACTED]", match.group(0))
-        if count:
-            redacted = True
-        return url
-
-    return URL_LIKE_RE.sub(url_repl, line), redacted
-
-
-def redact_secret_assignments(line: str) -> tuple[str, bool]:
+def redact_secret_assignments(
+    line: str,
+    *,
+    context: SanitizationContext,
+) -> tuple[str, bool]:
     line, redacted = redact_url_like_secret_params(line)
 
     def quoted_repl(match: re.Match[str]) -> str:
         nonlocal redacted
+        key = assignment_key(match.group("prefix"))
+        if key is None or not is_sensitive_key(key):
+            return match.group(0)
         redacted = True
         return f"{match.group('lead')}{match.group('prefix')}{match.group('quote')}[REDACTED]{match.group('quote')}"
 
     def unquoted_repl(match: re.Match[str]) -> str:
         nonlocal redacted
-        if not should_redact_unquoted_secret_value(line, match):
+        key = assignment_key(match.group("prefix"))
+        if key is None or not is_sensitive_key(key):
+            return match.group(0)
+        if not should_redact_unquoted_secret_value(line, match, context=context):
             return match.group(0)
         redacted = True
         return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
@@ -322,7 +501,7 @@ def redact_secret_assignments(line: str) -> tuple[str, bool]:
 
 MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?:^|[\s;{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
+    rf"[\"']?(?P<key>{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
 )
 
 
@@ -349,6 +528,8 @@ def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
 def detect_multiline_secret_assignment(line: str) -> str | None:
     """Return the quote delimiter when any secret assignment starts a multiline value."""
     for marker in MULTILINE_SECRET_ASSIGNMENT_RE.finditer(line):
+        if not is_sensitive_key(marker.group("key")):
+            continue
         quote = marker.group("quote")
         if not has_unescaped_quote(line, quote, marker.end("quote")):
             return quote
@@ -385,6 +566,10 @@ def detect_multiline_secret_expression(line: str) -> int | None:
     marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE.search(line)
     if marker is None:
         return None
+    prefix = line[: marker.start("value")]
+    key = assignment_key(prefix)
+    if key is None or not is_sensitive_key(key):
+        return None
     value = marker.group("value").strip()
     if not value:
         return 0
@@ -419,12 +604,23 @@ def secret_or_private_key_redaction_label(line: str) -> str:
 
 
 class LineSanitizer:
-    def __init__(self, *, show_paths: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        show_paths: bool = False,
+        context: SanitizationContext | str = "unknown_text",
+        private_roots: Iterable[str] = (),
+    ) -> None:
         self.show_paths = show_paths
+        self.context = coerce_sanitization_context(
+            context,
+            private_roots=private_roots,
+        )
         self.in_private_key_block = False
         self.multiline_secret_quote: str | None = None
         self.multiline_secret_expression_depth: int | None = None
         self.redactions = 0
+        self.path_redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
         line = strip_ansi(raw_line)
@@ -491,22 +687,30 @@ class LineSanitizer:
             redacted = True
             line = new_line
 
-        line, assignment_redacted = redact_secret_assignments(line)
+        line, assignment_redacted = redact_secret_assignments(
+            line,
+            context=self.context,
+        )
         if assignment_redacted:
             redacted = True
 
-        for pattern, replacement in INLINE_PATTERNS:
-            line, count = pattern.subn(replacement, line)
-            if count:
-                redacted = True
+        line, credential_redactions = redact_high_confidence_credentials(line)
+        if credential_redactions:
+            redacted = True
 
         return self._finish(line, redacted)
 
     def _finish(self, line: str, redacted: bool) -> tuple[str, bool]:
+        if not self.show_paths:
+            line, path_redactions = anonymize_paths_for_context(
+                line,
+                context=self.context,
+            )
+            if path_redactions:
+                self.path_redactions += path_redactions
+                redacted = True
         if redacted:
             self.redactions += 1
-        if not self.show_paths:
-            line = anonymize_absolute_paths(line)
         return line, redacted
 
 
@@ -600,7 +804,11 @@ class BoundedOutput:
 
 
 def sanitize_stream(stream: Iterable[str], args: argparse.Namespace) -> tuple[str, int, int]:
-    sanitizer = LineSanitizer(show_paths=args.show_paths)
+    sanitizer = LineSanitizer(
+        show_paths=args.show_paths,
+        context=getattr(args, "context", "unknown_text"),
+        private_roots=getattr(args, "private_root", ()),
+    )
     bounded = BoundedOutput(
         max_lines=args.max_lines,
         max_chars=args.max_chars,
@@ -872,6 +1080,33 @@ def stdin_has_data(stdin: TextIO) -> bool:
     return not stdin.isatty()
 
 
+def command_uses_search_diff_output(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = os.path.basename(command[0])
+    if executable in {"grep", "rg"}:
+        return True
+    if executable != "git":
+        return False
+    value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+    skip_next = False
+    for arg in command[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            break
+        if arg in value_options:
+            skip_next = True
+            continue
+        if any(arg.startswith(option + "=") for option in value_options if option.startswith("--")):
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg in {"diff", "grep", "log", "show"}
+    return False
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Redact secrets and budget grep/diff/log output before sending it to Claude."
@@ -896,6 +1131,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="show raw absolute paths instead of basename#path:<hash>; local debugging only because private paths may be exposed",
     )
+    parser.add_argument(
+        "--context",
+        choices=SANITIZATION_MODES,
+        default="unknown_text",
+        help=(
+            "sanitization origin policy (default: unknown_text); path-aware modes "
+            "only anonymize structurally proven locations"
+        ),
+    )
+    parser.add_argument(
+        "--private-root",
+        action="append",
+        default=[],
+        help=(
+            "private root eligible for path anonymization in filesystem_listing "
+            "mode; may be repeated"
+        ),
+    )
+    parser.add_argument(
+        "--context-guard-wrapper-v1",
+        choices=("command_search_diff",),
+        dest="wrapper_context",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
 
@@ -907,6 +1166,30 @@ def main() -> int:
     command = args.command
     if command and command[0] == "--":
         command = command[1:]
+    if args.wrapper_context is not None:
+        if len(command) != 3 or command[0:2] != ["bash", "-lc"] or not command[2]:
+            print(
+                "context-guard-sanitize-output: invalid context-guard wrapper v1 shape",
+                file=sys.stderr,
+            )
+            return 2
+        context = coerce_sanitization_context(
+            args.wrapper_context,
+            private_roots=args.private_root,
+        )
+    else:
+        context = coerce_sanitization_context(
+            args.context,
+            private_roots=args.private_root,
+        )
+        if (
+            context.mode == "unknown_text"
+            and command_uses_search_diff_output(command)
+        ):
+            context = SanitizationContext(
+                mode="command_search_diff",
+                private_roots=context.private_roots,
+            )
 
     proc: subprocess.Popen[bytes] | None = None
     command_stream: TimedCommandStream | None = None
@@ -927,14 +1210,17 @@ def main() -> int:
         print("context-guard-sanitize-output: missing command or stdin", file=sys.stderr)
         return 2
 
+    args.context = context
     output, _redactions, _line_count = sanitize_stream(stream, args)
     rc: int | None = None
     if proc is not None:
         rc = command_stream.returncode() if command_stream is not None else proc.wait()
         if command_stream is not None and command_stream.timed_out and not command_stream.timeout_reported:
-            timeout_line, _redacted = LineSanitizer(show_paths=args.show_paths).sanitize(
-                command_stream.timeout_message()
-            )
+            timeout_line, _redacted = LineSanitizer(
+                show_paths=args.show_paths,
+                context=context,
+                private_roots=args.private_root,
+            ).sanitize(command_stream.timeout_message())
             command_stream.timeout_reported = True
             output = output + timeout_line
 

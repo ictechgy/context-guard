@@ -134,8 +134,14 @@ class FallbackLineSanitizer:
         r"([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|pwd)[A-Za-z0-9_.-]*\s*[:=]\s*)\S+)"
     )
 
-    def __init__(self, *, show_paths: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        show_paths: bool = False,
+        context: str = "unknown_text",
+    ) -> None:
         self.show_paths = show_paths
+        self.context = context
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -151,7 +157,32 @@ class FallbackLineSanitizer:
         return line, bool(count)
 
 
-def load_line_sanitizer(show_paths: bool) -> object:
+def instantiate_line_sanitizer(
+    factory: object,
+    *,
+    show_paths: bool,
+    context: str,
+    private_roots: tuple[str, ...] = (),
+) -> object:
+    try:
+        return factory(  # type: ignore[operator]
+            show_paths=show_paths,
+            context=context,
+            private_roots=private_roots,
+        )
+    except TypeError:
+        if context != "unknown_text" or private_roots:
+            raise RuntimeError(
+                "adjacent sanitizer does not support required explicit context"
+            )
+        return factory(show_paths=show_paths)  # type: ignore[operator]
+
+
+def load_line_sanitizer(
+    show_paths: bool,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> object:
     """Reuse the shipped strong sanitizer when present; else fall back locally.
 
     Mirrors context_escrow.py so the compress CLI redacts with the same rules
@@ -168,16 +199,36 @@ def load_line_sanitizer(show_paths: bool) -> object:
             if spec is None:
                 raise RuntimeError("import spec unavailable")
             module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
-            return module.LineSanitizer(show_paths=show_paths)
+            sys.modules[loader.name] = module
+            try:
+                loader.exec_module(module)
+            except Exception:
+                sys.modules.pop(loader.name, None)
+                raise
+            return instantiate_line_sanitizer(
+                module.LineSanitizer,
+                show_paths=show_paths,
+                context=context,
+                private_roots=private_roots,
+            )
         except Exception as exc:
             raise RuntimeError(f"could not load sanitizer {candidate}: {exc}") from exc
-    return FallbackLineSanitizer(show_paths=show_paths)
+    return FallbackLineSanitizer(show_paths=show_paths, context=context)
 
 
-def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
+def sanitize_text(
+    text: str,
+    *,
+    show_paths: bool = False,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> tuple[str, int]:
     """Redact secrets line-by-line, returning sanitized text and redacted-line count."""
-    sanitizer = load_line_sanitizer(show_paths)
+    sanitizer = load_line_sanitizer(
+        show_paths,
+        context=context,
+        private_roots=private_roots,
+    )
     redacted = 0
     out: list[str] = []
     for line in text.splitlines(True):
@@ -737,13 +788,20 @@ def compress_text(
     max_bytes: int,
     protected_policy_enabled: bool = False,
     compression_mode: str = "conservative",
+    sanitization_context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
 ) -> tuple[str, dict[str, object]]:
     """Sanitize first, then classify and compress, then build the receipt.
 
     Redaction runs on the raw input so no secret can leak into the classifier,
     the compressed body, or the metadata that follows.
     """
-    sanitized, redacted_lines = sanitize_text(text, show_paths=show_paths)
+    sanitized, redacted_lines = sanitize_text(
+        text,
+        show_paths=show_paths,
+        context=sanitization_context,
+        private_roots=private_roots,
+    )
     parsed_json: object = JSON_PARSE_FAILED
     if forced_type is not None:
         content_type, type_source = forced_type, "override"
@@ -789,6 +847,9 @@ def compress_text(
         protected_policy_enabled=protected_policy_enabled,
         compression_mode=compression_mode,
     )
+    redaction_metadata = metadata.get("redaction")
+    if isinstance(redaction_metadata, dict):
+        redaction_metadata["context"] = sanitization_context
     return compressed, metadata
 
 
@@ -837,6 +898,10 @@ def run_compress(args: argparse.Namespace) -> int:
         max_bytes=max_bytes,
         protected_policy_enabled=bool(args.protected_policy),
         compression_mode=compression_mode,
+        sanitization_context=(
+            "source_code" if forced_type == "code" else args.sanitize_context
+        ),
+        private_roots=tuple(args.private_root),
     )
     if args.json:
         payload = {"metadata": metadata, "content": compressed}
@@ -882,6 +947,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-paths",
         action="store_true",
         help="show raw absolute paths instead of path hashes; local debugging only because private paths may be exposed",
+    )
+    parser.add_argument(
+        "--sanitize-context",
+        choices=(
+            "unknown_text",
+            "command_search_diff",
+            "filesystem_listing",
+            "source_code",
+        ),
+        default="unknown_text",
+        help="declare the input origin for conservative secret/path sanitization",
+    )
+    parser.add_argument(
+        "--private-root",
+        action="append",
+        default=[],
+        help="private root for filesystem_listing sanitization; may be repeated",
     )
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES, help="maximum stdin bytes to read before truncating")
     parser.set_defaults(func=run_compress)

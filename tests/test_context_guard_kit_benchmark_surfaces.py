@@ -5534,14 +5534,19 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertTrue(agents_md.is_file())
                     self.assertFalse((root / ".claude").exists())
                     text = agents_md.read_text(encoding="utf-8")
-                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertEqual(
+                        text.count("<!-- BEGIN context-guard:repo-rules version=1 -->"),
+                        1,
+                    )
                     self.assertIn("do not guarantee", text.lower())
 
                     again = self._run(script, root, ["--only", "codex", "--with-init", "--yes", "--no-diet-scan"])
                     self.assertEqual(again["adapter_plan"][0]["status"], "exists")
                     self.assertEqual(again["actions"], [])
                     self.assertEqual(
-                        agents_md.read_text(encoding="utf-8").count("<!-- contextguard:begin -->"),
+                        agents_md.read_text(encoding="utf-8").count(
+                            "<!-- BEGIN context-guard:repo-rules version=1 -->"
+                        ),
                         1,
                     )
 
@@ -5565,7 +5570,10 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     text = skill.read_text(encoding="utf-8")
                     self.assertIn("name: context-guard", text)
                     self.assertIn("description:", text)
-                    self.assertIn("contextguard:codex-skill:begin", text)
+                    self.assertIn(
+                        "<!-- BEGIN context-guard:codex-skill version=1 -->",
+                        text,
+                    )
                     self.assertIn("context-guard setup --agent codex --scope project", text)
                     self.assertIn("Do not claim fixed token or cost savings", text)
                     self.assertTrue((root / "AGENTS.md").is_file())
@@ -5685,7 +5693,10 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertTrue(backup_path.is_file())
                     self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
                     self.assertEqual(len(list(root.glob("AGENTS.md.bak-*"))), 1)
-                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+                    self.assertIn(
+                        "<!-- BEGIN context-guard:repo-rules version=1 -->",
+                        agents.read_text(encoding="utf-8"),
+                    )
 
     def test_with_init_uncertain_atomic_write_still_reports_backup_path(self):
         for index, script in enumerate(SETUP_SCRIPTS):
@@ -5727,7 +5738,10 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertTrue(backup_path.is_file())
                     self.assertEqual(backup_path.read_text(encoding="utf-8"), original)
                     self.assertIn("durability is uncertain", "\n".join(entry["planned_actions"]))
-                    self.assertIn("<!-- contextguard:begin -->", agents.read_text(encoding="utf-8"))
+                    self.assertIn(
+                        "<!-- BEGIN context-guard:repo-rules version=1 -->",
+                        agents.read_text(encoding="utf-8"),
+                    )
 
     def test_agent_alias_and_project_scope_keep_setup_project_local(self):
         for script in SETUP_SCRIPTS:
@@ -6025,7 +6039,7 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertTrue(by_key["windsurf"]["detected"])
                     # Without --with-init nothing is written.
                     self.assertNotIn(
-                        "<!-- contextguard:begin -->",
+                        "<!-- BEGIN context-guard:repo-rules version=1 -->",
                         (root / "AGENTS.md").read_text(encoding="utf-8"),
                     )
                     self.assertFalse((root / ".windsurf" / "rules" / "contextguard.md").exists())
@@ -6058,7 +6072,10 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertEqual(entry["rule_file"], ".clinerules")
                     text = rule_path.read_text(encoding="utf-8")
                     self.assertIn("Existing Cline rule.", text)
-                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertEqual(
+                        text.count("<!-- BEGIN context-guard:repo-rules version=1 -->"),
+                        1,
+                    )
                     self.assertFalse((root / ".clinerules" / "contextguard.md").exists())
                     self.assertFalse((root / ".claude").exists())
 
@@ -6193,7 +6210,10 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     entry = data["adapter_plan"][0]
                     text = agents_md.read_text(encoding="utf-8")
                     self.assertTrue(data["applied"])
-                    self.assertEqual(text.count("<!-- contextguard:begin -->"), 1)
+                    self.assertEqual(
+                        text.count("<!-- BEGIN context-guard:repo-rules version=1 -->"),
+                        1,
+                    )
                     self.assertEqual(text.count("<!-- BEGIN context-guard:brief-mode level=lite version=1 -->"), 1)
                     self.assertEqual(entry["project_skill_status"], "applied")
                     backup_path = Path(entry["brief_mode_backup_path"])

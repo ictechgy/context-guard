@@ -716,6 +716,89 @@ def check_brief_mode_apply_smoke(proc: subprocess.CompletedProcess[str], project
         fail(f"{command} unexpected brief_mode_status: {status!r}")
 
 
+def run_quiet_narration_smoke(
+    *,
+    command: Path,
+    project: Path,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+    dispatcher: bool = False,
+    trusted_root: Path | None = None,
+    label: str,
+) -> None:
+    """Prove staged quiet plan/apply/default rollback without touching settings."""
+    project.mkdir()
+    settings = project / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings_bytes = b"{ malformed settings that rules-only must not parse"
+    settings.write_bytes(settings_bytes)
+    rule_file = project / "CLAUDE.md"
+    original = b"Release smoke user rules without final newline"
+    rule_file.write_bytes(original)
+    prefix = ["setup"] if dispatcher else []
+    common = [
+        *prefix,
+        "--root",
+        str(project),
+        "--rules-only",
+        "--agent",
+        "claude",
+        "--scope",
+        "project",
+    ]
+
+    def launch(args: list[str], expect: Callable[[subprocess.CompletedProcess[str]], None]) -> None:
+        run_command(
+            entrypoint_launch_argv(command, [*common, *args], trusted_root=trusted_root),
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            expect=expect,
+        )
+
+    def check_plan(proc: subprocess.CompletedProcess[str]) -> None:
+        data = load_json(proc.stdout, f"{label} quiet plan")
+        check_json_field(data, "status", "planned", f"{label} quiet plan")
+        check_json_field(data, "applied", False, f"{label} quiet plan")
+        if rule_file.read_bytes() != original or settings.read_bytes() != settings_bytes:
+            fail(f"{label} quiet plan changed project files")
+
+    launch(["--narration-mode", "quiet", "--plan", "--json"], check_plan)
+
+    def check_apply(proc: subprocess.CompletedProcess[str]) -> None:
+        data = load_json(proc.stdout, f"{label} quiet apply")
+        check_json_field(data, "status", "applied", f"{label} quiet apply")
+        check_json_field(data, "applied", True, f"{label} quiet apply")
+        written = rule_file.read_bytes()
+        marker = b"<!-- BEGIN context-guard:narration-mode mode=quiet version=1 -->"
+        if not written.startswith(original) or written.count(marker) != 1:
+            fail(f"{label} quiet apply did not preserve user bytes and install one marker")
+        if settings.read_bytes() != settings_bytes:
+            fail(f"{label} quiet apply read or changed settings content")
+        backup = Path(str(data.get("backup_path") or ""))
+        if not backup.is_file() or backup.read_bytes() != original:
+            fail(f"{label} quiet apply did not create the expected backup")
+        if stat.S_IMODE(backup.stat().st_mode) != 0o600:
+            fail(f"{label} quiet apply backup is not mode 0600")
+
+    launch(["--narration-mode", "quiet", "--yes", "--json"], check_apply)
+
+    def check_default_rollback(proc: subprocess.CompletedProcess[str]) -> None:
+        data = load_json(proc.stdout, f"{label} default rollback")
+        check_json_field(data, "status", "removed", f"{label} default rollback")
+        check_json_field(data, "applied", True, f"{label} default rollback")
+        if rule_file.read_bytes() != original:
+            fail(f"{label} default rollback did not restore exact user bytes")
+        if settings.read_bytes() != settings_bytes:
+            fail(f"{label} default rollback changed settings content")
+        backup = Path(str(data.get("backup_path") or ""))
+        if not backup.is_file() or stat.S_IMODE(backup.stat().st_mode) != 0o600:
+            fail(f"{label} default rollback did not create a private backup")
+
+    launch(["--narration-mode", "default", "--yes", "--json"], check_default_rollback)
+
+
 def check_doctor_smoke(proc: subprocess.CompletedProcess[str], command: str) -> None:
     data = load_json(proc.stdout, command)
     check_json_field(data, "schema_version", "contextguard.doctor.v1", command)
@@ -1067,6 +1150,21 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         (project / "smoke-pack-copy.txt").write_text(sketch_variant, encoding="utf-8")
         mcp_project = Path(td) / "mcp-project"
         mcp_project.mkdir()
+        (project / "release-smoke.jsonl").write_text(
+            json.dumps(
+                {
+                    "session_id": "release-smoke",
+                    "timestamp": "2026-07-23T00:00:00Z",
+                    "message": {
+                        "id": "release-smoke-response",
+                        "model": "claude-release-smoke",
+                        "usage": {"input_tokens": 1},
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         env = smoke_environment(smoke_home, smoke_tmp)
         run_mcp_namespace_smoke(
             command_path(plugin_bin, "context-guard-mcp"), project=mcp_project, env=env,
@@ -1310,6 +1408,14 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
                 "context-guard-setup brief-mode apply",
             ),
         )
+        run_quiet_narration_smoke(
+            command=commands["context-guard-setup"],
+            project=Path(td) / "quiet-narration-project",
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            label="staged plugin setup",
+        )
         run_command(
             entrypoint_launch_argv(commands["context-guard-diet"], ["scan", str(project), "--json"]),
             cwd=project,
@@ -1537,6 +1643,16 @@ def run_npm_package_smoke(timeout: float) -> None:
                 project,
                 "isolated npm context-guard setup brief-mode apply",
             ),
+        )
+        run_quiet_narration_smoke(
+            command=context_guard,
+            project=root / "quiet-narration-project",
+            cwd=project,
+            env=env,
+            timeout=timeout,
+            dispatcher=True,
+            trusted_root=install_prefix,
+            label="isolated npm setup",
         )
         run_dispatcher_launch_smokes(
             bin_dir=isolated_bin,

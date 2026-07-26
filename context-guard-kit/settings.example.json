@@ -22,8 +22,6 @@
       "Read(./.netrc)",
       "Read(./.context-guard/**)",
       "Read(./.claude-token-optimizer/**)",
-      "Read(./.env)",
-      "Read(./.env.*)",
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Read(~/.gnupg/**)",

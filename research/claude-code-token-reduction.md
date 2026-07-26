@@ -193,15 +193,13 @@ Claude Code 자체는 `cache_control` TTL을 사용자가 직접 지정하지 �
       "Read(./build/**)",
       "Read(./coverage/**)",
       "Read(./tmp/**)",
-      "Read(./logs/**)",
-      "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./logs/**)"
     ]
   }
 }
 ```
 
-민감 파일 차단은 보안과 토큰 절감이 동시에 된다.
+`.env*` 내용 정책은 위의 `permissions.deny` 예시가 아니라 설치된 Claude Code `PreToolUse`의 `Read` matcher 훅이 담당한다. 이 훅은 basename이 `.env`로 시작하는 root/중첩 경로를 차단하되 정확한 템플릿 이름 `.env.example`, `.env.sample`, `.env.template`은 허용한다. `Glob`은 이름을 나열할 수 있고, `Grep`과 `Bash`는 파일 내용을 읽을 수 있지만 이 Read 훅의 범위 밖이다. 따라서 이는 범용 `.env` 또는 Bash 보호가 아니다. 훅이 no-follow로 연 descriptor를 재검증한 뒤에도 실제 Claude `Read`가 별도로 파일을 다시 열므로 post-hook TOCTOU 구간은 남는다.
 
 ### 3.3 MCP를 “기본 off, 필요할 때 on”으로
 
@@ -299,7 +297,7 @@ Claude Code는 `claude_code.token.usage`, `claude_code.cost.usage` 같은 metric
 
 ### 7.2 Transcript 감사
 
-Claude Code session은 로컬 JSONL transcript로 저장된다. 구조는 버전별로 달라질 수 있으니, 이 repo의 `context-guard-kit/claude_transcript_cost_audit.py`는 알려진 usage/cost field를 재귀적으로 찾아 합산한다.
+Claude Code session은 로컬 JSONL transcript로 저장된다. 이 repo의 `context-guard-kit/claude_transcript_cost_audit.py`는 토큰 합계에는 결정적인 `row.message.usage` 계약만 사용하고, 다른 usage-like 형태가 보이면 합산하지 않은 채 결과를 partial로 표시한다. 비용과 진단 메타데이터는 bounded schema-tolerant scan을 유지한다.
 
 ```bash
 python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 20
@@ -359,9 +357,7 @@ python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --t
       "Read(./build/**)",
       "Read(./coverage/**)",
       "Read(./logs/**)",
-      "Read(./tmp/**)",
-      "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./tmp/**)"
     ]
   },
   "hooks": {
@@ -372,6 +368,15 @@ python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --t
           {
             "type": "command",
             "command": "python3 context-guard-kit/rewrite_bash_for_token_budget.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 context-guard-kit/guard_large_read.py"
           }
         ]
       }

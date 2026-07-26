@@ -165,6 +165,7 @@ class SourceSpec:
     label: str | None = None
     input_index: int = 0
     origin: str = "cli"
+    sanitization_context: str = "source_code"
 
 
 @dataclass
@@ -205,9 +206,32 @@ class PackError(ValueError):
     pass
 
 
+SANITIZATION_CONTEXTS = frozenset(
+    {
+        "unknown_text",
+        "command_search_diff",
+        "filesystem_listing",
+        "source_code",
+    }
+)
+
+
+def parse_sanitization_context(value: object) -> str:
+    context = str(value or "unknown_text")
+    if context not in SANITIZATION_CONTEXTS:
+        raise PackError(f"unsupported sanitization context: {context}")
+    return context
+
+
 class FallbackLineSanitizer:
-    def __init__(self, *, show_paths: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        show_paths: bool = False,
+        context: str = "unknown_text",
+    ) -> None:
         self.show_paths = show_paths
+        self.context = context
         self.redactions = 0
 
     def sanitize(self, raw_line: str) -> tuple[str, bool]:
@@ -252,7 +276,12 @@ def load_line_sanitizer_factory() -> Any:
                 if spec is None:
                     raise RuntimeError("import spec unavailable")
                 module = importlib.util.module_from_spec(spec)
-                loader.exec_module(module)
+                sys.modules[loader.name] = module
+                try:
+                    loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(loader.name, None)
+                    raise
                 _LINE_SANITIZER_FACTORY_CACHE = module.LineSanitizer
                 return _LINE_SANITIZER_FACTORY_CACHE
             except Exception as exc:
@@ -261,13 +290,53 @@ def load_line_sanitizer_factory() -> Any:
         return _LINE_SANITIZER_FACTORY_CACHE
 
 
-def load_line_sanitizer(show_paths: bool = False) -> object:
+def instantiate_line_sanitizer(
+    factory: Any,
+    *,
+    show_paths: bool,
+    context: str,
+    private_roots: tuple[str, ...] = (),
+) -> object:
+    try:
+        return factory(
+            show_paths=show_paths,
+            context=context,
+            private_roots=private_roots,
+        )
+    except TypeError:
+        if context != "unknown_text" or private_roots:
+            raise RuntimeError(
+                "adjacent sanitizer does not support required explicit context"
+            )
+        return factory(show_paths=show_paths)
+
+
+def load_line_sanitizer(
+    show_paths: bool = False,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> object:
     sanitizer_factory = load_line_sanitizer_factory()
-    return sanitizer_factory(show_paths=show_paths)
+    return instantiate_line_sanitizer(
+        sanitizer_factory,
+        show_paths=show_paths,
+        context=context,
+        private_roots=private_roots,
+    )
 
 
-def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
-    sanitizer = load_line_sanitizer(show_paths)
+def sanitize_text(
+    text: str,
+    *,
+    show_paths: bool = False,
+    context: str = "unknown_text",
+    private_roots: tuple[str, ...] = (),
+) -> tuple[str, int]:
+    sanitizer = load_line_sanitizer(
+        show_paths,
+        context=context,
+        private_roots=private_roots,
+    )
     redacted = 0
     out: list[str] = []
     for line in text.splitlines(True):
@@ -278,7 +347,13 @@ def sanitize_text(text: str, *, show_paths: bool = False) -> tuple[str, int]:
     return "".join(out), redacted
 
 
-def sanitize_source_lines(handle: Any, requested: LineRange | None) -> tuple[list[str], int, int]:
+def sanitize_source_lines(
+    handle: Any,
+    requested: LineRange | None,
+    *,
+    context: str = "source_code",
+    private_roots: tuple[str, ...] = (),
+) -> tuple[list[str], int, int]:
     """Sanitize a source stream while retaining only the requested line window.
 
     Explicit line-window retrieval still scans the complete file so global
@@ -286,7 +361,10 @@ def sanitize_source_lines(handle: Any, requested: LineRange | None) -> tuple[lis
     outputs, but it no longer materializes a sanitized all-lines list before
     slicing.
     """
-    sanitizer = load_line_sanitizer()
+    sanitizer = load_line_sanitizer(
+        context=context,
+        private_roots=private_roots,
+    )
     selected: list[str] = []
     redacted = 0
     total_lines = 0
@@ -886,6 +964,9 @@ def read_manifest(path: Path) -> list[SourceSpec]:
             lines=lines,
             label=cap_label(item.get("label")),
             origin="manifest",
+            sanitization_context=parse_sanitization_context(
+                item.get("sanitization_context", item.get("context"))
+            ),
         ))
     return out
 
@@ -917,6 +998,9 @@ def parse_source_spec(raw: str) -> SourceSpec:
         lines=lines,
         label=cap_label(values.get("label")),
         origin="cli",
+        sanitization_context=parse_sanitization_context(
+            values.get("sanitization_context", values.get("context"))
+        ),
     )
 
 
@@ -1094,7 +1178,16 @@ def resolve_source(root: Path, spec: SourceSpec) -> tuple[ResolvedSource | None,
     try:
         with handle:
             requested = spec.lines
-            selected, total_lines, redacted_lines = sanitize_source_lines(handle, requested)
+            selected, total_lines, redacted_lines = sanitize_source_lines(
+                handle,
+                requested,
+                context=spec.sanitization_context,
+                private_roots=(
+                    (str(root),)
+                    if spec.sanitization_context == "filesystem_listing"
+                    else ()
+                ),
+            )
     except OSError:
         return None, omission(spec, "unsafe_path", path=display, redacted_path=redacted_path)
     if total_lines <= 0:
@@ -1977,10 +2070,16 @@ def run_git_diff(root: Path, diff_ref: str) -> str:
     except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
         raise PackError(f"could not read diff: {exc.__class__.__name__}") from exc
     if proc.returncode != 0:
-        detail = sanitize_text(proc.stderr or proc.stdout or "git diff failed")[0].strip().splitlines()
+        detail = sanitize_text(
+            proc.stderr or proc.stdout or "git diff failed",
+            context="command_search_diff",
+        )[0].strip().splitlines()
         message = detail[0] if detail else "git diff failed"
         raise PackError(f"could not read diff: {cap_label(message, default='git diff failed', limit=160)}")
-    return sanitize_text(proc.stdout[:MAX_SUGGEST_INPUT_BYTES])[0]
+    return sanitize_text(
+        proc.stdout[:MAX_SUGGEST_INPUT_BYTES],
+        context="command_search_diff",
+    )[0]
 
 
 def collect_diff_candidates(root: Path, diff_ref: str, query_terms: set[str], context_lines: int) -> list[SuggestCandidate]:

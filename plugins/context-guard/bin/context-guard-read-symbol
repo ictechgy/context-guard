@@ -51,7 +51,12 @@ def _load_sanitize_output():
         if spec is None:
             continue
         module = importlib.util.module_from_spec(spec)
-        loader.exec_module(module)
+        sys.modules[loader.name] = module
+        try:
+            loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(loader.name, None)
+            raise
         return module
     raise ImportError("sanitize_output helper not found in " + ", ".join(searched))
 
@@ -412,7 +417,7 @@ def strip_line_for_brace_count(line: str, in_block_comment: bool = False) -> tup
 
 
 def redact_symbol_content(content: str) -> str:
-    sanitizer = LineSanitizer(show_paths=True)
+    sanitizer = LineSanitizer(show_paths=False, context="source_code")
     return "".join(sanitizer.sanitize(line)[0] for line in content.splitlines(keepends=True))
 
 

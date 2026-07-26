@@ -91,13 +91,52 @@ context-guard-audit <temporary-project> --json
 
 The setup command must be read-only in `--plan` mode. The diet scanner must not follow symlinks when reading settings or context-like files. If you perform an additional manual smoke after installing a marketplace artifact, run the same commands from a clean project and compare the success shape against the automated gate rather than bypassing it.
 
+## Staged npm tarball evidence
+
+`release_smoke.py` also exercises the artifact produced by `npm pack`, not only the source checkout or staged plugin directory. To reproduce that artifact boundary manually:
+
+```bash
+stage_root="$(mktemp -d)"
+npm pack --json --ignore-scripts --pack-destination "$stage_root" >"$stage_root/pack.json"
+tarball="$(python3 - "$stage_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+print(root / json.loads((root / "pack.json").read_text(encoding="utf-8"))[0]["filename"])
+PY
+)"
+mkdir "$stage_root/project" "$stage_root/isolated-install"
+(cd "$stage_root/project" && npm install --ignore-scripts --no-audit --fund=false --prefix "$stage_root/isolated-install" "$tarball")
+"$stage_root/isolated-install/node_modules/.bin/context-guard" --version
+```
+
+The automated smoke additionally checks help and setup plan/apply behavior, quiet-narration apply/removal, every packaged dispatcher, legacy-wrapper package presence without npm bin exposure, and lifecycle-script rejection. Capture the `sync-plugin-copies: plugin copies synchronized` and `release smoke: OK` sentinels, tarball filename, size, integrity value from `pack.json`, command exit codes, and the absence of unexpected credentials. Keep the staging root only long enough to collect redacted evidence, then remove it and confirm no temporary release artifacts were added to the repository.
+
+## Integration release order
+
+Release the integrated safety work in public A, then B, then C, then D order. C is the optional Claude-only quiet-narration rule and remains default-off; D is optional measurement or research and cannot authorize a numeric claim without matched provider evidence. Keep the internal A0/A1/A2 and B1/B2 boundaries independently revertible even when they share one public release gate.
+
+Before advancing to the next public gate, verify the canonical implementation, its packaged mirror, and the dedicated tests as one owned unit. A feature rollback reverts that complete unit together. Revert shared package metadata only after every dependent feature has been reverted or superseded; reverting shared metadata first can leave an older package manifest pointing at newer behavior.
+
+Gate B has an executable history proof rather than a hunk-by-hunk rollback recipe:
+
+```bash
+python3 scripts/verify_gate_b_rollback.py --json
+```
+
+The proof checks the immutable B1 nudge/FSM and B2 usage-reducer feature commits against their exact owned canonical, packaged, and dedicated-test paths. In disposable clones it applies and reverts each feature independently from the same pre-B base, verifies the reverted tree equals that base, proves each feature can be reverted alone from the current head, and finally proves the integrated rollback order `B1 -> B2 -> shared integration`. It fails when the checkout is shallow, a component path set changes, either feature needs hunk surgery, or shared integration cannot be reverted last. CI therefore uses full Git history. Treat the emitted commit and tree hashes as the release evidence; do not substitute a successful source-only test for the mechanical history proof.
+
 ## Rollback notes
 
 If a release gate fails after a publish candidate has been prepared:
 
 1. Stop the release.
 2. Keep the failing artifact or PR branch for investigation, but do not paste raw logs until credential-like strings and private paths have been removed.
-3. Revert or supersede the candidate with a focused fix PR. For an already-pushed tag or marketplace artifact, pin the bad version in the incident note and publish a corrected version rather than mutating history.
-4. Re-run this runbook from the beginning, including CI and quad-review evidence on the new head.
+3. Identify the smallest failed owned unit. Revert its canonical implementation, packaged mirror, and dedicated tests together; do not mix versions within a pair.
+4. Revert shared package or release metadata only after its dependent feature units. Preserve unrelated managed bytes and fail closed if a setup rollback detects an external edit after the expected post-image.
+5. Revert or supersede the candidate with a focused fix PR. For an already-pushed tag or marketplace artifact, pin the bad version in the incident note and publish a corrected version rather than mutating history.
+6. Re-run this runbook from the beginning, including CI and quad-review evidence on the new head.
 
 Do not publish by bypassing `prepublish_check.py`, `release_smoke.py`, CI, or blocker-free quad review.

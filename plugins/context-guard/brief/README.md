@@ -70,3 +70,22 @@ Each block is wrapped in stable markers:
 To remove brief mode, delete the block between (and including) those two marker lines. Only
 one brief-mode block should be present at a time; installing a different level replaces the
 existing block rather than stacking a second one.
+
+## Quiet narration is separate
+
+[`narration-mode.quiet.md`](narration-mode.quiet.md) is a default-off, Claude-only rule for
+reducing discretionary progress narration. It is not a brief-mode level and does not change
+final-answer requirements or reasoning depth. Manage it only through the isolated,
+project-scoped rules operation:
+
+```bash
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --plan
+context-guard setup --rules-only --agent claude --scope project --narration-mode quiet --yes
+context-guard setup --rules-only --agent claude --scope project --narration-mode default --yes
+```
+
+This operation manages only the ContextGuard narration span in project `CLAUDE.md`; it does
+not read or change Claude settings, hooks, permissions, statusline, model defaults, or other
+agents' rule files. The rule preserves approvals and decisions, blockers, failures,
+destructive or security warnings, required progress, final results, changed files, and
+verification. It is best-effort guidance and does not guarantee token or cost savings.

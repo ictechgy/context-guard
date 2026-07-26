@@ -106,8 +106,6 @@ HEAVY_PROJECT_DENIES: tuple[tuple[str, str, str], ...] = (
     (".claude-token-optimizer", ".claude-token-optimizer", "Read(./.claude-token-optimizer/**)"),
 )
 SENSITIVE_PROJECT_DENIES: tuple[tuple[str, str, str], ...] = (
-    (".env", ".env", "Read(./.env)"),
-    (".env.*", ".env.*", "Read(./.env.*)"),
     (".npmrc", ".npmrc", "Read(./.npmrc)"),
     (".pypirc", ".pypirc", "Read(./.pypirc)"),
     (".netrc", ".netrc", "Read(./.netrc)"),
@@ -512,15 +510,11 @@ def path_target_denied(deny_entries: list[str], recommended: str) -> bool:
 
 
 def project_path_exists(root: Path, rel: str) -> bool:
-    if rel == ".env":
-        return (root / ".env").exists()
-    if rel == ".env.*":
-        return any(path.name.startswith(".env.") for path in root.iterdir() if path.exists())
     return (root / rel).exists()
 
 
 def generic_context_pattern(rel: str) -> str:
-    if rel in {".env", ".npmrc", ".pypirc", ".netrc"}:
+    if rel in {".npmrc", ".pypirc", ".netrc"}:
         return rel
     if rel.endswith(".*"):
         return rel
