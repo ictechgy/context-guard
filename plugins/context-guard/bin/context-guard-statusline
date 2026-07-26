@@ -11,8 +11,18 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-statusline_path=$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null || true)
-statusline_dir=$(CDPATH= cd -P -- "$(dirname -- "${statusline_path:-$0}")" && pwd)
+statusline_path=$0
+for _context_guard_symlink_hop in {1..32}; do
+  [[ -L "$statusline_path" ]] || break
+  statusline_link_dir=$(CDPATH= cd -P -- "$(dirname -- "$statusline_path")" && pwd) || break
+  statusline_link_target=$(readlink "$statusline_path" 2>/dev/null) || break
+  if [[ "$statusline_link_target" = /* ]]; then
+    statusline_path=$statusline_link_target
+  else
+    statusline_path=$statusline_link_dir/$statusline_link_target
+  fi
+done
+statusline_dir=$(CDPATH= cd -P -- "$(dirname -- "$statusline_path")" && pwd)
 usage_reducer_file=''
 for candidate in \
   "$statusline_dir/transcript_usage_reducer.py" \

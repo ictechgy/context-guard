@@ -15,6 +15,7 @@ SECRET_KEY = (
 )
 URL_LIKE_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
 URL_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#;](?:{SECRET_KEY})=)[^\s?&#;]+")
+SCHEMELESS_SECRET_PARAM_RE = re.compile(rf"(?i)([?&#](?:{SECRET_KEY})=)[^\s?&#;]+")
 CAMEL_ACRONYM_BOUNDARY_RE = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 EXACT_SENSITIVE_KEYS = frozenset(
@@ -152,7 +153,7 @@ def redact_url_like_secret_params(line: str) -> tuple[str, bool]:
         redacted = True
         return prefix + "[REDACTED]"
 
-    return URL_SECRET_PARAM_RE.sub(fragment_repl, line), redacted
+    return SCHEMELESS_SECRET_PARAM_RE.sub(fragment_repl, line), redacted
 
 
 def redact_high_confidence_credentials(text: str) -> tuple[str, int]:

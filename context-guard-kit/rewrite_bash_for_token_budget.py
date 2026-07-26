@@ -374,10 +374,18 @@ def _denied_minishell(command: str, consumed: int, reason: str) -> MiniShellPars
     )
 
 
-def _dollar_starts_expansion(command: str, index: int) -> bool:
+def _dollar_starts_expansion(
+    command: str,
+    index: int,
+    *,
+    allow_quoted_literal: bool = False,
+) -> bool:
     if index + 1 >= len(command):
         return False
-    return command[index + 1] in "\"'({$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz?!#*@-"
+    following = command[index + 1]
+    if allow_quoted_literal and following in {'"', "'"}:
+        return True
+    return following in "({$0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz?!#*@-"
 
 
 def parse_minishell(command: str) -> MiniShellParse:
@@ -582,7 +590,11 @@ def parse_minishell(command: str) -> MiniShellParse:
                 break
             if char in MINISHELL_DENIED_ACTIVE_CHARS:
                 return deny(f"active_{ord(char):02x}")
-            if char == "$" and _dollar_starts_expansion(command, index):
+            if char == "$" and _dollar_starts_expansion(
+                command,
+                index,
+                allow_quoted_literal=True,
+            ):
                 return deny("active_24")
             if fragment_kind != "unquoted":
                 if not bump_item():
