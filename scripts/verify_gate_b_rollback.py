@@ -128,24 +128,52 @@ def commit_exists(repo: Path, commit: str) -> bool:
     )
 
 
+def is_shallow_repository(repo: Path) -> bool:
+    proc = run_git(repo, "rev-parse", "--is-shallow-repository", check=False)
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise ProofHistoryUnavailable(
+            "full Gate-B proof history is unavailable: "
+            f"could not inspect repository depth ({detail or f'exit {proc.returncode}'})"
+        )
+    return proc.stdout.strip() == "true"
+
+
 def changed_paths(repo: Path, left: str, right: str) -> frozenset[str]:
     proc = run_git(repo, "diff", "--name-only", left, right)
     return frozenset(line for line in proc.stdout.splitlines() if line)
 
 
-def find_unique_subject(repo: Path, source_head: str, subject: str) -> str:
+def find_unique_subject(
+    repo: Path,
+    source_head: str,
+    subject: str,
+    *,
+    history_may_be_truncated: bool,
+) -> str:
     proc = run_git(
         repo,
         "log",
         "--format=%H%x00%s",
         f"{BASE_COMMIT}..{source_head}",
+        check=False,
     )
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout).strip()
+        if history_may_be_truncated:
+            raise ProofHistoryUnavailable(
+                "full Gate-B proof history is unavailable: "
+                f"could not inspect proof commits ({detail or f'exit {proc.returncode}'})"
+            )
+        raise ProofError(
+            f"could not inspect Gate-B proof commits: {detail or f'exit {proc.returncode}'}"
+        )
     matches = []
     for raw in proc.stdout.splitlines():
         commit, separator, actual_subject = raw.partition("\0")
         if separator and actual_subject == subject:
             matches.append(commit)
-    if not matches:
+    if not matches and history_may_be_truncated:
         raise ProofHistoryUnavailable(
             "full Gate-B proof history is unavailable: "
             f"reachable commit {subject!r} was not found"
@@ -171,12 +199,37 @@ def assert_residual_contract(repo: Path, bless: str) -> None:
                 )
 
 
-def resolve_history(repo: Path, source_head: str) -> dict[str, str]:
+def resolve_history(
+    repo: Path,
+    source_head: str,
+    *,
+    history_may_be_truncated: bool,
+) -> dict[str, str]:
     commits = {
-        "bless": find_unique_subject(repo, source_head, BLESS_SUBJECT),
-        "b1": find_unique_subject(repo, source_head, B1_SUBJECT),
-        "b2": find_unique_subject(repo, source_head, B2_SUBJECT),
-        "shared-integration": find_unique_subject(repo, source_head, SHARED_SUBJECT),
+        "bless": find_unique_subject(
+            repo,
+            source_head,
+            BLESS_SUBJECT,
+            history_may_be_truncated=history_may_be_truncated,
+        ),
+        "b1": find_unique_subject(
+            repo,
+            source_head,
+            B1_SUBJECT,
+            history_may_be_truncated=history_may_be_truncated,
+        ),
+        "b2": find_unique_subject(
+            repo,
+            source_head,
+            B2_SUBJECT,
+            history_may_be_truncated=history_may_be_truncated,
+        ),
+        "shared-integration": find_unique_subject(
+            repo,
+            source_head,
+            SHARED_SUBJECT,
+            history_may_be_truncated=history_may_be_truncated,
+        ),
     }
     expected_parents = (
         (commits["b1"], commits["bless"]),
@@ -288,7 +341,15 @@ def prove_current_revert_order(
 
 def run_proof(repo: Path = ROOT) -> dict[str, object]:
     repo = repo.resolve()
-    source_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    head = run_git(repo, "rev-parse", "HEAD", check=False)
+    if head.returncode:
+        detail = (head.stderr or head.stdout).strip()
+        raise ProofHistoryUnavailable(
+            "full Gate-B proof history is unavailable: "
+            f"could not resolve HEAD ({detail or f'exit {head.returncode}'})"
+        )
+    source_head = head.stdout.strip()
+    history_may_be_truncated = is_shallow_repository(repo)
     if not commit_exists(repo, BASE_COMMIT):
         raise ProofHistoryUnavailable(
             "full Gate-B proof history is unavailable: "
@@ -311,7 +372,11 @@ def run_proof(repo: Path = ROOT) -> dict[str, object]:
                 f"could not inspect ancestry ({detail or f'exit {ancestry.returncode}'})"
             )
         raise ProofError(f"Gate-B base {BASE_COMMIT} is not an ancestor of {source_head}")
-    commits = resolve_history(repo, source_head)
+    commits = resolve_history(
+        repo,
+        source_head,
+        history_may_be_truncated=history_may_be_truncated,
+    )
     with tempfile.TemporaryDirectory(prefix="context-guard-gate-b-proof-") as tmp:
         proof_repo = Path(tmp) / "repo"
         run_git(repo, "clone", "--quiet", "--no-hardlinks", str(repo), str(proof_repo))
@@ -358,7 +423,7 @@ def main() -> int:
             )
         else:
             print(f"gate-b rollback proof: UNAVAILABLE: {exc}")
-        return 2
+        return 3
     except ProofError as exc:
         if args.json:
             print(

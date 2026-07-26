@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,7 +74,7 @@ class GateBRollbackProofTests(unittest.TestCase):
             ):
                 rollback_proof.run_proof(repo)
 
-    def test_squashed_history_reports_missing_proof_commits_as_unavailable(self) -> None:
+    def test_complete_squashed_history_is_a_failed_proof(self) -> None:
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-squash-") as tmp:
             repo = self.make_snapshot_repo(Path(tmp))
             base_commit = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -82,17 +83,22 @@ class GateBRollbackProofTests(unittest.TestCase):
             rollback_proof.run_git(repo, "commit", "--quiet", "-m", "squashed change")
             with mock.patch.object(rollback_proof, "BASE_COMMIT", base_commit):
                 with self.assertRaisesRegex(
-                    rollback_proof.ProofHistoryUnavailable,
-                    "reachable commit 'proof: establish Gate-B-free residual' was not found",
-                ):
+                    rollback_proof.ProofError,
+                    "expected exactly one reachable commit named "
+                    "'proof: establish Gate-B-free residual', found 0",
+                ) as raised:
                     rollback_proof.run_proof(repo)
+            self.assertNotIsInstance(
+                raised.exception,
+                rollback_proof.ProofHistoryUnavailable,
+            )
 
     def test_cli_distinguishes_unavailable_history_from_failed_proof(self) -> None:
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-cli-") as tmp:
             repo = self.make_snapshot_repo(Path(tmp))
             proc = subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     str(SCRIPT),
                     "--json",
                     "--repo",
@@ -104,10 +110,28 @@ class GateBRollbackProofTests(unittest.TestCase):
                 check=False,
             )
 
-        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["status"], "unavailable")
         self.assertIn("full Gate-B proof history is unavailable", payload["error"])
+
+    def test_cli_reports_unborn_repository_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-unborn-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT), "--json", "--repo", str(repo)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertIn("could not resolve HEAD", payload["error"])
 
 
 if __name__ == "__main__":
