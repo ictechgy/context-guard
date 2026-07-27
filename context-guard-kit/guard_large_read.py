@@ -900,10 +900,26 @@ def repeated_read_hint(count: int) -> str:
 
 
 def valve_exhausted_reason(count: int) -> str:
-    """3회차 밸브 미발화 또는 4회차 이후 거부에 쓰는 200바이트 미만 단축 메시지."""
+    """지문이 과거에 실제로 밸브를 1회 발화(valve_used=True)한 뒤 다시 차단됐을 때 쓰는
+    200바이트 미만 단축 메시지. "발화했다가 소진됨"을 뜻하므로 발화한 적이 없는
+    지문에는 절대 쓰지 않는다 — 그 경우는 valve_budget_exceeded_reason을 쓴다.
+    """
     return (
         f"[context-guard-kit] Read blocked ({count}x, escape valve exhausted). "
         "Use a smaller offset/limit range for this file."
+    )
+
+
+def valve_budget_exceeded_reason(count: int, content_limit: int) -> str:
+    """좁힌 기본 범위(offset=0, limit=max_line_range())조차 예산을 넘어 밸브가 구조적으로
+    발화할 수 없는 지문(minified/JSON/CSV/로그처럼 줄이 긴 파일)에 쓰는 200바이트 미만
+    단축 메시지. "탈진"이라 말하지 않는다 — 애초에 켜진 적이 없기 때문이다. 실제 예산
+    수치를 실어 에이전트가 스스로 유효한 offset/limit을 계산할 수 있게 한다.
+    """
+    return (
+        f"[context-guard-kit] Large Read blocked ({count}x). Narrowed {max_line_range()}-line "
+        f"range still exceeds the {content_limit:,}-byte guard; supply an explicit offset/limit "
+        "under it."
     )
 
 
@@ -1084,11 +1100,16 @@ def main() -> int:
     except Exception:
         attempt_count = 1
 
-    # 단축 메시지는 밸브가 실제로 발화했었는지(valve_used)로만 판단한다 — 카운트 자체는
-    # 밸브 상태를 증명하지 않는다. 좁힌 범위조차 예산을 넘는 파일은 밸브가 구조적으로
-    # 발화할 수 없으므로, 몇 회를 반복하든 "탈진했다"고 주장하지 않고 실제 사유를 낸다.
+    # 3단 분기. 1) count<3: 아직 자기 교정 여지가 있으므로 전체 사다리를 준다.
+    # 2) count>=3, valve_used=False: 밸브가 3회차에 시도됐고(구성상 이 카운트에
+    #    도달하려면 반드시 시도됐다) 구조적으로 발화할 수 없었던 지문 — "탈진"이
+    #    아니라 "애초에 켤 수 없다"이므로 실제 예산 수치가 담긴 실행 가능한 단축
+    #    메시지를 쓴다. 3) valve_used=True: 과거에 실제로 발화했던 지문 — 기존
+    #    "탈진" 단축 메시지.
     if attempt_peek["valve_used"]:
         reason = valve_exhausted_reason(attempt_count)
+    elif attempt_count >= 3:
+        reason = valve_budget_exceeded_reason(attempt_count, content_limit)
     else:
         read_symbol = find_read_symbol_command()
         reason = read_proof_denial_reason(

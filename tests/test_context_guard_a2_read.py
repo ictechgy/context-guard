@@ -680,19 +680,27 @@ class ReadA2ContractTests(unittest.TestCase):
                     self.assertLess(len(denial_reason.encode("utf-8")), 200)
                     self.assertIn("escape valve exhausted", denial_reason)
 
-    def test_escape_valve_never_fires_keeps_full_reason_and_valve_used_false_on_every_repeat(
+    def test_escape_valve_never_fires_gives_actionable_budget_reason_from_round_three(
         self,
     ) -> None:
-        # AC-3.6 (교정): 자동 축소(offset=0, limit=400) 자체도 content_budget_exceeded면
-        # 밸브는 구조적으로 발화할 수 없다. 단축 메시지는 "발화했다가 소진됨"을 뜻하므로,
-        # 발화한 적이 없는 파일에는 절대 쓰지 않는다 — 몇 회를 반복하든 실제 사유
-        # (Large Read blocked 사다리)를 그대로 낸다. updatedInput도 절대 나오지 않는다.
+        # AC-3.2/3.6 (교정): 자동 축소(offset=0, limit=400) 자체도 content_budget_exceeded면
+        # 밸브는 구조적으로 발화할 수 없다. 1~2회차는 아직 자기 교정 여지가 있으므로 전체
+        # 사다리를 주고, 3회차부터는 "탈진"이라 주장하지 않는 대신 실제 예산 수치가 담긴
+        # 실행 가능한 단축 메시지("Large Read blocked" 포함, 200바이트 미만)를 매 반복마다
+        # 낸다. updatedInput은 절대 나오지 않고, valve_used는 계속 False로 남는다.
         for guard in self.guards:
             with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "narrow.bin").write_bytes(b"x\n" * 10)
                 payload = {"tool_name": "Read", "tool_input": {"file_path": "narrow.bin"}}
-                for round_number in range(1, 7):
+                for round_number in range(1, 3):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    output = hook_result(stdout)["hookSpecificOutput"]
+                    with self.subTest(round=round_number):
+                        self.assertNotIn("updatedInput", output)
+                        self.assertIn("Progressive read ladder", output["permissionDecisionReason"])
+
+                for round_number in range(3, 7):
                     _, stdout, _ = invoke_guard(guard, payload, cwd=root)
                     output = hook_result(stdout)["hookSpecificOutput"]
                     with self.subTest(round=round_number):
@@ -700,18 +708,23 @@ class ReadA2ContractTests(unittest.TestCase):
                         self.assertEqual(output["permissionDecision"], "deny")
                         denial_reason = output["permissionDecisionReason"]
                         self.assertIn("Large Read blocked", denial_reason)
+                        self.assertIn("byte guard", denial_reason)
                         self.assertNotIn("escape valve exhausted", denial_reason)
+                        self.assertNotIn("Progressive read ladder", denial_reason)
+                        self.assertLess(len(denial_reason.encode("utf-8")), 200)
 
                 # 에이전트가 직접 실패하는 범위를 지정해도(자체 outcome=content_budget_exceeded)
-                # 여전히 짧은 "소진" 메시지로 바뀌지 않고 실제 사유를 낸다.
+                # 여전히 "탈진" 메시지로 바뀌지 않고 예산 초과 사유를 낸다.
                 explicit_payload = {
                     "tool_name": "Read",
                     "tool_input": {"file_path": "narrow.bin", "offset": 0, "limit": 5},
                 }
                 _, stdout, _ = invoke_guard(guard, explicit_payload, cwd=root)
                 explicit_reason = reason(stdout)
-                self.assertIn("content_budget_exceeded", explicit_reason)
+                self.assertIn("Large Read blocked", explicit_reason)
+                self.assertIn("byte guard", explicit_reason)
                 self.assertNotIn("escape valve exhausted", explicit_reason)
+                self.assertLess(len(explicit_reason.encode("utf-8")), 200)
 
                 state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
                 state = json.loads(state_file.read_text(encoding="utf-8"))
