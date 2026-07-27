@@ -27,6 +27,12 @@ from tests.context_guard_a1_oracles import (
     prepare_path_lookup_canary,
     route_cases,
 )
+from tests.corpus_adversarial_pins import (
+    FIX5_ADVERSARIAL_PINS,
+    FIX5_ALLOWLIST_POSITIVE_PINS,
+    FIX5_GLOB_REJECTION_PINS,
+    fix5_case_count,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -848,6 +854,97 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 with self.subTest(script=script, command=command):
                     self.assert_bounded_deny(proc)
                     self.assertNotIn("leaving command unchanged", proc.stderr)
+
+    def test_fix5_adversarial_pin_count_matches_ac_5_1(self) -> None:
+        """AC-5.1 — 적대적 환경변수 접두사 벡터는 정확히 19개여야 한다."""
+        self.assertEqual(fix5_case_count(), 19)
+
+    def test_fix5_adversarial_env_prefix_vectors_deny_on_canonical_and_staged(self) -> None:
+        """AC-5.1/AC-5.2 — 19개 벡터가 canonical/staged 양쪽에서 전부 deny 되고,
+        기존 우연한 거부 2건을 제외한 17건은 신규 `unsafe_env_name_denied` 를 낸다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_adversarial_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_ADVERSARIAL_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, pin["expected_decision"])
+                    expected_reason_code = pin.get("expected_reason_code")
+                    if expected_reason_code is not None:
+                        self.assertEqual(decision.reason_code, expected_reason_code)
+
+    def test_fix5_allowlisted_env_prefix_still_routes_on_canonical_and_staged(self) -> None:
+        """AC-5.3 — 시드 화이트리스트 안의 무해 접두사는 계속 허용된다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_positive_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_ALLOWLIST_POSITIVE_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertIsNone(decision.reason_code)
+
+    def test_fix5_exact_name_match_rejects_glob_style_prefixes(self) -> None:
+        """AC-5.6 — TERMINFO/LOCPATH 는 TERM/LANG 접두사 매칭으로 재승인되지 않는다
+        (`TERM*` 글롭이었다면 재현되었을 denylist 침몰 실패 형태를 고정한다)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_glob_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_GLOB_REJECTION_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+
+    def test_fix5_multi_prefix_denies_when_any_name_is_unsafe(self) -> None:
+        """다중 접두사 중 하나라도 화이트리스트 밖이면 세그먼트 전체가 거부된다."""
+        namespace = self.load_namespace(REWRITE_SCRIPTS[0], "fix5_multi_prefix")
+        classify_command = namespace["classify_command"]
+        decision = classify_command("TZ=UTC GIT_PAGER=/tmp/evil.sh git diff")
+        self.assertEqual(decision.action, "deny")
+        self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+
+    def test_fix5_env_builtin_form_enforces_same_allowlist(self) -> None:
+        """리터럴 `env NAME=val -- cmd` 형태도 동일한 이름 화이트리스트를 적용받는다
+        (`_routing_start` 의 두 번째 스캔 구간 — `env` 뒤 할당 목록)."""
+        namespace = self.load_namespace(REWRITE_SCRIPTS[0], "fix5_env_builtin")
+        classify_command = namespace["classify_command"]
+        denied = classify_command("env GIT_PAGER=/tmp/evil.sh git diff")
+        self.assertEqual(denied.action, "deny")
+        self.assertEqual(denied.reason_code, "unsafe_env_name_denied")
+        allowed = classify_command("env NODE_ENV=production npm test")
+        self.assertEqual(allowed.action, "trim")
+        self.assertIsNone(allowed.reason_code)
+
+    def test_fix5_restricted_env_denied_still_covers_its_original_cause(self) -> None:
+        """`restricted_env_denied` 는 이름 문제가 아닌 `env` 플래그 형태에서 여전히
+        발생해야 한다 — 신규 `unsafe_env_name_denied` 와 원인이 섞이지 않았는지 확인
+        (Q10, §5.4/§5.6 측정이 reason_code 로 필터링하므로 오염되면 안 된다)."""
+        namespace = self.load_namespace(REWRITE_SCRIPTS[0], "fix5_restricted_env_cause")
+        classify_command = namespace["classify_command"]
+        decision = classify_command("env --unknown printf ok")
+        self.assertEqual(decision.action, "deny")
+        self.assertEqual(decision.reason_code, "restricted_env_denied")
+
+    def test_fix5_hook_envelope_denies_env_prefix_rce_end_to_end(self) -> None:
+        """AC-5.4 — 거부된 접두사는 wrapped `bash -lc` 출력으로 도달하지 않는다."""
+        for script in REWRITE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self.assert_command_decision(
+                    "GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+                    "deny",
+                    script=script,
+                )
+                self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
 
 
 if __name__ == "__main__":

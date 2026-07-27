@@ -422,11 +422,28 @@ def minishell_normative_cases() -> list[dict[str, object]]:
             "expected_denial_reason": "leftover_after_heredoc",
         },
         {
+            # FIX-5: 이름이 시드 화이트리스트 안이므로(NODE_ENV, CI) 여전히 noop —
+            # `env NAME=val -- cmd` 파싱 형태 자체가 허용됨을 검증하는 케이스.
+            # 원래는 FOO/EMPTY 를 썼으나 화이트리스트 밖이라 deny 로 바뀌므로
+            # 파싱-형태 검증이라는 이 케이스의 원래 취지를 유지하려면 화이트리스트
+            # 안의 이름으로 교체해야 한다(§5.5 5열: 위치는 워킹 리포 밖 읽기 없음,
+            # 자격증명 표면 없음, 출력 유계, 축 b 무영향, 역방향은 바로 아래 신규
+            # 케이스가 원본 FOO/EMPTY 입력으로 고정).
             "case_id": "minishell-restricted-env-accepted",
             "family": "restricted-env",
-            "command": "env FOO=bar EMPTY= -- printf ok",
+            "command": "env NODE_ENV=production CI= -- printf ok",
             "expected_decision": "noop",
-            "expected_argv": ("env", "FOO=bar", "EMPTY=", "--", "printf", "ok"),
+            "expected_argv": ("env", "NODE_ENV=production", "CI=", "--", "printf", "ok"),
+        },
+        {
+            # 역방향 케이스(신규) — 위 케이스의 원래 입력을 그대로 고정한다. FOO/EMPTY
+            # 는 시드 화이트리스트 밖이므로 이제 unsafe_env_name_denied 로 거부되어야
+            # 한다. INV-A: 기존에 이미 deny 는 아니었지만(noop→deny 전환), FIX-5 는
+            # 이 전환 방향을 명시적으로 허용한다(AC-5.5는 반대 방향 0건만 요구).
+            "case_id": "minishell-restricted-env-unsafe-name-denied",
+            "family": "restricted-env",
+            "command": "env FOO=bar EMPTY= -- printf ok",
+            "expected_decision": "deny",
         },
     ]
 
@@ -708,20 +725,37 @@ def _assignment_templates() -> list[dict[str, object]]:
         {"raw_word": "9FOO=~", "expected_decision": noop, "site": "invalid_name"},
         {"raw_word": "FOO'='~", "expected_decision": noop, "site": "quoted_equal"},
         {"raw_word": "FOO\\=~", "expected_decision": noop, "site": "escaped_equal"},
-        {"raw_word": "FOO=a=~", "expected_decision": noop, "site": "later_equal_literal"},
+        {
+            "raw_word": "FOO=a=~",
+            "expected_decision": noop,
+            "site": "later_equal_literal",
+            "env_prefix_name_recognized": True,
+        },
         {"raw_word": "FOO=a=:~", "expected_decision": deny, "site": "scan_after_equal"},
         {"raw_word": "FOO=a=~:~", "expected_decision": deny, "site": "later_colon"},
-        {"raw_word": "FOO=''~", "expected_decision": noop, "site": "empty_quote_suppression"},
-        {'raw_word': 'FOO=""~', "expected_decision": noop, "site": "empty_quote_suppression"},
+        {
+            "raw_word": "FOO=''~",
+            "expected_decision": noop,
+            "site": "empty_quote_suppression",
+            "env_prefix_name_recognized": True,
+        },
+        {
+            'raw_word': 'FOO=""~',
+            "expected_decision": noop,
+            "site": "empty_quote_suppression",
+            "env_prefix_name_recognized": True,
+        },
         {
             "raw_word": "FOO=prefix:''~",
             "expected_decision": noop,
             "site": "empty_quote_suppression",
+            "env_prefix_name_recognized": True,
         },
         {
             "raw_word": 'FOO=prefix:""~',
             "expected_decision": noop,
             "site": "empty_quote_suppression",
+            "env_prefix_name_recognized": True,
         },
         {"raw_word": "FOO='':~", "expected_decision": deny, "site": "locality"},
         {"raw_word": "FOO=''prefix:~", "expected_decision": deny, "site": "locality"},
@@ -729,28 +763,57 @@ def _assignment_templates() -> list[dict[str, object]]:
             "raw_word": "FOO=\\\n''~",
             "expected_decision": noop,
             "site": "removed_plus_retained",
+            "env_prefix_name_recognized": True,
         },
         {
-            "raw_word": 'FOO=\\\n""~',
+            'raw_word': 'FOO=\\\n""~',
             "expected_decision": noop,
             "site": "removed_plus_retained",
+            "env_prefix_name_recognized": True,
         },
         {
             "raw_word": "FOO=prefix:\\\n''~",
             "expected_decision": noop,
             "site": "removed_plus_retained",
+            "env_prefix_name_recognized": True,
         },
         {
             "raw_word": 'FOO=prefix:\\\n""~',
             "expected_decision": noop,
             "site": "removed_plus_retained",
+            "env_prefix_name_recognized": True,
         },
         {"raw_word": "''FOO=~", "expected_decision": noop, "site": "leading_empty_name"},
-        {"raw_word": "FOO=x~", "expected_decision": noop, "site": "nonprefix_tilde"},
-        {"raw_word": "FOO='prefix:'~", "expected_decision": noop, "site": "quoted_colon"},
-        {"raw_word": "FOO=prefix\\:~", "expected_decision": noop, "site": "escaped_colon"},
-        {"raw_word": "FOO=prefix:'~'", "expected_decision": noop, "site": "quoted_tilde"},
-        {"raw_word": "FOO=prefix:\\~", "expected_decision": noop, "site": "escaped_tilde"},
+        {
+            "raw_word": "FOO=x~",
+            "expected_decision": noop,
+            "site": "nonprefix_tilde",
+            "env_prefix_name_recognized": True,
+        },
+        {
+            "raw_word": "FOO='prefix:'~",
+            "expected_decision": noop,
+            "site": "quoted_colon",
+            "env_prefix_name_recognized": True,
+        },
+        {
+            "raw_word": "FOO=prefix\\:~",
+            "expected_decision": noop,
+            "site": "escaped_colon",
+            "env_prefix_name_recognized": True,
+        },
+        {
+            "raw_word": "FOO=prefix:'~'",
+            "expected_decision": noop,
+            "site": "quoted_tilde",
+            "env_prefix_name_recognized": True,
+        },
+        {
+            "raw_word": "FOO=prefix:\\~",
+            "expected_decision": noop,
+            "site": "escaped_tilde",
+            "env_prefix_name_recognized": True,
+        },
     ]
 
 
@@ -783,9 +846,40 @@ def _generated_assignment_templates(seed: int) -> list[dict[str, object]]:
                 "expected_decision": "deny" if active else "noop",
                 "site": f"seeded_{mutation}",
                 "generated": True,
+                # 이름 풀(A/VAR/PATH/A1_NAME/TOKEN_COUNT)이 항상 인용되지 않은 유효
+                # 식별자이므로 assignment_index 는 항상 인식된다(FIX-5 무관 상수).
+                "env_prefix_name_recognized": True,
             }
         )
     return generated
+
+
+# FIX-5 가 라우팅 접두사 이름을 검사하는 위치. `ordinary_argv` 는 할당 word 가
+# 명령 뒤(단순 인자)에 오므로 `_routing_start` 의 접두사 스캔에 전혀 닿지 않는다.
+_ENV_PREFIX_ROUTED_POSITIONS = frozenset({"direct_prefix", "restricted_env"})
+
+
+def _assignment_effective_expectation(
+    template: Mapping[str, object],
+    position: str,
+) -> tuple[str, str | None]:
+    """B1 템플릿의 (decision, reason) 을 FIX-5 접두사 이름 게이트까지 반영해 계산한다.
+
+    B1 오라클은 항상 화이트리스트 밖 이름(FOO/A/VAR/...)만 쓴다 — 애초에 tilde
+    출처 판정을 시험하려는 목적이지 이름 정책을 시험하려는 게 아니다. 템플릿이
+    tilde-active 로 이미 deny 이면 FIX-5 는 절대 관여하지 않는다(tilde 검사가
+    라우팅보다 먼저 실행됨, `classify_command` 참고). 템플릿이 noop 이고 이름이
+    문법적으로 인식되며(`env_prefix_name_recognized`) 위치가 접두사 스캔 구간이면
+    FIX-5 가 새로 deny 로 승격시킨다 — noop→deny 는 INV-A 가 명시적으로 허용하는
+    강화 방향 전환이다.
+    """
+    expected_decision = str(template["expected_decision"])
+    if expected_decision == "deny":
+        return "deny", "active_shell_expansion_denied"
+    name_recognized = bool(template.get("env_prefix_name_recognized", False))
+    if position in _ENV_PREFIX_ROUTED_POSITIONS and name_recognized:
+        return "deny", "unsafe_env_name_denied"
+    return "noop", None
 
 
 def assignment_provenance_cases(
@@ -798,7 +892,9 @@ def assignment_provenance_cases(
         for position in ASSIGNMENT_POSITIONS:
             for ordinal, template in enumerate(templates):
                 raw_word = str(template["raw_word"])
-                expected_decision = str(template["expected_decision"])
+                expected_decision, expected_reason = _assignment_effective_expectation(
+                    template, position
+                )
                 case = {
                     "case_id": _case_id(
                         "assignment",
@@ -815,15 +911,11 @@ def assignment_provenance_cases(
                     "raw_word": raw_word,
                     "logical_word": _logical_word(raw_word),
                     "command": _assignment_command(raw_word, position),
-                    "expected_decision": expected_decision,
-                    "expected_reason": (
-                        "active_shell_expansion_denied"
-                        if expected_decision == "deny"
-                        else None
-                    ),
                     "expected_wrapper_launches": 0,
                     "expected_side_effects": 0,
                     **{key: value for key, value in template.items() if key != "raw_word"},
+                    "expected_decision": expected_decision,
+                    "expected_reason": expected_reason,
                 }
                 cases.append(case)
     return cases

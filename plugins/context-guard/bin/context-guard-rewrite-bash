@@ -83,6 +83,30 @@ MINISHELL_HEREDOC_STDIN_CONSUMERS = frozenset({
     "wc",
 })
 MINISHELL_HEREDOC_DELIMITER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+# 환경변수 접두사(`KEY=VALUE cmd`) 이름 화이트리스트 — FIX-5, 원칙 4의 유일한 예외.
+# denylist 는 구조적으로 종료하지 않는다(실측: 최소 denylist가 PAGER/EDITOR/VISUAL/
+# PERL5LIB/RUBYOPT/PYTHONPATH/PYTHONSTARTUP/NODE_OPTIONS 8종을 놓침). 이 15개는
+# "값을 실행 가능한 코드 경로로 해석하지 않는다"는 기준을 통과한 것만 포함한다.
+# 정확 이름 일치만 허용 — 접두사/글롭 매칭 금지(`TERM*`는 `TERMINFO`를 재승인시킨다).
+# TERM 은 TERMINFO/TERMINFO_DIRS 가, LANG/LC_* 는 LOCPATH/NLSPATH 가 배제되었기
+# 때문에만 안전하다 — 이 조건부 안전성을 확장 심사 시 반드시 재확인할 것.
+MINISHELL_ALLOWED_ENV_PREFIX_NAMES = frozenset({
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "TZ",
+    "NO_COLOR",
+    "CLICOLOR",
+    "CI",
+    "COLUMNS",
+    "LINES",
+    "TERM",
+    "NODE_ENV",
+})
 CGW1_MAX_LINES = "220"
 CGW1_SHELL_ARGV = ("bash", "-lc")
 CGW1_SENTINEL = "--context-guard-wrapper-v1"
@@ -853,19 +877,58 @@ def is_log_streaming_command(argv: list[str]) -> bool:
     return False
 
 
+def _env_prefix_name(word: MiniShellWord) -> str:
+    """할당 word 의 소스 텍스트에서 `=` 앞 변수 이름만 뽑아낸다.
+
+    `word.assignment_index` 는 `_exact_assignment_index` 가 확정한, 활성(비인용)
+    `=` 의 위치이므로 호출자는 `assignment_index is not None` 을 먼저 확인해야 한다.
+    """
+    return word.source_value[: word.assignment_index]
+
+
+def _has_unsafe_env_prefix_name(
+    words: tuple[MiniShellWord, ...],
+    start: int,
+    end: int,
+) -> bool:
+    """[start, end) 구간의 환경변수 할당 이름이 시드 화이트리스트 밖이면 True.
+
+    정확 이름 일치만 검사한다(접두사/글롭 금지) — `TERM*` 글롭이 `TERMINFO` 를
+    재승인시키는 실패 형태를 피하기 위함(AC-5.6).
+    """
+    return any(
+        _env_prefix_name(words[index]) not in MINISHELL_ALLOWED_ENV_PREFIX_NAMES
+        for index in range(start, end)
+    )
+
+
 def _routing_start(
     words: tuple[MiniShellWord, ...],
     argv: tuple[str, ...],
 ) -> int:
+    """라우팅이 시작되는 word 인덱스를 계산한다.
+
+    반환값 의미: `>= 0` 은 라우팅 시작 인덱스, `-1` 은 기존 `restricted_env_denied`
+    (`env` 뒤에 알 수 없는 플래그), `-2` 는 신규 `unsafe_env_name_denied`(FIX-5 — 접두사
+    변수 이름이 화이트리스트 밖). 두 원인은 §5.4/§5.6 측정이 `reason_code` 로 필터링하므로
+    호출자가 구분해서 처리해야 한다(classify_command 참고).
+    """
     index = 0
     while index < len(words) and words[index].assignment_index is not None:
         index += 1
-    if index >= len(words) or command_basename(argv[index]) != "env":
+    if index >= len(words):
+        return index
+    if _has_unsafe_env_prefix_name(words, 0, index):
+        return -2
+    if command_basename(argv[index]) != "env":
         return index
 
     index += 1
+    env_arg_start = index
     while index < len(words) and words[index].assignment_index is not None:
         index += 1
+    if _has_unsafe_env_prefix_name(words, env_arg_start, index):
+        return -2
     if index < len(words) and argv[index] == "--":
         index += 1
     if index >= len(words) or argv[index].startswith("-"):
@@ -1672,6 +1735,13 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
     for segment_index, segment in enumerate(parsed.segments):
         segment_argv = tuple(word.value for word in segment)
         route_start = _routing_start(segment, segment_argv)
+        if route_start == -2:
+            return CommandDecision(
+                action="deny",
+                parsed=parsed,
+                reason="Unsafe env prefix name denied (unsafe_env_name_denied).",
+                reason_code="unsafe_env_name_denied",
+            )
         if route_start < 0:
             return CommandDecision(
                 action="deny",
