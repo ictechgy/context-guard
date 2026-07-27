@@ -1158,6 +1158,88 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
                     self.assertEqual(shlex.split(wrapped)[-1], command)
 
+    def test_inv_a_fix1b_git_pair_allowlist_anchors_stay_denied(self) -> None:
+        """INV-A(거부 보존, plan §5.2) — `FIX1B_ROUTE_PREDICATE_CASES` 의 거부
+        앵커는 개조 전/후 어느 코드에서도 항상 거부되어야 한다. FIX-1a 와 동일하게
+        `reason_code` 는 세그먼트 교차 배치(classify_command:1671-1751)로 이동할 수
+        있으므로 여기서 고정하지 않는다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_fix1b_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX1B_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+
+    def test_ac1_4_zero_arity_git_writers_stay_denied(self) -> None:
+        """AC-1.4 — D2(위치 인자 0개면 허용) 프로토타입이 누수시킨 쓰기 명령을
+        고정한다. 서브커맨드 이름이나 arity 만으로는 읽기/쓰기를 가를 수 없다는
+        실증이며, `git clean -fd` 와 `git reset --hard` 는 단순 쓰기가 아니라
+        **데이터 손실**이므로 이 앵커가 무너지면 즉시 차단 사유다."""
+        self.assertEqual(
+            fix1b_ac1_4_case_count(),
+            14,
+            "AC-1.4 는 위치 인자 0개 쓰기 14건 고정을 요구한다.",
+        )
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"ac1_4_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX1B_ROUTE_PREDICATE_CASES:
+                if not case["case_id"].startswith("fix1b-ac1-4-"):
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(classify_command(case["command"]).action, "deny")
+
+    def test_ac1b2_global_option_bypasses_stay_denied(self) -> None:
+        """AC-1b.2 — R-5 불변식(`argv[1]` 리터럴)이 지탱하는 우회 9건을 고정한다.
+        git 은 `-c`/`-C`/`-p`/`--exec-path` 를 서브커맨드보다 먼저 소비하므로,
+        선행 전역 옵션을 건너뛰어 서브커맨드를 찾는 구현으로 바꾸면 표 전체가
+        무력화된다. `git -c alias.x='!cmd' x` 는 임의 셸 실행이 확인된 벡터다."""
+        self.assertEqual(
+            fix1b_ac1b2_case_count(),
+            9,
+            "AC-1b.2 는 전역 옵션 우회 9건 고정을 요구한다.",
+        )
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"ac1b2_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX1B_ROUTE_PREDICATE_CASES:
+                if not case["case_id"].startswith("fix1b-ac1b2-"):
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(classify_command(case["command"]).action, "deny")
+
+    def test_ac1b3_git_table_subcommands_match_oracle_families(self) -> None:
+        """AC-1b.3 — 표의 서브커맨드 집합과 A1 오라클의 `git-*` family 집합이
+        일치해야 한다. 개조 전 오라클에는 git family 가 `git-diff` 하나뿐이었고,
+        그 때문에 쌍 화이트리스트 프로토타입의 오라클 영향이 0으로 측정됐다 —
+        이는 안전이 아니라 **감시의 부재**였다. 이 단언이 있으면 표에 행만 추가하고
+        family 를 빠뜨리는 순간 빌드가 깨진다."""
+        oracle_families = {
+            str(case["family"])[len("git-") :]
+            for case in route_cases()
+            if str(case["family"]).startswith("git-")
+        }
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"ac1b3_{index}")
+            with self.subTest(entrypoint="canonical" if index == 0 else "staged"):
+                self.assertEqual(
+                    set(namespace["GIT_TABLE_SUBCOMMANDS"]),
+                    oracle_families,
+                    "표 행과 오라클 family 가 어긋났다 — 행 추가 시 family 도 추가할 것.",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
