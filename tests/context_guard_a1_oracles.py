@@ -1249,6 +1249,33 @@ def _sanitizer_literals() -> list[dict[str, object]]:
             "input": "https://fixture-user:fixture-password@example.invalid/private",
             "default_expectation": "redact_secret",
         },
+        # ---------------------------------------------------------------
+        # FIX-6 — credential_policy.py:108 URL userinfo 리댁션 정규식이
+        # `user:pass@` 두 파트를 모두 요구해 콜론 없는 토큰 전용 URL(가장 흔한
+        # PAT 임베딩 형태, 예: `git remote -v`가 출력하는
+        # `https://TOKEN@host/repo.git`)을 통과시켰다(실측: Azure DevOps PAT,
+        # 사내 PAT, 범용 토큰 3/3 누수). 기존 4개 userinfo 오라클 케이스(위
+        # `credential_url`)는 전부 `fixture-user:fixture-password` 형태만
+        # 다뤄 이 구멍이 감시되지 않았다 — 이 완화가 AC-1.3(섹션 불변) 범위를
+        # 명시적으로 벗어나는 이유: `sanitizer_mode_cases`의 카운트/내용이
+        # 바뀐다(60 -> 68). `assignment_provenance_cases`/`consumer_mode_cases`/
+        # `path_lookup_canary`는 이 함수의 생성 로직과 무관하므로 계속 불변이다.
+        {
+            "category": "credential_url_token_only",
+            "input": "https://fixture-token@example.invalid/private",
+            "default_expectation": "redact_secret",
+        },
+        # 음성 케이스 — 과잉 리댁션 경계 고정. `scheme://` 접두사가 없는 평범한
+        # 이메일 언급(예: `git log`/`git show` 저자 줄의 `<user@host>`)은 넓힌
+        # 정규식으로도 건드리지 않아야 한다 — credential_policy.py는 git 전용이
+        # 아니라 grep/rg/kubectl logs 등 모든 sanitize 루트가 공유하므로, 스킴
+        # 없는 `word@word` 형태까지 잡으면 사람 이름이 포함된 정상 출력을
+        # 과잉 리댁션한다.
+        {
+            "category": "bare_userinfo_without_scheme",
+            "input": "Author: Fixture User <fixture-user@example.invalid>",
+            "default_expectation": "preserve",
+        },
         {
             "category": "private_key",
             "input": (

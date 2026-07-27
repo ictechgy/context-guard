@@ -5851,7 +5851,7 @@
     "assignment": 360,
     "consumers": 8,
     "route": 574,
-    "sanitizer": 60
+    "sanitizer": 68
   },
   "path_lookup_canary": {
     "absolute_control": "/usr/bin/env PATH=/missing:~/bin /usr/bin/printenv PATH",
@@ -13333,84 +13333,14 @@
   "route_policy_version": "minishell-route-v1",
   "sanitizer_mode_cases": [
     {
-      "case_id": "sanitize-unknown-text-benign-usage-token-count-123-output-t-b5204ba20b",
-      "category": "benign_usage",
+      "case_id": "sanitize-unknown-text-bare-userinfo-without-sc-author-fixture-user-fixt-acf1d0ce85",
+      "category": "bare_userinfo_without_scheme",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
+      "input": "Author: Fixture User <fixture-user@example.invalid>",
       "mode": "unknown_text",
       "ordinal": 0,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-benign-types-token-str-optional-str-t-a4c88d9026",
-      "category": "benign_types",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "token: str; Optional[str]; token: string; tokenizer",
-      "mode": "unknown_text",
-      "ordinal": 1,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-source-import-from-app-routes-import-u-e16707e4a5",
-      "category": "source_import",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "from app.routes import users",
-      "mode": "unknown_text",
-      "ordinal": 2,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-route-api-v1-users-d6b3e2ca8f",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/api/v1/users",
-      "mode": "unknown_text",
-      "ordinal": 3,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-credential-assignment-api-key-sk-test-abcdefgh-d2270a67fa",
-      "category": "credential_assignment",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
-      "mode": "unknown_text",
-      "ordinal": 4,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-grep-location-users-contextguard-priva-634a2fb677",
-      "category": "grep_location",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/app.py:12:match",
-      "mode": "unknown_text",
-      "ordinal": 5,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13424,63 +13354,21 @@
       "idempotence_required": true,
       "input": "  File \"/Users/contextguard/private/project/app.py\", line 17, in main",
       "mode": "unknown_text",
-      "ordinal": 6,
+      "ordinal": 1,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-unknown-text-cookie-header-cookie-session-abcdefghi-ddb9e77a3f",
-      "category": "cookie_header",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
-      "mode": "unknown_text",
-      "ordinal": 7,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-benign-identifiers-secretary-signature-algo-5ee3948e36",
-      "category": "benign_identifiers",
+      "case_id": "sanitize-unknown-text-private-path-plain-users-contextguard-priva-3d7b7f88a2",
+      "category": "private_path_plain",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "secretary signature_algorithm token_budget=100",
+      "input": "/Users/contextguard/private/project/secrets.txt",
       "mode": "unknown_text",
-      "ordinal": 8,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-credential-url-https-fixture-user-fixtu-d7eb9d9d36",
-      "category": "credential_url",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "https://fixture-user:fixture-password@example.invalid/private",
-      "mode": "unknown_text",
-      "ordinal": 9,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-unknown-text-route-health-check-6c03f9cb57",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/health/check",
-      "mode": "unknown_text",
-      "ordinal": 10,
+      "ordinal": 2,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13494,7 +13382,105 @@
       "idempotence_required": true,
       "input": "-----BEGIN PRIVATE KEY-----\nZmFrZS1maXh0dXJlLW9ubHk=\n-----END PRIVATE KEY-----",
       "mode": "unknown_text",
-      "ordinal": 11,
+      "ordinal": 3,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-benign-usage-token-count-123-output-t-b5204ba20b",
+      "category": "benign_usage",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
+      "mode": "unknown_text",
+      "ordinal": 4,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-benign-types-token-str-optional-str-t-a4c88d9026",
+      "category": "benign_types",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token: str; Optional[str]; token: string; tokenizer",
+      "mode": "unknown_text",
+      "ordinal": 5,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-route-api-v1-users-d6b3e2ca8f",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/api/v1/users",
+      "mode": "unknown_text",
+      "ordinal": 6,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-credential-assignment-api-key-sk-test-abcdefgh-d2270a67fa",
+      "category": "credential_assignment",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
+      "mode": "unknown_text",
+      "ordinal": 7,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-credential-url-https-fixture-user-fixtu-d7eb9d9d36",
+      "category": "credential_url",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "https://fixture-user:fixture-password@example.invalid/private",
+      "mode": "unknown_text",
+      "ordinal": 8,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-cookie-header-cookie-session-abcdefghi-ddb9e77a3f",
+      "category": "cookie_header",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
+      "mode": "unknown_text",
+      "ordinal": 9,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-benign-identifiers-secretary-signature-algo-5ee3948e36",
+      "category": "benign_identifiers",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "secretary signature_algorithm token_budget=100",
+      "mode": "unknown_text",
+      "ordinal": 10,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13507,6 +13493,20 @@
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "r\"/foo/bar\"",
+      "mode": "unknown_text",
+      "ordinal": 11,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-unknown-text-route-health-check-6c03f9cb57",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/health/check",
       "mode": "unknown_text",
       "ordinal": 12,
       "private_roots": [
@@ -13529,12 +13529,12 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-unknown-text-private-path-plain-users-contextguard-priva-3d7b7f88a2",
-      "category": "private_path_plain",
+      "case_id": "sanitize-unknown-text-credential-url-token-onl-https-fixture-token-exam-f41e083190",
+      "category": "credential_url_token_only",
       "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
+      "expectation": "redact_secret",
       "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/secrets.txt",
+      "input": "https://fixture-token@example.invalid/private",
       "mode": "unknown_text",
       "ordinal": 14,
       "private_roots": [
@@ -13543,84 +13543,42 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-command-search-diff-benign-usage-token-count-123-output-t-4669c27b82",
-      "category": "benign_usage",
+      "case_id": "sanitize-unknown-text-grep-location-users-contextguard-priva-634a2fb677",
+      "category": "grep_location",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
-      "mode": "command_search_diff",
-      "ordinal": 0,
+      "input": "/Users/contextguard/private/project/app.py:12:match",
+      "mode": "unknown_text",
+      "ordinal": 15,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-command-search-diff-benign-types-token-str-optional-str-t-f4d6989eb0",
-      "category": "benign_types",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "token: str; Optional[str]; token: string; tokenizer",
-      "mode": "command_search_diff",
-      "ordinal": 1,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-source-import-from-app-routes-import-u-aadf6b7b9c",
+      "case_id": "sanitize-unknown-text-source-import-from-app-routes-import-u-e16707e4a5",
       "category": "source_import",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "from app.routes import users",
-      "mode": "command_search_diff",
-      "ordinal": 2,
+      "mode": "unknown_text",
+      "ordinal": 16,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-command-search-diff-route-api-v1-users-c73c17ed8a",
-      "category": "route",
+      "case_id": "sanitize-command-search-diff-bare-userinfo-without-sc-author-fixture-user-fixt-94b2cb4459",
+      "category": "bare_userinfo_without_scheme",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "/api/v1/users",
+      "input": "Author: Fixture User <fixture-user@example.invalid>",
       "mode": "command_search_diff",
-      "ordinal": 3,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-credential-assignment-api-key-sk-test-abcdefgh-00ee04ee3b",
-      "category": "credential_assignment",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
-      "mode": "command_search_diff",
-      "ordinal": 4,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-grep-location-users-contextguard-priva-258ab28c21",
-      "category": "grep_location",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_path",
-      "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/app.py:12:match",
-      "mode": "command_search_diff",
-      "ordinal": 5,
+      "ordinal": 0,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13634,63 +13592,21 @@
       "idempotence_required": true,
       "input": "  File \"/Users/contextguard/private/project/app.py\", line 17, in main",
       "mode": "command_search_diff",
-      "ordinal": 6,
+      "ordinal": 1,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-command-search-diff-cookie-header-cookie-session-abcdefghi-ad2f9a9968",
-      "category": "cookie_header",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
-      "mode": "command_search_diff",
-      "ordinal": 7,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-benign-identifiers-secretary-signature-algo-9662a56021",
-      "category": "benign_identifiers",
+      "case_id": "sanitize-command-search-diff-private-path-plain-users-contextguard-priva-0620d69111",
+      "category": "private_path_plain",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "secretary signature_algorithm token_budget=100",
+      "input": "/Users/contextguard/private/project/secrets.txt",
       "mode": "command_search_diff",
-      "ordinal": 8,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-credential-url-https-fixture-user-fixtu-aa72023071",
-      "category": "credential_url",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "https://fixture-user:fixture-password@example.invalid/private",
-      "mode": "command_search_diff",
-      "ordinal": 9,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-command-search-diff-route-health-check-d3ad66da7d",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/health/check",
-      "mode": "command_search_diff",
-      "ordinal": 10,
+      "ordinal": 2,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13704,7 +13620,105 @@
       "idempotence_required": true,
       "input": "-----BEGIN PRIVATE KEY-----\nZmFrZS1maXh0dXJlLW9ubHk=\n-----END PRIVATE KEY-----",
       "mode": "command_search_diff",
-      "ordinal": 11,
+      "ordinal": 3,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-benign-usage-token-count-123-output-t-4669c27b82",
+      "category": "benign_usage",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
+      "mode": "command_search_diff",
+      "ordinal": 4,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-benign-types-token-str-optional-str-t-f4d6989eb0",
+      "category": "benign_types",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token: str; Optional[str]; token: string; tokenizer",
+      "mode": "command_search_diff",
+      "ordinal": 5,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-route-api-v1-users-c73c17ed8a",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/api/v1/users",
+      "mode": "command_search_diff",
+      "ordinal": 6,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-credential-assignment-api-key-sk-test-abcdefgh-00ee04ee3b",
+      "category": "credential_assignment",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
+      "mode": "command_search_diff",
+      "ordinal": 7,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-credential-url-https-fixture-user-fixtu-aa72023071",
+      "category": "credential_url",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "https://fixture-user:fixture-password@example.invalid/private",
+      "mode": "command_search_diff",
+      "ordinal": 8,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-cookie-header-cookie-session-abcdefghi-ad2f9a9968",
+      "category": "cookie_header",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
+      "mode": "command_search_diff",
+      "ordinal": 9,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-benign-identifiers-secretary-signature-algo-9662a56021",
+      "category": "benign_identifiers",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "secretary signature_algorithm token_budget=100",
+      "mode": "command_search_diff",
+      "ordinal": 10,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13717,6 +13731,20 @@
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "r\"/foo/bar\"",
+      "mode": "command_search_diff",
+      "ordinal": 11,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-route-health-check-d3ad66da7d",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/health/check",
       "mode": "command_search_diff",
       "ordinal": 12,
       "private_roots": [
@@ -13739,12 +13767,12 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-command-search-diff-private-path-plain-users-contextguard-priva-0620d69111",
-      "category": "private_path_plain",
+      "case_id": "sanitize-command-search-diff-credential-url-token-onl-https-fixture-token-exam-bbc9a54b5e",
+      "category": "credential_url_token_only",
       "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
+      "expectation": "redact_secret",
       "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/secrets.txt",
+      "input": "https://fixture-token@example.invalid/private",
       "mode": "command_search_diff",
       "ordinal": 14,
       "private_roots": [
@@ -13753,84 +13781,42 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-filesystem-listing-benign-usage-token-count-123-output-t-2c605dddd6",
-      "category": "benign_usage",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
-      "mode": "filesystem_listing",
-      "ordinal": 0,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-benign-types-token-str-optional-str-t-5a43ac7c33",
-      "category": "benign_types",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "token: str; Optional[str]; token: string; tokenizer",
-      "mode": "filesystem_listing",
-      "ordinal": 1,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-source-import-from-app-routes-import-u-bc2127d7a1",
-      "category": "source_import",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "from app.routes import users",
-      "mode": "filesystem_listing",
-      "ordinal": 2,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-route-api-v1-users-af42afe99f",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/api/v1/users",
-      "mode": "filesystem_listing",
-      "ordinal": 3,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-credential-assignment-api-key-sk-test-abcdefgh-1fe193f7d9",
-      "category": "credential_assignment",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
-      "mode": "filesystem_listing",
-      "ordinal": 4,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-grep-location-users-contextguard-priva-20ae96505d",
+      "case_id": "sanitize-command-search-diff-grep-location-users-contextguard-priva-258ab28c21",
       "category": "grep_location",
       "counter_rule": "changed spans and values exactly",
       "expectation": "redact_path",
       "idempotence_required": true,
       "input": "/Users/contextguard/private/project/app.py:12:match",
+      "mode": "command_search_diff",
+      "ordinal": 15,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-command-search-diff-source-import-from-app-routes-import-u-aadf6b7b9c",
+      "category": "source_import",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "from app.routes import users",
+      "mode": "command_search_diff",
+      "ordinal": 16,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-bare-userinfo-without-sc-author-fixture-user-fixt-d8722d6a8b",
+      "category": "bare_userinfo_without_scheme",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "Author: Fixture User <fixture-user@example.invalid>",
       "mode": "filesystem_listing",
-      "ordinal": 5,
+      "ordinal": 0,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13844,63 +13830,21 @@
       "idempotence_required": true,
       "input": "  File \"/Users/contextguard/private/project/app.py\", line 17, in main",
       "mode": "filesystem_listing",
-      "ordinal": 6,
+      "ordinal": 1,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-filesystem-listing-cookie-header-cookie-session-abcdefghi-9a9d192ef8",
-      "category": "cookie_header",
+      "case_id": "sanitize-filesystem-listing-private-path-plain-users-contextguard-priva-2746ba62a9",
+      "category": "private_path_plain",
       "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
+      "expectation": "redact_path",
       "idempotence_required": true,
-      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
+      "input": "/Users/contextguard/private/project/secrets.txt",
       "mode": "filesystem_listing",
-      "ordinal": 7,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-benign-identifiers-secretary-signature-algo-fa478d205b",
-      "category": "benign_identifiers",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "secretary signature_algorithm token_budget=100",
-      "mode": "filesystem_listing",
-      "ordinal": 8,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-credential-url-https-fixture-user-fixtu-57ff017ef8",
-      "category": "credential_url",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "https://fixture-user:fixture-password@example.invalid/private",
-      "mode": "filesystem_listing",
-      "ordinal": 9,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-filesystem-listing-route-health-check-b48899afa0",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/health/check",
-      "mode": "filesystem_listing",
-      "ordinal": 10,
+      "ordinal": 2,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13914,7 +13858,105 @@
       "idempotence_required": true,
       "input": "-----BEGIN PRIVATE KEY-----\nZmFrZS1maXh0dXJlLW9ubHk=\n-----END PRIVATE KEY-----",
       "mode": "filesystem_listing",
-      "ordinal": 11,
+      "ordinal": 3,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-benign-usage-token-count-123-output-t-2c605dddd6",
+      "category": "benign_usage",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
+      "mode": "filesystem_listing",
+      "ordinal": 4,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-benign-types-token-str-optional-str-t-5a43ac7c33",
+      "category": "benign_types",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token: str; Optional[str]; token: string; tokenizer",
+      "mode": "filesystem_listing",
+      "ordinal": 5,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-route-api-v1-users-af42afe99f",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/api/v1/users",
+      "mode": "filesystem_listing",
+      "ordinal": 6,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-credential-assignment-api-key-sk-test-abcdefgh-1fe193f7d9",
+      "category": "credential_assignment",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
+      "mode": "filesystem_listing",
+      "ordinal": 7,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-credential-url-https-fixture-user-fixtu-57ff017ef8",
+      "category": "credential_url",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "https://fixture-user:fixture-password@example.invalid/private",
+      "mode": "filesystem_listing",
+      "ordinal": 8,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-cookie-header-cookie-session-abcdefghi-9a9d192ef8",
+      "category": "cookie_header",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
+      "mode": "filesystem_listing",
+      "ordinal": 9,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-benign-identifiers-secretary-signature-algo-fa478d205b",
+      "category": "benign_identifiers",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "secretary signature_algorithm token_budget=100",
+      "mode": "filesystem_listing",
+      "ordinal": 10,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -13927,6 +13969,20 @@
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "r\"/foo/bar\"",
+      "mode": "filesystem_listing",
+      "ordinal": 11,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-filesystem-listing-route-health-check-b48899afa0",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/health/check",
       "mode": "filesystem_listing",
       "ordinal": 12,
       "private_roots": [
@@ -13949,12 +14005,12 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-filesystem-listing-private-path-plain-users-contextguard-priva-2746ba62a9",
-      "category": "private_path_plain",
+      "case_id": "sanitize-filesystem-listing-credential-url-token-onl-https-fixture-token-exam-ca81b07648",
+      "category": "credential_url_token_only",
       "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_path",
+      "expectation": "redact_secret",
       "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/secrets.txt",
+      "input": "https://fixture-token@example.invalid/private",
       "mode": "filesystem_listing",
       "ordinal": 14,
       "private_roots": [
@@ -13963,84 +14019,42 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-source-code-benign-usage-token-count-123-output-t-b25e6a724b",
-      "category": "benign_usage",
+      "case_id": "sanitize-filesystem-listing-grep-location-users-contextguard-priva-20ae96505d",
+      "category": "grep_location",
       "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
+      "expectation": "redact_path",
       "idempotence_required": true,
-      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
-      "mode": "source_code",
-      "ordinal": 0,
+      "input": "/Users/contextguard/private/project/app.py:12:match",
+      "mode": "filesystem_listing",
+      "ordinal": 15,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-source-code-benign-types-token-str-optional-str-t-25428d0d45",
-      "category": "benign_types",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "token: str; Optional[str]; token: string; tokenizer",
-      "mode": "source_code",
-      "ordinal": 1,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-source-import-from-app-routes-import-u-5494e8bd14",
+      "case_id": "sanitize-filesystem-listing-source-import-from-app-routes-import-u-bc2127d7a1",
       "category": "source_import",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "from app.routes import users",
-      "mode": "source_code",
-      "ordinal": 2,
+      "mode": "filesystem_listing",
+      "ordinal": 16,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-source-code-route-api-v1-users-7e46a60a24",
-      "category": "route",
+      "case_id": "sanitize-source-code-bare-userinfo-without-sc-author-fixture-user-fixt-b449bdbca0",
+      "category": "bare_userinfo_without_scheme",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "/api/v1/users",
+      "input": "Author: Fixture User <fixture-user@example.invalid>",
       "mode": "source_code",
-      "ordinal": 3,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-credential-assignment-api-key-sk-test-abcdefgh-14aee25f03",
-      "category": "credential_assignment",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
-      "mode": "source_code",
-      "ordinal": 4,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-grep-location-users-contextguard-priva-07359deb1b",
-      "category": "grep_location",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/app.py:12:match",
-      "mode": "source_code",
-      "ordinal": 5,
+      "ordinal": 0,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -14054,63 +14068,21 @@
       "idempotence_required": true,
       "input": "  File \"/Users/contextguard/private/project/app.py\", line 17, in main",
       "mode": "source_code",
-      "ordinal": 6,
+      "ordinal": 1,
       "private_roots": [
         "/Users/contextguard/private"
       ],
       "seed": 41306
     },
     {
-      "case_id": "sanitize-source-code-cookie-header-cookie-session-abcdefghi-d830fc881d",
-      "category": "cookie_header",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
-      "mode": "source_code",
-      "ordinal": 7,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-benign-identifiers-secretary-signature-algo-b13554abfa",
-      "category": "benign_identifiers",
+      "case_id": "sanitize-source-code-private-path-plain-users-contextguard-priva-4d88da3b09",
+      "category": "private_path_plain",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "secretary signature_algorithm token_budget=100",
+      "input": "/Users/contextguard/private/project/secrets.txt",
       "mode": "source_code",
-      "ordinal": 8,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-credential-url-https-fixture-user-fixtu-946c84b5ce",
-      "category": "credential_url",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "redact_secret",
-      "idempotence_required": true,
-      "input": "https://fixture-user:fixture-password@example.invalid/private",
-      "mode": "source_code",
-      "ordinal": 9,
-      "private_roots": [
-        "/Users/contextguard/private"
-      ],
-      "seed": 41306
-    },
-    {
-      "case_id": "sanitize-source-code-route-health-check-1759a4a030",
-      "category": "route",
-      "counter_rule": "changed spans and values exactly",
-      "expectation": "preserve",
-      "idempotence_required": true,
-      "input": "/health/check",
-      "mode": "source_code",
-      "ordinal": 10,
+      "ordinal": 2,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -14124,7 +14096,105 @@
       "idempotence_required": true,
       "input": "-----BEGIN PRIVATE KEY-----\nZmFrZS1maXh0dXJlLW9ubHk=\n-----END PRIVATE KEY-----",
       "mode": "source_code",
-      "ordinal": 11,
+      "ordinal": 3,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-benign-usage-token-count-123-output-t-b25e6a724b",
+      "category": "benign_usage",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token_count = 123; output_tokens: 313; max_tokens=4096",
+      "mode": "source_code",
+      "ordinal": 4,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-benign-types-token-str-optional-str-t-25428d0d45",
+      "category": "benign_types",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "token: str; Optional[str]; token: string; tokenizer",
+      "mode": "source_code",
+      "ordinal": 5,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-route-api-v1-users-7e46a60a24",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/api/v1/users",
+      "mode": "source_code",
+      "ordinal": 6,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-credential-assignment-api-key-sk-test-abcdefgh-14aee25f03",
+      "category": "credential_assignment",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "api_key=sk-test-abcdefghijklmnopqrstuvwxyz123456",
+      "mode": "source_code",
+      "ordinal": 7,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-credential-url-https-fixture-user-fixtu-946c84b5ce",
+      "category": "credential_url",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "https://fixture-user:fixture-password@example.invalid/private",
+      "mode": "source_code",
+      "ordinal": 8,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-cookie-header-cookie-session-abcdefghi-d830fc881d",
+      "category": "cookie_header",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "Cookie: session=abcdefghijklmnopqrstuvwxyz0123456789",
+      "mode": "source_code",
+      "ordinal": 9,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-benign-identifiers-secretary-signature-algo-b13554abfa",
+      "category": "benign_identifiers",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "secretary signature_algorithm token_budget=100",
+      "mode": "source_code",
+      "ordinal": 10,
       "private_roots": [
         "/Users/contextguard/private"
       ],
@@ -14137,6 +14207,20 @@
       "expectation": "preserve",
       "idempotence_required": true,
       "input": "r\"/foo/bar\"",
+      "mode": "source_code",
+      "ordinal": 11,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-route-health-check-1759a4a030",
+      "category": "route",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "/health/check",
       "mode": "source_code",
       "ordinal": 12,
       "private_roots": [
@@ -14159,14 +14243,42 @@
       "seed": 41306
     },
     {
-      "case_id": "sanitize-source-code-private-path-plain-users-contextguard-priva-4d88da3b09",
-      "category": "private_path_plain",
+      "case_id": "sanitize-source-code-credential-url-token-onl-https-fixture-token-exam-ace3ed46fd",
+      "category": "credential_url_token_only",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "redact_secret",
+      "idempotence_required": true,
+      "input": "https://fixture-token@example.invalid/private",
+      "mode": "source_code",
+      "ordinal": 14,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-grep-location-users-contextguard-priva-07359deb1b",
+      "category": "grep_location",
       "counter_rule": "changed spans and values exactly",
       "expectation": "preserve",
       "idempotence_required": true,
-      "input": "/Users/contextguard/private/project/secrets.txt",
+      "input": "/Users/contextguard/private/project/app.py:12:match",
       "mode": "source_code",
-      "ordinal": 14,
+      "ordinal": 15,
+      "private_roots": [
+        "/Users/contextguard/private"
+      ],
+      "seed": 41306
+    },
+    {
+      "case_id": "sanitize-source-code-source-import-from-app-routes-import-u-5494e8bd14",
+      "category": "source_import",
+      "counter_rule": "changed spans and values exactly",
+      "expectation": "preserve",
+      "idempotence_required": true,
+      "input": "from app.routes import users",
+      "mode": "source_code",
+      "ordinal": 16,
       "private_roots": [
         "/Users/contextguard/private"
       ],

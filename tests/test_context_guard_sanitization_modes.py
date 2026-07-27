@@ -369,7 +369,9 @@ class SanitizationModeTests(unittest.TestCase):
     def test_fixed_seed_sanitizer_oracle_matrix(self) -> None:
         cases = sanitizer_mode_cases()
         self.assertEqual(SANITIZER_SEED, 0xA15A)
-        self.assertEqual(len(cases), 60)
+        # FIX-6 이 리터럴 2개(`credential_url_token_only` 양성 + AC-1.3
+        # `bare_userinfo_without_scheme` 음성)를 추가해 17개 리터럴 x 4 모드 = 68.
+        self.assertEqual(len(cases), 68)
 
         for case in cases:
             raw = str(case["input"])

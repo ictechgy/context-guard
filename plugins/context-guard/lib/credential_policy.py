@@ -105,7 +105,16 @@ INLINE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED]"),
     (re.compile(r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
     (re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "[REDACTED]"),
-    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE), r"\1[REDACTED]@"),
+    # FIX-6: URL userinfo 리댁션 — 비밀번호 파트(`:pass`)를 선택적으로 만들어
+    # `scheme://TOKEN@host`(콜론 없는 토큰 전용 형태, 가장 흔한 PAT 임베딩 방식)도
+    # 함께 잡는다. 기존 패턴은 `user:pass@` 두 부분을 모두 요구해 벤더 접두사가
+    # 없는 토큰(Azure DevOps PAT, 사내 PAT, 범용 토큰 등 — `ghp_`/`github_pat_`/
+    # `glpat-`처럼 위에서 별도 패턴이 잡는 벤더가 아닌 토큰)을 통과시켰다(실측
+    # 3/3 누수). `scheme://` 접두사는 여전히 필수이므로 `git log` 저자 줄의
+    # `<user@host>` 같은 스킴 없는 평범한 이메일 언급은 과잉 리댁션하지 않는다
+    # — 이 경계는 sanitizer_mode_cases의 `bare_userinfo_without_scheme` 음성
+    # 케이스로 고정한다(tests/context_guard_a1_oracles.py).
+    (re.compile(r"([a-z][a-z0-9+.-]*://)[^/\s:@]+(?::[^/\s@]+)?@", re.IGNORECASE), r"\1[REDACTED]@"),
 )
 
 
