@@ -1538,13 +1538,13 @@ def _rg_is_safe(argv: tuple[str, ...]) -> bool:
 
 
 GIT_TABLE_SUBCOMMANDS = frozenset({
-    "status", "log", "branch", "tag", "rev-parse", "describe", "ls-files",
-    "shortlog", "blame", "stash", "diff", "show", "grep",
+    "status", "log", "branch", "tag", "remote", "rev-parse", "describe",
+    "ls-files", "shortlog", "blame", "stash", "diff", "show", "grep",
 })
-"""§6.1b 11행 쌍 화이트리스트가 다루는 git 서브커맨드 집합 — `diff`/`show`/`grep`은
-한 표 행을 공유하므로 13개 서브커맨드가 11행이 된다. 오라클 `git-*` family 집합과의
-동치 검증(AC-1b.3, R-11)이 이 상수를 그대로 참조한다 — 행을 늘리고 family를
-빠뜨리면 그 테스트가 실패한다."""
+"""§6.1b 12행 쌍 화이트리스트가 다루는 git 서브커맨드 집합 — `diff`/`show`/`grep`은
+한 표 행을 공유하므로 14개 서브커맨드가 12행이 된다(FIX-6이 `remote`행을
+재도입해 11행 -> 12행). 오라클 `git-*` family 집합과의 동치 검증(AC-1b.3, R-11)이
+이 상수를 그대로 참조한다 — 행을 늘리고 family를 빠뜨리면 그 테스트가 실패한다."""
 
 
 def _git_flags_and_positionals(
@@ -1644,6 +1644,27 @@ def _git_tag_is_safe(arguments: tuple[str, ...]) -> bool:
         if argument.startswith("-"):
             return False
         positionals += 1
+    return positionals == 0
+
+
+_GIT_REMOTE_LONG_FLAGS = frozenset({"--verbose"})
+_GIT_REMOTE_SHORT_FLAGS = frozenset("v")
+
+
+def _git_remote_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git remote`: 위치 인자 0개 엄격 — branch/tag와 동일하게 arity가
+    조회(0개)를 쓰기(`add`/`remove`/`rename`/`set-url`, 1개+)로 뒤집는다
+    (§6.1b 표, FIX-6 재도입). `add`/`remove`/`rename`/`set-url`/`get-url` 등
+    서브서브커맨드는 별도 목록 없이도 위치 인자로 잡혀 자동 거부된다(AC-1.4에
+    `remote add origin url` deny가 고정돼 있고, 이번 재도입 후에도 그대로다).
+    `-v`/`--verbose`만 허용해 URL을 노출하는 유일한 조회 형태를 표에 올린다
+    — 이 URL이 자격증명을 담고 있어도 안전한 이유는 FIX-6에서 확장한
+    `credential_policy.py`의 토큰 전용(콜론 없는) userinfo 리댁션이 담보한다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_REMOTE_LONG_FLAGS,
+        short_flags=_GIT_REMOTE_SHORT_FLAGS,
+    )
     return positionals == 0
 
 
@@ -1880,7 +1901,7 @@ def _git_log_is_safe(arguments: tuple[str, ...]) -> bool:
 
 
 def _git_is_safe(argv: tuple[str, ...]) -> bool:
-    """git (서브커맨드, 인자 형태) 쌍 화이트리스트(D1, plan §6.1b, 11행).
+    """git (서브커맨드, 인자 형태) 쌍 화이트리스트(D1, plan §6.1b, 12행).
 
     R-5 불변식(표 전체를 지탱하는 단일 지점) — `argv[1]`을 리터럴로만
     서브커맨드로 인정한다. `-`로 시작하면 무조건 거부하고, 서브커맨드를
@@ -1898,15 +1919,26 @@ def _git_is_safe(argv: tuple[str, ...]) -> bool:
     실증했다(`git stash`/`gc`/`prune`/`repack`/`clean -fd`/`reset --hard`/
     `commit --amend --no-edit`/`branch --edit-description`; 뒤 둘은 데이터
     손실이다). 반드시 (서브커맨드, 허용 플래그, 위치 인자 상한) 삼중으로
-    판정한다. 표에 없는 서브커맨드(`config`/`remote`/`gc`/`prune`/`repack`/
+    판정한다. 표에 없는 서브커맨드(`config`/`gc`/`prune`/`repack`/
     `clean`/`reset`/`commit`/`push`/`pull`/`fetch`/`merge`/`rebase`/
     `checkout`/`switch`/`restore` 등)는 아래 분기에 없어 자동으로 폴스루
     거부된다 — never-list는 두지 않는다(이미 deny인 폴스루에 목록을 얹으면
     "목록에 없으면 안전"이라는 오독만 유발할 뿐 방어를 강화하지 않는다,
-    plan 결정 D1). `config`/`remote`는 키 없이 값만 출력하거나 자격증명이
-    임베드된 URL을 출력해 구조적으로 리댁션이 불가능하므로(원칙 6, R-13)
-    표에서 삭제되었다 — `remote`는 FIX-6에서 `credential_policy.py` 확장
-    후 재도입 심사 대상이다.
+    plan 결정 D1). `config`는 키 없이 값만 출력해 구조적으로 리댁션이
+    불가능하므로(원칙 6, R-13) 표에서 영구 삭제되었다 — `config`는 FIX-6의
+    범위 밖이다(FIX-6은 `remote`만 재도입 심사 대상이었다).
+
+    `remote`는 FIX-6에서 재도입됐다. `git remote -v`가 자격증명이 임베드된
+    URL(`https://TOKEN@host/...`)을 출력해 구조적으로 위험했던 원인은
+    `credential_policy.py`의 URL 리댁션 정규식이 `user:pass@` 두 파트를 모두
+    요구해 콜론 없는 토큰 전용 URL(가장 흔한 PAT 임베딩 형태)을 통과시켰기
+    때문이다 — 그 정규식 자체의 결함이지, `remote` 행이 원천적으로 리댁션
+    불가능한 것은 아니었다(`config`와 다른 점). FIX-6이 그 정규식을
+    `scheme://TOKEN@` 형태까지 커버하도록 넓혔으므로(비밀번호 파트를
+    선택적으로 만듦) 지금은 안전하다 — `_git_remote_is_safe`가 `-v`/
+    `--verbose` 조회 형태만 허용하고 `add`/`remove`/`rename`/`set-url` 등
+    위치 인자가 있는 쓰기 형태는 branch/tag와 동일한 0-arity 규칙으로
+    거부한다(AC-1.4에 `remote add origin url` deny가 고정돼 있다).
     """
     if len(argv) < 2 or argv[1].startswith("-"):
         return False
@@ -1920,6 +1952,8 @@ def _git_is_safe(argv: tuple[str, ...]) -> bool:
         return _git_branch_is_safe(arguments)
     if subcommand == "tag":
         return _git_tag_is_safe(arguments)
+    if subcommand == "remote":
+        return _git_remote_is_safe(arguments)
     if subcommand == "rev-parse":
         return _git_rev_parse_is_safe(arguments)
     if subcommand == "describe":

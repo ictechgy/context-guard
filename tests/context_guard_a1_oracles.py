@@ -260,6 +260,44 @@ def _route_examples() -> list[dict[str, str]]:
         note="AC-1.4 zero-arity-write negative; AC-1.10 -- counting negative "
         "(positional after -- still counts)",
     )
+    # -------------------------------------------------------------------
+    # FIX-6 — `git remote`/`git remote -v` re-admitted to the pair allowlist
+    # (plan §6.1b row 12) after credential_policy.py's URL-userinfo redaction
+    # was hardened to also cover password-less (token-only) URLs. FIX-1b's
+    # 5-column note above (5th column) explicitly named `git remote -v` as a
+    # row deleted for R-13 (structurally unredactable). That premise no
+    # longer holds — the redaction gap was in the *regex*, not the row: the
+    # old pattern required both `user:pass@` parts and let vendor-unrecognized
+    # token-only URLs (e.g. `https://TOKEN@host/...`, the most common PAT
+    # form) through unredacted. FIX-6 widened the pattern (password part now
+    # optional); this family is the surveillance for that re-admission.
+    #
+    # §5.5 5-column check:
+    #   1. before/after: route_policy_denied -> rewrite_sanitize (new row).
+    #   2. output boundedness: unchanged — sanitize_output.py's 240-line cap.
+    #   3. axis-b non-impact: unchanged — only the route gate is touched.
+    #   4. reverse case: `remote add/remove/rename/set-url` (positional
+    #      overflow — 0-arity strict, same rule as branch/tag) and an R-5
+    #      global-option-bypass negative.
+    #   5. reads outside the repo / credential store: yes — `.git/config`
+    #      remote URLs can carry embedded credentials. What makes this row
+    #      safe *now* (and not before) is the hardened redaction from FIX-6's
+    #      first commit: credential_policy.py's INLINE_PATTERNS now redacts
+    #      both `user:pass@` and bare `TOKEN@` userinfo before the URL ever
+    #      reaches Claude's context.
+    # -------------------------------------------------------------------
+    add(
+        "git-remote",
+        ("standalone", "first"),
+        ("git remote", "git remote -v"),
+        "rewrite_sanitize",
+        (
+            "git remote add origin https://example.invalid/repo.git",
+            "git --no-pager remote -v",
+        ),
+        note="AC-1.4 zero-arity-write negative (remote add, positional overflow, "
+        "same rule as branch/tag); R-5 global-option-bypass negative",
+    )
     add(
         "git-rev-parse",
         ("standalone", "first"),

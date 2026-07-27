@@ -703,7 +703,11 @@ FIX1B_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "baseline_reason_code": "route_policy_denied",
         "expected_decision": "deny",
         "expected_reason_code": "route_policy_denied",
-        "note": "remote 행은 표에서 삭제됨(R-13) — FIX-6 완료 후 재도입 심사 대상.",
+        "note": "FIX-1b 시점에는 remote 행 자체가 표에서 삭제됨(R-13). FIX-6이 "
+        "credential_policy.py 하드닝 후 `remote`/`remote -v` 조회 형태만 재도입했다 "
+        "— 위치 인자가 있는 `add`는 branch/tag와 동일한 0-arity 규칙으로 여전히 "
+        "거부된다(이 케이스의 expected_decision 은 변경 없음, FIX6_ROUTE_PREDICATE_"
+        "CASES 의 fix6-inv-a-remote-add-still-denied 가 FIX-6 관점에서 재확인).",
     },
     {
         "case_id": "fix1b-ac1-4-gc",
@@ -1169,4 +1173,136 @@ def fix2_route_predicate_relaxations() -> list[RoutePredicateCase]:
     """
     return [
         case for case in FIX2_ROUTE_PREDICATE_CASES if case.get("baseline_reason_code") is None
+    ]
+
+
+# ---------------------------------------------------------------------------
+# FIX-6 — `git remote`/`git remote -v` 를 §6.1b 쌍 화이트리스트에 재도입한다
+# (11행 -> 12행). FIX-1a/1b 와 동일하게 deny -> allow(sanitize) 전환이므로
+# INV-A/INV-B 하네스로 검증한다(FIX-1a 의 케이스 shape 를 그대로 따른다).
+#
+# 전제 — remote 행은 FIX-1b 당시 R-13(구조적으로 리댁션 불가능)을 이유로
+# 삭제됐었다(`fix1b-ac1-4-remote-add`의 옛 note 참고). 그 전제가 이제 거짓이다:
+# `git remote -v`가 위험했던 건 행 자체가 아니라 credential_policy.py:108의
+# 정규식이 `user:pass@` 두 파트를 모두 요구해 콜론 없는 토큰 전용 URL(가장 흔한
+# PAT 임베딩 형태)을 통과시켰기 때문이다. FIX-6 커밋 1(사전 조건)이 그 정규식을
+# 넓혔고(비밀번호 파트 선택적), 이 커밋(2)이 그 하드닝을 전제로 행을 재도입한다.
+# `add`/`remove`/`rename`/`set-url`/`get-url` 등 위치 인자가 있는 서브서브커맨드는
+# branch/tag와 동일한 0-arity 엄격 규칙으로 여전히 거부된다 — `remote add`는
+# 이미 FIX1B_ROUTE_PREDICATE_CASES 의 `fix1b-ac1-4-remote-add`에 고정돼 있으므로
+# (AC-1.4, 위 섹션) 여기서는 나머지 쓰기 서브서브커맨드로 커버리지를 넓힌다.
+# ---------------------------------------------------------------------------
+FIX6_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    # --- 완화 — deny -> sanitize 전환(INV-B 대상), 재도입된 remote 행 ---
+    {
+        "case_id": "fix6-relax-remote-bare",
+        "fix": "FIX-6",
+        "command": "git remote",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "remote 행 재도입 — 위치 인자 0개 조건으로 조회(원격 이름 나열)만 "
+        "허용한다. 이 형태는 URL 을 출력하지 않아 credential_policy.py 하드닝과도 "
+        "무관하게 이미 안전했다.",
+    },
+    {
+        "case_id": "fix6-relax-remote-verbose",
+        "fix": "FIX-6",
+        "command": "git remote -v",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "핵심 완화 — URL 을 노출하는 유일한 조회 형태. 이 행이 FIX-6 커밋 1보다 "
+        "먼저 재도입됐다면 콜론 없는 토큰 전용 URL 이 그대로 노출됐을 것이다 — 두 "
+        "커밋의 순서(하드닝 먼저)가 바로 이 케이스를 안전하게 만드는 이유다.",
+    },
+    {
+        "case_id": "fix6-relax-remote-verbose-long",
+        "fix": "FIX-6",
+        "command": "git remote --verbose",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "장옵션 형태도 `_GIT_REMOTE_LONG_FLAGS` 로 동일하게 허용된다.",
+    },
+    # --- 역방향 케이스(INV-A 대상) — 위치 인자가 있는 쓰기 서브서브커맨드는
+    # remote 행 재도입 이후에도 여전히 거부된다 ---
+    {
+        "case_id": "fix6-inv-a-remote-add-still-denied",
+        "fix": "FIX-6",
+        "command": "git remote add origin https://example.invalid/repo.git",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "AC-1.4 에 이미 고정된 fix1b-ac1-4-remote-add 와 동일한 사실을 FIX-6 "
+        "관점에서 재확인한다 — 위치 인자(add/origin/url)가 있어 0-arity 엄격 조건을 "
+        "위반해 여전히 거부된다.",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-remove-still-denied",
+        "fix": "FIX-6",
+        "command": "git remote remove origin",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — remove 도 위치 인자가 있어 여전히 거부된다.",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-rename-still-denied",
+        "fix": "FIX-6",
+        "command": "git remote rename origin upstream",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — rename 도 위치 인자가 있어 여전히 거부된다.",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-set-url-still-denied",
+        "fix": "FIX-6",
+        "command": "git remote set-url origin https://example.invalid/repo.git",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — set-url 은 원격 URL 을 자격증명째로 재지정할 수 있는 쓰기 "
+        "형태다. 위치 인자가 있어 여전히 거부된다.",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-get-url-unlisted-subcommand",
+        "fix": "FIX-6",
+        "command": "git remote get-url origin",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "미등재 인접 서브서브커맨드 — get-url 도 위치 인자(get-url/origin)가 있어 "
+        "`-v`/`--verbose`만 허용하는 표에 없어 거부된다.",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-no-pager-bypass-denied",
+        "fix": "FIX-6",
+        "command": "git --no-pager remote -v",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "R-5 전역 옵션 우회 음성 — argv[1]='--no-pager' 라 서브커맨드로 인정되지 "
+        "않아 remote 행 신설과 무관하게 여전히 거부된다(AC-1b.2 와 동일 계열).",
+    },
+    {
+        "case_id": "fix6-inv-a-remote-verbose-extra-positional-denied",
+        "fix": "FIX-6",
+        "command": "git remote -v origin",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — `-v` 뒤에 위치 인자(origin)가 남으면 0-arity 엄격 조건을 "
+        "위반해 거부된다(`git remote -v <name>`은 유효한 git 문법도 아니다).",
+    },
+]
+
+
+def fix6_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """INV-B 가 실제로 전환을 검사해야 하는 행(완화 대상)만 골라낸다."""
+    return [
+        case
+        for case in FIX6_ROUTE_PREDICATE_CASES
+        if case.get("expected_decision") != "deny"
     ]

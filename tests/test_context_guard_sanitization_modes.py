@@ -193,6 +193,40 @@ class SanitizationModeTests(unittest.TestCase):
         self.assertNotIn("/Users/alice", output)
         self.assertGreaterEqual(sanitizer.path_redactions, 3)
 
+    def test_git_remote_verbose_token_only_url_is_redacted_end_to_end(self) -> None:
+        """FIX-6 — `git remote -v`가 §6.1b 표에 재도입되며 실제로 안전해졌는지
+        종단 간(subprocess, 두 스크립트 사본 모두) 검증한다. 콜론 없는 토큰
+        전용 URL(`https://TOKEN@host/...`)은 credential_policy.py 의 구
+        정규식(`user:pass@` 두 파트 필수)으로는 리댁션되지 않던 형태다 — 이
+        테스트가 실패하면 `_git_remote_is_safe` 재도입의 안전 전제(FIX-6
+        커밋 1의 하드닝된 리댁션)가 깨진 것이다. `git remote`가 wrapper에서
+        실제로 사용하는 컨텍스트(`command_search_diff`, `CGW1_COMMAND_SEARCH_
+        DIFF`)를 명시해 라우트 조건과 동일하게 재현한다."""
+        token = "fixture-pat-" + ("Z" * 24)
+        raw = (
+            f"origin\thttps://{token}@github.example.invalid/org/repo.git (fetch)\n"
+            f"origin\thttps://{token}@github.example.invalid/org/repo.git (push)\n"
+        )
+        for script in (
+            KIT / "sanitize_output.py",
+            PLUGIN_BIN / "context-guard-sanitize-output",
+        ):
+            with self.subTest(script=script):
+                proc = subprocess.run(
+                    [sys.executable, str(script), "--context", "command_search_diff"],
+                    input=raw,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertNotIn(token, proc.stdout)
+                self.assertIn(
+                    "https://[REDACTED]@github.example.invalid/org/repo.git",
+                    proc.stdout,
+                )
+                self.assertIn("(fetch)", proc.stdout)
+                self.assertIn("(push)", proc.stdout)
+
     def test_context_is_immutable_and_git_global_options_keep_search_mode(self) -> None:
         context = self.sanitize.SanitizationContext(
             mode="filesystem_listing",
