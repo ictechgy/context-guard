@@ -1537,16 +1537,235 @@ def _rg_is_safe(argv: tuple[str, ...]) -> bool:
     return pattern_seen
 
 
-def _git_is_safe(argv: tuple[str, ...]) -> bool:
-    if len(argv) < 2:
-        return False
-    subcommand = argv[1]
-    arguments = argv[2:]
-    if subcommand == "grep":
-        return _grep_is_safe(("grep", *arguments), allow_files=True)
-    if subcommand not in {"diff", "show", "log"}:
-        return False
-    patch_output = subcommand != "log"
+GIT_TABLE_SUBCOMMANDS = frozenset({
+    "status", "log", "branch", "tag", "rev-parse", "describe", "ls-files",
+    "shortlog", "blame", "stash", "diff", "show", "grep",
+})
+"""§6.1b 11행 쌍 화이트리스트가 다루는 git 서브커맨드 집합 — `diff`/`show`/`grep`은
+한 표 행을 공유하므로 13개 서브커맨드가 11행이 된다. 오라클 `git-*` family 집합과의
+동치 검증(AC-1b.3, R-11)이 이 상수를 그대로 참조한다 — 행을 늘리고 family를
+빠뜨리면 그 테스트가 실패한다."""
+
+
+def _git_flags_and_positionals(
+    arguments: tuple[str, ...],
+    *,
+    long_flags: frozenset[str],
+    short_flags: frozenset[str],
+) -> int | None:
+    """옵션을 소비하며 위치 인자 개수를 반환한다. 미지 플래그면 `None`.
+
+    `--` 토큰 자체는 위치 인자로 계수하지 않되, 그 이후 토큰은 옵션 파싱을 끄고
+    전부 위치 인자로 계수한다(AC-1.10 — `git log a..b -- p1 p2 p3`는 `--`를
+    빼면 정확히 4개다. 과거 결함은 오버플로가 아니라 이 규칙의 부재였다).
+    묶음 단축 플래그(`-ad` 등)는 `-`로 시작하는 각 글자가 모두 `short_flags`에
+    속해야 허용된다(분해 없이 집합 매칭 — AC-1.9). `git branch -ad`는 `{a,d}`로
+    분해되고 `d`가 branch의 허용 집합에 없어 거부된다(D1 완화가 다시 쓰기를
+    재승인하지 않는지 확인하는 회귀 핀).
+    """
+    positionals = 0
+    options_done = False
+    for argument in arguments:
+        if not options_done and argument == "--":
+            options_done = True
+            continue
+        if options_done:
+            positionals += 1
+            continue
+        if argument in long_flags:
+            continue
+        if (
+            argument.startswith("-")
+            and not argument.startswith("--")
+            and argument != "-"
+            and set(argument[1:]).issubset(short_flags)
+        ):
+            continue
+        if argument.startswith("-"):
+            return None
+        positionals += 1
+    return positionals
+
+
+_GIT_STATUS_LONG_FLAGS = frozenset({
+    "--short", "--branch", "--porcelain", "--long", "--no-color",
+    "--untracked-files",
+})
+_GIT_STATUS_SHORT_FLAGS = frozenset("sb")
+
+
+def _git_status_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git status`: 위치 인자 0개(§6.1b 표). `.git/index` stat-cache 갱신은
+    허용된 부작용이다(AC-1.4 각주) — 이 함수의 쓰기 판정 대상이 아니다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_STATUS_LONG_FLAGS,
+        short_flags=_GIT_STATUS_SHORT_FLAGS,
+    )
+    return positionals == 0
+
+
+_GIT_BRANCH_LONG_FLAGS = frozenset({
+    "--all", "--remotes", "--verbose", "--list", "--show-current",
+    "--no-color", "--sort",
+})
+_GIT_BRANCH_SHORT_FLAGS = frozenset("arv")
+
+
+def _git_branch_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git branch`: 위치 인자 0개 엄격 — arity가 조회(0개)를 생성(1개+)으로
+    뒤집는 서브커맨드다(D2 반증 사례, plan §6.1b). `--edit-description` 등
+    쓰기 플래그는 표에 없어 미지 플래그로 거부된다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_BRANCH_LONG_FLAGS,
+        short_flags=_GIT_BRANCH_SHORT_FLAGS,
+    )
+    return positionals == 0
+
+
+_GIT_TAG_LONG_FLAGS = frozenset({"--list", "--sort", "--no-color"})
+
+
+def _git_tag_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git tag`: 위치 인자 0개 엄격 — branch와 동일하게 arity가 조회↔생성을
+    뒤집는다(§6.1b 표). `-n`은 부착형 주석 줄 수만 허용한다 — 분리형 `-n 5`는
+    다음 토큰 `5`가 미지 위치 인자로 남아 이미 안전하게 거부된다(subcommand별
+    `-n` 의미 차이, AC-1.9 — log는 분리형 값, tag는 부착형, shortlog는 순수
+    불리언)."""
+    positionals = 0
+    for argument in arguments:
+        if argument == "--":
+            continue
+        if argument in _GIT_TAG_LONG_FLAGS or argument in {"-l", "-n"}:
+            continue
+        if re.fullmatch(r"-n[1-9]\d*", argument):
+            continue
+        if argument.startswith("-"):
+            return False
+        positionals += 1
+    return positionals == 0
+
+
+_GIT_REV_PARSE_LONG_FLAGS = frozenset({
+    "--abbrev-ref", "--short", "--verify", "--show-toplevel", "--git-dir",
+    "--is-inside-work-tree", "--quiet",
+})
+
+
+def _git_rev_parse_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git rev-parse`: 위치 인자 무제한(revision 문자열, §6.1b 표) — 쓰기가
+    되지 않는다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_REV_PARSE_LONG_FLAGS,
+        short_flags=frozenset(),
+    )
+    return positionals is not None
+
+
+_GIT_DESCRIBE_LONG_FLAGS = frozenset({
+    "--tags", "--always", "--dirty", "--long", "--abbrev",
+})
+
+
+def _git_describe_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git describe`: 위치 인자 무제한(§6.1b 표) — 쓰기가 되지 않는다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_DESCRIBE_LONG_FLAGS,
+        short_flags=frozenset(),
+    )
+    return positionals is not None
+
+
+_GIT_LS_FILES_LONG_FLAGS = frozenset({
+    "--cached", "--modified", "--others", "--exclude-standard", "--stage",
+    "--deleted",
+})
+_GIT_LS_FILES_SHORT_FLAGS = frozenset("cmos")
+
+
+def _git_ls_files_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git ls-files`: 위치 인자 무제한(pathspec 필터, §6.1b 표) — 쓰기가
+    되지 않는다."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_LS_FILES_LONG_FLAGS,
+        short_flags=_GIT_LS_FILES_SHORT_FLAGS,
+    )
+    return positionals is not None
+
+
+_GIT_SHORTLOG_LONG_FLAGS = frozenset({
+    "--summary", "--numbered", "--email", "--no-color",
+})
+_GIT_SHORTLOG_SHORT_FLAGS = frozenset("sne")
+
+
+def _git_shortlog_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git shortlog`: 위치 인자 무제한(§6.1b 표). `-n`은 여기서 `--numbered`
+    (값을 취하지 않는 순수 불리언)다 — log의 max-count `-n`과 의미가 다르다
+    (subcommand별 `-n` 의미 차이, AC-1.9)."""
+    positionals = _git_flags_and_positionals(
+        arguments,
+        long_flags=_GIT_SHORTLOG_LONG_FLAGS,
+        short_flags=_GIT_SHORTLOG_SHORT_FLAGS,
+    )
+    return positionals is not None
+
+
+def _git_blame_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git blame`: 위치 인자 무제한이나 경로 1개 이상 필수(§6.1b 표).
+    `-L`은 값을 취한다(부착 `-L10,20` 또는 분리 `-L 10,20` 모두 허용 — 범위
+    문자열 자체를 검증하지 않아도 안전하다, sanitize 240줄 상한이 출력을
+    이미 유계화한다)."""
+    positionals = 0
+    options_done = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if not options_done and argument == "--":
+            options_done = True
+            index += 1
+            continue
+        if not options_done and argument in {"--porcelain", "--line-porcelain", "-w"}:
+            index += 1
+            continue
+        if not options_done and argument == "-L":
+            if index + 1 >= len(arguments):
+                return False
+            index += 2
+            continue
+        if not options_done and argument.startswith("-L") and len(argument) > 2:
+            index += 1
+            continue
+        if not options_done and argument.startswith("-"):
+            return False
+        positionals += 1
+        index += 1
+    return positionals >= 1
+
+
+def _git_stash_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git stash`: `list`/`show`만 허용, 부가 인자 없는 정확히 그 형태만
+    — 맨 `git stash`(0-arity writer, D2 반증 사례)와 그 밖의 서브커맨드
+    (`push`/`pop`/`apply`/`drop`/`clear`/`branch`/`save`)는 표에 없어
+    거부된다(§6.1b 표)."""
+    return len(arguments) == 1 and arguments[0] in {"list", "show"}
+
+
+_GIT_DIFF_SHOW_BOOLEAN_FLAGS = frozenset({
+    "-p", "--patch", "--stat", "--name-only", "--name-status", "--no-color",
+    "--color=never", "--cached", "--staged", "--oneline",
+})
+
+
+def _git_diff_show_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git diff`/`git show`: 기존 `_git_is_safe` 경로를 그대로 보존한다
+    (§6.1b 표 — "기존대로"). 개조 전 `patch_output`은 diff/show에서
+    항상 `True`로 시작해 끝까지 `False`로 바뀌는 경로가 없었으므로(오직
+    log에서만 `-p` 요구가 의미 있었다) 여기서는 제거했다 — 동작은 동일하다."""
     index = 0
     options_done = False
     while index < len(arguments):
@@ -1555,55 +1774,144 @@ def _git_is_safe(argv: tuple[str, ...]) -> bool:
             options_done = True
             index += 1
             continue
-        if not options_done and argument in {
-            "-p", "--patch",
-            "--stat", "--name-only", "--name-status", "--no-color",
-            "--color=never", "--cached", "--staged", "--oneline",
-        }:
-            if argument in {"-p", "--patch"}:
-                patch_output = True
+        if options_done:
             index += 1
             continue
-        if not options_done and argument in {"-U", "--unified"}:
+        if argument in _GIT_DIFF_SHOW_BOOLEAN_FLAGS:
+            index += 1
+            continue
+        if argument in {"-U", "--unified"}:
             if index + 1 >= len(arguments) or not _valid_n(arguments[index + 1]):
                 return False
             index += 2
             continue
-        if (
-            not options_done
-            and subcommand == "log"
-            and argument in {"-n", "--max-count"}
-        ):
-            if index + 1 >= len(arguments) or not _valid_n(arguments[index + 1]):
-                return False
-            index += 2
-            continue
-        if (
-            not options_done
-            and subcommand == "log"
-            and (
-                re.fullmatch(r"-[1-9]\d*", argument)
-                or (
-                    argument.startswith("--max-count=")
-                    and _valid_n(argument.split("=", 1)[1])
-                )
-            )
+        if re.fullmatch(r"-U[1-9]\d*", argument) or (
+            argument.startswith("--unified=")
+            and _valid_n(argument.split("=", 1)[1])
         ):
             index += 1
             continue
-        if not options_done and (
-            re.fullmatch(r"-U[1-9]\d*", argument)
-            or re.fullmatch(r"--unified=[1-9]\d*", argument)
-        ):
-            value = argument[2:] if argument.startswith("-U") else argument.split("=", 1)[1]
-            if not _valid_n(value):
-                return False
-            index += 1
-            continue
-        if not options_done and argument.startswith("-"):
+        if argument.startswith("-"):
             return False
         index += 1
-    return patch_output
+    return True
+
+
+_GIT_LOG_BOOLEAN_FLAGS = frozenset({
+    "--oneline", "--stat", "--name-only", "--name-status", "--graph",
+    "--decorate", "--no-color", "-p", "--patch", "--reverse",
+})
+_GIT_LOG_VALUE_FLAGS = frozenset({
+    "--pretty", "--format", "--author", "--since", "--until",
+})
+
+
+def _git_log_attached_value_ok(argument: str) -> bool:
+    """`-<N>`/`-U<N>`/`--unified=<N>`/`--max-count=<N>`/`--<value-flag>=…`
+    부착형이 안전한지 판정한다(AC-1.9 — `git log --oneline -20` 같은 부착형이
+    거짓 거부되지 않도록 분해 전에 먼저 인식한다)."""
+    if re.fullmatch(r"-[1-9]\d*", argument):
+        return True
+    if re.fullmatch(r"-U[1-9]\d*", argument):
+        return True
+    if argument.startswith("--unified=") and _valid_n(argument.split("=", 1)[1]):
+        return True
+    if argument.startswith("--max-count=") and _valid_n(argument.split("=", 1)[1]):
+        return True
+    return any(argument.startswith(f"{flag}=") for flag in _GIT_LOG_VALUE_FLAGS)
+
+
+def _git_log_is_safe(arguments: tuple[str, ...]) -> bool:
+    """`git log`: 위치 인자 무제한(revision/pathspec, §6.1b 표) — arity가
+    쓰기로 뒤집히지 않으므로 상한이 불필요하다. 출력 증폭은 sanitize 240줄
+    상한(`sanitize_output.py:295`)으로 이미 유계다. 개조 전에는 `-p` 없이
+    `git log`/`git log --oneline`이 거부됐다(§0 정정 1) — 이 요구를 제거한
+    것이 이 함수의 핵심 완화다."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return True
+        if argument in _GIT_LOG_BOOLEAN_FLAGS:
+            index += 1
+            continue
+        if argument in {"-n", "--max-count", "-U", "--unified"}:
+            if index + 1 >= len(arguments) or not _valid_n(arguments[index + 1]):
+                return False
+            index += 2
+            continue
+        if argument in _GIT_LOG_VALUE_FLAGS:
+            if index + 1 >= len(arguments):
+                return False
+            index += 2
+            continue
+        if _git_log_attached_value_ok(argument):
+            index += 1
+            continue
+        if argument.startswith("-"):
+            return False
+        index += 1
+    return True
+
+
+def _git_is_safe(argv: tuple[str, ...]) -> bool:
+    """git (서브커맨드, 인자 형태) 쌍 화이트리스트(D1, plan §6.1b, 11행).
+
+    R-5 불변식(표 전체를 지탱하는 단일 지점) — `argv[1]`을 리터럴로만
+    서브커맨드로 인정한다. `-`로 시작하면 무조건 거부하고, 서브커맨드를
+    찾기 위해 선행 전역 옵션(`-c`/`-C`/`-p`/`--paginate`/`--no-pager`/
+    `--exec-path`/`--git-dir` 등)을 절대 건너뛰지 않는다.
+    **경고**: `_package_script_route:1436`의
+    `while index < len(argv) and argv[index].startswith("-")` 패턴을 이
+    함수에 재사용하지 말 것 — 그 패턴을 쓰면 `git -c alias.zz='!echo pwned' zz`
+    가 임의 셸을 실행한다(3라운드 레드팀 실증, plan §4 시나리오 1). 현재
+    9개 전역 옵션 우회(AC-1b.2)가 전부 막히는 이유는 오직 이 리터럴 비교
+    하나다.
+
+    R-1 불변식 — 서브커맨드 이름만으로도, "위치 인자 0개면 거부"만으로도
+    승인하지 않는다. 전자는 쓰기 6/6 누수, 후자는 0-arity 쓰기 8건 누수를
+    실증했다(`git stash`/`gc`/`prune`/`repack`/`clean -fd`/`reset --hard`/
+    `commit --amend --no-edit`/`branch --edit-description`; 뒤 둘은 데이터
+    손실이다). 반드시 (서브커맨드, 허용 플래그, 위치 인자 상한) 삼중으로
+    판정한다. 표에 없는 서브커맨드(`config`/`remote`/`gc`/`prune`/`repack`/
+    `clean`/`reset`/`commit`/`push`/`pull`/`fetch`/`merge`/`rebase`/
+    `checkout`/`switch`/`restore` 등)는 아래 분기에 없어 자동으로 폴스루
+    거부된다 — never-list는 두지 않는다(이미 deny인 폴스루에 목록을 얹으면
+    "목록에 없으면 안전"이라는 오독만 유발할 뿐 방어를 강화하지 않는다,
+    plan 결정 D1). `config`/`remote`는 키 없이 값만 출력하거나 자격증명이
+    임베드된 URL을 출력해 구조적으로 리댁션이 불가능하므로(원칙 6, R-13)
+    표에서 삭제되었다 — `remote`는 FIX-6에서 `credential_policy.py` 확장
+    후 재도입 심사 대상이다.
+    """
+    if len(argv) < 2 or argv[1].startswith("-"):
+        return False
+    subcommand = argv[1]
+    arguments = argv[2:]
+    if subcommand == "status":
+        return _git_status_is_safe(arguments)
+    if subcommand == "log":
+        return _git_log_is_safe(arguments)
+    if subcommand == "branch":
+        return _git_branch_is_safe(arguments)
+    if subcommand == "tag":
+        return _git_tag_is_safe(arguments)
+    if subcommand == "rev-parse":
+        return _git_rev_parse_is_safe(arguments)
+    if subcommand == "describe":
+        return _git_describe_is_safe(arguments)
+    if subcommand == "ls-files":
+        return _git_ls_files_is_safe(arguments)
+    if subcommand == "shortlog":
+        return _git_shortlog_is_safe(arguments)
+    if subcommand == "blame":
+        return _git_blame_is_safe(arguments)
+    if subcommand == "stash":
+        return _git_stash_is_safe(arguments)
+    if subcommand == "grep":
+        return _grep_is_safe(("grep", *arguments), allow_files=True)
+    if subcommand in {"diff", "show"}:
+        return _git_diff_show_is_safe(arguments)
+    return False
 
 
 def _package_script_route(argv: tuple[str, ...]) -> str:
