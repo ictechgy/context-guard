@@ -24514,10 +24514,24 @@ for malformed in malformed_values:
                     first_fp = guard.read_guard_fingerprint(safe, "src/safe.py", safe.stat().st_size)
                     second_fp = guard.read_guard_fingerprint(safe, "src/safe.py", safe.stat().st_size + 1)
                     self.assertNotEqual(first_fp, second_fp)
-                    self.assertEqual(guard.record_read_guard_attempt(root, first_fp), 1)
-                    self.assertEqual(guard.record_read_guard_attempt(root, first_fp), 2)
+                    first_entry = guard.record_read_guard_attempt(root, first_fp)
+                    self.assertEqual(first_entry["count"], 1)
+                    self.assertFalse(first_entry["valve_used"])
+                    second_entry = guard.record_read_guard_attempt(root, first_fp, valve_fired=True)
+                    self.assertEqual(second_entry["count"], 2)
+                    self.assertTrue(second_entry["valve_used"])
+                    self.assertEqual(guard.peek_read_guard_attempt(root, first_fp), second_entry)
+                    self.assertEqual(guard.peek_read_guard_attempt(root, second_fp), guard.default_read_guard_entry())
                     self.assertIn("Repeated-read dedup", guard.repeated_read_hint(2))
                     self.assertEqual(guard.repeated_read_hint(1), "")
+
+                    # 하위 호환: 레거시 {"count": N} 엔트리도 크래시 없이 읽고, 쓰기 시 병합된다.
+                    guard.save_read_guard_state(root, {"attempts": {"legacy-fp": {"count": 5}}})
+                    legacy_peek = guard.peek_read_guard_attempt(root, "legacy-fp")
+                    self.assertEqual(legacy_peek["count"], 5)
+                    self.assertFalse(legacy_peek["valve_used"])
+                    legacy_commit = guard.record_read_guard_attempt(root, "legacy-fp")
+                    self.assertEqual(legacy_commit["count"], 6)
 
                     state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
                     self.assertTrue(state_file.is_file())

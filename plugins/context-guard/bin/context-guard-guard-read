@@ -8,6 +8,7 @@ remain supported for existing project settings.
 """
 from __future__ import annotations
 
+import copy
 import errno
 import hashlib
 import importlib.util
@@ -18,6 +19,7 @@ import secrets
 import shlex
 import stat
 import sys
+import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -52,7 +54,7 @@ OUTLINE_MAX_BYTES = 200_000
 OUTLINE_MAX_ITEMS = 12
 READ_GUARD_STATE_DIR = Path(".context-guard")
 READ_GUARD_STATE_FILE = "read-guard-cache.json"
-READ_GUARD_STATE_MAX_ITEMS = 20
+READ_GUARD_STATE_MAX_ITEMS = 128
 GUARD_ENV = "CONTEXT_GUARD_READ_GUARD"
 LEGACY_GUARD_ENV = "CLAUDE_TOKEN_READ_GUARD"
 MAX_BYTES_ENV = "CONTEXT_GUARD_READ_GUARD_MAX_BYTES"
@@ -480,6 +482,41 @@ def prove_raw_read_range(
     return ReadRangeProof("proof_budget_exhausted", charged_bytes, scanned_bytes)
 
 
+def raw_read_range_outcome(
+    fd: int,
+    initial_stat: os.stat_result,
+    *,
+    size: int,
+    offset: int,
+    limit: int,
+    content_limit: int,
+) -> str:
+    """지정된 offset/limit로 raw-byte 증명을 수행하고 동일 fd의 정체성 변화까지 확인한다.
+
+    peek/commit 분리 설계의 핵심: 밸브 판정과 증명이 fd 보유 구간 안에서만 일어나며
+    별도로 재개방하지 않으므로 새 TOCTOU 창을 만들지 않는다.
+    """
+    try:
+        proof = prove_raw_read_range(
+            fd,
+            file_size=size,
+            offset=offset,
+            limit=limit,
+            content_budget=content_limit,
+            proof_budget=read_proof_bytes(),
+        )
+        outcome = proof.outcome
+    except (OSError, ValueError):
+        outcome = "read_proof_failed"
+    try:
+        final_stat = os.fstat(fd)
+    except OSError:
+        return "file_changed_during_proof"
+    if stat_identity(initial_stat) != stat_identity(final_stat):
+        return "file_changed_during_proof"
+    return outcome
+
+
 def find_read_symbol_command() -> str:
     script_dir = Path(__file__).resolve().parent
     if (script_dir / "context-guard-read-symbol").exists():
@@ -794,31 +831,77 @@ def save_read_guard_state(root: Path, state: dict[str, Any]) -> None:
         return
 
 
-def record_read_guard_attempt(root: Path, fp: str) -> int:
+def default_read_guard_entry() -> dict[str, Any]:
+    """캐시에 아직 없거나 손상된 지문에 사용할 기본 시도 엔트리."""
+    return {"count": 0, "valve_used": False, "first_seen": 0, "last_seen": 0}
+
+
+def normalize_read_guard_entry(entry: Any) -> dict[str, Any]:
+    """레거시 `{"count": N}` 및 손상된 엔트리를 신규 스키마로 하위 호환 정규화한다."""
+    normalized = default_read_guard_entry()
+    if not isinstance(entry, dict):
+        return normalized
+    normalized["count"] = bounded_int(entry.get("count", 0), 0, 0, 1_000_000)
+    normalized["valve_used"] = bool(entry.get("valve_used", False))
+    normalized["first_seen"] = bounded_int(entry.get("first_seen", 0), 0, 0, MAX_READ_RANGE_INTEGER)
+    normalized["last_seen"] = bounded_int(entry.get("last_seen", 0), 0, 0, MAX_READ_RANGE_INTEGER)
+    return normalized
+
+
+def peek_read_guard_attempt(root: Path, fp: str) -> dict[str, Any]:
+    """카운터를 증가시키지 않고 현재 지문의 시도 엔트리를 읽는다(밸브 판정 전용).
+
+    밸브 발화 여부는 대상 fd 보유 구간 안에서 결정해야 하므로, 영속화(commit)와
+    분리된 읽기 전용 조회로 둔다. 대상 파일의 fd는 건드리지 않는다.
+    """
+    state = load_read_guard_state(root)
+    attempts = state.get("attempts")
+    if not isinstance(attempts, dict):
+        return default_read_guard_entry()
+    return normalize_read_guard_entry(attempts.get(fp))
+
+
+def record_read_guard_attempt(root: Path, fp: str, *, valve_fired: bool = False) -> dict[str, Any]:
+    """시도 횟수를 1 증가시키고 병합 방식으로 영속화한다(commit 단계, fd 미보유 구간).
+
+    기존 엔트리를 통째로 덮어쓰지 않고 필드를 병합해 valve_used/first_seen/last_seen을
+    보존한다. pop 후 재삽입 순서를 유지해 초과분 축출을 LRU 유사하게 만든다.
+    """
     state = load_read_guard_state(root)
     attempts = state.get("attempts")
     if not isinstance(attempts, dict):
         attempts = {}
-    entry = attempts.get(fp)
-    if not isinstance(entry, dict):
-        entry = {"count": 0}
-    count = bounded_int(entry.get("count", 0), 0, 0, 1_000_000) + 1
+    entry = normalize_read_guard_entry(attempts.get(fp))
+    now = int(time.time())
+    entry["count"] += 1
+    entry["valve_used"] = entry["valve_used"] or valve_fired
+    entry["first_seen"] = entry["first_seen"] or now
+    entry["last_seen"] = now
     attempts.pop(fp, None)
-    attempts[fp] = {"count": count}
+    attempts[fp] = entry
     if len(attempts) > READ_GUARD_STATE_MAX_ITEMS:
         for key in list(attempts)[: len(attempts) - READ_GUARD_STATE_MAX_ITEMS]:
             attempts.pop(key, None)
     state["attempts"] = attempts
     save_read_guard_state(root, state)
-    return count
+    return entry
 
 
 def repeated_read_hint(count: int) -> str:
+    """1~2회차 사다리 거부에 덧붙이는 반복 신호 문구(3회차부터는 단축 메시지를 대신 쓴다)."""
     if count < 2:
         return ""
     return (
         f" Repeated-read dedup: this same oversized file fingerprint has been blocked {count} times; "
         "reuse the previous ladder and query a symbol or line range instead of retrying full-file Read."
+    )
+
+
+def valve_exhausted_reason(count: int) -> str:
+    """3회차 밸브 미발화 또는 4회차 이후 거부에 쓰는 200바이트 미만 단축 메시지."""
+    return (
+        f"[context-guard-kit] Read blocked ({count}x, escape valve exhausted). "
+        "Use a smaller offset/limit range for this file."
     )
 
 
@@ -828,6 +911,18 @@ def deny_response(reason: str) -> dict[str, Any]:
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
+        }
+    }
+
+
+def valve_updated_input_response(payload: dict[str, Any], offer: tuple[int, int]) -> dict[str, Any]:
+    """3회차 밸브가 발화했을 때 offset/limit을 주입한 updatedInput 훅 응답을 만든다."""
+    updated_input = copy.deepcopy(tool_input(payload))
+    updated_input["offset"], updated_input["limit"] = offer
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": updated_input,
         }
     }
 
@@ -894,6 +989,9 @@ def main() -> int:
     size = 0
     initial_stat: os.stat_result | None = None
     outcome = "invalid_read_range"
+    fingerprint = ""
+    valve_offer: tuple[int, int] | None = None
+    valve_attempted = False
     fd = -1
     try:
         fd = open_regular_no_symlink(path)
@@ -903,28 +1001,39 @@ def main() -> int:
             print("{}")
             return 0
 
+        # peek: fd 보유 구간 안에서 밸브 판정에 쓸 이전 시도 횟수를 읽는다(쓰기 없음).
+        fingerprint = read_guard_fingerprint(path, safe_label(path, root), size, stat_result=initial_stat)
+        attempt_peek = peek_read_guard_attempt(root, fingerprint)
+
         requested_range = large_read_range(payload)
         if requested_range is not None:
-            offset, line_limit = requested_range
-            try:
-                proof = prove_raw_read_range(
-                    fd,
-                    file_size=size,
-                    offset=offset,
-                    limit=line_limit,
-                    content_budget=content_limit,
-                    proof_budget=read_proof_bytes(),
-                )
-                outcome = proof.outcome
-            except (OSError, ValueError):
-                outcome = "read_proof_failed"
-            try:
-                final_stat = os.fstat(fd)
-            except OSError:
-                outcome = "file_changed_during_proof"
-            else:
-                if stat_identity(initial_stat) != stat_identity(final_stat):
-                    outcome = "file_changed_during_proof"
+            outcome = raw_read_range_outcome(
+                fd,
+                initial_stat,
+                size=size,
+                offset=requested_range[0],
+                limit=requested_range[1],
+                content_limit=content_limit,
+            )
+
+        if (
+            outcome not in ("allowed", "file_changed_during_proof")
+            and attempt_peek["count"] + 1 == 3
+            and not attempt_peek["valve_used"]
+        ):
+            valve_attempted = True
+            candidate = (0, max_line_range())
+            candidate_outcome = raw_read_range_outcome(
+                fd,
+                initial_stat,
+                size=size,
+                offset=candidate[0],
+                limit=candidate[1],
+                content_limit=content_limit,
+            )
+            if candidate_outcome == "allowed":
+                outcome = "allowed"
+                valve_offer = candidate
     except (OSError, ValueError) as exc:
         error_number = getattr(exc, "errno", None)
         if error_number == errno.ELOOP:
@@ -957,27 +1066,37 @@ def main() -> int:
         if fd != -1:
             os.close(fd)
 
+    if outcome == "allowed" and valve_offer is not None:
+        # commit: fd 종료 이후 밸브 발화를 지문에 1회로 기록한다(FIFO/LRU 유사 축출 유지).
+        try:
+            record_read_guard_attempt(root, fingerprint, valve_fired=True)
+        except Exception:
+            pass
+        print(json.dumps(valve_updated_input_response(payload, valve_offer), ensure_ascii=False))
+        return 0
+
     if outcome == "allowed":
         print("{}")
         return 0
 
-    label = safe_label(path, root)
-    read_symbol = find_read_symbol_command()
     try:
-        attempt_count = record_read_guard_attempt(
-            root,
-            read_guard_fingerprint(path, label, size, stat_result=initial_stat),
-        )
+        entry = record_read_guard_attempt(root, fingerprint, valve_fired=False)
+        attempt_count = entry["count"]
     except Exception:
         attempt_count = 1
-    reason = read_proof_denial_reason(
-        outcome,
-        path=path,
-        root=root,
-        size=size,
-        content_limit=content_limit,
-        read_symbol=read_symbol,
-    ) + repeated_read_hint(attempt_count)
+
+    if valve_attempted or attempt_count >= 4:
+        reason = valve_exhausted_reason(attempt_count)
+    else:
+        read_symbol = find_read_symbol_command()
+        reason = read_proof_denial_reason(
+            outcome,
+            path=path,
+            root=root,
+            size=size,
+            content_limit=content_limit,
+            read_symbol=read_symbol,
+        ) + repeated_read_hint(attempt_count)
     print(json.dumps(deny_response(reason), ensure_ascii=False))
     return 0
 
