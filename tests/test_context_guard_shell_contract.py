@@ -9,6 +9,7 @@ import json
 import os
 import random
 import runpy
+import shlex
 import subprocess
 import sys
 import unittest
@@ -28,10 +29,12 @@ from tests.context_guard_a1_oracles import (
     route_cases,
 )
 from tests.corpus_adversarial_pins import (
+    FIX1A_ROUTE_PREDICATE_CASES,
     FIX5_ADVERSARIAL_PINS,
     FIX5_ALLOWLIST_POSITIVE_PINS,
     FIX5_ENV_WRAPPER_BYPASS_PINS,
     FIX5_GLOB_REJECTION_PINS,
+    fix1a_route_predicate_relaxations,
     fix5_case_count,
 )
 
@@ -1047,6 +1050,109 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     script=script,
                 )
                 self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
+
+    def test_inv_a_route_predicate_relaxation_preserves_denial_for_anchors(
+        self,
+    ) -> None:
+        """INV-A(거부 보존, plan §5.2) — `FIX1A_ROUTE_PREDICATE_CASES` 중 완화
+        대상이 아닌 행(§5.5 역방향 케이스 + reason_code 이동 실증 케이스)은 개조
+        전/후 어느 코드에 대해 실행해도 항상 거부되어야 한다. `reason_code` 는
+        세그먼트 교차 배치(classify_command:1671-1751)로 이동할 수 있으므로 여기서
+        고정하지 않는다 — 이동은 아래 `test_inv_a_reason_code_drift_is_pinned_where_documented`
+        가 별도로 실측 고정한다(이 테스트만 code-state 무관하게 유지하기 위함)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX1A_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+
+    def test_inv_a_reason_code_drift_is_pinned_where_documented(self) -> None:
+        """INV-A 각주 — `baseline_reason_code` 와 다른 `expected_reason_code` 를
+        명시한 행(예: `head setup.py | tee out.txt`)은 실제로 그 reason_code 로
+        거부되는지 실측 고정한다. 위 test_inv_a 는 이 드리프트를 허용만 하고
+        고정하지 않으므로, 여기서 별도로 "허용됨"이 아니라 "정확히 이 원인으로
+        이동함"까지 검증한다 — 개조 후 코드에서만 의미 있는 고정이다(개조 전에는
+        드리프트가 아직 발생하지 않아 baseline 값 그대로 관측된다)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_drift_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX1A_ROUTE_PREDICATE_CASES:
+                expected_reason_code = case.get("expected_reason_code")
+                if (
+                    case["expected_decision"] != "deny"
+                    or expected_reason_code is None
+                    or expected_reason_code == case["baseline_reason_code"]
+                ):
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+                    if decision.reason_code == case["baseline_reason_code"]:
+                        continue  # 개조 전 코드 — 드리프트 아직 미발생, 스킵
+                    self.assertEqual(decision.reason_code, expected_reason_code)
+
+    def test_inv_b_deny_to_allow_transition_requires_route_policy_denied_baseline(
+        self,
+    ) -> None:
+        """INV-B(허용 전환의 출처 제한, plan §5.2) — `FIX1A_ROUTE_PREDICATE_CASES`
+        중 완화 대상 행은 전부 baseline `route_policy_denied` 여야 한다(구조적
+        전제). 개조 전 코드에서는 아직 전환이 관측되지 않으므로(항상 deny) 이
+        테스트는 자동으로 통과하고, 개조 후에는 실제 전환이 `expected_decision`/
+        `expected_reason_code` 와 정확히 일치하는지도 고정한다 — 두 커밋 단계
+        (plan §6.1a 커밋 경계 1/2) 모두에서 초록이어야 하는 이유가 이 구조다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_b_{index}")
+            classify_command = namespace["classify_command"]
+            for case in fix1a_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    if decision.action != "deny":
+                        self.assertEqual(decision.action, case["expected_decision"])
+                        self.assertEqual(
+                            decision.reason_code, case.get("expected_reason_code")
+                        )
+
+    def test_inv_c_newly_rewrapped_head_tail_commands_roundtrip(self) -> None:
+        """INV-C(재래핑 왕복, plan §5.2) — 이번 완화로 `bash -lc` trim 경로에 새로
+        진입하는 명령(head/tail bare, `-n` 없음)을 전수 열거하고, 래핑된 명령을
+        되찢어 원본 명령 문자열이 손실 없이 보존되는지 확인한다. `wc` 완화는
+        noop(무변형 통과) 경로라 재래핑 대상이 아니므로 제외한다. 개조 전 코드에서는
+        해당 명령이 아직 deny 라 스킵되고(§6.1a 커밋 경계 1 에서도 초록), 개조 후
+        trim 으로 전환되면 왕복 검증이 실제로 발화한다."""
+        newly_rewrapped_candidates = tuple(
+            case["command"]
+            for case in fix1a_route_predicate_relaxations()
+            if case["expected_decision"] in {"trim", "sanitize"}
+        )
+        for script in self.contract_scripts():
+            for command in newly_rewrapped_candidates:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    decision = a1_route_decision(proc)
+                    if decision == "deny":
+                        continue
+                    self.assertEqual(decision, "rewrite_trim")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
 
 
 if __name__ == "__main__":
