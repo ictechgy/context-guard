@@ -721,18 +721,20 @@ class ReadA2ContractTests(unittest.TestCase):
 
     def test_read_guard_state_entry_merges_and_stays_backward_compatible(self) -> None:
         # AC-3.5: 레거시 {"count": N} 캐시를 크래시 없이 읽고, 쓰기 시 덮어쓰지 않고 병합한다.
+        # record_read_guard_attempt는 호출부가 실제로 쓰는 count(int)만 반환하고,
+        # valve_used/first_seen/last_seen 같은 전체 엔트리 조회는 peek으로 확인한다.
         for guard in self.guards:
             with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 self.assertEqual(guard.peek_read_guard_attempt(root, "fresh"), guard.default_read_guard_entry())
 
-                first = guard.record_read_guard_attempt(root, "fp")
-                self.assertEqual(first["count"], 1)
+                self.assertEqual(guard.record_read_guard_attempt(root, "fp"), 1)
+                first = guard.peek_read_guard_attempt(root, "fp")
                 self.assertFalse(first["valve_used"])
                 self.assertGreater(first["first_seen"], 0)
 
-                second = guard.record_read_guard_attempt(root, "fp", valve_fired=True)
-                self.assertEqual(second["count"], 2)
+                self.assertEqual(guard.record_read_guard_attempt(root, "fp", valve_fired=True), 2)
+                second = guard.peek_read_guard_attempt(root, "fp")
                 self.assertTrue(second["valve_used"])
                 self.assertEqual(second["first_seen"], first["first_seen"])
 
@@ -744,12 +746,64 @@ class ReadA2ContractTests(unittest.TestCase):
                 legacy_peek = guard.peek_read_guard_attempt(root, "legacy")
                 self.assertEqual(legacy_peek["count"], 9)
                 self.assertFalse(legacy_peek["valve_used"])
-                legacy_committed = guard.record_read_guard_attempt(root, "legacy")
+                self.assertEqual(guard.record_read_guard_attempt(root, "legacy"), 10)
+                legacy_committed = guard.peek_read_guard_attempt(root, "legacy")
                 self.assertEqual(legacy_committed["count"], 10)
                 self.assertFalse(legacy_committed["valve_used"])
 
                 # 병합 방식이므로 다른 지문("fp")의 기존 필드는 훼손되지 않는다.
                 self.assertEqual(guard.peek_read_guard_attempt(root, "fp")["count"], 2)
+
+    def test_security_denials_repeat_full_reason_and_never_touch_the_valve_counter(self) -> None:
+        # 회귀 고정: 보안/경로 판정(심볼릭 링크 순회 등)은 예산 밸브보다 앞서 조기 반환되므로
+        # 몇 번을 반복해도 카운터를 건드리지 않고, 매번 동일한 전체 보안 사유를 낸다.
+        # 예산 밸브(3회차 축소, 4회차 이후 단축 메시지)와 절대 뒤섞이지 않아야 한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                real = root / "real.bin"
+                real.write_bytes(b"x\n" * 100000)
+                link = root / "linked.bin"
+                try:
+                    link.symlink_to(real)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"symlink unavailable: {exc}")
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "linked.bin"}}
+
+                for _round in range(5):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    self.assertEqual(decision(stdout), "deny")
+                    denial_reason = reason(stdout)
+                    self.assertIn("traverses a symlink", denial_reason)
+                    self.assertNotIn("escape valve exhausted", denial_reason)
+                    self.assertNotIn("Repeated-read dedup", denial_reason)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                self.assertFalse(state_file.exists())
+
+    def test_race_detected_symlink_denials_also_skip_the_valve_counter(self) -> None:
+        # open_regular_no_symlink가 open() 시점에 뒤늦게 심볼릭 링크를 감지(ELOOP)해도
+        # 같은 방어선이다: 예외 처리기가 카운터/밸브 코드에 도달하기 전에 조기 반환한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "race.bin").write_bytes(b"x\n" * 100000)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "race.bin"}}
+                original_open = guard.open_regular_no_symlink
+
+                def racing_open(path, _original=original_open):
+                    raise OSError(guard.errno.ELOOP, "too many symlinks")
+
+                with mock.patch.object(guard, "open_regular_no_symlink", racing_open):
+                    for _round in range(4):
+                        _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                        self.assertEqual(decision(stdout), "deny")
+                        denial_reason = reason(stdout)
+                        self.assertIn("traverses a symlink", denial_reason)
+                        self.assertNotIn("escape valve exhausted", denial_reason)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                self.assertFalse(state_file.exists())
 
     def test_read_guard_state_max_items_bumped_and_eviction_stays_fifo_like(self) -> None:
         # READ_GUARD_STATE_MAX_ITEMS 20->128; pop 후 재삽입이 축출을 LRU 유사로 유지한다.

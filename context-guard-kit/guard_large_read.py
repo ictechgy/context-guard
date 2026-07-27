@@ -861,11 +861,13 @@ def peek_read_guard_attempt(root: Path, fp: str) -> dict[str, Any]:
     return normalize_read_guard_entry(attempts.get(fp))
 
 
-def record_read_guard_attempt(root: Path, fp: str, *, valve_fired: bool = False) -> dict[str, Any]:
+def record_read_guard_attempt(root: Path, fp: str, *, valve_fired: bool = False) -> int:
     """시도 횟수를 1 증가시키고 병합 방식으로 영속화한다(commit 단계, fd 미보유 구간).
 
     기존 엔트리를 통째로 덮어쓰지 않고 필드를 병합해 valve_used/first_seen/last_seen을
     보존한다. pop 후 재삽입 순서를 유지해 초과분 축출을 LRU 유사하게 만든다.
+    valve_used 등 전체 엔트리 조회가 필요하면 별도로 peek_read_guard_attempt를 쓴다
+    (이 함수의 반환값은 호출부가 실제로 쓰는 count만 담는다).
     """
     state = load_read_guard_state(root)
     attempts = state.get("attempts")
@@ -884,7 +886,7 @@ def record_read_guard_attempt(root: Path, fp: str, *, valve_fired: bool = False)
             attempts.pop(key, None)
     state["attempts"] = attempts
     save_read_guard_state(root, state)
-    return entry
+    return entry["count"]
 
 
 def repeated_read_hint(count: int) -> str:
@@ -1080,8 +1082,7 @@ def main() -> int:
         return 0
 
     try:
-        entry = record_read_guard_attempt(root, fingerprint, valve_fired=False)
-        attempt_count = entry["count"]
+        attempt_count = record_read_guard_attempt(root, fingerprint, valve_fired=False)
     except Exception:
         attempt_count = 1
 
