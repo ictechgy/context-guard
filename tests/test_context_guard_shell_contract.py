@@ -30,11 +30,15 @@ from tests.context_guard_a1_oracles import (
 )
 from tests.corpus_adversarial_pins import (
     FIX1A_ROUTE_PREDICATE_CASES,
+    FIX1B_ROUTE_PREDICATE_CASES,
     FIX5_ADVERSARIAL_PINS,
     FIX5_ALLOWLIST_POSITIVE_PINS,
     FIX5_ENV_WRAPPER_BYPASS_PINS,
     FIX5_GLOB_REJECTION_PINS,
     fix1a_route_predicate_relaxations,
+    fix1b_ac1_4_case_count,
+    fix1b_ac1b2_case_count,
+    fix1b_route_predicate_relaxations,
     fix5_case_count,
 )
 
