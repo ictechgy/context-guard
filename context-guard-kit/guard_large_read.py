@@ -993,7 +993,6 @@ def main() -> int:
     outcome = "invalid_read_range"
     fingerprint = ""
     valve_offer: tuple[int, int] | None = None
-    valve_attempted = False
     fd = -1
     try:
         fd = open_regular_no_symlink(path)
@@ -1023,7 +1022,6 @@ def main() -> int:
             and attempt_peek["count"] + 1 == 3
             and not attempt_peek["valve_used"]
         ):
-            valve_attempted = True
             candidate = (0, max_line_range())
             candidate_outcome = raw_read_range_outcome(
                 fd,
@@ -1086,7 +1084,10 @@ def main() -> int:
     except Exception:
         attempt_count = 1
 
-    if valve_attempted or attempt_count >= 4:
+    # 단축 메시지는 밸브가 실제로 발화했었는지(valve_used)로만 판단한다 — 카운트 자체는
+    # 밸브 상태를 증명하지 않는다. 좁힌 범위조차 예산을 넘는 파일은 밸브가 구조적으로
+    # 발화할 수 없으므로, 몇 회를 반복하든 "탈진했다"고 주장하지 않고 실제 사유를 낸다.
+    if attempt_peek["valve_used"]:
         reason = valve_exhausted_reason(attempt_count)
     else:
         read_symbol = find_read_symbol_command()

@@ -680,25 +680,44 @@ class ReadA2ContractTests(unittest.TestCase):
                     self.assertLess(len(denial_reason.encode("utf-8")), 200)
                     self.assertIn("escape valve exhausted", denial_reason)
 
-    def test_escape_valve_falls_back_to_short_denial_when_narrowed_range_still_exceeds_budget(
+    def test_escape_valve_never_fires_keeps_full_reason_and_valve_used_false_on_every_repeat(
         self,
     ) -> None:
-        # AC-3.6: 자동 축소(offset=0, limit=400) 자체도 content_budget_exceeded면 밸브가
-        # 발화하지 않고 종결 단축 거부로 폴백한다(updatedInput 없음).
+        # AC-3.6 (교정): 자동 축소(offset=0, limit=400) 자체도 content_budget_exceeded면
+        # 밸브는 구조적으로 발화할 수 없다. 단축 메시지는 "발화했다가 소진됨"을 뜻하므로,
+        # 발화한 적이 없는 파일에는 절대 쓰지 않는다 — 몇 회를 반복하든 실제 사유
+        # (Large Read blocked 사다리)를 그대로 낸다. updatedInput도 절대 나오지 않는다.
         for guard in self.guards:
             with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "narrow.bin").write_bytes(b"x\n" * 10)
                 payload = {"tool_name": "Read", "tool_input": {"file_path": "narrow.bin"}}
-                for _round in range(2):
-                    invoke_guard(guard, payload, cwd=root)
-                _, stdout, _ = invoke_guard(guard, payload, cwd=root)
-                output = hook_result(stdout)["hookSpecificOutput"]
-                self.assertNotIn("updatedInput", output)
-                self.assertEqual(output["permissionDecision"], "deny")
-                denial_reason = output["permissionDecisionReason"]
-                self.assertLess(len(denial_reason.encode("utf-8")), 200)
-                self.assertIn("escape valve exhausted", denial_reason)
+                for round_number in range(1, 7):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    output = hook_result(stdout)["hookSpecificOutput"]
+                    with self.subTest(round=round_number):
+                        self.assertNotIn("updatedInput", output)
+                        self.assertEqual(output["permissionDecision"], "deny")
+                        denial_reason = output["permissionDecisionReason"]
+                        self.assertIn("Large Read blocked", denial_reason)
+                        self.assertNotIn("escape valve exhausted", denial_reason)
+
+                # 에이전트가 직접 실패하는 범위를 지정해도(자체 outcome=content_budget_exceeded)
+                # 여전히 짧은 "소진" 메시지로 바뀌지 않고 실제 사유를 낸다.
+                explicit_payload = {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "narrow.bin", "offset": 0, "limit": 5},
+                }
+                _, stdout, _ = invoke_guard(guard, explicit_payload, cwd=root)
+                explicit_reason = reason(stdout)
+                self.assertIn("content_budget_exceeded", explicit_reason)
+                self.assertNotIn("escape valve exhausted", explicit_reason)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                entry = next(iter(state["attempts"].values()))
+                self.assertEqual(entry["count"], 7)
+                self.assertFalse(entry["valve_used"])
 
     def test_escape_valve_and_counter_reset_on_fingerprint_change(self) -> None:
         # AC-3.4: 파일 mtime이 바뀌면 지문이 바뀌어 카운터와 valve_used가 자연히 리셋된다.
