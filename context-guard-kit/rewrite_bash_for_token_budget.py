@@ -1739,7 +1739,7 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
             return CommandDecision(
                 action="deny",
                 parsed=parsed,
-                reason="Unsafe env prefix name denied (unsafe_env_name_denied).",
+                reason="MiniShell-v1 denied an unsafe environment prefix name (unsafe_env_name_denied).",
                 reason_code="unsafe_env_name_denied",
             )
         if route_start < 0:
