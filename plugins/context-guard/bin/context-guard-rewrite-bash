@@ -1374,22 +1374,42 @@ def _uniq_is_safe(argv: tuple[str, ...]) -> bool:
     return True
 
 
-def _wc_is_safe(argv: tuple[str, ...]) -> bool:
-    for index, argument in enumerate(argv[1:], start=1):
-        if argument == "--":
-            return index == len(argv) - 1
-        if (
-            argument.startswith("-")
-            and not argument.startswith("--")
-            and bool(argument[1:])
-            and set(argument[1:]).issubset({"c", "l", "m", "w"})
-        ):
+def _wc_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
+    """wc 인자가 안전한 라우팅 대상인지 판정한다.
+
+    플래그는 -c/-l/-m/-w 조합만 허용한다. 파일 피연산자는 `_cat_is_safe`(:1138)와
+    대칭으로 `allow_files`가 True일 때만 허용한다 — role이 "filter"(파이프 중간)면
+    stdin만 읽어야 하므로 파일 인자를 거부해야 한다. `--` 이후 토큰은 전부
+    피연산자로 취급한다(pathspec 구분자와 동일한 관례).
+    """
+    operands = 0
+    options_done = False
+    for argument in argv[1:]:
+        if not options_done and argument == "--":
+            options_done = True
             continue
-        return False
-    return True
+        if not options_done and argument.startswith("-") and argument != "-":
+            if (
+                argument.startswith("--")
+                or not argument[1:]
+                or not set(argument[1:]).issubset({"c", "l", "m", "w"})
+            ):
+                return False
+            continue
+        operands += 1
+    return allow_files or operands == 0
 
 
 def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
+    """head/tail 인자가 안전한 라우팅 대상인지 판정한다.
+
+    `-n`/`--lines`(및 `-N`/`-nN`/`--lines=N` 축약형)는 최대 1회만 허용하며 유효한
+    양의 정수여야 한다. **`-n` 미지정도 허용한다** — bare `head`/`tail`은 기본
+    10줄 상한이 이미 적용되므로 무제한 출력 위험이 없다. `tail -f`/`-F`는 무제한
+    스트림이므로 allow_files 여부와 무관하게 항상 거부한다(`bash -lc` 내부에서
+    프로세스가 종결되지 않는 것을 방지). `-c`(바이트 단위)는 지원하지 않는다 —
+    trim 예산 단위는 줄(line)이라 바이트 상한과 섞일 수 없다.
+    """
     first = command_basename(argv[0])
     index = 1
     count_seen = False
@@ -1416,7 +1436,7 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
         if argument.startswith("-"):
             return False
         break
-    return count_seen and (allow_files or index == len(argv))
+    return allow_files or index == len(argv)
 
 
 def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
@@ -1701,7 +1721,7 @@ def command_search_diff(
             return "deny"
         return "trim" if role == "filter" else "noop"
     if first == "wc":
-        if role == "first" or not _wc_is_safe(argv):
+        if role == "first" or not _wc_is_safe(argv, allow_files=role != "filter"):
             return "deny"
         return "trim" if role == "filter" else "noop"
     if first in {"head", "tail"}:
