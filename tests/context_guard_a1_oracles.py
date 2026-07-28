@@ -141,11 +141,40 @@ def _route_examples() -> list[dict[str, str]]:
         {"standalone": "noop", "first": "rewrite_trim"},
         ("printf -v out ok",),
     )
+    # -------------------------------------------------------------------
+    # FIX-2 — `cat <bigfile>` read guard bypass (plan §6.2, AC-2.1/AC-2.4).
+    # standalone cat이 `noop`(무변형 통과)이었던 것이 Read 가드
+    # (`guard_large_read.py`, `tool_name == "Read"` 전용)와 Bash 훅 사이의
+    # 정확한 틈이었다 — 48KB 초과 파일을 `cat <bigfile>`로 읽으면 두 가드
+    # 어느 쪽도 발동하지 않고 파일 전체가 통과했다(161,544바이트 ≈ 40,000토큰
+    # 실측). first/filter 역할은 이미 `trim`이었으므로 standalone만 맞춘다.
+    # `cat-filter`(바로 아래)는 이 변경과 무관 — 필터 역할은 이미 `trim`이었고
+    # 그대로 유지된다(AC-2.2).
+    #
+    # §5.5 5열 표:
+    #   1. 변경 전/후 기대값: standalone cat 양성 케이스 `noop -> rewrite_trim`.
+    #   2. 출력 유계성 근거: `trim_command_output.py`가 `--max-lines 220`으로
+    #      래핑하므로 파일 크기와 무관하게 출력이 유계화된다(이전에는 무제한).
+    #   3. 축 b 무영향 근거: `_cat_is_safe`(허용 플래그, `allow_files`)는 전혀
+    #      바뀌지 않았다 — 라우트 코드만 바뀐다. 이 변경은 deny -> allow
+    #      전환이 아니므로(둘 다 accept) INV-A/INV-B 대상이 아니다 — 대신
+    #      새로 진입하는 `bash -lc` 재래핑 경로는 INV-C(AC-2.3)로 검증한다.
+    #   4. 역방향 케이스: `cat --number README.md`(아래 negatives)는
+    #      `--number`가 허용 플래그 집합(`bnsETAvet`) 밖이라 여전히 deny —
+    #      완화가 플래그 검증을 재승인하지 않음을 보인다.
+    #   5. 저장소 밖 읽기 / 자격증명 저장소 접근 여부: 아니오 — `cat`은 Bash가
+    #      전달한 경로 인자를 그대로 여는 표준 파일 읽기이고, 이 표의 대상은
+    #      저장소 내부 파일(README.md 등)이다. 환경변수나 credential helper를
+    #      암묵적으로 읽지 않는다. `cat ~/.netrc`처럼 저장소 밖 경로를 명시하는
+    #      경우는 개조 전에도 `_cat_is_safe`가 파일 인자를 허용하면 이미
+    #      `noop`으로 통과했다 — 라우트 코드 변경(`noop -> trim`)은 이
+    #      표면(무엇을 읽을 수 있는가)에 전혀 영향을 주지 않는다.
+    # -------------------------------------------------------------------
     add(
         "cat-producer",
         ("standalone", "first"),
         ("cat -n -- README.md", "cat -b README.md"),
-        {"standalone": "noop", "first": "rewrite_trim"},
+        "rewrite_trim",
         ("cat --number README.md",),
     )
     add(

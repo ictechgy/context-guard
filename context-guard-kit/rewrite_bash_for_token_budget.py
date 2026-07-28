@@ -2023,7 +2023,15 @@ def command_search_diff(
     *,
     role: str = "standalone",
 ) -> str:
-    """Classify one boundary-checked simple command for the A1 route table."""
+    """Classify one boundary-checked simple command for the A1 route table.
+
+    FIX-2: standalone `cat`도 `trim`으로 라우팅한다(과거에는 `noop`, 즉 무변형
+    통과였다). 48KB 초과 파일을 `cat <bigfile>`로 그대로 읽으면 Read 가드
+    (`guard_large_read.py`)가 `tool_name == "Read"`에서만 발동하므로 이 구멍을
+    그대로 우회했다 — standalone `cat`이 first/filter 역할과 동일하게 항상
+    `trim`을 받도록 통일해 막는다. `_cat_is_safe`의 안전성 판정 자체(허용 플래그,
+    `allow_files`)는 바뀌지 않는다.
+    """
     if not argv:
         return "deny"
     first = command_basename(argv[0])
@@ -2036,7 +2044,7 @@ def command_search_diff(
     if first == "cat":
         if not _cat_is_safe(argv, allow_files=role != "filter"):
             return "deny"
-        return "trim" if role in {"first", "filter"} else "noop"
+        return "trim"
     if first == "cut":
         if role == "first" or not _cut_is_safe(argv):
             return "deny"

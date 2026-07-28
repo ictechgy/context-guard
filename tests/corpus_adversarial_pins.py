@@ -1055,3 +1055,118 @@ def fix1b_ac1b2_case_count() -> int:
         for case in FIX1B_ROUTE_PREDICATE_CASES
         if case["case_id"].startswith("fix1b-ac1b2-")
     )
+
+
+# ---------------------------------------------------------------------------
+# FIX-2 — `cat <bigfile>` read guard bypass 차단 (plan §6.2, AC-2.1/AC-2.2/
+# AC-2.4/AC-2.5). FIX-1a/1b 와 달리 이 표의 관계 케이스는 deny -> allow 전환이
+# 아니다 — 개조 전 standalone `cat`은 애초에 거부된 적이 없다(`noop`, 즉
+# 무변형 통과). Read 가드(`guard_large_read.py`)는 `tool_name == "Read"`에서만
+# 발동하고 Bash 훅의 standalone `cat`은 그 가드를 거치지 않으므로, 48KB 초과
+# 파일을 `cat <bigfile>`로 읽으면 두 가드 사이의 정확한 틈을 통과해 파일
+# 전체가 무제한으로 출력됐다(161,544바이트 ≈ 40,000토큰 실측). 이 표는 그래서
+# INV-A/INV-B 대상이 아니며(라우트 *코드*만 `noop -> trim`으로 바뀔 뿐 어떤
+# 명령이 허용되는지의 경계는 그대로다), `baseline_reason_code`는 실제로 거부된
+# 적이 있는 행(§5.5 4번째 열의 역방향 케이스, AC-2.5의 범위 외 확인)에만
+# 채우고 나머지는 None 이다 — 거부 이력이 없기 때문이다.
+#
+# `cat`이 이번에 처음 `bash -lc` 재래핑 경로(INV-C)에 진입한다 — 왕복 실행
+# 검증은 `test_context_guard_shell_contract.py`의 e2e 테스트(AC-2.3)가 실제
+# `bash -lc`를 통해 담당하므로 이 표에서는 라우트 판정만 고정한다.
+# ---------------------------------------------------------------------------
+FIX2_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    {
+        "case_id": "fix2-ac2-1-cat-standalone-bigfile",
+        "fix": "FIX-2",
+        "command": "cat README.ko.md",
+        "baseline_reason_code": None,
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "AC-2.1 핵심 사례 — README.ko.md 는 72,517바이트(48KB 초과)로 "
+        "저장소 안에 실재하는 파일이다. 라우트 판정 자체는 argv 형태만 보고 "
+        "파일 크기를 읽지 않으므로(순수 문법적 판정) 어떤 크기의 파일에도 "
+        "동일하게 적용된다 — 실제 결함 재현 규모(161,544바이트)와 같은 부류를 "
+        "실재하는 저장소 파일로 구체화했다. 개조 전에는 noop(무변형 통과)이라 "
+        "파일 전체가 유계화 없이 출력됐다.",
+    },
+    {
+        "case_id": "fix2-ac2-1-cat-standalone-bare-flag",
+        "fix": "FIX-2",
+        "command": "cat -s README.ko.md",
+        "baseline_reason_code": None,
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "허용 플래그 집합(`bnsETAvet`) 안의 `-s`(squeeze-blank)도 동일하게 "
+        "trim 으로 전환된다 — 완화가 무플래그 형태에만 국한되지 않음을 보인다.",
+    },
+    {
+        "case_id": "fix2-ac2-2-cat-filter-unchanged",
+        "fix": "FIX-2",
+        "command": "printf '%s\\n' ok | cat -n",
+        "baseline_reason_code": None,
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "AC-2.2 — filter 역할은 개조 전에도 이미 trim 이었다(코퍼스 수준 "
+        "회귀 고정). 이번 FIX-2 는 standalone 만 바꾸므로 이 케이스는 개조 "
+        "전/후 어느 코드에도 동일하게 trim 이어야 한다 — 오라클 생성기의 "
+        "`cat-filter` family(불변) 와 동일한 결론을 별도 경로로 재확인한다.",
+    },
+    {
+        "case_id": "fix2-inv-a-cat-long-option-denied",
+        "fix": "FIX-2",
+        "command": "cat --show-all README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "§5.5 4번째 열(역방향 케이스) — `--`로 시작하는 장옵션은 "
+        "`_cat_is_safe`의 허용 집합 검사에서 무조건 거부된다(플래그 문자 집합 "
+        "검사 이전에 `argument.startswith(\"--\")`로 이미 걸린다). 완화가 "
+        "장옵션 형태까지 재승인하지 않는지 고정한다.",
+    },
+    {
+        "case_id": "fix2-inv-a-cat-unknown-short-flag-denied",
+        "fix": "FIX-2",
+        "command": "cat -z README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "§5.5 4번째 열 — `z`는 허용 플래그 집합(`bnsETAvet`) 밖이라 "
+        "여전히 거부된다.",
+    },
+    {
+        "case_id": "fix2-ac2-5-head-dash-c-out-of-scope",
+        "fix": "FIX-2",
+        "command": "head -c 100 README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "AC-2.5 — `head -c`/`tail -c`는 이 FIX 의 범위 밖이며 여전히 "
+        "deny 다. trim 의 예산 단위는 줄(`CGW1_MAX_LINES`)인데 `-c`는 바이트 "
+        "단위라, 개행 없는 거대한 한 줄을 `--max-lines 220`으로 유계화할 수 "
+        "없다 — 이 조합을 trim 으로 보내면 가드가 작동하는 것처럼 보이면서 "
+        "막지 못한다. 별도 바이트 예산 신설이 필요한 후속 변경이다.",
+    },
+    {
+        "case_id": "fix2-ac2-5-tail-dash-c-out-of-scope",
+        "fix": "FIX-2",
+        "command": "tail -c 100 README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "AC-2.5 — head -c 와 동일한 사유로 tail -c 도 범위 밖이며 "
+        "여전히 deny 다.",
+    },
+]
+
+
+def fix2_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """이번 FIX 가 라우트 *코드*를 바꾼(거부 이력이 없는) 행만 골라낸다.
+
+    FIX1A/1B 의 동명 함수와 달리 deny -> allow 전환을 고르는 것이 아니다 —
+    FIX-2 에는 그런 전환이 없다(§0 참고, 위 섹션 헤더). 대신
+    `baseline_reason_code`가 없는(=개조 전에도 거부된 적이 없는) 행을 골라
+    AC-2.1/AC-2.2 가 실제로 검사해야 할 대상만 좁힌다.
+    """
+    return [
+        case for case in FIX2_ROUTE_PREDICATE_CASES if case.get("baseline_reason_code") is None
+    ]

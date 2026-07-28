@@ -31,6 +31,7 @@ from tests.context_guard_a1_oracles import (
 from tests.corpus_adversarial_pins import (
     FIX1A_ROUTE_PREDICATE_CASES,
     FIX1B_ROUTE_PREDICATE_CASES,
+    FIX2_ROUTE_PREDICATE_CASES,
     FIX5_ADVERSARIAL_PINS,
     FIX5_ALLOWLIST_POSITIVE_PINS,
     FIX5_ENV_WRAPPER_BYPASS_PINS,
@@ -40,6 +41,7 @@ from tests.corpus_adversarial_pins import (
     fix1b_ac1b2_case_count,
     fix1b_relaxation_case_count,
     fix1b_route_predicate_relaxations,
+    fix2_route_predicate_relaxations,
     fix5_case_count,
 )
 
@@ -1278,6 +1280,97 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     oracle_families,
                     "표 행과 오라클 family 가 어긋났다 — 행 추가 시 family 도 추가할 것.",
                 )
+
+    def test_fix2_cat_route_predicate_cases_match_expected_decision(self) -> None:
+        """FIX-2(plan §6.2) — `FIX2_ROUTE_PREDICATE_CASES`의 각 케이스가
+        canonical/packaged 두 진입점 모두에서 `expected_decision`/
+        `expected_reason_code`와 일치하는지 고정한다. 이 표의 관계는 FIX-1a/1b
+        와 달리 deny -> allow 전환이 아니다(라우트 *코드*만 `noop -> trim`으로
+        바뀐다) — `_cat_is_safe`의 허용 경계 자체는 이번 변경으로 전혀 바뀌지
+        않았으므로 INV-A/INV-B 하네스 대신 이 직접 대조로 §5.5 4번째 열(역방향
+        케이스)과 AC-2.1/AC-2.2/AC-2.5를 고정한다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix2_route_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX2_ROUTE_PREDICATE_CASES:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(decision.reason_code, case["expected_reason_code"])
+
+    def test_inv_c_fix2_cat_relaxation_commands_roundtrip(self) -> None:
+        """INV-C(재래핑 왕복, plan §5.2) — FIX-2로 `bash -lc` trim 경로에 새로
+        진입하는 cat standalone 명령(`FIX2_ROUTE_PREDICATE_CASES`의
+        `noop -> trim` 전환 대상, `fix2_route_predicate_relaxations()`)을 전수
+        열거하고, 래핑된 명령을 되찢어 원본 명령 문자열이 손실 없이 보존되는지
+        확인한다. `fix1a`의 동명 테스트(:1035)와 동일한 패턴이다. 파일명 자체의
+        적대적 인코딩(공백/따옴표/유니코드)을 실제 `bash -lc` 실행까지 수행하는
+        검증은 `test_ac2_3_cat_adversarial_filenames_survive_bash_lc_roundtrip`
+        이 별도로 담당한다."""
+        newly_rewrapped_candidates = tuple(
+            case["command"] for case in fix2_route_predicate_relaxations()
+        )
+        for script in self.contract_scripts():
+            for command in newly_rewrapped_candidates:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(a1_route_decision(proc), "rewrite_trim")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_ac2_3_cat_adversarial_filenames_survive_bash_lc_roundtrip(self) -> None:
+        """AC-2.3(INV-C 대상, plan §6.2) — FIX-2로 `cat`이 처음 `bash -lc`
+        재래핑 경로에 진입한다. 파일명은 공백/따옴표/유니코드를 다른 피연산자보다
+        훨씬 자주 담는 페이로드이므로, 실제 훅 페이로드를 stdin으로 주입하고
+        (`run_rewrite`) 되돌아온 `updatedInput.command`를 실제 `bash -lc`로
+        한 번 더 실행해(문자열 비교가 아니라 진짜 실행) 원본 파일명이 손상 없이
+        살아남는지 확인한다.
+
+        `shell_quote`(:2172)는 이 프로젝트에서 이미 독립적으로 검증됐다 — 실제
+        `bash -lc` 17개 적대 케이스(공백/따옴표/백슬래시/탭/개행/한글/leading
+        dash/`$HOME`/백틱/세미콜론/별표/괄호/빈 문자열/파이프/`'''`/혼합)에서
+        0/17 실패, `shlex.quote`와 바이트 동일이 확인되었다. 그래서 이 테스트는
+        결함을 찾으려는 탐색이 아니라 — `cat`이 그 경로에 새로 들어오는 시점을
+        고정하는 **회귀 핀**이다."""
+        import tempfile
+
+        adversarial_names = (
+            "has space.txt",
+            "single'quote.txt",
+            'double"quote.txt',
+            "back\\slash.txt",
+            "한글_파일이름.txt",
+            "mixed 'both\" chars 한글.txt",
+        )
+        for script in self.contract_scripts():
+            with tempfile.TemporaryDirectory(prefix="fix2-ac2-3-roundtrip-") as tmp:
+                for name in adversarial_names:
+                    marker = f"FIX2-AC2-3-MARKER-{abs(hash((script.name, name)))}"
+                    (Path(tmp) / name).write_text(marker + "\n", encoding="utf-8")
+                    raw_command = f"cat {shlex.quote(name)}"
+                    with self.subTest(script=script, filename=name):
+                        proc = run_rewrite(script, {"tool_input": {"command": raw_command}})
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+                        self.assertEqual(a1_route_decision(proc), "rewrite_trim")
+                        response = json.loads(proc.stdout)
+                        wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                        exec_proc = subprocess.run(
+                            ["bash", "-lc", wrapped],
+                            cwd=tmp,
+                            capture_output=True,
+                            text=True,
+                        )
+                        self.assertEqual(exec_proc.returncode, 0, exec_proc.stderr)
+                        self.assertIn(
+                            marker,
+                            exec_proc.stdout,
+                            "재래핑된 명령을 실제 bash -lc 로 실행한 결과에서 "
+                            "파일 내용을 찾지 못했다 — 파일명이 왕복 중 손상됐을 수 있다.",
+                        )
 
 
 if __name__ == "__main__":
