@@ -920,6 +920,24 @@ def _is_unmodeled_assignment_prefix(word: MiniShellWord) -> bool:
     return not any(boundary <= equals_index for boundary in word.barriers)
 
 
+def _env_operand_name(word: MiniShellWord) -> str | None:
+    """`env` 피연산자에서 환경변수 이름을 뽑는다 — 셸 인용을 무시한다.
+
+    coreutils `env` 는 셸 할당 문법을 검사하지 않는다. 인용 제거가 끝난 argv 원소가
+    `=` 를 포함하기만 하면 그대로 putenv() 한다. 따라서 셸이 할당으로 보지 않는
+    `env 'GIT_EXTERNAL_DIFF'=/tmp/evil.sh git diff` 나 `env NAME\\=v cmd` 도 실제로는
+    환경에 적용된다(실측 확인). `assignment_index` 는 인용된 문자를 비활성으로 보고
+    할당 표시를 남기지 않으므로, `env` 피연산자 구간에서는 인용이 제거된
+    `word.value` 를 기준으로 이름을 다시 판정해야 한다.
+
+    `=` 가 없으면 그 word 가 곧 실행할 명령어이므로 `None` 을 돌려 소비를 멈춘다.
+    """
+    equals_index = word.value.find("=")
+    if equals_index <= 0:
+        return None
+    return word.value[:equals_index]
+
+
 def _has_unsafe_env_prefix_name(
     words: tuple[MiniShellWord, ...],
     start: int,
@@ -977,6 +995,16 @@ def _routing_start(
             if index < len(words) and argv[index] == "--":
                 index += 1
                 continue
+            # `env` 피연산자는 셸 할당 문법이 아니라 "`=` 를 포함한 argv 원소" 규칙을
+            # 따른다. 인용으로 셸 할당 표시를 피한 형태도 env 가 그대로 적용하므로
+            # 인용 제거된 value 기준으로 한 번 더 검사한다(§_env_operand_name).
+            if index < len(words):
+                operand_name = _env_operand_name(words[index])
+                if operand_name is not None:
+                    if operand_name not in MINISHELL_ALLOWED_ENV_PREFIX_NAMES:
+                        return -2
+                    index += 1
+                    continue
             # 이름 문제가 아닌 미지의 `env` 플래그는 기존 원인을 유지한다.
             if index >= len(words) or argv[index].startswith("-"):
                 return -1

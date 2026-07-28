@@ -2030,11 +2030,11 @@
       "site": "removed_continuation_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-7-e24593e8e2",
+      "case_id": "assignment-canonical-restricted-env-7-942dd644c7",
       "command": "/usr/bin/env F'O'O=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2045,11 +2045,11 @@
       "site": "quoted_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-8-d3cf41dc8d",
+      "case_id": "assignment-canonical-restricted-env-8-8e80d30be8",
       "command": "/usr/bin/env F\\OO=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2060,11 +2060,11 @@
       "site": "escaped_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-9-3f39204269",
+      "case_id": "assignment-canonical-restricted-env-9-79098912c5",
       "command": "/usr/bin/env 'FOO'=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2075,11 +2075,11 @@
       "site": "quoted_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-10-d8a8060faf",
+      "case_id": "assignment-canonical-restricted-env-10-c447f3d230",
       "command": "/usr/bin/env F''OO=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2090,11 +2090,11 @@
       "site": "empty_quote_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-11-cadcefff42",
+      "case_id": "assignment-canonical-restricted-env-11-c6733767b3",
       "command": "/usr/bin/env FOO''=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2135,11 +2135,11 @@
       "site": "later_colon_after_quote"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-14-757217eec2",
+      "case_id": "assignment-canonical-restricted-env-14-310c97b5a7",
       "command": "/usr/bin/env 9FOO=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "9FOO=~",
@@ -2150,11 +2150,11 @@
       "site": "invalid_name"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-15-d09b7d7856",
+      "case_id": "assignment-canonical-restricted-env-15-4e10e840cc",
       "command": "/usr/bin/env FOO'='~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2165,11 +2165,11 @@
       "site": "quoted_equal"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-16-f1105887d0",
+      "case_id": "assignment-canonical-restricted-env-16-4482722251",
       "command": "/usr/bin/env FOO\\=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -2384,11 +2384,11 @@
       "site": "removed_plus_retained"
     },
     {
-      "case_id": "assignment-canonical-restricted-env-30-3873a004a0",
+      "case_id": "assignment-canonical-restricted-env-30-a3db74b00a",
       "command": "/usr/bin/env ''FOO=~ /usr/bin/printenv FOO",
       "entrypoint": "canonical",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -4916,11 +4916,11 @@
       "site": "removed_continuation_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-7-379315b181",
+      "case_id": "assignment-packaged-restricted-env-7-3713c1b5fd",
       "command": "/usr/bin/env F'O'O=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -4931,11 +4931,11 @@
       "site": "quoted_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-8-b19591e80c",
+      "case_id": "assignment-packaged-restricted-env-8-defaff0011",
       "command": "/usr/bin/env F\\OO=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -4946,11 +4946,11 @@
       "site": "escaped_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-9-4c264af85b",
+      "case_id": "assignment-packaged-restricted-env-9-a164fa4f10",
       "command": "/usr/bin/env 'FOO'=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -4961,11 +4961,11 @@
       "site": "quoted_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-10-2167e9678d",
+      "case_id": "assignment-packaged-restricted-env-10-9dd26b1ac6",
       "command": "/usr/bin/env F''OO=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -4976,11 +4976,11 @@
       "site": "empty_quote_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-11-5ddfd93d36",
+      "case_id": "assignment-packaged-restricted-env-11-3ec66c3731",
       "command": "/usr/bin/env FOO''=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -5021,11 +5021,11 @@
       "site": "later_colon_after_quote"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-14-4169119db3",
+      "case_id": "assignment-packaged-restricted-env-14-f20020275f",
       "command": "/usr/bin/env 9FOO=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "9FOO=~",
@@ -5036,11 +5036,11 @@
       "site": "invalid_name"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-15-da199f7fbe",
+      "case_id": "assignment-packaged-restricted-env-15-4cfc824219",
       "command": "/usr/bin/env FOO'='~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -5051,11 +5051,11 @@
       "site": "quoted_equal"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-16-6486b20601",
+      "case_id": "assignment-packaged-restricted-env-16-30213d69fc",
       "command": "/usr/bin/env FOO\\=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",
@@ -5270,11 +5270,11 @@
       "site": "removed_plus_retained"
     },
     {
-      "case_id": "assignment-packaged-restricted-env-30-759a2b8442",
+      "case_id": "assignment-packaged-restricted-env-30-cae59c92bb",
       "command": "/usr/bin/env ''FOO=~ /usr/bin/printenv FOO",
       "entrypoint": "packaged",
-      "expected_decision": "noop",
-      "expected_reason": null,
+      "expected_decision": "deny",
+      "expected_reason": "unsafe_env_name_denied",
       "expected_side_effects": 0,
       "expected_wrapper_launches": 0,
       "logical_word": "FOO=~",

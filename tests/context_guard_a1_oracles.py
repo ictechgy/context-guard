@@ -881,6 +881,13 @@ def _assignment_effective_expectation(
     expected_decision = str(template["expected_decision"])
     if expected_decision == "deny":
         return "deny", "active_shell_expansion_denied"
+    if position == "restricted_env" and "=" in str(template["raw_word"]):
+        # `env` 피연산자 자리는 셸 할당 문법을 따르지 않는다. coreutils `env` 는
+        # 인용 제거가 끝난 argv 원소가 `=` 를 포함하기만 하면 그대로 putenv() 하므로
+        # (`env F'O'O=v printenv FOO` 가 실제로 v 를 출력한다) 셸이 할당으로 보지 않는
+        # 인용 형태도 환경에 적용된다. B1 템플릿의 이름은 전부 화이트리스트 밖이므로
+        # 이 위치에서는 인식 여부와 무관하게 이름 게이트에 걸린다.
+        return "deny", "unsafe_env_name_denied"
     name_recognized = bool(template.get("env_prefix_name_recognized", False))
     if position in _ENV_PREFIX_ROUTED_POSITIONS and name_recognized:
         return "deny", "unsafe_env_name_denied"

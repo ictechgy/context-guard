@@ -279,6 +279,32 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "잡혀야 한다(기존 구현은 `--` 를 명령으로 오인해 라우팅했다).",
     },
     {
+        "case_id": "fix5-bypass-env-quoted-operand",
+        "fix": "FIX-5",
+        "command": "env 'GIT_EXTERNAL_DIFF'=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "coreutils `env` 는 셸 할당 문법이 아니라 `=` 를 포함한 argv 원소를 "
+        "그대로 putenv() 한다. 인용 때문에 assignment_index 가 남지 않아 명령어로 "
+        "취급되며 통과했다(실측: env 'X'=v 는 실제로 X 를 설정한다).",
+    },
+    {
+        "case_id": "fix5-bypass-env-escaped-operand",
+        "fix": "FIX-5",
+        "command": "env GIT_EXTERNAL_DIFF\\=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "백슬래시로 `=` 를 인용한 형태도 env 는 동일하게 적용한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-quoted-operand-allowlisted",
+        "fix": "FIX-5",
+        "command": "env 'LANG'=C git diff",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "대조군 — 인용된 허용 이름은 계속 통과하며 라우팅 헤드는 git 이어야 한다.",
+    },
+    {
         "case_id": "fix5-bypass-append-assignment",
         "fix": "FIX-5",
         "command": "GIT_EXTERNAL_DIFF+=/tmp/evil.sh git diff",
