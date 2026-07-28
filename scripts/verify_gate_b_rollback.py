@@ -528,16 +528,31 @@ def assert_gate_b_markers_absent_from_bless(
     bless 트리에 소유 경로 자체가 없으면(그 경로가 이 세대에서 통째로 삭제된
     경우) 부재로 간주해 통과한다 — 경로의 부재는 ``assert_generation_structure``의
     경로 집합 검사가 이미 구속한다.
+
+    다만 그 건너뛰기가 *모든* 마커에 적용되면 이 검사는 0개를 평가한 채 성공을
+    보고한다. ``commit_paths``가 ``diff-tree --name-only``(상태 무시)라 bless가
+    삭제한 경로도 정당한 컴포넌트 경로이므로, 마커 소유 경로를 전부 '이 세대가
+    삭제하는 경로'로 선언하면 역방향 anti-laundering 검사가 통째로 공허해진다
+    (소유 경로가 컴포넌트 경로인지 보는 D6-3으로는 막히지 않는다). 그래서 최소
+    하나는 실제로 평가되었는지 요구한다.
     """
+    evaluated = 0
     for marker in generation.gate_b_markers:
         if not path_exists_in_tree(repo, bless, marker.owner_path):
             continue
+        evaluated += 1
         content = file_at(repo, bless, marker.owner_path)
         if marker.literal in content:
             raise ProofError(
                 f"generation {generation.name!r} bless tree {bless} retains Gate-B "
                 f"marker {marker.literal!r} in {marker.owner_path}"
             )
+    if not evaluated:
+        raise ProofError(
+            f"generation {generation.name!r} evaluated no Gate-B markers against "
+            f"bless tree {bless}: every marker owner path is absent there, so the "
+            "reverse anti-laundering check would pass vacuously"
+        )
 
 
 def assert_gate_b_markers_present_at_head(
@@ -671,8 +686,12 @@ def resolve_history(
         raise ProofError(
             f"component paths changed after durable reapplication: {sorted(overlap)!r}"
         )
-    assert_gate_b_markers_absent_from_bless(repo, active, active_commits["bless"])
+    # 순서가 의미를 가진다. C3-a(HEAD 존재)가 먼저다 — 마커 리터럴이 개명 등으로
+    # rot하면 C3-b는 '어디에도 없으니 bless에도 없다'로 조용히 통과하므로, 그보다
+    # 먼저 C3-a가 큰 소리로 실패해야 자기 무효화(P5)가 문서대로 작동한다. 뒤집으면
+    # 최종 판정은 같아도 진단이 '잔여물이 마커를 품었다'가 아니라 침묵이 된다.
     assert_gate_b_markers_present_at_head(repo, source_head, active)
+    assert_gate_b_markers_absent_from_bless(repo, active, active_commits["bless"])
     return all_commits
 
 

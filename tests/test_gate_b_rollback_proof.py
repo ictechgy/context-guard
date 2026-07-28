@@ -854,12 +854,18 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         )
         return gen1, gen2
 
-    def drive(self, tmp, generations, *, bless_deletions=None):
-        """합성 저장소를 만들고 ``resolve_history``를 HEAD까지 태운다."""
+    def drive(self, tmp, generations, *, bless_deletions=None, drive_generations=None):
+        """합성 저장소를 만들고 ``resolve_history``를 HEAD까지 태운다.
+
+        ``drive_generations``를 주면 저장소는 ``generations``로 만들되
+        ``resolve_history``는 그 기록으로 돌린다 — 저장소 내용과 어긋나는 기록을
+        검사에 태울 때 쓴다(subject/경로는 같게 유지해야 커밋 해석이 성공한다).
+        """
         repo, base, _ = self.make_repo_for_generations(
             Path(tmp), generations, bless_deletions=bless_deletions
         )
         head = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        generations = drive_generations or generations
         with mock.patch.object(rollback_proof, "GENERATIONS", generations):
             with mock.patch.object(rollback_proof, "BASE_COMMIT", base):
                 return rollback_proof.resolve_history(
@@ -1177,12 +1183,15 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             b2_paths=frozenset({"g2/b2.txt"}),
             shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
             # 직전 세대의 마커를 그대로 이월하면서(전방 이월 규칙) 누출을
-            # 드러내는 리터럴을 하나 더 얹는다.
+            # 드러내는 리터럴을 하나 더 얹는다. 누출 리터럴은 HEAD에도 있어야
+            # 한다 — C3-a가 C3-b보다 먼저 돌기 때문이다. 경로 이름 자체는 bless
+            # (``# residual[...]: shared/keep.txt``)와 HEAD(``# shared:
+            # shared/keep.txt``) 양쪽에 나타나므로 이 조건을 만족한다.
             gate_b_markers=(
                 rollback_proof.GateBMarker(
                     self.SHARED_MARKER_LITERAL, "shared/keep.txt"
                 ),
-                rollback_proof.GateBMarker("residual[", "shared/keep.txt"),
+                rollback_proof.GateBMarker("shared/keep.txt", "shared/keep.txt"),
             ),
             residual_edits=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
         )
@@ -1265,6 +1274,143 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ):
                 self.drive(tmp, (gen1, nonce_only))
 
+    def test_resolve_history_fires_c3a_when_head_lost_a_gate_b_marker(self) -> None:
+        """C3-a 배선 — 존재 검사의 *호출부*를 고정한다.
+
+        U-9는 헬퍼를 직접 부르므로 ``resolve_history``에서 호출 한 줄을 지워도
+        스위트가 초록이었다(변이 배터리로 확인). 마커가 rot했는데 이 검사가
+        빠지면 C3-b가 '어디에도 없으니 bless에도 없다'로 조용히 통과해 역방향
+        방어선 전체가 소리 없이 사라진다.
+        """
+        gen1, _ = self.make_pair()
+        rotted = self.make_generation(
+            "gen2-rotted-marker",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+            gate_b_markers=(
+                rollback_proof.GateBMarker(
+                    self.SHARED_MARKER_LITERAL, "shared/keep.txt"
+                ),
+                rollback_proof.GateBMarker("GONE_FROM_HEAD", "shared/keep.txt"),
+            ),
+            residual_edits=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-c3a-wired-") as tmp:
+            with self.assertRaisesRegex(rollback_proof.ProofError, "missing from"):
+                self.drive(tmp, (gen1, rotted))
+
+    def test_c3b_rejects_a_generation_that_evaluates_no_markers(self) -> None:
+        """마커 소유 경로를 전부 'bless가 삭제하는 경로'로 선언해 C3-b가 0개를
+        평가한 채 성공하는 것을 막는다.
+
+        ``commit_paths``는 ``diff-tree --name-only``라 상태를 보지 않으므로,
+        bless가 삭제한 경로도 여전히 정당한 컴포넌트 경로다. 따라서 소유 경로가
+        컴포넌트 경로인지 보는 D6-3만으로는 이 공허화를 막지 못한다.
+        """
+        marker_owner = "shared/only.txt"
+        generation = self.make_generation(
+            "gen-evaluates-nothing",
+            b1_paths=frozenset({"e/b1.txt"}),
+            b2_paths=frozenset({"e/b2.txt"}),
+            shared_paths=frozenset({marker_owner}),
+            residual_markers={marker_owner: (self.RESIDUAL_MARKER_NEEDLE,)},
+            gate_b_markers=(
+                rollback_proof.GateBMarker("ANY_LITERAL", marker_owner),
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-noeval-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+            # 소유 경로가 아예 없는 bless 트리 — 모든 마커가 continue로 건너뛰어진다.
+            empty_bless = commit_paths_for_test(
+                repo, {"other.txt": "no marker owner here\n"}, "bless without owners"
+            )
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "evaluated no Gate-B markers"
+            ):
+                rollback_proof.assert_gate_b_markers_absent_from_bless(
+                    repo, generation, empty_bless
+                )
+
+    def test_assert_generation_structure_rejects_overlapping_paths(self) -> None:
+        """서로소 검사가 ``assert_generation_structure`` 안에서도 실제로 돈다.
+
+        사전 검사(pre-pass)와 이 호출은 서로 다른 진입점을 방어한다. 사전 검사만
+        고정돼 있으면 ``assert_generation_structure``를 직접 부르는 경로에서 검사가
+        사라져도 아무 테스트가 실패하지 않는다(변이 배터리로 확인).
+        """
+        overlapping = self.make_generation(
+            "gen-structure-overlap",
+            b1_paths=frozenset({"s/dup.txt", "s/b1.txt"}),
+            b2_paths=frozenset({"s/dup.txt"}),
+            shared_paths=frozenset({"s/shared.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-structover-") as tmp:
+            # 진짜 4-커밋 체인을 만든다. 겹치는 경로 집합은 부모 체인 검사도 경로
+            # 집합 검사도 통과시킬 수 있으므로(b1 커밋이 {b1,dup}을, b2 커밋이
+            # {dup}을 건드리면 둘 다 선언과 일치한다) 서로소 검사에 실제로 도달한다.
+            _repo, _base, all_commits = self.make_repo_for_generations(
+                Path(tmp), (overlapping,)
+            )
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "component paths overlap"
+            ):
+                rollback_proof.assert_generation_structure(
+                    _repo, overlapping, all_commits[overlapping.name]
+                )
+
+    def test_apply_then_revert_restores_the_base_tree(self) -> None:
+        """apply/revert 트리 동등성의 성공 방향만 고정한다.
+
+        변이 배터리에서 이 단언(``reverted_tree != base_tree``)을 꺼도 스위트가
+        초록으로 남는다. 그러나 실패 방향을 합성으로 만들 수 없다: ``git revert``가
+        깨끗이 적용되면 결과 트리는 정의상 cherry-pick 직전 트리와 같고, 깨끗이
+        적용되지 않으면 ``run_git``이 그 전에 cherry-pick/revert 실패로 발화한다.
+        즉 이 단언은 git 의미론상 도달 불가능한 방어적 단언이며, 억지 픽스처로
+        핀을 만드는 대신 그 사실을 여기 기록한다. 성공 방향은 회귀를 잡는다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-applyrevert-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            base = commit_paths_for_test(repo, {"f.txt": "v1\n"}, "base")
+            component = commit_paths_for_test(repo, {"f.txt": "v2\n"}, "component")
+            base_tree = rollback_proof.run_git(
+                repo, "rev-parse", f"{base}^{{tree}}"
+            ).stdout.strip()
+            result = rollback_proof.apply_then_revert(repo, base, component)
+            self.assertEqual(result["reverted_tree"], base_tree)
+            self.assertNotEqual(result["applied_tree"], base_tree)
+
+    def test_resolve_history_fires_residual_contract(self) -> None:
+        """잔여 계약의 ``resolve_history`` 호출부를 고정한다.
+
+        이 검사는 ``prove_current_revert_order``에서도 불리므로 호출부 하나를 지워도
+        전체가 무력해지지는 않지만, 그렇다고 배선이 검증된 것은 아니다.
+
+        저장소는 마커를 *쓰는* 세대 기록으로 만들고, ``resolve_history``에는 더 넓은
+        마커를 요구하는 기록을 넘긴다 — U-12의 대조군과 같은 기법이다.
+        """
+        gen1, gen2 = self.make_pair(
+            residual_edits=frozenset({"shared/keep.txt", "shared/vanish.txt"})
+        )
+        demanding = self.make_generation(
+            gen2.name,
+            b1_paths=gen2.b1_paths,
+            b2_paths=gen2.b2_paths,
+            shared_paths=gen2.shared_paths,
+            residual_markers={"shared/keep.txt": ("MARKER_NEVER_WRITTEN",)},
+            residual_edits=gen2.residual_edits,
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-residwire-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "unrelated feature marker"
+            ):
+                self.drive(tmp, (gen1, gen2), drive_generations=(gen1, demanding))
+
     def test_cli_reports_a_malformed_record_as_failure_not_unavailable(self) -> None:
         """레코드 결함은 체크아웃 모양과 무관하므로 어떤 클론에서도 '실패'(종료 1)여야
         한다.
@@ -1317,27 +1463,58 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         여기서 직접 ``-O`` 하위 프로세스를 띄운다. 검사가 ``assert`` 문으로
         회귀하면 ``-O``가 그것을 소거해 이 테스트가 실패한다.
         """
-        program = (
-            "import importlib.util, sys;"
-            f"spec = importlib.util.spec_from_file_location('vg', {str(SCRIPT)!r});"
-            "m = importlib.util.module_from_spec(spec);"
-            "sys.modules['vg'] = m;"
-            "spec.loader.exec_module(m);"
-            "g = m.Generation(name='o', bless_subject='b', b1_subject='1',"
-            " b2_subject='2', shared_subject='s',"
-            " b1_paths=frozenset({'x','dup'}), b2_paths=frozenset({'dup'}),"
-            " shared_paths=frozenset({'y'}), residual_markers={'y': ('N',)},"
-            " gate_b_markers=(m.GateBMarker('L', 'y'),));"
-            "raised = 0\n"
-            "try:\n"
-            "    m.assert_disjoint_paths(g)\n"
-            "except m.ProofError:\n"
-            "    raised += 1\n"
-            "try:\n"
-            "    m.assert_generation_records_wellformed((g, g))\n"
-            "except m.ProofError:\n"
-            "    raised += 1\n"
-            "print(raised)\n"
+        program = "\n".join(
+            [
+                "import importlib.util, sys",
+                f"spec = importlib.util.spec_from_file_location('vg', {str(SCRIPT)!r})",
+                "m = importlib.util.module_from_spec(spec)",
+                "sys.modules['vg'] = m",
+                "spec.loader.exec_module(m)",
+                "",
+                "def gen(name, **kw):",
+                "    base = dict(name=name, bless_subject='b ' + name,",
+                "                b1_subject='1 ' + name, b2_subject='2 ' + name,",
+                "                shared_subject='s ' + name,",
+                "                b1_paths=frozenset({name + '/x'}),",
+                "                b2_paths=frozenset({name + '/z'}),",
+                "                shared_paths=frozenset({name + '/y'}),",
+                "                residual_markers={name + '/y': ('N',)},",
+                "                gate_b_markers=(m.GateBMarker('L', name + '/y'),))",
+                "    base.update(kw)",
+                "    return m.Generation(**base)",
+                "",
+                "ok = gen('ok')",
+                "overlap = gen('ov', b1_paths=frozenset({'ov/x', 'ov/dup'}),",
+                "               b2_paths=frozenset({'ov/dup'}))",
+                # 각 분기를 서로 다른 레코드로 따로 발화시킨다 — 한 레코드에 여러
+                # 결함을 몰아넣으면 먼저 걸리는 분기 하나만 검증되고 나머지 분기는
+                # -O에서 소거돼도 눈치채지 못한다.
+                "cases = [",
+                "    ('disjoint', lambda: m.assert_disjoint_paths(overlap)),",
+                "    ('dupname', lambda: m.assert_generation_records_wellformed(",
+                "        (ok, gen('ok', b1_paths=frozenset({'ok2/x'}),",
+                "                 b2_paths=frozenset({'ok2/z'}),",
+                "                 shared_paths=frozenset({'ok2/y'}),",
+                "                 residual_markers={'ok2/y': ('N',)},",
+                "                 gate_b_markers=(m.GateBMarker('L', 'ok2/y'),))))),",
+                "    ('nomarkers', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('nm', gate_b_markers=()),))),",
+                "    ('noresidual', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('nr', residual_markers={}),))),",
+                "    ('emptyneedle', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('en', residual_markers={'en/y': ('',)}),))),",
+                "    ('foreignowner', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('fo', gate_b_markers=(m.GateBMarker('L', 'nope'),)),))),",
+                "]",
+                "missed = []",
+                "for label, call in cases:",
+                "    try:",
+                "        call()",
+                "    except m.ProofError:",
+                "        continue",
+                "    missed.append(label)",
+                "print(','.join(missed) if missed else 'ALL_RAISED')",
+            ]
         )
         proc = subprocess.run(
             [sys.executable, "-O", "-c", program],
@@ -1349,8 +1526,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             proc.stdout.strip(),
-            "2",
-            "record invariants were optimized away under python -O "
+            "ALL_RAISED",
+            "these record invariants were optimized away under python -O "
             "(they must raise explicitly, never use an assert statement)",
         )
 
