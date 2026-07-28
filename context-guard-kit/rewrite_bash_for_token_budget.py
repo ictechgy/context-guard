@@ -1704,15 +1704,40 @@ _GIT_SHORTLOG_SHORT_FLAGS = frozenset("sne")
 
 
 def _git_shortlog_is_safe(arguments: tuple[str, ...]) -> bool:
-    """`git shortlog`: 위치 인자 무제한(§6.1b 표). `-n`은 여기서 `--numbered`
-    (값을 취하지 않는 순수 불리언)다 — log의 max-count `-n`과 의미가 다르다
-    (subcommand별 `-n` 의미 차이, AC-1.9)."""
-    positionals = _git_flags_and_positionals(
+    """`git shortlog`: 위치 인자 무제한이나 리비전 1개 이상 필수(§6.1b 표).
+    `-n`은 여기서 `--numbered`(값을 취하지 않는 순수 불리언)다 — log의
+    max-count `-n`과 의미가 다르다(subcommand별 `-n` 의미 차이, AC-1.9).
+
+    **리비전 1개 이상을 요구하는 이유(비종료 방지)**: git shortlog 는 리비전
+    피연산자가 없으면 커밋 로그를 stdin 에서 읽는다. 재작성 래퍼
+    (`sanitize_output.py:1052`)는 자식 프로세스에 `stdin=` 을 지정하지 않아
+    훅의 stdin 을 그대로 상속시키므로, 닫히지 않은 stdin 아래에서
+    `git shortlog -sn` 은 `DEFAULT_TIMEOUT_SECONDS`(600초) 워치독이 프로세스
+    그룹을 죽일 때까지 아무 것도 출력하지 않고 블록한다(실측). 이는
+    `_head_tail_is_safe` 가 `tail -f`/`-F` 를 거부하는 것과 동일한 불변식이며,
+    승인 범위를 좁히는 방향이므로 표의 보안 태세를 약화하지 않는다.
+    `git shortlog -sn HEAD` 처럼 리비전을 주면 stdin 을 읽지 않고 즉시 끝난다.
+
+    `--` 이후 토큰은 리비전이 아니라 pathspec 이므로 세지 않는다 —
+    `git shortlog -sn -- README.md` 는 위치 인자가 1개로 보이지만 리비전이
+    없어 여전히 stdin 을 읽고 블록한다(실측). blame 의 `>=1 path` 규칙과 달리
+    여기서는 `--` 앞의 리비전만 요건을 충족시킨다.
+    """
+    if _git_flags_and_positionals(
         arguments,
         long_flags=_GIT_SHORTLOG_LONG_FLAGS,
         short_flags=_GIT_SHORTLOG_SHORT_FLAGS,
+    ) is None:
+        return False
+    revision_arguments = (
+        arguments[: arguments.index("--")] if "--" in arguments else arguments
     )
-    return positionals is not None
+    revisions = _git_flags_and_positionals(
+        revision_arguments,
+        long_flags=_GIT_SHORTLOG_LONG_FLAGS,
+        short_flags=_GIT_SHORTLOG_SHORT_FLAGS,
+    )
+    return revisions is not None and revisions >= 1
 
 
 def _git_blame_is_safe(arguments: tuple[str, ...]) -> bool:

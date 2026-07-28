@@ -258,11 +258,13 @@ def _route_examples() -> list[dict[str, str]]:
     add(
         "git-shortlog",
         ("standalone", "first"),
-        ("git shortlog -sn", "git shortlog --summary --email"),
+        ("git shortlog -sn HEAD", "git shortlog --summary --email HEAD"),
         "rewrite_sanitize",
-        ("git shortlog --merge", "git --paginate shortlog -sn"),
+        ("git shortlog -sn", "git --paginate shortlog -sn"),
         note="AC-1.9 bundled-flag positive (subcommand-local -n=--numbered); "
-        "unknown-flag + R-5 global-option-bypass negatives",
+        "missing-required-revision negative (>=1 revision rule — bare shortlog "
+        "reads commits from stdin and blocks until the 600s wrapper watchdog) "
+        "+ R-5 global-option-bypass negative",
     )
     add(
         "git-blame",

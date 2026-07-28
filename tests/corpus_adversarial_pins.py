@@ -929,11 +929,34 @@ FIX1B_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
     {
         "case_id": "fix1b-relax-shortlog",
         "fix": "FIX-1b",
-        "command": "git shortlog -sn",
+        "command": "git shortlog -sn HEAD",
         "baseline_reason_code": "route_policy_denied",
         "expected_decision": "sanitize",
         "expected_reason_code": None,
-        "note": "shortlog 행 신설 — AC-1.9 묶음 단축 플래그(-sn -> {s,n}) 검증 겸용.",
+        "note": "shortlog 행 신설 — AC-1.9 묶음 단축 플래그(-sn -> {s,n}) 검증 겸용. "
+        "리비전 HEAD 를 주어 stdin 을 읽지 않는 형태만 승인된다.",
+    },
+    {
+        "case_id": "fix1b-inv-a-shortlog-no-revision",
+        "fix": "FIX-1b",
+        "command": "git shortlog -sn",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": None,
+        "note": "리비전 없는 shortlog 는 stdin 에서 커밋 로그를 읽어 래퍼의 600초 "
+        "워치독까지 블록한다(실측). `tail -f` 를 거부하는 것과 같은 비종료 방지 "
+        "불변식이므로 승인 범위를 좁히는 방향으로 고정한다.",
+    },
+    {
+        "case_id": "fix1b-inv-a-shortlog-pathspec-only",
+        "fix": "FIX-1b",
+        "command": "git shortlog -sn -- README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": None,
+        "note": "`--` 뒤 토큰은 pathspec 이라 리비전 요건을 충족하지 못한다 — "
+        "위치 인자 총계만 세면 이 형태가 승인되지만 git 은 여전히 stdin 을 "
+        "읽고 블록한다(실측).",
     },
     {
         "case_id": "fix1b-relax-blame",
