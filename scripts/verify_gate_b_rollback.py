@@ -214,8 +214,20 @@ def path_exists_in_tree(repo: Path, commit: str, path: str) -> bool:
     ``--name-status`` 기반 헬퍼는 쓰지 않는다 — 서로소·경로 집합 고정 체인에서는
     상태(M/D) 비교 자체가 laundering을 구별하는 정보를 주지 않기 때문이다
     (Decision D5 참고). 트리 존재 여부만 직접 묻는다.
+
+    ``git cat-file -e <commit>:<path>``는 쓰지 않는다. 그 형태는 '트리에 경로
+    없음'과 '잘못된 리비전·손상된 객체' 양쪽에 똑같이 128을 돌려주므로, 종료
+    코드로 둘을 가를 수 없다(1은 나오지 않는다 — 실측 확인). 두 경우를 '부재'로
+    합치면 인프라 실패가 곧 통과가 된다: D5는 before/after가 함께 비어 같아지고,
+    C3-b는 마커 검사를 통째로 건너뛴다 — 릴리스 게이트가 fail-open 한다.
+
+    ``git ls-tree``는 정확히 필요한 분리를 준다. 커밋이 유효하면 경로가 없어도
+    종료 0에 빈 출력이고, 리비전 자체가 나쁘면 0이 아닌 종료로 실패한다. 따라서
+    ``check=True``로 호출해 인프라 실패는 ``ProofError``로 큰 소리를 내게 하고,
+    부재는 출력이 비었는지로만 판단한다.
     """
-    return run_git(repo, "cat-file", "-e", f"{commit}:{path}", check=False).returncode == 0
+    proc = run_git(repo, "ls-tree", "--name-only", commit, "--", path)
+    return path in proc.stdout.splitlines()
 
 
 def commit_exists(repo: Path, commit: str) -> bool:
@@ -330,6 +342,55 @@ def assert_disjoint_paths(generation: Generation) -> None:
                 f"generation {generation.name!r} component paths overlap between "
                 f"{left_name} and {right_name}: {sorted(overlap)!r}"
             )
+
+
+def assert_generation_records_wellformed(generations: tuple[Generation, ...]) -> None:
+    """git 없이 세대 레코드 자체의 자기 신고 구멍을 막는다 (D6, 신규 구현).
+
+    ``python -O``에서도 소거되지 않도록 ``assert`` 문을 쓰지 않고 명시적으로
+    ``raise``한다. 세 가지를 검사한다.
+
+    1. ``name`` 전역 고유성. ``resolve_history``의 ``all_commits``는 ``name``을
+       키로 쓰므로, 이름이 겹치면 앞 세대의 커밋이 조용히 덮어써지고 D3/D5가
+       같은 bless를 자기 자신과 비교해 통째로 공허해진다 — 재축복 커밋 안의
+       한 단어짜리 편집으로 이번 PR이 추가하는 두 방어선이 모두 꺼진다.
+    2. ``gate_b_markers``/``residual_markers`` 비어 있지 않음. 빈 컬렉션은
+       C3-a/C3-b/잔여 계약을 0회 루프로 만들어 공허하게 통과시킨다. I5 약화를
+       정당화하는 역방향 anti-laundering 방어선을 재축복자 자신이 끌 수 있으면
+       안 된다. 단조성(이전 세대 마커 포함)은 요구하지 *않는다* — 그것은 과거
+       세대의 bless를 소급 재검사하지 않는다는 설계 성질(U-12)을 깨뜨린다.
+       여기서 세우는 것은 바닥선이지 단조성이 아니다.
+    3. 마커 소유 경로가 그 세대의 컴포넌트 경로에 속함. C3-b가 'bless 트리에
+       소유 경로가 없으면 통과'로 건너뛰는 근거는 '경로의 부재는 경로 집합
+       검사가 이미 구속한다'인데, 그 논거는 소유 경로가 컴포넌트 경로일 때만
+       성립한다. 컴포넌트 밖 경로를 소유자로 선언하면 C3-b가 아무것도 평가하지
+       않고 성공을 보고한다.
+    """
+    if not generations:
+        raise ProofError("GENERATIONS is empty: the proof has no anchor")
+    names = [generation.name for generation in generations]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ProofError(f"duplicate generation names: {duplicates!r}")
+    for generation in generations:
+        if not generation.gate_b_markers:
+            raise ProofError(
+                f"generation {generation.name!r} declares no Gate-B markers: "
+                "the reverse anti-laundering check would pass vacuously"
+            )
+        if not generation.residual_markers:
+            raise ProofError(
+                f"generation {generation.name!r} declares no residual markers: "
+                "the unrelated-feature preservation contract would pass vacuously"
+            )
+        components = generation.all_component_paths
+        for marker in generation.gate_b_markers:
+            if marker.owner_path not in components:
+                raise ProofError(
+                    f"generation {generation.name!r} Gate-B marker "
+                    f"{marker.literal!r} owner path {marker.owner_path!r} is not a "
+                    "component path of that generation"
+                )
 
 
 def resolve_generation_commits(
@@ -511,6 +572,13 @@ def resolve_history(
     세대 간 잔여물 편집 선언(D3)과 존재 집합 불변(D5)은 연속한 두 세대마다
     검사한다 — 세대가 하나뿐인 PR-1에서는 이 루프가 비어 있어 완전히 불활성이다.
     """
+    # git이 필요 없는 레코드 검사를 먼저 돌린다. 커밋 해석 뒤에 두면 얕은
+    # 체크아웃에서 ProofHistoryUnavailable(종료 3)이 먼저 나서 순수 레코드
+    # 불변이 아예 평가되지 않는다.
+    assert_generation_records_wellformed(GENERATIONS)
+    for generation in GENERATIONS:
+        assert_disjoint_paths(generation)
+
     all_commits: dict[str, dict[str, str]] = {}
     for generation in GENERATIONS:
         commits = resolve_generation_commits(

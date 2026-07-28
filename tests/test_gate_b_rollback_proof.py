@@ -51,9 +51,10 @@ class GateBRollbackProofTests(unittest.TestCase):
     def make_gate_b_history_repo(self, root: Path) -> tuple[Path, dict[str, str]]:
         """실제 Gate-B 4-커밋 이력과 경로·subject가 동형인 합성 저장소를 만든다.
 
-        운영 코드의 ``B1_PATHS``/``B2_PATHS``/``SHARED_INTEGRATION_PATHS``/
-        ``RESIDUAL_MARKERS``를 그대로 읽어 파일을 배치하므로, 프로덕션 상수가
-        바뀌면 이 헬퍼도 자동으로 따라간다. 반환값은
+        운영 코드의 ``B1_PATHS``/``B2_PATHS``/``SHARED_INTEGRATION_PATHS``와
+        활성 세대의 ``GENERATIONS[-1].residual_markers``를 그대로 읽어 파일을
+        배치하므로, 프로덕션 상수가 바뀌면 이 헬퍼도 자동으로 따라간다
+        (``RESIDUAL_MARKERS``는 세대 레코드로 옮겨지며 사라진 이름이다). 반환값은
         ``{"base"/"bless"/"b1"/"b2"/"shared-integration": <sha>}``.
         """
         repo = root / "gate-b-history"
@@ -320,6 +321,12 @@ class GateBGenerationsTests(unittest.TestCase):
     때문이다 — 공용 헬퍼는 모듈 레벨 ``commit_paths_for_test``로 뺐다.
     """
 
+    # 합성 저장소가 실제로 쓰는 리터럴. bless 트리는 ``# residual[<gen>]: <path>``,
+    # shared reapply 커밋은 ``# shared: <path>``를 쓰므로 ``SHARED_MARKER_LITERAL``은
+    # HEAD에는 있고 bless에는 없다 — C3-a/C3-b가 요구하는 방향과 정확히 일치한다.
+    SHARED_MARKER_LITERAL = "shared:"
+    RESIDUAL_MARKER_NEEDLE = "SYNTHETIC_RESIDUAL_MARKER"
+
     def make_generation(
         self,
         name: str,
@@ -328,9 +335,23 @@ class GateBGenerationsTests(unittest.TestCase):
         b2_paths: frozenset[str],
         shared_paths: frozenset[str],
         residual_markers: dict[str, tuple[str, ...]] | None = None,
-        gate_b_markers: tuple = (),
+        gate_b_markers: tuple | None = None,
         residual_edits: frozenset[str] = frozenset(),
     ):
+        """합성 세대 하나를 만든다.
+
+        ``gate_b_markers``/``residual_markers``를 넘기지 않으면 합성 저장소와
+        아귀가 맞는 유효한 기본값을 채운다 — 빈 컬렉션은 이제
+        ``assert_generation_records_wellformed``가 거부하기 때문이다(D6). 기본
+        마커의 소유 경로는 반드시 그 세대의 컴포넌트 경로여야 한다.
+        """
+        owner = sorted(shared_paths)[0]
+        if gate_b_markers is None:
+            gate_b_markers = (
+                rollback_proof.GateBMarker(self.SHARED_MARKER_LITERAL, owner),
+            )
+        if residual_markers is None:
+            residual_markers = {owner: (self.RESIDUAL_MARKER_NEEDLE,)}
         return rollback_proof.Generation(
             name=name,
             bless_subject=f"proof: establish {name} residual",
@@ -340,33 +361,63 @@ class GateBGenerationsTests(unittest.TestCase):
             b1_paths=b1_paths,
             b2_paths=b2_paths,
             shared_paths=shared_paths,
-            residual_markers=residual_markers or {},
+            residual_markers=residual_markers,
             gate_b_markers=gate_b_markers,
             residual_edits=residual_edits,
         )
 
     def make_repo_for_generations(
-        self, root: Path, generations: tuple
+        self,
+        root: Path,
+        generations: tuple,
+        bless_deletions: dict[str, frozenset[str]] | None = None,
     ) -> tuple[Path, str, dict[str, dict[str, str]]]:
         """세대 목록을 base -> gen[0](bless/b1/b2/shared) -> gen[1](...) -> ...
         순으로 이어 붙인 합성 저장소를 만든다. 반환값은
         ``(repo, base_sha, {세대이름: {"bless"/"b1"/"b2"/"shared-integration": sha}})``.
+
+        bless 내용에 세대 이름을 박아 넣는다 — 세대 간 컴포넌트 경로가 겹칠 때
+        두 bless가 같은 내용이면 D3가 볼 변화가 없어 배선 테스트가 공허해진다.
+
+        ``bless_deletions``는 세대 이름별로 그 세대의 bless가 (내용을 쓰는 대신)
+        트리에서 지울 컴포넌트 경로를 지정한다 — D5의 존재 집합 축을
+        ``resolve_history``까지 태워 검사하기 위한 것이다.
         """
         repo = root / "generations-history"
         repo.mkdir()
         rollback_proof.run_git(repo, "init", "--quiet")
         base = commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
 
+        deletions = bless_deletions or {}
         all_commits: dict[str, dict[str, str]] = {}
         for generation in generations:
+            dropped = deletions.get(generation.name, frozenset())
             bless_contents = {
-                path: f"# residual: {path}\n" for path in generation.all_component_paths
+                path: f"# residual[{generation.name}]: {path}\n"
+                for path in generation.all_component_paths
+                if path not in dropped
             }
             for path, needles in generation.residual_markers.items():
                 bless_contents[path] = (
                     "".join(f"# {needle}\n" for needle in needles) + bless_contents[path]
                 )
-            bless = commit_paths_for_test(repo, bless_contents, generation.bless_subject)
+            if dropped:
+                for path in sorted(dropped):
+                    if (repo / path).exists():
+                        rollback_proof.run_git(repo, "rm", "--quiet", path)
+                for path, content in bless_contents.items():
+                    file_path = repo / path
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(content, encoding="utf-8")
+                rollback_proof.run_git(repo, "add", *bless_contents)
+                rollback_proof.run_git(
+                    repo, "commit", "--quiet", "-m", generation.bless_subject
+                )
+                bless = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            else:
+                bless = commit_paths_for_test(
+                    repo, bless_contents, generation.bless_subject
+                )
             b1 = commit_paths_for_test(
                 repo,
                 {path: f"# b1: {path}\n" for path in generation.b1_paths},
@@ -392,9 +443,14 @@ class GateBGenerationsTests(unittest.TestCase):
 
     def test_overlapping_component_path_sets_are_rejected(self) -> None:
         """U-3b — 서로소가 깨지면 거부된다 (I1, 신규 구현). git이 필요 없다 —
-        ``assert_disjoint_paths``는 ``Generation`` 레코드만 본다. 전체 스위트가
-        ``python -O``로도 실행되므로(AC-2b) 이 검사가 ``assert`` 문이 아님을
-        간접 증명한다.
+        ``assert_disjoint_paths``는 ``Generation`` 레코드만 본다.
+
+        ``python -O`` 생존 성질은 여기서 간접 증명하지 않는다. 이 저장소의
+        어떤 CI/prepublish 경로도 스위트를 ``-O``로 돌리지 않으므로 그런 주장은
+        자동화된 보증이 아니다(실측 확인). 그 성질은
+        ``test_record_invariants_survive_python_optimized_mode``가 ``-O`` 하위
+        프로세스를 직접 띄워 고정한다. 호출부 배선은
+        ``test_resolve_history_rejects_overlapping_component_paths``가 고정한다.
         """
         overlapping = self.make_generation(
             "gen-overlap",
@@ -742,6 +798,433 @@ class GateBGenerationsTests(unittest.TestCase):
                 rollback_proof.assert_residual_existence_invariant(
                     repo, gen1, {"bless": gen1_bless}, gen2, {"bless": gen2_laundered}
                 )
+
+
+class GateBGenerationRecordTests(GateBGenerationsTests):
+    """세대 레코드 자체의 자기 신고 구멍(D6)과, 신규 단언의 *배선*을 고정한다.
+
+    앞선 클래스의 U-3b/U-11/U-13은 단언 함수를 직접 호출하므로, 호출부를
+    ``resolve_history``에서 지워도 스위트가 초록으로 남는다(PR #243에서 발견된
+    '임포트만 되고 호출되지 않는 헬퍼' 실패 모드와 같은 계열). 여기 테스트는
+    전부 ``resolve_history``를 통해 발화시켜 배선을 함께 고정한다.
+
+    ``GateBGenerationsTests``를 상속하는 이유는 헬퍼(``make_generation``/
+    ``make_repo_for_generations``)를 재사용하기 위해서다. 부모의 test_* 메서드가
+    이 클래스 이름으로 한 번 더 실행되지만, 모두 결정적이고 서로 독립적인
+    합성 저장소 테스트라 중복 실행이 안전하다.
+    """
+
+    def make_pair(self, *, residual_edits=frozenset()):
+        """컴포넌트 경로가 *겹치는* 두 세대를 만든다.
+
+        기존 U-5/U-6/U-7의 합성 세대는 경로가 서로소라 ``shared_components``가
+        공집합이고, 그래서 D3/D5가 ``resolve_history``를 지나가도 공허하게
+        통과했다. 겹치게 만들어야 두 검사가 실제로 평가된다.
+        """
+        shared = frozenset({"shared/keep.txt", "shared/vanish.txt"})
+        gen1 = self.make_generation(
+            "gen1-wired",
+            b1_paths=frozenset({"g1/b1.txt"}),
+            b2_paths=frozenset({"g1/b2.txt"}),
+            shared_paths=shared,
+        )
+        gen2 = self.make_generation(
+            "gen2-wired",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=shared,
+            residual_edits=residual_edits,
+        )
+        return gen1, gen2
+
+    def drive(self, tmp, generations, *, bless_deletions=None):
+        """합성 저장소를 만들고 ``resolve_history``를 HEAD까지 태운다."""
+        repo, base, _ = self.make_repo_for_generations(
+            Path(tmp), generations, bless_deletions=bless_deletions
+        )
+        head = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        with mock.patch.object(rollback_proof, "GENERATIONS", generations):
+            with mock.patch.object(rollback_proof, "BASE_COMMIT", base):
+                return rollback_proof.resolve_history(
+                    repo, head, history_may_be_truncated=False
+                )
+
+    def test_resolve_history_fires_d3_on_undeclared_residual_edit(self) -> None:
+        """D3 배선 — ``resolve_history``의 호출부를 지우면 이 테스트가 실패한다."""
+        gen1, gen2 = self.make_pair(residual_edits=frozenset())
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-d3-wired-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "residual edits undeclared"
+            ):
+                self.drive(tmp, (gen1, gen2))
+
+    def test_resolve_history_accepts_declared_residual_edit(self) -> None:
+        """대조군 — 정확히 선언하면 통과한다(오탐 없음)."""
+        declared = frozenset({"shared/keep.txt", "shared/vanish.txt"})
+        gen1, gen2 = self.make_pair(residual_edits=declared)
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-d3-ok-") as tmp:
+            resolved = self.drive(tmp, (gen1, gen2))
+        self.assertIn("gen1-wired", resolved)
+        self.assertIn("gen2-wired", resolved)
+
+    def test_resolve_history_fires_d5_on_vanished_residual_path(self) -> None:
+        """D5 배선 — D3를 선언으로 만족시킨 뒤에도 존재 집합 변화는 잡힌다.
+
+        D3(내용)와 D5(존재)가 직교한다는 성질을 ``resolve_history``까지 태워
+        고정한다. D5 호출부를 지우면 이 테스트가 실패한다.
+        """
+        declared = frozenset({"shared/keep.txt", "shared/vanish.txt"})
+        gen1, gen2 = self.make_pair(residual_edits=declared)
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-d5-wired-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "residual existence set changed"
+            ):
+                self.drive(
+                    tmp,
+                    (gen1, gen2),
+                    bless_deletions={"gen2-wired": frozenset({"shared/vanish.txt"})},
+                )
+
+    def test_d5_rejects_compensating_pair_with_equal_counts(self) -> None:
+        """D5가 개수가 아니라 *집합*을 비교함을 고정한다.
+
+        U-13의 세탁 케이스는 존재 개수까지 달라지므로, 구현을
+        ``len(before) != len(after)``로 독살해도 통과한다 — 즉 이 PR이 명시적으로
+        내세운 '개수가 아니라 집합' 성질에 핀이 없었다. 여기서는 한 경로가
+        사라지고 다른 경로가 되살아나 개수가 그대로인 상쇄 쌍을 만든다.
+        """
+        shared = frozenset({"shared/alive.txt", "shared/dead.txt"})
+        gen1 = self.make_generation(
+            "gen1-pair",
+            b1_paths=frozenset({"p1/b1.txt"}),
+            b2_paths=frozenset({"p1/b2.txt"}),
+            shared_paths=shared,
+        )
+        gen2 = self.make_generation(
+            "gen2-pair",
+            b1_paths=frozenset({"p2/b1.txt"}),
+            b2_paths=frozenset({"p2/b2.txt"}),
+            shared_paths=shared,
+            residual_edits=shared,
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-pair-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+            # gen1 bless: alive.txt 존재, dead.txt 부재(정상적으로 삭제된 상태).
+            commit_paths_for_test(
+                repo,
+                {"shared/alive.txt": "v1\n", "shared/dead.txt": "seed\n"},
+                "seed for compensating pair",
+            )
+            rollback_proof.run_git(repo, "rm", "--quiet", "shared/dead.txt")
+            rollback_proof.run_git(repo, "commit", "--quiet", "-m", gen1.bless_subject)
+            gen1_bless = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            # gen2 bless: dead.txt를 되살리고(세탁) alive.txt를 지워 개수를 맞춘다.
+            rollback_proof.run_git(repo, "rm", "--quiet", "shared/alive.txt")
+            gen2_bless = commit_paths_for_test(
+                repo,
+                {"shared/dead.txt": "GATE_B_LAUNDERED_BACK\n"},
+                gen2.bless_subject,
+            )
+
+            before = {
+                path
+                for path in shared
+                if rollback_proof.path_exists_in_tree(repo, gen1_bless, path)
+            }
+            after = {
+                path
+                for path in shared
+                if rollback_proof.path_exists_in_tree(repo, gen2_bless, path)
+            }
+            # 이것이 이 테스트의 핵심 전제다 — 개수가 같아야 개수 비교를 독살로
+            # 검출할 수 있다.
+            self.assertEqual(len(before), len(after))
+            self.assertNotEqual(before, after)
+
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "residual existence set changed"
+            ):
+                rollback_proof.assert_residual_existence_invariant(
+                    repo, gen1, {"bless": gen1_bless}, gen2, {"bless": gen2_bless}
+                )
+
+    def test_d3_rejects_equal_count_declaration_mismatch(self) -> None:
+        """D3도 개수가 아니라 집합을 비교함을 고정한다.
+
+        U-11의 미선언 케이스는 개수까지 달라(2 대 1) ``len`` 비교 독살을
+        통과시킨다. 여기서는 개수가 같고 원소만 어긋나는 선언을 쓴다.
+        """
+        gen1 = self.make_generation(
+            "gen1-d3-count",
+            b1_paths=frozenset({"c1/b1.txt"}),
+            b2_paths=frozenset({"c1/b2.txt"}),
+            shared_paths=frozenset({"shared/a.txt", "shared/b.txt"}),
+        )
+        gen2 = self.make_generation(
+            "gen2-d3-count",
+            b1_paths=frozenset({"c2/b1.txt"}),
+            b2_paths=frozenset({"c2/b2.txt"}),
+            shared_paths=frozenset({"shared/a.txt", "shared/b.txt"}),
+            residual_edits=frozenset({"shared/a.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-d3-count-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+            gen1_bless = commit_paths_for_test(
+                repo,
+                {"shared/a.txt": "v1-a\n", "shared/b.txt": "v1-b\n"},
+                gen1.bless_subject,
+            )
+            # 선언은 {a}인데 실제로 바뀐 것은 {b} — 개수는 1로 같다.
+            gen2_bless = commit_paths_for_test(
+                repo, {"shared/b.txt": "v2-b\n"}, gen2.bless_subject
+            )
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "residual edits undeclared"
+            ):
+                rollback_proof.assert_declared_residual_edits(
+                    repo, gen1, {"bless": gen1_bless}, gen2, {"bless": gen2_bless}
+                )
+
+    def test_resolve_history_rejects_duplicate_generation_names(self) -> None:
+        """D6-1 — 이름이 겹치면 ``all_commits``에서 앞 세대가 덮어써져 D3/D5가
+        같은 bless를 자기 자신과 비교하게 되고 둘 다 공허해진다. 재축복 커밋 안의
+        한 단어짜리 편집으로 이번 변경이 세우는 두 방어선이 모두 꺼진다.
+        """
+        gen1, gen2 = self.make_pair()
+        collided = rollback_proof.Generation(
+            **{**gen2.__dict__, "name": gen1.name}
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-dupname-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "duplicate generation names"
+            ):
+                self.drive(tmp, (gen1, collided))
+
+    def test_resolve_history_rejects_generation_without_gate_b_markers(self) -> None:
+        """D6-2 — ``gate_b_markers=()``면 C3-a/C3-b가 0회 루프로 공허하게
+        통과한다. I5 약화를 정당화하는 역방향 anti-laundering 방어선을 재축복자
+        자신이 끌 수 있으면 안 된다.
+        """
+        gen1, _ = self.make_pair()
+        blind = self.make_generation(
+            "gen2-no-markers",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+            gate_b_markers=(),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-nomarker-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "declares no Gate-B markers"
+            ):
+                self.drive(tmp, (gen1, blind))
+
+    def test_resolve_history_rejects_generation_without_residual_markers(self) -> None:
+        """D6-2b — ``residual_markers={}``면 무관 기능 보존 계약이 공허해진다."""
+        gen1, _ = self.make_pair()
+        blind = self.make_generation(
+            "gen2-no-residual-markers",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+            residual_markers={},
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-noresid-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "declares no residual markers"
+            ):
+                self.drive(tmp, (gen1, blind))
+
+    def test_resolve_history_rejects_marker_owner_outside_component_paths(self) -> None:
+        """D6-3 — C3-b가 '소유 경로가 bless에 없으면 통과'로 건너뛰는 근거는
+        소유 경로가 컴포넌트 경로일 때만 성립한다. 컴포넌트 밖 경로를 소유자로
+        선언하면 아무것도 평가하지 않고 성공을 보고한다.
+        """
+        gen1, _ = self.make_pair()
+        foreign = self.make_generation(
+            "gen2-foreign-owner",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+            gate_b_markers=(
+                rollback_proof.GateBMarker("shared:", "not/a/component/path.txt"),
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-owner-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "is not a\n?\\s*component path"
+            ):
+                self.drive(tmp, (gen1, foreign))
+
+    def test_resolve_history_rejects_overlapping_component_paths(self) -> None:
+        """I1 배선 — ``assert_disjoint_paths``의 호출부를 지우면 실패한다.
+
+        U-3b는 함수를 직접 호출하므로 호출부 제거를 잡지 못했다. 또한 이 검사가
+        커밋 해석보다 앞선 git-free 사전 검사라서, 이력이 없는 저장소에서도
+        (``ProofHistoryUnavailable``로 새지 않고) 큰 소리로 실패함을 함께 고정한다.
+        """
+        overlapping = self.make_generation(
+            "gen-overlap-wired",
+            b1_paths=frozenset({"o/dup.txt", "o/b1.txt"}),
+            b2_paths=frozenset({"o/dup.txt"}),
+            shared_paths=frozenset({"o/shared.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-overlap-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            base = commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+            with mock.patch.object(rollback_proof, "GENERATIONS", (overlapping,)):
+                with mock.patch.object(rollback_proof, "BASE_COMMIT", base):
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError, "component paths overlap"
+                    ):
+                        rollback_proof.resolve_history(
+                            repo, base, history_may_be_truncated=False
+                        )
+
+    def test_resolve_history_fires_c3b_when_bless_retains_a_gate_b_marker(self) -> None:
+        """C3-b 배선 — U-8은 헬퍼를 직접 호출하므로 ``resolve_history``의 호출부를
+        지워도 잡히지 않았다. 여기서는 활성 세대의 bless 트리가 실제로 그 세대의
+        Gate-B 마커를 품게 만들어 호출부까지 고정한다.
+
+        합성 bless는 ``# residual[<gen>]: <path>``를 쓰므로 리터럴 ``residual[``는
+        bless에는 있고 shared reapply 커밋(``# shared: <path>``)에는 없다 —
+        C3-b가 발화해야 하는 정확한 조건이다.
+        """
+        gen1, _ = self.make_pair()
+        leaky = self.make_generation(
+            "gen2-leaky-bless",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+            gate_b_markers=(
+                rollback_proof.GateBMarker("residual[", "shared/keep.txt"),
+            ),
+            residual_edits=frozenset({"shared/keep.txt", "shared/vanish.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-c3b-wired-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "retains Gate-B marker"
+            ):
+                self.drive(tmp, (gen1, leaky))
+
+    def test_d3_rejects_over_declaration(self) -> None:
+        """D3가 *정확히* 일치를 요구함을 고정한다 (과대선언 방향).
+
+        U-11과 개수 테스트는 과소선언만 다루므로, 구현을
+        ``if actual_edits - current.residual_edits``(부분집합 허용)로 독살해도
+        통과했다. 실제로 바꾼 것보다 넓게 선언하는 것도 거부되어야 한다 —
+        그렇지 않으면 '전부 선언'이 D3를 통째로 무력화하는 만능 키가 된다.
+        """
+        gen1 = self.make_generation(
+            "gen1-over",
+            b1_paths=frozenset({"o1/b1.txt"}),
+            b2_paths=frozenset({"o1/b2.txt"}),
+            shared_paths=frozenset({"shared/a.txt", "shared/b.txt"}),
+        )
+        gen2 = self.make_generation(
+            "gen2-over",
+            b1_paths=frozenset({"o2/b1.txt"}),
+            b2_paths=frozenset({"o2/b2.txt"}),
+            shared_paths=frozenset({"shared/a.txt", "shared/b.txt"}),
+            residual_edits=frozenset({"shared/a.txt", "shared/b.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-d3-over-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+            gen1_bless = commit_paths_for_test(
+                repo,
+                {"shared/a.txt": "v1-a\n", "shared/b.txt": "v1-b\n"},
+                gen1.bless_subject,
+            )
+            # 선언은 {a, b}인데 실제로 바뀐 것은 {a}뿐이다.
+            gen2_bless = commit_paths_for_test(
+                repo, {"shared/a.txt": "v2-a\n"}, gen2.bless_subject
+            )
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "residual edits undeclared"
+            ):
+                rollback_proof.assert_declared_residual_edits(
+                    repo, gen1, {"bless": gen1_bless}, gen2, {"bless": gen2_bless}
+                )
+
+    def test_record_invariants_survive_python_optimized_mode(self) -> None:
+        """AC-2b — 레코드 불변이 ``python -O``에서도 살아 있음을 *기계적으로*
+        고정한다.
+
+        기존 독스트링은 '전체 스위트가 ``python -O``로도 실행되므로'라고 적었지만
+        실측하면 ``scripts/prepublish_check.py``도 ``.github/workflows/``도 ``-O``를
+        쓰지 않는다 — 자동화된 보증이 아니라 수동 실행에 기댄 주장이었다. 그래서
+        여기서 직접 ``-O`` 하위 프로세스를 띄운다. 검사가 ``assert`` 문으로
+        회귀하면 ``-O``가 그것을 소거해 이 테스트가 실패한다.
+        """
+        program = (
+            "import importlib.util, sys;"
+            f"spec = importlib.util.spec_from_file_location('vg', {str(SCRIPT)!r});"
+            "m = importlib.util.module_from_spec(spec);"
+            "sys.modules['vg'] = m;"
+            "spec.loader.exec_module(m);"
+            "g = m.Generation(name='o', bless_subject='b', b1_subject='1',"
+            " b2_subject='2', shared_subject='s',"
+            " b1_paths=frozenset({'x','dup'}), b2_paths=frozenset({'dup'}),"
+            " shared_paths=frozenset({'y'}), residual_markers={'y': ('N',)},"
+            " gate_b_markers=(m.GateBMarker('L', 'y'),));"
+            "raised = 0\n"
+            "try:\n"
+            "    m.assert_disjoint_paths(g)\n"
+            "except m.ProofError:\n"
+            "    raised += 1\n"
+            "try:\n"
+            "    m.assert_generation_records_wellformed((g, g))\n"
+            "except m.ProofError:\n"
+            "    raised += 1\n"
+            "print(raised)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-O", "-c", program],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout.strip(),
+            "2",
+            "record invariants were optimized away under python -O "
+            "(they must raise explicitly, never use an assert statement)",
+        )
+
+    def test_path_exists_in_tree_fails_loudly_on_a_bad_revision(self) -> None:
+        """부재와 인프라 실패를 가르는 성질을 고정한다.
+
+        ``git cat-file -e <commit>:<path>``는 '트리에 경로 없음'과 '잘못된
+        리비전' 양쪽에 128을 돌려주므로 종료 코드로 둘을 가를 수 없었다. 그
+        구현에서는 인프라 실패가 곧 '부재'로 읽혀 D5가 before/after 모두 비어
+        통과하고 C3-b가 마커 검사를 건너뛰었다 — 릴리스 게이트의 fail-open이다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-badrev-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            head = commit_paths_for_test(repo, {"real.txt": "x\n"}, "base")
+
+            self.assertTrue(rollback_proof.path_exists_in_tree(repo, head, "real.txt"))
+            # 유효한 커밋에서의 진짜 부재는 조용히 False여야 한다.
+            self.assertFalse(rollback_proof.path_exists_in_tree(repo, head, "gone.txt"))
+            # 잘못된 리비전은 부재가 아니라 ProofError여야 한다.
+            with self.assertRaises(rollback_proof.ProofError):
+                rollback_proof.path_exists_in_tree(repo, "0" * 40, "real.txt")
 
 
 if __name__ == "__main__":
