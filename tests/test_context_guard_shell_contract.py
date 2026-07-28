@@ -911,6 +911,36 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         decision.reason_code, pin["expected_reason_code"]
                     )
 
+    def test_fix5_env_wrapper_bypass_pins_denied_through_hook_envelope(self) -> None:
+        """우회 핀 전체를 실제 훅 엔벌로프로도 검증한다(AC-5.4 확장).
+
+        classify_command 단위 고정만으로는 분류 경로와 rewrite/엔벌로프 경로가 어긋난
+        경우를 잡지 못한다. FIX-5 의 본질이 ride-along RCE 차단이므로 거부 벡터는 실제
+        훅 출력에서도 deny 여야 하고, 변수 이름과 값 경로가 stdout 으로 새면 안 된다.
+        허용 대조군은 라우팅 헤드가 할당 word 나 `--` 가 아니라 실제 명령이어야 한다.
+        """
+        for script in REWRITE_SCRIPTS:
+            for pin in FIX5_ENV_WRAPPER_BYPASS_PINS:
+                with self.subTest(script=script.name, case_id=pin["case_id"]):
+                    if pin["expected_decision"] == "deny":
+                        proc = self.assert_command_decision(
+                            pin["command"], "deny", script=script
+                        )
+                        self.assert_bounded_deny(proc)
+                        self.assertNotIn("/tmp/evil", proc.stdout)
+                        self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
+                        self.assertNotIn("LD_PRELOAD", proc.stdout)
+                    else:
+                        proc = self.assert_command_decision(
+                            pin["command"], "rewrite", script=script
+                        )
+                        updated = json.loads(proc.stdout)["hookSpecificOutput"][
+                            "updatedInput"
+                        ]["command"]
+                        # 라우팅 헤드를 할당 word(`LANG=C`)나 `--` 로 잡으면 엉뚱한
+                        # word 를 감싸게 되므로 실제 명령이 남아 있어야 한다.
+                        self.assertIn("git", updated)
+
     def test_fix5_assignment_only_segment_reports_unsafe_name_cause(self) -> None:
         """명령어 없는 할당 전용 세그먼트도 이름 자체로 거부된다.
 

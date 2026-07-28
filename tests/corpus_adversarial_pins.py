@@ -279,6 +279,18 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "잡혀야 한다(기존 구현은 `--` 를 명령으로 오인해 라우팅했다).",
     },
     {
+        "case_id": "fix5-bypass-env-split-string",
+        "fix": "FIX-5",
+        "command": "env -S 'GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff'",
+        "expected_decision": "deny",
+        # `-S`/`--split-string` 는 할당과 명령을 한 argv 원소로 묶어 env 가 다시 쪼갠다.
+        # 현재는 미지의 `env` 플래그로 걸러지므로 원인 코드가 restricted_env_denied 다.
+        # 이름 게이트가 아니라 플래그 게이트가 막고 있다는 사실을 명시적으로 고정한다.
+        "expected_reason_code": "restricted_env_denied",
+        "note": "AC-5.2 원인 구분 — `-S` 는 이름 게이트가 아니라 플래그 게이트가 막는다. "
+        "향후 `env` 플래그를 허용하게 되면 이 핀이 먼저 깨져 재심사를 강제한다.",
+    },
+    {
         "case_id": "fix5-bypass-env-path-qualified",
         "fix": "FIX-5",
         "command": "/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
