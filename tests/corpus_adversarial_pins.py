@@ -253,6 +253,32 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "note": "동적 링커 계열도 같은 `--` 우회로 통과했음을 고정한다.",
     },
     {
+        "case_id": "fix5-bypass-env-safe-assignment-then-double-dash",
+        "fix": "FIX-5",
+        "command": "env LANG=C -- GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "`--` 는 할당 목록 앞뒤 어디에나 올 수 있다. 허용 이름을 먼저 두어 "
+        "`--` 를 할당 뒤로 밀면 그 뒤의 할당 구간이 검사되지 않고 통과했다(실증).",
+    },
+    {
+        "case_id": "fix5-bypass-env-double-dash-twice",
+        "fix": "FIX-5",
+        "command": "env -- env -- GIT_PAGER=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "중첩 `env` 와 반복 `--` 를 조합한 형태도 매 단계 재검사되어야 한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-double-dash-then-safe-routes",
+        "fix": "FIX-5",
+        "command": "env LANG=C -- git diff",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "대조군 — 할당 뒤 `--` 형태에서 라우팅 헤드가 `--` 가 아니라 git 으로 "
+        "잡혀야 한다(기존 구현은 `--` 를 명령으로 오인해 라우팅했다).",
+    },
+    {
         "case_id": "fix5-adv-lessopen-no-pipe",
         "fix": "FIX-5",
         "command": "LESSOPEN=/tmp/evil.sh git diff",

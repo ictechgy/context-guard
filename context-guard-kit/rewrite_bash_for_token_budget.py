@@ -924,6 +924,7 @@ def _routing_start(
     호출자가 구분해서 처리해야 한다(classify_command 참고).
     """
     index = 0
+    saw_env = False
     while True:
         assignment_start = index
         while index < len(words) and words[index].assignment_index is not None:
@@ -933,19 +934,24 @@ def _routing_start(
         # 의존하지 않고 자신의 원인 코드로 거부되어야 §5.4/§5.6 측정이 눈을 뜬다.
         if _has_unsafe_env_prefix_name(words, assignment_start, index):
             return -2
+        if saw_env:
+            # coreutils `env` 문법은 `env [옵션]... [--] [NAME=VALUE]... [명령]` 이며
+            # `--` 는 할당 목록의 앞뒤 어느 쪽에도 올 수 있다. `--` 를 소비한 뒤에도
+            # 할당이 이어질 수 있으므로 루프 선두로 돌아가 이름 검사를 다시 수행한다.
+            if index < len(words) and argv[index] == "--":
+                index += 1
+                continue
+            # 이름 문제가 아닌 미지의 `env` 플래그는 기존 원인을 유지한다.
+            if index >= len(words) or argv[index].startswith("-"):
+                return -1
         if index >= len(words):
             return index
         if command_basename(argv[index]) != "env":
             return index
 
+        # `env env NAME=VALUE cmd` 같은 중첩 호출도 각 단계마다 할당 구간을 검사한다.
         index += 1
-        # coreutils `env` 는 `--` 뒤에서도 선행 `NAME=VALUE` 를 환경 할당으로 처리하고,
-        # `env env NAME=VALUE cmd` 처럼 중첩 호출도 허용한다. 두 형태 모두 예전에는
-        # 할당 구간 재검사 없이 라우팅으로 빠져나가 FIX-5 를 우회했으므로 루프로 돌린다.
-        if index < len(words) and argv[index] == "--":
-            index += 1
-        if index >= len(words) or argv[index].startswith("-"):
-            return -1
+        saw_env = True
 
 
 def _routing_start_index(parsed: MiniShellParse) -> int:
