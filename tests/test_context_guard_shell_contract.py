@@ -36,6 +36,7 @@ from tests.corpus_adversarial_pins import (
     FIX5_ALLOWLIST_POSITIVE_PINS,
     FIX5_ENV_WRAPPER_BYPASS_PINS,
     FIX5_GLOB_REJECTION_PINS,
+    FIX6_ROUTE_PREDICATE_CASES,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -43,6 +44,7 @@ from tests.corpus_adversarial_pins import (
     fix1b_route_predicate_relaxations,
     fix2_route_predicate_relaxations,
     fix5_case_count,
+    fix6_route_predicate_relaxations,
 )
 
 
@@ -1370,6 +1372,54 @@ class MiniShellBoundaryTests(unittest.TestCase):
                             exec_proc.stdout,
                             "재래핑된 명령을 실제 bash -lc 로 실행한 결과에서 "
                             "파일 내용을 찾지 못했다 — 파일명이 왕복 중 손상됐을 수 있다.",
+                        )
+
+    def test_inv_a_fix6_git_remote_write_forms_stay_denied(self) -> None:
+        """INV-A(거부 보존, plan §5.2) — `FIX6_ROUTE_PREDICATE_CASES`의 거부 앵커
+        (add/remove/rename/set-url/get-url 등 위치 인자가 있는 서브서브커맨드,
+        R-5 전역 옵션 우회, `-v` 뒤 잉여 위치 인자)는 remote 행 재도입 이후에도
+        항상 거부되어야 한다. FIX-1a/1b 와 동일하게 reason_code 이동은 고정하지
+        않는다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_fix6_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX6_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+
+    def test_inv_b_fix6_git_remote_relaxation_matches_expected_decision(self) -> None:
+        """INV-B(허용 전환의 출처 제한, plan §5.2) — `fix6_route_predicate_relaxations()`
+        (`git remote`/`git remote -v`/`git remote --verbose`)는 전부 baseline
+        `route_policy_denied`였고, 재도입 후 정확히 `sanitize`로 전환되는지
+        고정한다. `git remote -v`가 실제로 안전해진 이유는 이 라우트 전환 자체가
+        아니라 FIX-6 커밋 1의 `credential_policy.py` 하드닝이다 — 그 리댁션이
+        실제로 발동하는지는 `test_context_guard_sanitization_modes.py`의
+        `test_git_remote_verbose_token_only_url_is_redacted_end_to_end`가
+        별도로 담당한다(라우트 판정과 리댁션 내용은 서로 다른 계층이다)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_b_fix6_{index}")
+            classify_command = namespace["classify_command"]
+            for case in fix6_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    if decision.action != "deny":
+                        self.assertEqual(decision.action, case["expected_decision"])
+                        self.assertEqual(
+                            decision.reason_code, case.get("expected_reason_code")
                         )
 
 

@@ -260,6 +260,44 @@ def _route_examples() -> list[dict[str, str]]:
         note="AC-1.4 zero-arity-write negative; AC-1.10 -- counting negative "
         "(positional after -- still counts)",
     )
+    # -------------------------------------------------------------------
+    # FIX-6 — `git remote`/`git remote -v` re-admitted to the pair allowlist
+    # (plan §6.1b row 12) after credential_policy.py's URL-userinfo redaction
+    # was hardened to also cover password-less (token-only) URLs. FIX-1b's
+    # 5-column note above (5th column) explicitly named `git remote -v` as a
+    # row deleted for R-13 (structurally unredactable). That premise no
+    # longer holds — the redaction gap was in the *regex*, not the row: the
+    # old pattern required both `user:pass@` parts and let vendor-unrecognized
+    # token-only URLs (e.g. `https://TOKEN@host/...`, the most common PAT
+    # form) through unredacted. FIX-6 widened the pattern (password part now
+    # optional); this family is the surveillance for that re-admission.
+    #
+    # §5.5 5-column check:
+    #   1. before/after: route_policy_denied -> rewrite_sanitize (new row).
+    #   2. output boundedness: unchanged — sanitize_output.py's 240-line cap.
+    #   3. axis-b non-impact: unchanged — only the route gate is touched.
+    #   4. reverse case: `remote add/remove/rename/set-url` (positional
+    #      overflow — 0-arity strict, same rule as branch/tag) and an R-5
+    #      global-option-bypass negative.
+    #   5. reads outside the repo / credential store: yes — `.git/config`
+    #      remote URLs can carry embedded credentials. What makes this row
+    #      safe *now* (and not before) is the hardened redaction from FIX-6's
+    #      first commit: credential_policy.py's INLINE_PATTERNS now redacts
+    #      both `user:pass@` and bare `TOKEN@` userinfo before the URL ever
+    #      reaches Claude's context.
+    # -------------------------------------------------------------------
+    add(
+        "git-remote",
+        ("standalone", "first"),
+        ("git remote", "git remote -v"),
+        "rewrite_sanitize",
+        (
+            "git remote add origin https://example.invalid/repo.git",
+            "git --no-pager remote -v",
+        ),
+        note="AC-1.4 zero-arity-write negative (remote add, positional overflow, "
+        "same rule as branch/tag); R-5 global-option-bypass negative",
+    )
     add(
         "git-rev-parse",
         ("standalone", "first"),
@@ -1248,6 +1286,33 @@ def _sanitizer_literals() -> list[dict[str, object]]:
             "category": "credential_url",
             "input": "https://fixture-user:fixture-password@example.invalid/private",
             "default_expectation": "redact_secret",
+        },
+        # ---------------------------------------------------------------
+        # FIX-6 — credential_policy.py:108 URL userinfo 리댁션 정규식이
+        # `user:pass@` 두 파트를 모두 요구해 콜론 없는 토큰 전용 URL(가장 흔한
+        # PAT 임베딩 형태, 예: `git remote -v`가 출력하는
+        # `https://TOKEN@host/repo.git`)을 통과시켰다(실측: Azure DevOps PAT,
+        # 사내 PAT, 범용 토큰 3/3 누수). 기존 4개 userinfo 오라클 케이스(위
+        # `credential_url`)는 전부 `fixture-user:fixture-password` 형태만
+        # 다뤄 이 구멍이 감시되지 않았다 — 이 완화가 AC-1.3(섹션 불변) 범위를
+        # 명시적으로 벗어나는 이유: `sanitizer_mode_cases`의 카운트/내용이
+        # 바뀐다(60 -> 68). `assignment_provenance_cases`/`consumer_mode_cases`/
+        # `path_lookup_canary`는 이 함수의 생성 로직과 무관하므로 계속 불변이다.
+        {
+            "category": "credential_url_token_only",
+            "input": "https://fixture-token@example.invalid/private",
+            "default_expectation": "redact_secret",
+        },
+        # 음성 케이스 — 과잉 리댁션 경계 고정. `scheme://` 접두사가 없는 평범한
+        # 이메일 언급(예: `git log`/`git show` 저자 줄의 `<user@host>`)은 넓힌
+        # 정규식으로도 건드리지 않아야 한다 — credential_policy.py는 git 전용이
+        # 아니라 grep/rg/kubectl logs 등 모든 sanitize 루트가 공유하므로, 스킴
+        # 없는 `word@word` 형태까지 잡으면 사람 이름이 포함된 정상 출력을
+        # 과잉 리댁션한다.
+        {
+            "category": "bare_userinfo_without_scheme",
+            "input": "Author: Fixture User <fixture-user@example.invalid>",
+            "default_expectation": "preserve",
         },
         {
             "category": "private_key",
