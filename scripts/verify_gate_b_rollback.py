@@ -170,6 +170,15 @@ def proof_environment() -> dict[str, str]:
             "GIT_COMMITTER_EMAIL": "rollback-proof@example.invalid",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
+            # 컴포넌트 경로 문자열은 여러 곳에서 git pathspec으로 넘어간다
+            # (``path_exists_in_tree``의 ls-tree, ``prove_current_revert_order``의
+            # diff). pathspec 문법에서 ``*``/``?``/``[``는 glob이고 선행 ``:``는
+            # magic 접두사이므로, 그런 문자를 담은 경로는 '자기 자신'이 아니라
+            # 패턴으로 해석된다 — ``:(exclude)...`` 형태면 오히려 다른 경로를
+            # 검사 대상에서 빼버린다. 경로 집합은 세대마다 다시 선언되므로 오늘의
+            # 18개가 순수 ASCII라는 사실에 기댈 수 없다. 모든 pathspec을 리터럴로
+            # 강제한다 — 이 증명에서 glob이 의도된 곳은 한 군데도 없다.
+            "GIT_LITERAL_PATHSPECS": "1",
         }
     )
     return env
@@ -230,9 +239,21 @@ def path_exists_in_tree(repo: Path, commit: str, path: str) -> bool:
     C 스타일로 따옴표 처리해(``"hangul_\\355\\225\\234..."``) 원래 경로 문자열과
     일치하지 않게 되고, 그러면 존재하는 경로가 '부재'로 읽혀 정확히 이 함수가
     막으려던 fail-open이 되살아난다. NUL 구분 출력은 따옴표 처리를 하지 않는다.
+
+    ``--name-only`` 대신 전체 출력을 파싱해 객체 타입까지 본다. ``ls-tree``는
+    ``-r`` 없이도 트리 엔트리를 그대로 보고하므로, 파일이 같은 이름의 디렉터리로
+    바뀌어도 이름만 비교하면 '여전히 존재'로 읽힌다 — D5가 파일→디렉터리 교체를
+    변화 없음으로 통과시킨다. 컴포넌트 경로는 언제나 blob이므로 blob만 존재로 센다.
     """
-    proc = run_git(repo, "ls-tree", "--name-only", "-z", commit, "--", path)
-    return path in [name for name in proc.stdout.split("\0") if name]
+    proc = run_git(repo, "ls-tree", "-z", commit, "--", path)
+    for entry in proc.stdout.split("\0"):
+        if not entry:
+            continue
+        info, _, name = entry.partition("\t")
+        fields = info.split()
+        if name == path and len(fields) >= 2 and fields[1] == "blob":
+            return True
+    return False
 
 
 def commit_exists(repo: Path, commit: str) -> bool:
@@ -567,6 +588,15 @@ def assert_gate_b_markers_present_at_head(
     부재 검사(C3-b)가 공허하게 통과하는 것을 막는다(P5).
     """
     for marker in generation.gate_b_markers:
+        # 소유 경로가 HEAD에서 통째로 사라진 경우를 먼저 걸러 낸다. 그냥 file_at을
+        # 부르면 ``git show ... failed``라는 날것의 메시지가 올라와, 실제 원인
+        # (마커가 가리키던 표면이 HEAD에 없다)이 진단에서 사라진다.
+        if not path_exists_in_tree(repo, source_head, marker.owner_path):
+            raise ProofError(
+                f"generation {generation.name!r} Gate-B marker {marker.literal!r} "
+                f"missing from {marker.owner_path} at HEAD {source_head}: "
+                "the owner path itself does not exist there"
+            )
         content = file_at(repo, source_head, marker.owner_path)
         if marker.literal not in content:
             raise ProofError(

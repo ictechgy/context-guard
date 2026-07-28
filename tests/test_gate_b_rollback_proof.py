@@ -825,10 +825,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     '임포트만 되고 호출되지 않는 헬퍼' 실패 모드와 같은 계열). 여기 테스트는
     전부 ``resolve_history``를 통해 발화시켜 배선을 함께 고정한다.
 
-    ``GateBGenerationsTests``를 상속하는 이유는 헬퍼(``make_generation``/
-    ``make_repo_for_generations``)를 재사용하기 위해서다. 부모의 test_* 메서드가
-    이 클래스 이름으로 한 번 더 실행되지만, 모두 결정적이고 서로 독립적인
-    합성 저장소 테스트라 중복 실행이 안전하다.
+    헬퍼는 ``SyntheticGenerationHelpers`` 믹스인에서 가져온다 — 다른 TestCase를
+    상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
     def make_pair(self, *, residual_edits=frozenset()):
@@ -1551,6 +1549,118 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             # 잘못된 리비전은 부재가 아니라 ProofError여야 한다.
             with self.assertRaises(rollback_proof.ProofError):
                 rollback_proof.path_exists_in_tree(repo, "0" * 40, "real.txt")
+
+    def test_path_exists_in_tree_counts_only_blobs(self) -> None:
+        """같은 이름의 디렉터리는 '존재'가 아니다.
+
+        ``ls-tree``는 ``-r`` 없이도 트리 엔트리를 그대로 보고하므로 이름만
+        비교하면 파일이 디렉터리로 바뀌어도 '여전히 존재'로 읽히고, D5가
+        파일→디렉터리 교체를 변화 없음으로 통과시킨다. 컴포넌트 경로는 언제나
+        blob이므로 blob만 센다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-blob-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            as_blob = commit_paths_for_test(repo, {"thing": "I am a file\n"}, "as blob")
+            self.assertTrue(rollback_proof.path_exists_in_tree(repo, as_blob, "thing"))
+
+            rollback_proof.run_git(repo, "rm", "--quiet", "thing")
+            as_tree = commit_paths_for_test(
+                repo, {"thing/inner.txt": "now a directory\n"}, "as tree"
+            )
+            self.assertFalse(
+                rollback_proof.path_exists_in_tree(repo, as_tree, "thing"),
+                "a directory must not be reported as an existing component path",
+            )
+            self.assertTrue(
+                rollback_proof.path_exists_in_tree(repo, as_tree, "thing/inner.txt")
+            )
+
+    def test_path_exists_in_tree_treats_pathspec_magic_literally(self) -> None:
+        """컴포넌트 경로는 패턴이 아니라 리터럴로 해석되어야 한다.
+
+        경로 문자열은 여러 곳에서 git pathspec으로 넘어간다.
+        ``proof_environment``의 ``GIT_LITERAL_PATHSPECS``가 이를 리터럴로 강제한다.
+        경로 집합은 세대마다 다시 선언되므로 '오늘의 18개는 순수 ASCII'라는 사실에
+        기댈 수 없다.
+
+        실측한 두 방향(``git diff``에서만 드러난다 — ``ls-tree``는 애초에 glob하지
+        않는다):
+
+        * ``weird[a].txt``는 문자 클래스로 읽혀 ``weirda.txt``까지 함께 매칭한다
+          (과다 매칭).
+        * ``:(exclude)<path>``는 음수 pathspec이 되어 *다른* 경로를 검사 대상에서
+          빼버린다 — ``prove_current_revert_order``의 ``residual_delta``가 바로 이
+          형태로 컴포넌트 경로를 넘기므로 fail-open이 된다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-pathspec-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            left = commit_paths_for_test(
+                repo, {"weird[a].txt": "v1\n", "weirda.txt": "v1\n"}, "left"
+            )
+            right = commit_paths_for_test(
+                repo, {"weird[a].txt": "v2\n", "weirda.txt": "v2\n"}, "right"
+            )
+
+            # 과다 매칭 방향: 리터럴이면 자기 자신만 나온다.
+            names = rollback_proof.run_git(
+                repo, "diff", "--no-renames", "--name-only", left, right,
+                "--", "weird[a].txt",
+            ).stdout.split()
+            self.assertEqual(
+                names,
+                ["weird[a].txt"],
+                "pathspec magic made a component path match unrelated paths",
+            )
+
+            # 음수 pathspec 방향: 리터럴이면 아무것도 제외하지 못한다.
+            excluded = rollback_proof.run_git(
+                repo, "diff", "--no-renames", "--name-only", left, right,
+                "--", ":(exclude)weirda.txt",
+            ).stdout.split()
+            self.assertEqual(
+                excluded,
+                [],
+                "a component path spelled ':(exclude)...' still acted as a negative "
+                "pathspec, so it could hide other paths from the proof",
+            )
+
+            # 존재 검사 자체도 리터럴이어야 한다.
+            self.assertTrue(
+                rollback_proof.path_exists_in_tree(repo, right, "weird[a].txt")
+            )
+            self.assertFalse(
+                rollback_proof.path_exists_in_tree(repo, right, "weird[b].txt")
+            )
+
+    def test_c3a_reports_a_missing_owner_path_as_a_marker_failure(self) -> None:
+        """소유 경로가 HEAD에서 통째로 사라지면 날것의 git 오류가 아니라 마커
+        실패로 보고한다.
+
+        가드가 없으면 ``file_at``이 ``git show ... failed``를 올려, 실제 원인
+        (마커가 가리키던 표면이 HEAD에 없다)이 진단에서 사라진다.
+        """
+        generation = self.make_generation(
+            "gen-owner-gone",
+            b1_paths=frozenset({"o/b1.txt"}),
+            b2_paths=frozenset({"o/b2.txt"}),
+            shared_paths=frozenset({"o/owner.txt"}),
+            gate_b_markers=(rollback_proof.GateBMarker("LIT", "o/owner.txt"),),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-ownergone-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            head = commit_paths_for_test(repo, {"unrelated.txt": "x\n"}, "no owner path")
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "owner path itself does not exist"
+            ):
+                rollback_proof.assert_gate_b_markers_present_at_head(
+                    repo, head, generation
+                )
 
     def test_path_exists_in_tree_handles_paths_git_would_quote(self) -> None:
         """존재하는 경로가 따옴표 처리 때문에 '부재'로 읽히지 않아야 한다.
