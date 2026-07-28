@@ -279,6 +279,33 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "잡혀야 한다(기존 구현은 `--` 를 명령으로 오인해 라우팅했다).",
     },
     {
+        "case_id": "fix5-bypass-append-assignment",
+        "fix": "FIX-5",
+        "command": "GIT_EXTERNAL_DIFF+=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "bash 는 `NAME+=VALUE` 를 접두사 할당으로 실제 적용하지만(실측) "
+        "MiniShell 은 이름 문법 불일치로 할당 표시를 남기지 않아 이름 검사를 건너뛰고 "
+        "통과했다. 모델링 못하는 할당 형태는 fail-closed 로 거부한다.",
+    },
+    {
+        "case_id": "fix5-bypass-append-assignment-in-env",
+        "fix": "FIX-5",
+        "command": "env -- LD_PRELOAD+=/tmp/evil.so cat README.md",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "`env` 래퍼와 결합한 append 할당도 같은 경로로 막혀야 한다.",
+    },
+    {
+        "case_id": "fix5-bypass-append-assignment-allowlisted-name",
+        "fix": "FIX-5",
+        "command": "LANG+=C git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "허용 이름이라도 append 의미를 모델링하지 않으므로 과잉 거부 방향으로 "
+        "닫는다 — 화이트리스트는 정확한 이름+대입 형태에 대해서만 안전을 주장한다.",
+    },
+    {
         "case_id": "fix5-adv-lessopen-no-pipe",
         "fix": "FIX-5",
         "command": "LESSOPEN=/tmp/evil.sh git diff",

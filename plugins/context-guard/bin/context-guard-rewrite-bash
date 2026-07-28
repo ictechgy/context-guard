@@ -83,6 +83,9 @@ MINISHELL_HEREDOC_STDIN_CONSUMERS = frozenset({
     "wc",
 })
 MINISHELL_HEREDOC_DELIMITER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+# bash 가 접두사 할당으로 적용하는 `NAME+=VALUE` 형태 — MiniShell 은 이를 할당으로
+# 표시하지 않으므로(§_is_unmodeled_assignment_prefix) 라우팅 접두사 구간에서 거부한다.
+MINISHELL_APPEND_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+=")
 # 환경변수 접두사(`KEY=VALUE cmd`) 이름 화이트리스트 — FIX-5, 원칙 4의 유일한 예외.
 # denylist 는 구조적으로 종료하지 않는다(실측: 최소 denylist가 PAGER/EDITOR/VISUAL/
 # PERL5LIB/RUBYOPT/PYTHONPATH/PYTHONSTARTUP/NODE_OPTIONS 8종을 놓침). 이 15개는
@@ -894,6 +897,29 @@ def _env_prefix_name(word: MiniShellWord) -> str | None:
     return word.source_value[:index]
 
 
+def _is_unmodeled_assignment_prefix(word: MiniShellWord) -> bool:
+    """bash 는 환경 접두사로 적용하지만 MiniShell 이 할당으로 표시하지 않는 형태인가.
+
+    `NAME+=VALUE` 는 bash 가 접두사 할당으로 실제 적용하지만(실측 확인),
+    `_exact_assignment_index` 는 `=` 앞이 `NAME+` 라서 이름 문법을 만족하지 못해
+    `assignment_index` 를 남기지 않는다. 그 결과 이 word 는 할당이 아니라 명령어로
+    취급되어 FIX-5 이름 검사를 통째로 건너뛴다. 모델링하지 못하는 할당 형태는
+    안전을 증명할 수 없으므로 fail-closed 로 거부한다.
+
+    인용된 형태(`"FOO"+=x`)는 bash 가 할당으로 보지 않으므로 대상이 아니다 —
+    `_exact_assignment_index` 와 동일한 활성/배리어 규칙을 적용한다.
+    """
+    if word.assignment_index is not None:
+        return False
+    match = MINISHELL_APPEND_ASSIGNMENT_RE.match(word.source_value)
+    if match is None:
+        return False
+    equals_index = match.end() - 1
+    if not all(word.active[: equals_index + 1]):
+        return False
+    return not any(boundary <= equals_index for boundary in word.barriers)
+
+
 def _has_unsafe_env_prefix_name(
     words: tuple[MiniShellWord, ...],
     start: int,
@@ -919,13 +945,19 @@ def _routing_start(
     """라우팅이 시작되는 word 인덱스를 계산한다.
 
     반환값 의미: `>= 0` 은 라우팅 시작 인덱스, `-1` 은 기존 `restricted_env_denied`
-    (`env` 뒤에 알 수 없는 플래그), `-2` 는 신규 `unsafe_env_name_denied`(FIX-5 — 접두사
-    변수 이름이 화이트리스트 밖). 두 원인은 §5.4/§5.6 측정이 `reason_code` 로 필터링하므로
-    호출자가 구분해서 처리해야 한다(classify_command 참고).
+    (`env` 뒤에 알 수 없는 플래그가 오거나, `env` 뒤에 명령어 word 자체가 없는 경우),
+    `-2` 는 신규 `unsafe_env_name_denied`(FIX-5 — 접두사 변수 이름이 화이트리스트 밖
+    이거나, 모델링하지 못하는 접두사 할당 형태). 두 원인은 §5.4/§5.6 측정이
+    `reason_code` 로 필터링하므로 호출자가 구분해서 처리해야 한다(classify_command 참고).
+
+    음수 센티넬을 인덱스로 다시 쓰면 파이썬 음수 인덱싱 때문에 조용히 잘못된 word 를
+    가리키므로, 모든 호출부는 인덱싱 전에 `< 0` 을 먼저 검사해야 한다.
     """
     index = 0
     saw_env = False
-    while True:
+    # 각 반복은 `env` 또는 `--` 를 최소 한 개 소비하므로 word 수만큼이면 충분하다.
+    # PreToolUse 훅 안에서 도는 코드라 구조적 종료 보장을 명시한다(무한 루프 = 행).
+    for _ in range(len(words) + 1):
         assignment_start = index
         while index < len(words) and words[index].assignment_index is not None:
             index += 1
@@ -933,6 +965,10 @@ def _routing_start(
         # 세그먼트(`PATH=/tmp/evil`)도 `assignment_only_denied` 라는 다른 백스톱에
         # 의존하지 않고 자신의 원인 코드로 거부되어야 §5.4/§5.6 측정이 눈을 뜬다.
         if _has_unsafe_env_prefix_name(words, assignment_start, index):
+            return -2
+        # 모델링하지 못하는 접두사 할당(`NAME+=VALUE`)이 라우팅 헤드 자리에 오면
+        # 이름 검사를 건너뛴 채 명령어로 취급되므로 여기서 fail-closed 로 막는다.
+        if index < len(words) and _is_unmodeled_assignment_prefix(words[index]):
             return -2
         if saw_env:
             # coreutils `env` 문법은 `env [옵션]... [--] [NAME=VALUE]... [명령]` 이며
@@ -953,13 +989,25 @@ def _routing_start(
         index += 1
         saw_env = True
 
+    # 도달 불가(매 반복이 word 를 최소 하나 소비한다). 방어적으로 fail-closed.
+    return -1
+
 
 def _routing_start_index(parsed: MiniShellParse) -> int:
     return _routing_start(parsed.words, parsed.argv)
 
 
 def _routing_argv(parsed: MiniShellParse) -> tuple[str, ...]:
-    return parsed.argv[_routing_start_index(parsed):]
+    """라우팅 대상 argv. 거부 센티넬(`-1`/`-2`)은 빈 튜플로 fail-closed 처리한다.
+
+    센티넬을 그대로 슬라이스하면 파이썬 음수 인덱싱 때문에 `argv[-2:]` 가 마지막 두
+    토큰을 조용히 돌려주어, 불변식 위반이 예외가 아니라 "잘못된 word 에 대한 라우팅
+    결정"으로 둔갑한다.
+    """
+    route_start = _routing_start_index(parsed)
+    if route_start < 0:
+        return ()
+    return parsed.argv[route_start:]
 
 
 def _wrapper_invocation(argv: tuple[str, ...]) -> tuple[str, int] | None:
