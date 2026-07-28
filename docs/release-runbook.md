@@ -137,6 +137,30 @@ instead: restore the proof chain rather than treating it as unavailable.
 
 The proof checks the immutable B1 nudge/FSM and B2 usage-reducer feature commits against their exact owned canonical, packaged, and dedicated-test paths. In disposable clones it applies and reverts each feature independently from the same pre-B base, verifies the reverted tree equals that base, proves each feature can be reverted alone from the current head, and finally proves the integrated rollback order `B1 -> B2 -> shared integration`. It reports unavailable when the checkout lacks the required history, and fails when a component path set changes, either feature needs hunk surgery, or shared integration cannot be reverted last. CI therefore uses full Git history. Treat the emitted commit and tree hashes as the release evidence; do not substitute a successful source-only test for the mechanical history proof.
 
+### Gate B generations
+
+The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_rollback.py`, not a single hardcoded set of four commits. Every generation (retired or active) is checked forever for structure (parent chain, disjoint owned path sets), apply/revert tree equality, and its own residual contract. Only the **active generation** (the last element of `GENERATIONS`) is checked against the live `HEAD`: the freeze that rejects any post-reapplication edit to its component paths, the ordered live rollback (`B1 -> B2 -> shared integration`), and presence/absence of that generation's Gate-B markers. A retired generation's four commits stay immutable, so once its checks pass they remain true forever — the durable guarantee a retired generation keeps making is that its four proof commits stay uniquely reachable.
+
+**Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
+
+Re-blessing procedure:
+
+1. Confirm the freeze is actually the blocker (an otherwise-unrelated PR touches a frozen component path) and that no cheaper option — narrowing the frozen path set for a future generation, or splitting a large frozen test file — resolves it instead.
+2. Author the new generation's four reapply commits (`bless`, `b1`, `b2`, `shared-integration`) with subjects that are globally unique across the whole `GENERATIONS` history (uniqueness is enforced mechanically: two commits sharing a subject make the proof fail with "found N" instead of silently picking one).
+3. Append a new `Generation` record to `GENERATIONS` in the same commit that lands the fourth reapply commit's ancestor chain. Do not edit any prior generation's record — the list is append-only, including its path sets and markers.
+4. Declare every component path whose blessed content legitimately changes relative to the previous generation in the new generation's `residual_edits`. An undeclared change to a path both generations own is rejected.
+5. **Pull the review pathspec from the proof itself — do not hand-maintain a path list.** Run `python3 scripts/verify_gate_b_rollback.py --json` and read the `review_pathspec` key: it is the sorted union of every generation's component paths, computed by the script, not typed in by a reviewer. A hardcoded list goes stale the moment a generation adds or drops a path; deriving from only the active generation would let a narrowing generation hide a path from review. Use it to scope the actual review diff:
+   ```bash
+   python3 scripts/verify_gate_b_rollback.py --json > /tmp/gate-b-proof.json
+   jq -r '.review_pathspec[]' /tmp/gate-b-proof.json
+   ```
+   then review `git diff <previous-generation-bless> <new-generation-bless> -- <paths from review_pathspec>` line by line, confirming every changed line is one of the declared `residual_edits`.
+6. Run the full proof (`--json` and plain) and the targeted Gate-B test modules locally before pushing; the publish workflow runs the proof as a blocking step, but a broken generation record should never reach CI first.
+
+### Gate-B incident exception to append-only
+
+`GENERATIONS` is append-only during normal operation. The one exception is a security incident: if a re-blessed generation is later found to have laundered Gate-B surface into the residual (a legitimate-looking `bless` diff that actually leaves Gate-B code reachable), the bad generation record may be removed. That removal is itself a reviewed commit with an incident note explaining what was found and why the generation was pulled, not a silent history rewrite. See the incident steps under Rollback notes below; do not use this exception to escape a normal freeze — that is exactly the softness this proof exists to prevent.
+
 ## Rollback notes
 
 If a release gate fails after a publish candidate has been prepared:
@@ -147,5 +171,6 @@ If a release gate fails after a publish candidate has been prepared:
 4. Revert shared package or release metadata only after its dependent feature units. Preserve unrelated managed bytes and fail closed if a setup rollback detects an external edit after the expected post-image.
 5. Revert or supersede the candidate with a focused fix PR. For an already-pushed tag or marketplace artifact, pin the bad version in the incident note and publish a corrected version rather than mutating history.
 6. Re-run this runbook from the beginning, including CI and quad-review evidence on the new head.
+7. Gate B generations specifically: if the incident is a laundered re-blessing (see "Gate-B incident exception to append-only" above), the fix PR that removes the bad generation record goes through the same CI-green-plus-blocker-free-quad-review bar as any other change — there is no separate approval path. Do not delete or edit an older, unaffected generation record to work around this; only the specific bad record is removed, and the incident note stays attached to the fix PR.
 
 Do not publish by bypassing `prepublish_check.py`, `release_smoke.py`, CI, or blocker-free quad review.
