@@ -27,6 +27,13 @@ from tests.context_guard_a1_oracles import (
     prepare_path_lookup_canary,
     route_cases,
 )
+from tests.corpus_adversarial_pins import (
+    FIX5_ADVERSARIAL_PINS,
+    FIX5_ALLOWLIST_POSITIVE_PINS,
+    FIX5_ENV_WRAPPER_BYPASS_PINS,
+    FIX5_GLOB_REJECTION_PINS,
+    fix5_case_count,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -399,6 +406,15 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         self.assertEqual(
                             parsed.denial_reason,
                             case["expected_denial_reason"],
+                        )
+                    # `expected_denial_reason` 은 파서 단계(parsed.denial_reason)를,
+                    # `expected_reason_code` 는 분류 단계(decision.reason_code)를 고정한다.
+                    # 파싱은 성공하고 분류에서 거부되는 케이스(예: unsafe_env_name_denied)
+                    # 는 후자로만 원인을 단언할 수 있다.
+                    if "expected_reason_code" in case:
+                        self.assertEqual(
+                            decision.reason_code,
+                            case["expected_reason_code"],
                         )
                     if "expected_argv" in case:
                         self.assertEqual(parsed.argv, case["expected_argv"])
@@ -848,6 +864,189 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 with self.subTest(script=script, command=command):
                     self.assert_bounded_deny(proc)
                     self.assertNotIn("leaving command unchanged", proc.stderr)
+
+    def test_fix5_adversarial_pin_count_matches_ac_5_1(self) -> None:
+        """AC-5.1 — 적대적 환경변수 접두사 벡터는 정확히 19개여야 한다."""
+        self.assertEqual(fix5_case_count(), 19)
+
+    def test_fix5_adversarial_env_prefix_vectors_deny_on_canonical_and_staged(self) -> None:
+        """AC-5.1/AC-5.2 — 19개 벡터가 canonical/staged 양쪽에서 전부 deny 되고,
+        이름 검사가 라우팅보다 먼저 실행되므로 19건 모두 신규
+        `unsafe_env_name_denied` 를 원인으로 갖는다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_adversarial_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_ADVERSARIAL_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, pin["expected_decision"])
+                    # 원인 코드는 항상 단언한다 — 생략을 허용하면 `deny` 만 보고 통과해
+                    # 원인 오염(파서 우연/assignment_only 대체)을 놓치는 공허한 단언이 된다.
+                    self.assertEqual(
+                        decision.reason_code, pin["expected_reason_code"]
+                    )
+
+    def test_fix5_env_wrapper_forms_cannot_bypass_allowlist(self) -> None:
+        """`env -- NAME=val cmd` 와 `env env NAME=val cmd` 는 이름 화이트리스트를
+        우회하지 못한다.
+
+        coreutils `env` 는 `--` 뒤에서도 선행 할당을 환경에 적용하고 중첩 호출도
+        허용한다. 최초 FIX-5 구현은 `env` 를 한 번만 소비하고 `--` 이후 할당 구간을
+        재검사하지 않아 두 형태 모두 noop(허용)으로 통과했다 — 즉 FIX-5 가 막으려던
+        ride-along RCE 가 그대로 재현됐다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_env_wrapper_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_ENV_WRAPPER_BYPASS_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code, pin["expected_reason_code"]
+                    )
+
+    def test_fix5_env_wrapper_bypass_pins_denied_through_hook_envelope(self) -> None:
+        """우회 핀 전체를 실제 훅 엔벌로프로도 검증한다(AC-5.4 확장).
+
+        classify_command 단위 고정만으로는 분류 경로와 rewrite/엔벌로프 경로가 어긋난
+        경우를 잡지 못한다. FIX-5 의 본질이 ride-along RCE 차단이므로 거부 벡터는 실제
+        훅 출력에서도 deny 여야 하고, 변수 이름과 값 경로가 stdout 으로 새면 안 된다.
+        허용 대조군은 라우팅 헤드가 할당 word 나 `--` 가 아니라 실제 명령이어야 한다.
+        """
+        for script in REWRITE_SCRIPTS:
+            for pin in FIX5_ENV_WRAPPER_BYPASS_PINS:
+                with self.subTest(script=script.name, case_id=pin["case_id"]):
+                    if pin["expected_decision"] == "deny":
+                        proc = self.assert_command_decision(
+                            pin["command"], "deny", script=script
+                        )
+                        self.assert_bounded_deny(proc)
+                        self.assertNotIn("/tmp/evil", proc.stdout)
+                        self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
+                        self.assertNotIn("LD_PRELOAD", proc.stdout)
+                    else:
+                        proc = self.assert_command_decision(
+                            pin["command"], "rewrite", script=script
+                        )
+                        updated = json.loads(proc.stdout)["hookSpecificOutput"][
+                            "updatedInput"
+                        ]["command"]
+                        # 라우팅 헤드를 할당 word(`LANG=C`)나 `--` 로 잡으면 엉뚱한
+                        # word 를 감싸게 되므로 실제 명령이 남아 있어야 한다.
+                        self.assertIn("git", updated)
+
+    def test_fix5_assignment_only_segment_reports_unsafe_name_cause(self) -> None:
+        """명령어 없는 할당 전용 세그먼트도 이름 자체로 거부된다.
+
+        예전에는 `index >= len(words)` 조기 반환이 이름 검사보다 먼저 실행되어
+        `assignment_only_denied` 라는 다른 백스톱에만 의존했다. 그 경우 §5.4/§5.6
+        측정이 `unsafe_env_name_denied` 로 필터링할 때 이 시도를 놓친다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_assignment_only_{index}")
+            classify_command = namespace["classify_command"]
+            entrypoint = "canonical" if index == 0 else "staged"
+            with self.subTest(entrypoint=entrypoint, case="unsafe name"):
+                decision = classify_command("PATH=/tmp/evil")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+            with self.subTest(entrypoint=entrypoint, case="allowlisted name"):
+                # 허용 이름은 기존 원인(assignment_only_denied)을 그대로 유지한다.
+                decision = classify_command("LANG=C")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "assignment_only_denied")
+
+    def test_fix5_allowlisted_env_prefix_still_routes_on_canonical_and_staged(self) -> None:
+        """AC-5.3 — 시드 화이트리스트 안의 무해 접두사는 계속 허용된다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_positive_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_ALLOWLIST_POSITIVE_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, pin["expected_decision"])
+                    self.assertIsNone(decision.reason_code)
+
+    def test_fix5_exact_name_match_rejects_glob_style_prefixes(self) -> None:
+        """AC-5.6 — TERMINFO/LOCPATH 는 TERM/LANG 접두사 매칭으로 재승인되지 않는다
+        (`TERM*` 글롭이었다면 재현되었을 denylist 침몰 실패 형태를 고정한다)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_glob_{index}")
+            classify_command = namespace["classify_command"]
+            for pin in FIX5_GLOB_REJECTION_PINS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=pin["case_id"],
+                ):
+                    decision = classify_command(pin["command"])
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+
+    def test_fix5_multi_prefix_denies_when_any_name_is_unsafe(self) -> None:
+        """다중 접두사 중 하나라도 화이트리스트 밖이면 세그먼트 전체가 거부된다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_multi_prefix_{index}")
+            classify_command = namespace["classify_command"]
+            entrypoint = "canonical" if index == 0 else "staged"
+            with self.subTest(entrypoint=entrypoint, case="safe then unsafe"):
+                decision = classify_command("TZ=UTC GIT_PAGER=/tmp/evil.sh git diff")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+            with self.subTest(entrypoint=entrypoint, case="unsafe first"):
+                # 단락 평가 순서와 무관하게 거부되어야 한다.
+                decision = classify_command("GIT_PAGER=/tmp/evil.sh TZ=UTC git diff")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "unsafe_env_name_denied")
+            with self.subTest(entrypoint=entrypoint, case="all safe"):
+                decision = classify_command("TZ=UTC LANG=C git diff")
+                self.assertNotEqual(decision.action, "deny")
+
+    def test_fix5_env_builtin_form_enforces_same_allowlist(self) -> None:
+        """리터럴 `env NAME=val -- cmd` 형태도 동일한 이름 화이트리스트를 적용받는다
+        (`_routing_start` 의 두 번째 스캔 구간 — `env` 뒤 할당 목록)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"fix5_env_builtin_{index}")
+            classify_command = namespace["classify_command"]
+            with self.subTest(entrypoint="canonical" if index == 0 else "staged"):
+                denied = classify_command("env GIT_PAGER=/tmp/evil.sh git diff")
+                self.assertEqual(denied.action, "deny")
+                self.assertEqual(denied.reason_code, "unsafe_env_name_denied")
+                allowed = classify_command("env NODE_ENV=production npm test")
+                self.assertEqual(allowed.action, "trim")
+                self.assertIsNone(allowed.reason_code)
+
+    def test_fix5_restricted_env_denied_still_covers_its_original_cause(self) -> None:
+        """`restricted_env_denied` 는 이름 문제가 아닌 `env` 플래그 형태에서 여전히
+        발생해야 한다 — 신규 `unsafe_env_name_denied` 와 원인이 섞이지 않았는지 확인
+        (Q10, §5.4/§5.6 측정이 reason_code 로 필터링하므로 오염되면 안 된다)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(
+                script, f"fix5_restricted_env_cause_{index}"
+            )
+            classify_command = namespace["classify_command"]
+            with self.subTest(entrypoint="canonical" if index == 0 else "staged"):
+                decision = classify_command("env --unknown printf ok")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "restricted_env_denied")
+
+    def test_fix5_hook_envelope_denies_env_prefix_rce_end_to_end(self) -> None:
+        """AC-5.4 — 거부된 접두사는 wrapped `bash -lc` 출력으로 도달하지 않는다."""
+        for script in REWRITE_SCRIPTS:
+            with self.subTest(script=script):
+                proc = self.assert_command_decision(
+                    "GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+                    "deny",
+                    script=script,
+                )
+                self.assertNotIn("GIT_EXTERNAL_DIFF", proc.stdout)
 
 
 if __name__ == "__main__":
