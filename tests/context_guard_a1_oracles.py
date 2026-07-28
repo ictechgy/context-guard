@@ -444,6 +444,11 @@ def minishell_normative_cases() -> list[dict[str, object]]:
             "family": "restricted-env",
             "command": "env FOO=bar EMPTY= -- printf ok",
             "expected_decision": "deny",
+            # 원인까지 고정한다 — `deny` 만 단언하면 restricted_env_denied 같은 다른
+            # 원인으로 거부돼도 통과해, FOO/EMPTY 가 "이름 때문에" 막힌다는 성질이
+            # 검증되지 않는다. 파싱 자체는 성공하므로 parsed.denial_reason 이 아니라
+            # 분류 단계의 reason_code 로 단언해야 한다.
+            "expected_reason_code": "unsafe_env_name_denied",
         },
     ]
 

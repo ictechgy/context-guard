@@ -877,13 +877,21 @@ def is_log_streaming_command(argv: list[str]) -> bool:
     return False
 
 
-def _env_prefix_name(word: MiniShellWord) -> str:
+def _env_prefix_name(word: MiniShellWord) -> str | None:
     """할당 word 의 소스 텍스트에서 `=` 앞 변수 이름만 뽑아낸다.
 
-    `word.assignment_index` 는 `_exact_assignment_index` 가 확정한, 활성(비인용)
-    `=` 의 위치이므로 호출자는 `assignment_index is not None` 을 먼저 확인해야 한다.
+    `word.assignment_index` 는 `_exact_assignment_index` 가 `source_value` 기준으로
+    확정한 활성(비인용) `=` 의 위치다. 그 교차 필드 불변식이 깨진 word 는 이름을
+    신뢰할 수 없으므로 `None` 을 돌려 호출자가 fail-closed 로 처리하게 한다.
+    `source_value[:None]` 이 토큰 전체를 조용히 돌려주는 파이썬 슬라이스 특성 때문에
+    불변식 위반이 무증상으로 통과하지 않도록 명시적으로 막는다.
     """
-    return word.source_value[: word.assignment_index]
+    index = word.assignment_index
+    if index is None or not 0 <= index < len(word.source_value):
+        return None
+    if word.source_value[index] != "=":
+        return None
+    return word.source_value[:index]
 
 
 def _has_unsafe_env_prefix_name(
@@ -894,12 +902,14 @@ def _has_unsafe_env_prefix_name(
     """[start, end) 구간의 환경변수 할당 이름이 시드 화이트리스트 밖이면 True.
 
     정확 이름 일치만 검사한다(접두사/글롭 금지) — `TERM*` 글롭이 `TERMINFO` 를
-    재승인시키는 실패 형태를 피하기 위함(AC-5.6).
+    재승인시키는 실패 형태를 피하기 위함(AC-5.6). 이름을 추출할 수 없는 word 는
+    안전을 증명할 수 없으므로 unsafe 로 간주한다(fail-closed).
     """
-    return any(
-        _env_prefix_name(words[index]) not in MINISHELL_ALLOWED_ENV_PREFIX_NAMES
-        for index in range(start, end)
-    )
+    for index in range(start, end):
+        name = _env_prefix_name(words[index])
+        if name is None or name not in MINISHELL_ALLOWED_ENV_PREFIX_NAMES:
+            return True
+    return False
 
 
 def _routing_start(
@@ -914,26 +924,28 @@ def _routing_start(
     호출자가 구분해서 처리해야 한다(classify_command 참고).
     """
     index = 0
-    while index < len(words) and words[index].assignment_index is not None:
-        index += 1
-    if index >= len(words):
-        return index
-    if _has_unsafe_env_prefix_name(words, 0, index):
-        return -2
-    if command_basename(argv[index]) != "env":
-        return index
+    while True:
+        assignment_start = index
+        while index < len(words) and words[index].assignment_index is not None:
+            index += 1
+        # 이름 검사는 어떤 조기 반환보다도 먼저 수행한다. 명령어 없는 할당 전용
+        # 세그먼트(`PATH=/tmp/evil`)도 `assignment_only_denied` 라는 다른 백스톱에
+        # 의존하지 않고 자신의 원인 코드로 거부되어야 §5.4/§5.6 측정이 눈을 뜬다.
+        if _has_unsafe_env_prefix_name(words, assignment_start, index):
+            return -2
+        if index >= len(words):
+            return index
+        if command_basename(argv[index]) != "env":
+            return index
 
-    index += 1
-    env_arg_start = index
-    while index < len(words) and words[index].assignment_index is not None:
         index += 1
-    if _has_unsafe_env_prefix_name(words, env_arg_start, index):
-        return -2
-    if index < len(words) and argv[index] == "--":
-        index += 1
-    if index >= len(words) or argv[index].startswith("-"):
-        return -1
-    return index
+        # coreutils `env` 는 `--` 뒤에서도 선행 `NAME=VALUE` 를 환경 할당으로 처리하고,
+        # `env env NAME=VALUE cmd` 처럼 중첩 호출도 허용한다. 두 형태 모두 예전에는
+        # 할당 구간 재검사 없이 라우팅으로 빠져나가 FIX-5 를 우회했으므로 루프로 돌린다.
+        if index < len(words) and argv[index] == "--":
+            index += 1
+        if index >= len(words) or argv[index].startswith("-"):
+            return -1
 
 
 def _routing_start_index(parsed: MiniShellParse) -> int:

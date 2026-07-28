@@ -15,12 +15,23 @@ from __future__ import annotations
 from typing import TypedDict
 
 
-class AdversarialPin(TypedDict, total=False):
+class _AdversarialPinRequired(TypedDict):
+    """모든 핀이 반드시 채워야 하는 필드.
+
+    `expected_reason_code` 를 필수로 둔다 — 선택 필드였을 때 핀이 이 값을 생략하면
+    계약 테스트가 `deny` 여부만 보고 통과해, 원인 코드가 오염돼도(예: 파서 우연이나
+    assignment_only 로의 대체) 아무도 눈치채지 못하는 공허한 단언이 된다. 허용 핀은
+    명시적으로 `None` 을 적어 "원인 코드가 없어야 함"을 단언하게 한다.
+    """
+
     case_id: str
     fix: str
     command: str
     expected_decision: str
     expected_reason_code: str | None
+
+
+class AdversarialPin(_AdversarialPinRequired, total=False):
     note: str
 
 
@@ -31,9 +42,10 @@ class AdversarialPin(TypedDict, total=False):
 # 스킵했다. 19개 벡터 중 17개가 기존 코드에서 통과(sanitize/trim)했고, 나머지 2개
 # (GIT_PAGER, LESSOPEN)는 화이트리스트와 무관한 우연(각각 `git log`의 patch_output
 # 요구 실패, 값에 포함된 `|`가 활성 파이프로 파싱됨)으로 이미 deny 였다. FIX-5 이후
-# 19개 전부 deny 이어야 한다(AC-5.1) — 17개는 신규 `unsafe_env_name_denied`(AC-5.2)로,
-# 나머지 2개는 각자의 기존 원인을 유지해도 무방하다(INV-A는 reason_code 변경을 허용할
-# 뿐 요구하지 않는다).
+# 19개 전부 deny 이어야 한다(AC-5.1). 이름 검사가 라우팅과 할당 전용 조기 반환보다
+# 먼저 실행되므로, 우연히 deny 였던 2개를 포함해 19개 모두 신규
+# `unsafe_env_name_denied`(AC-5.2)를 원인으로 갖는다 — 검사 순서가
+# "세그먼트 분해 -> 이름 화이트리스트 -> 라우팅" 임을 이 핀들이 고정한다.
 # ---------------------------------------------------------------------------
 FIX5_ADVERSARIAL_PINS: list[AdversarialPin] = [
     {
@@ -195,12 +207,68 @@ FIX5_ADVERSARIAL_PINS: list[AdversarialPin] = [
         "command": "LESSOPEN=|/tmp/evil.sh %s git diff",
         "expected_decision": "deny",
         # 값에 포함된 인용되지 않은 `|` 가 활성 파이프 구분자로 파싱되어 첫 세그먼트가
-        # "LESSOPEN=" 단독(명령 없음)이 된다 — assignment_only_denied 로 거부된다.
-        # 이름 화이트리스트와 무관하게 이미 deny 였고 여전히 deny 다(파이프를 제거하면
-        # noop 으로 통과했을 것이므로 우연한 방어임 — §0 defect report).
-        "expected_reason_code": "assignment_only_denied",
-        "note": "값의 `|` 가 활성 파이프로 파싱되는 우연한 방어 — 파이프를 제거하면 "
-        "(`LESSOPEN=/tmp/evil.sh git diff`) 이름 화이트리스트가 대신 deny 를 보장한다.",
+        # "LESSOPEN=" 단독(명령 없음)이 된다. 예전에는 이 우연한 파싱 덕분에
+        # assignment_only_denied 로만 거부됐지만, 이제 이름 검사가 할당 전용 조기
+        # 반환보다 먼저 실행되므로 LESSOPEN 이라는 이름 자체로 확정 deny 된다.
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "예전의 우연한 파이프 방어가 아니라 이름 화이트리스트가 원인이 된다 — "
+        "파이프를 제거한 형태(fix5-adv-lessopen-no-pipe)도 같은 코드로 거부된다.",
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# FIX-5 — `env` 래퍼 우회 회귀 (리뷰 루프에서 발견된 실증 우회)
+#
+# 아래 두 형태는 최초 FIX-5 구현에서 noop(허용)으로 통과했다. coreutils `env` 는
+# `--` 뒤에서도 선행 NAME=VALUE 를 환경 할당으로 처리하고 중첩 호출도 허용하므로,
+# 두 경우 모두 FIX-5 가 막으려던 ride-along RCE 가 그대로 재현됐다.
+# AC-5.1 의 19개 카운트를 보존하기 위해 별도 리스트로 분리한다.
+# ---------------------------------------------------------------------------
+FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
+    {
+        "case_id": "fix5-bypass-env-double-dash",
+        "fix": "FIX-5",
+        "command": "env -- GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "`--` 이후 할당 구간이 재검사되지 않아 라우팅이 할당 word 에서 시작하고 "
+        "noop 으로 통과했다(실증). `env -- NAME=VALUE cmd` 는 실제로 변수를 설정한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-nested",
+        "fix": "FIX-5",
+        "command": "env env GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "`env` 를 한 번만 소비해 중첩 호출의 할당 구간이 검사되지 않고 noop "
+        "으로 통과했다(실증). `env env NAME=VALUE cmd` 도 실제로 변수를 설정한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-double-dash-ld-preload",
+        "fix": "FIX-5",
+        "command": "env -- LD_PRELOAD=/tmp/evil.so cat README.md",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "동적 링커 계열도 같은 `--` 우회로 통과했음을 고정한다.",
+    },
+    {
+        "case_id": "fix5-adv-lessopen-no-pipe",
+        "fix": "FIX-5",
+        "command": "LESSOPEN=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        # 우연한 `|` 파이프 방어를 제거한 형태 — 이름 화이트리스트가 유일한 방어선이다.
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "파이프 파싱 우연에 기대지 않고 이름 화이트리스트만으로 deny 됨을 고정한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-double-dash-allowlisted-routes",
+        "fix": "FIX-5",
+        "command": "env -- LANG=C git diff",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "대조군 — 허용 이름은 `--` 뒤에서도 계속 통과하며, 라우팅 헤드가 할당 "
+        "word 가 아니라 실제 명령(git)으로 잡혀야 한다.",
     },
 ]
 
@@ -269,6 +337,7 @@ ALL_PINS: list[AdversarialPin] = [
     *FIX5_ADVERSARIAL_PINS,
     *FIX5_ALLOWLIST_POSITIVE_PINS,
     *FIX5_GLOB_REJECTION_PINS,
+    *FIX5_ENV_WRAPPER_BYPASS_PINS,
 ]
 
 
