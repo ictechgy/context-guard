@@ -326,7 +326,12 @@ class ReadA2ContractTests(unittest.TestCase):
                     {"limit": 1, "offset": 1.5},
                     {"limit": 1, "offset": 1 << 63},
                 )
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
                 for read_range in invalid_ranges:
+                    # 이 루프는 입력 검증만 다루므로, 회차별 밸브 개입을 피하려고 매번
+                    # 시도 카운터 캐시를 초기화한다(회차 로직은 별도 테스트가 다룬다).
+                    if state_file.exists():
+                        state_file.unlink()
                     payload = {"file_path": "large.bin", **read_range}
                     _, stdout, _ = invoke_guard(
                         guard,
@@ -623,6 +628,229 @@ class ReadA2ContractTests(unittest.TestCase):
                     self.assertEqual(stderr, "")
                     outputs[index].append(stdout)
         self.assertEqual(outputs[0], outputs[1])
+
+    def test_escape_valve_fires_once_at_third_blocked_read_without_reopening_file(self) -> None:
+        # AC-3.1 / AC-3.3 / AC-3.7: 3회차에 offset/limit을 주입하는 updatedInput이 정확히 1회
+        # 발화하고, 이후 반복 호출에서는 재발화하지 않으며, 밸브 판정 자체는 대상 파일 fd를
+        # 재개방하지 않는다. (1~2회차 사다리 거부는 별도의 아웃라인 프리뷰 open을 쓰므로
+        # AC-3.7의 재개방-없음 단언은 밸브가 실제로 판정을 내리는 3회차에 한정한다.)
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "blank.bin").write_bytes(b"\n" * 5000)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "blank.bin"}}
+                invoke_guard(guard, payload, cwd=root)
+                invoke_guard(guard, payload, cwd=root)
+
+                original_open = guard.open_regular_no_symlink
+                open_calls: list[int] = []
+
+                def counting_open(path, _original=original_open):
+                    open_calls.append(1)
+                    return _original(path)
+
+                with mock.patch.object(guard, "open_regular_no_symlink", counting_open):
+                    _, stdout, stderr = invoke_guard(guard, payload, cwd=root)
+                self.assertEqual(stderr, "")
+                self.assertEqual(len(open_calls), 1)
+                output = hook_result(stdout)["hookSpecificOutput"]
+                self.assertNotIn("permissionDecision", output)
+                self.assertEqual(
+                    output["updatedInput"],
+                    {"file_path": "blank.bin", "offset": 0, "limit": 400},
+                )
+
+                for _round in range(4, 11):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    self.assertNotIn("updatedInput", hook_result(stdout)["hookSpecificOutput"])
+
+    def test_escape_valve_exhausted_denials_stay_under_200_bytes(self) -> None:
+        # AC-3.2: 4회차 이후 거부 메시지는 200바이트 미만이어야 한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "blank.bin").write_bytes(b"\n" * 5000)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "blank.bin"}}
+                for _round in range(3):
+                    invoke_guard(guard, payload, cwd=root)
+                for _round in range(4, 8):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    self.assertEqual(decision(stdout), "deny")
+                    denial_reason = reason(stdout)
+                    self.assertLess(len(denial_reason.encode("utf-8")), 200)
+                    self.assertIn("escape valve exhausted", denial_reason)
+
+    def test_escape_valve_never_fires_gives_actionable_budget_reason_from_round_three(
+        self,
+    ) -> None:
+        # AC-3.2/3.6 (교정): 자동 축소(offset=0, limit=400) 자체도 content_budget_exceeded면
+        # 밸브는 구조적으로 발화할 수 없다. 1~2회차는 아직 자기 교정 여지가 있으므로 전체
+        # 사다리를 주고, 3회차부터는 "탈진"이라 주장하지 않는 대신 실제 예산 수치가 담긴
+        # 실행 가능한 단축 메시지("Large Read blocked" 포함, 200바이트 미만)를 매 반복마다
+        # 낸다. updatedInput은 절대 나오지 않고, valve_used는 계속 False로 남는다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "narrow.bin").write_bytes(b"x\n" * 10)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "narrow.bin"}}
+                for round_number in range(1, 3):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    output = hook_result(stdout)["hookSpecificOutput"]
+                    with self.subTest(round=round_number):
+                        self.assertNotIn("updatedInput", output)
+                        self.assertIn("Progressive read ladder", output["permissionDecisionReason"])
+
+                for round_number in range(3, 7):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    output = hook_result(stdout)["hookSpecificOutput"]
+                    with self.subTest(round=round_number):
+                        self.assertNotIn("updatedInput", output)
+                        self.assertEqual(output["permissionDecision"], "deny")
+                        denial_reason = output["permissionDecisionReason"]
+                        self.assertIn("Large Read blocked", denial_reason)
+                        self.assertIn("byte guard", denial_reason)
+                        self.assertNotIn("escape valve exhausted", denial_reason)
+                        self.assertNotIn("Progressive read ladder", denial_reason)
+                        self.assertLess(len(denial_reason.encode("utf-8")), 200)
+
+                # 에이전트가 직접 실패하는 범위를 지정해도(자체 outcome=content_budget_exceeded)
+                # 여전히 "탈진" 메시지로 바뀌지 않고 예산 초과 사유를 낸다.
+                explicit_payload = {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "narrow.bin", "offset": 0, "limit": 5},
+                }
+                _, stdout, _ = invoke_guard(guard, explicit_payload, cwd=root)
+                explicit_reason = reason(stdout)
+                self.assertIn("Large Read blocked", explicit_reason)
+                self.assertIn("byte guard", explicit_reason)
+                self.assertNotIn("escape valve exhausted", explicit_reason)
+                self.assertLess(len(explicit_reason.encode("utf-8")), 200)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                entry = next(iter(state["attempts"].values()))
+                self.assertEqual(entry["count"], 7)
+                self.assertFalse(entry["valve_used"])
+
+    def test_escape_valve_and_counter_reset_on_fingerprint_change(self) -> None:
+        # AC-3.4: 파일 mtime이 바뀌면 지문이 바뀌어 카운터와 valve_used가 자연히 리셋된다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target = root / "churn.bin"
+                target.write_bytes(b"\n" * 5000)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "churn.bin"}}
+                invoke_guard(guard, payload, cwd=root)
+                _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                self.assertIn("Repeated-read dedup", reason(stdout))
+
+                current = target.stat()
+                os.utime(target, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
+
+                _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                self.assertNotIn("Repeated-read dedup", reason(stdout))
+                self.assertNotIn("escape valve exhausted", reason(stdout))
+
+    def test_read_guard_state_entry_merges_and_stays_backward_compatible(self) -> None:
+        # AC-3.5: 레거시 {"count": N} 캐시를 크래시 없이 읽고, 쓰기 시 덮어쓰지 않고 병합한다.
+        # record_read_guard_attempt는 호출부가 실제로 쓰는 count(int)만 반환하고,
+        # valve_used/first_seen/last_seen 같은 전체 엔트리 조회는 peek으로 확인한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.assertEqual(guard.peek_read_guard_attempt(root, "fresh"), guard.default_read_guard_entry())
+
+                self.assertEqual(guard.record_read_guard_attempt(root, "fp"), 1)
+                first = guard.peek_read_guard_attempt(root, "fp")
+                self.assertFalse(first["valve_used"])
+                self.assertGreater(first["first_seen"], 0)
+
+                self.assertEqual(guard.record_read_guard_attempt(root, "fp", valve_fired=True), 2)
+                second = guard.peek_read_guard_attempt(root, "fp")
+                self.assertTrue(second["valve_used"])
+                self.assertEqual(second["first_seen"], first["first_seen"])
+
+                # save_read_guard_state는 최상위 state를 통째로 대체하므로, 기존 "fp" 엔트리를
+                # 보존하려면 먼저 불러와 레거시 엔트리를 병합해 넣어야 한다.
+                legacy_state = guard.load_read_guard_state(root)
+                legacy_state["attempts"]["legacy"] = {"count": 9}
+                guard.save_read_guard_state(root, legacy_state)
+                legacy_peek = guard.peek_read_guard_attempt(root, "legacy")
+                self.assertEqual(legacy_peek["count"], 9)
+                self.assertFalse(legacy_peek["valve_used"])
+                self.assertEqual(guard.record_read_guard_attempt(root, "legacy"), 10)
+                legacy_committed = guard.peek_read_guard_attempt(root, "legacy")
+                self.assertEqual(legacy_committed["count"], 10)
+                self.assertFalse(legacy_committed["valve_used"])
+
+                # 병합 방식이므로 다른 지문("fp")의 기존 필드는 훼손되지 않는다.
+                self.assertEqual(guard.peek_read_guard_attempt(root, "fp")["count"], 2)
+
+    def test_security_denials_repeat_full_reason_and_never_touch_the_valve_counter(self) -> None:
+        # 회귀 고정: 보안/경로 판정(심볼릭 링크 순회 등)은 예산 밸브보다 앞서 조기 반환되므로
+        # 몇 번을 반복해도 카운터를 건드리지 않고, 매번 동일한 전체 보안 사유를 낸다.
+        # 예산 밸브(3회차 축소, 4회차 이후 단축 메시지)와 절대 뒤섞이지 않아야 한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                real = root / "real.bin"
+                real.write_bytes(b"x\n" * 100000)
+                link = root / "linked.bin"
+                try:
+                    link.symlink_to(real)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"symlink unavailable: {exc}")
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "linked.bin"}}
+
+                for _round in range(5):
+                    _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                    self.assertEqual(decision(stdout), "deny")
+                    denial_reason = reason(stdout)
+                    self.assertIn("traverses a symlink", denial_reason)
+                    self.assertNotIn("escape valve exhausted", denial_reason)
+                    self.assertNotIn("Repeated-read dedup", denial_reason)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                self.assertFalse(state_file.exists())
+
+    def test_race_detected_symlink_denials_also_skip_the_valve_counter(self) -> None:
+        # open_regular_no_symlink가 open() 시점에 뒤늦게 심볼릭 링크를 감지(ELOOP)해도
+        # 같은 방어선이다: 예외 처리기가 카운터/밸브 코드에 도달하기 전에 조기 반환한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "race.bin").write_bytes(b"x\n" * 100000)
+                payload = {"tool_name": "Read", "tool_input": {"file_path": "race.bin"}}
+                original_open = guard.open_regular_no_symlink
+
+                def racing_open(path, _original=original_open):
+                    raise OSError(guard.errno.ELOOP, "too many symlinks")
+
+                with mock.patch.object(guard, "open_regular_no_symlink", racing_open):
+                    for _round in range(4):
+                        _, stdout, _ = invoke_guard(guard, payload, cwd=root)
+                        self.assertEqual(decision(stdout), "deny")
+                        denial_reason = reason(stdout)
+                        self.assertIn("traverses a symlink", denial_reason)
+                        self.assertNotIn("escape valve exhausted", denial_reason)
+
+                state_file = root / guard.READ_GUARD_STATE_DIR / guard.READ_GUARD_STATE_FILE
+                self.assertFalse(state_file.exists())
+
+    def test_read_guard_state_max_items_bumped_and_eviction_stays_fifo_like(self) -> None:
+        # READ_GUARD_STATE_MAX_ITEMS 20->128; pop 후 재삽입이 축출을 LRU 유사로 유지한다.
+        for guard in self.guards:
+            with self.subTest(script=guard.__file__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.assertEqual(guard.READ_GUARD_STATE_MAX_ITEMS, 128)
+                for index in range(130):
+                    guard.record_read_guard_attempt(root, f"fp-{index}")
+                guard.record_read_guard_attempt(root, "fp-0")
+                attempts = guard.load_read_guard_state(root)["attempts"]
+                self.assertEqual(len(attempts), guard.READ_GUARD_STATE_MAX_ITEMS)
+                self.assertIn("fp-0", attempts)
+                self.assertNotIn("fp-1", attempts)
+                self.assertIn("fp-129", attempts)
 
 
 if __name__ == "__main__":
