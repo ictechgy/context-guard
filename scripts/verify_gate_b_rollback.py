@@ -225,9 +225,14 @@ def path_exists_in_tree(repo: Path, commit: str, path: str) -> bool:
     종료 0에 빈 출력이고, 리비전 자체가 나쁘면 0이 아닌 종료로 실패한다. 따라서
     ``check=True``로 호출해 인프라 실패는 ``ProofError``로 큰 소리를 내게 하고,
     부재는 출력이 비었는지로만 판단한다.
+
+    ``-z``는 선택이 아니라 필수다. 줄 단위 출력에서는 git이 ASCII 밖 경로를
+    C 스타일로 따옴표 처리해(``"hangul_\\355\\225\\234..."``) 원래 경로 문자열과
+    일치하지 않게 되고, 그러면 존재하는 경로가 '부재'로 읽혀 정확히 이 함수가
+    막으려던 fail-open이 되살아난다. NUL 구분 출력은 따옴표 처리를 하지 않는다.
     """
-    proc = run_git(repo, "ls-tree", "--name-only", commit, "--", path)
-    return path in proc.stdout.splitlines()
+    proc = run_git(repo, "ls-tree", "--name-only", "-z", commit, "--", path)
+    return path in [name for name in proc.stdout.split("\0") if name]
 
 
 def commit_exists(repo: Path, commit: str) -> bool:
@@ -354,12 +359,22 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
        키로 쓰므로, 이름이 겹치면 앞 세대의 커밋이 조용히 덮어써지고 D3/D5가
        같은 bless를 자기 자신과 비교해 통째로 공허해진다 — 재축복 커밋 안의
        한 단어짜리 편집으로 이번 PR이 추가하는 두 방어선이 모두 꺼진다.
-    2. ``gate_b_markers``/``residual_markers`` 비어 있지 않음. 빈 컬렉션은
-       C3-a/C3-b/잔여 계약을 0회 루프로 만들어 공허하게 통과시킨다. I5 약화를
-       정당화하는 역방향 anti-laundering 방어선을 재축복자 자신이 끌 수 있으면
-       안 된다. 단조성(이전 세대 마커 포함)은 요구하지 *않는다* — 그것은 과거
-       세대의 bless를 소급 재검사하지 않는다는 설계 성질(U-12)을 깨뜨린다.
-       여기서 세우는 것은 바닥선이지 단조성이 아니다.
+    2. ``gate_b_markers``/``residual_markers`` 비어 있지 않고, needle 목록과
+       리터럴이 실제로 무언가를 구속함. 빈 컬렉션은 C3-a/C3-b/잔여 계약을 0회
+       루프로 만들어 공허하게 통과시킨다. 컬렉션이 비었는지만 보면 바닥이 옮겨질
+       뿐이라 ``{"p": ()}``와 ``{"p": ("",)}``도 함께 막는다.
+
+    4. Gate-B 마커 전방 이월(forward carry). 세대 N은 세대 N-1의
+       ``gate_b_markers``를 모두 포함해야 한다. 비어 있지 않기만 요구하면
+       재축복자가 자기 bless를 구속할 리터럴 집합을 스스로 고르게 되어, nonce
+       마커 하나를 선언하고(자기 b1 커밋이 HEAD에 그 nonce를 넣으면 C3-a 통과,
+       bless는 그보다 앞서므로 C3-b 통과) 진짜 Gate-B 리터럴은 bless에 그대로
+       남겨두는 세탁이 성립한다. 이월은 *소급*이 아니다 — 과거 bless를 새 마커로
+       다시 검사하는 것이 아니라, 새 bless를 과거 마커로 검사할 뿐이다. 따라서
+       세대별 비소급 성질(U-12)은 그대로 보존된다. 마커를 버리는 탈출 필드는
+       두지 않는다: 그런 필드는 바로 그 세탁을 잡을 마커를 지목해 버리게 해준다.
+       리터럴이 정말로 사라졌다면 C3-a가 HEAD에 대해 먼저 큰 소리로 실패하므로
+       그 경우는 이미 자기 신고된다(P5).
     3. 마커 소유 경로가 그 세대의 컴포넌트 경로에 속함. C3-b가 'bless 트리에
        소유 경로가 없으면 통과'로 건너뛰는 근거는 '경로의 부재는 경로 집합
        검사가 이미 구속한다'인데, 그 논거는 소유 경로가 컴포넌트 경로일 때만
@@ -385,12 +400,57 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
             )
         components = generation.all_component_paths
         for marker in generation.gate_b_markers:
+            if not marker.literal.strip():
+                raise ProofError(
+                    f"generation {generation.name!r} declares an empty Gate-B marker "
+                    f"literal for {marker.owner_path!r}"
+                )
             if marker.owner_path not in components:
                 raise ProofError(
                     f"generation {generation.name!r} Gate-B marker "
                     f"{marker.literal!r} owner path {marker.owner_path!r} is not a "
                     "component path of that generation"
                 )
+        # 컬렉션이 비어 있지 않은지만 보면 바닥이 옮겨질 뿐 막히지 않는다.
+        # ``{"p": ()}``는 안쪽 루프가 0회라 아무 needle도 검사하지 않고,
+        # ``{"p": ("",)}``는 ``"" in content``가 항상 참이라 어떤 내용이든 통과한다.
+        # 둘 다 dict는 비어 있지 않으므로 위 검사를 그대로 빠져나간다.
+        for path, needles in generation.residual_markers.items():
+            if path not in components:
+                raise ProofError(
+                    f"generation {generation.name!r} residual marker path {path!r} is "
+                    "not a component path of that generation"
+                )
+            if not needles:
+                raise ProofError(
+                    f"generation {generation.name!r} declares no residual marker "
+                    f"needles for {path!r}: that path's contract would pass vacuously"
+                )
+            for needle in needles:
+                if not needle.strip():
+                    raise ProofError(
+                        f"generation {generation.name!r} declares an empty residual "
+                        f"marker needle for {path!r}: it matches any content"
+                    )
+    for previous, current in zip(generations, generations[1:]):
+        # 이월 범위는 '현 세대가 여전히 소유한 경로의 마커'로 한정한다. 경로 자체를
+        # 컴포넌트 집합에서 뺀 경우까지 이월을 강요하면 규칙 3(소유 경로는 컴포넌트
+        # 경로)과 충돌해 구성 자체가 불가능해진다. 경로를 빼는 것은 별개의 알려진
+        # 좁히기 벡터이고, 그쪽은 ``review_pathspec``이 전 세대 합집합이라 리뷰에
+        # 계속 드러난다. 여기서 막는 것은 '경로는 그대로 들고 있으면서 그 경로를
+        # 구속하던 마커만 조용히 버리는' 세탁이다.
+        carried = {
+            marker
+            for marker in previous.gate_b_markers
+            if marker.owner_path in current.all_component_paths
+        }
+        dropped = carried - set(current.gate_b_markers)
+        if dropped:
+            raise ProofError(
+                f"generation {current.name!r} drops Gate-B markers declared by "
+                f"{previous.name!r} for paths it still owns: "
+                f"{sorted((marker.literal, marker.owner_path) for marker in dropped)!r}"
+            )
 
 
 def resolve_generation_commits(
@@ -793,6 +853,14 @@ def apply_and_revert_all_generations(
 
 def run_proof(repo: Path = ROOT) -> dict[str, object]:
     repo = repo.resolve()
+    # 레코드 검사는 git을 전혀 쓰지 않으므로 ``resolve_source_head``보다도 앞선다.
+    # 뒤에 두면 얕은 체크아웃(fetch-depth: 1처럼 BASE_COMMIT이 없는 경우)에서
+    # ProofHistoryUnavailable(종료 3)이 먼저 나서, 망가진 레코드가 '증명 불가'로
+    # 보고된다. 레코드 결함은 체크아웃 모양과 무관한 소스 결함이므로 어떤
+    # 체크아웃에서도 똑같이 실패(종료 1)해야 한다.
+    assert_generation_records_wellformed(GENERATIONS)
+    for generation in GENERATIONS:
+        assert_disjoint_paths(generation)
     source_head, history_may_be_truncated = resolve_source_head(repo)
     all_commits = resolve_history(
         repo,
