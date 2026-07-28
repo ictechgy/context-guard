@@ -628,3 +628,430 @@ def fix1a_route_predicate_relaxations() -> list[RoutePredicateCase]:
         for case in FIX1A_ROUTE_PREDICATE_CASES
         if case.get("expected_decision") != "deny"
     ]
+
+
+# ---------------------------------------------------------------------------
+# FIX-1b — git (subcommand, 인자 형태) 쌍 화이트리스트, INV-A/B 회귀 앵커
+# (plan §6.1b, AC-1.4, AC-1b.2). D1이 무효화한 두 프로토타입을 실증 고정한다:
+#   1라운드 — 서브커맨드 이름만으로 허용 → 쓰기 6/6 누수.
+#   2라운드 — "위치 인자 0개면 거부" → 위치 인자 0개 쓰기 8건 누수(AC-1.4의
+#             stash/gc/prune/repack/clean -fd/reset --hard/commit --amend
+#             --no-edit/branch --edit-description). clean -fd 와 reset --hard
+#             는 단순 쓰기가 아니라 **데이터 손실**이다.
+#   3라운드 — 전역 옵션이 서브커맨드 앞에 올 수 있음을 무시 → `argv[1]`을
+#             찾으려 선행 플래그를 스킵하면 `git -c alias.zz='!...' zz`가
+#             임의 셸을 실행한다(AC-1b.2, 실행 확인, R-5).
+# baseline_reason_code 는 개조 전 코드(`subcommand not in {"diff","show","log"}`
+# 만으로 판정하던 버전)를 읽어 수기로 판정했다 — 개조 전 코드에서 이 명령들은
+# 전부 route_policy_denied 였다(config/stash/branch/tag/remote/gc/prune/repack/
+# clean/reset/commit 은 옛 allow-set 에 아예 없었고, AC-1b.2의 9개는 `argv[1]`이
+# 이미 리터럴이라 `-`로 시작하는 값이 옛 allow-set 과도 결코 일치하지 않았다 —
+# 즉 R-5 불변식은 "새로 추가"가 아니라 "실수로 이미 있던 안전성을 명시적
+# 불변식으로 승격 + 유지"다).
+# ---------------------------------------------------------------------------
+FIX1B_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    # --- AC-1.4: 위치 인자 0개 쓰기 14건(D2 반증 사례) — 전부 INV-A 앵커 ---
+    {
+        "case_id": "fix1b-ac1-4-config-user-name",
+        "fix": "FIX-1b",
+        "command": "git config user.name Bob",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "config 행은 표에서 삭제됨(R-13) — 키 없이 값만 출력해 리댁션 불가.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-config-global-email",
+        "fix": "FIX-1b",
+        "command": "git config --global user.email x@y.z",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "config 행 삭제(R-13) — 전역 설정 파일 쓰기이기도 함.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-stash-bare-1",
+        "fix": "FIX-1b",
+        "command": "git stash",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — stash 행은 list/show 만 허용, 맨 stash 는 거부.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-branch-newfeature",
+        "fix": "FIX-1b",
+        "command": "git branch newfeature",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "branch 는 위치 인자 0개 엄격 — arity 가 조회를 생성으로 뒤집는다.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-tag-v1",
+        "fix": "FIX-1b",
+        "command": "git tag v1.0.0",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "tag 도 위치 인자 0개 엄격 — branch 와 동일한 arity 반전 사유.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-remote-add",
+        "fix": "FIX-1b",
+        "command": "git remote add origin url",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "remote 행은 표에서 삭제됨(R-13) — FIX-6 완료 후 재도입 심사 대상.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-gc",
+        "fix": "FIX-1b",
+        "command": "git gc",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer(2라운드 8건 누수 사례) — 오브젝트 스토어 재작성.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-prune",
+        "fix": "FIX-1b",
+        "command": "git prune",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — 도달 불가 오브젝트 삭제.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-repack",
+        "fix": "FIX-1b",
+        "command": "git repack",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — 오브젝트 스토어 재작성.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-clean-fd",
+        "fix": "FIX-1b",
+        "command": "git clean -fd",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — 단순 쓰기가 아니라 **데이터 손실**(추적 안 된 파일 삭제).",
+    },
+    {
+        "case_id": "fix1b-ac1-4-reset-hard",
+        "fix": "FIX-1b",
+        "command": "git reset --hard",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — 단순 쓰기가 아니라 **데이터 손실**(워킹 트리 변경 폐기).",
+    },
+    {
+        "case_id": "fix1b-ac1-4-commit-amend",
+        "fix": "FIX-1b",
+        "command": "git commit --amend --no-edit",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — 직전 커밋을 재작성한다.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-branch-edit-description",
+        "fix": "FIX-1b",
+        "command": "git branch --edit-description",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "0-arity writer — branch 표에 없는 쓰기 플래그라 미지 플래그로도 거부됨.",
+    },
+    {
+        "case_id": "fix1b-ac1-4-stash-bare-2",
+        "fix": "FIX-1b",
+        "command": "git stash",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "plan AC-1.4 목록의 중복 항목을 그대로 보존한다(14건 카운트, AC-0.5 산식).",
+    },
+    # --- AC-1b.2: argv[1] 리터럴 불변식(R-5) — 전역 옵션 우회 9건, 전부 앵커 ---
+    {
+        "case_id": "fix1b-ac1b2-c-core-pager",
+        "fix": "FIX-1b",
+        "command": "git -c core.pager=cat log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='-c' — 서브커맨드로 인정되지 않아 즉시 거부.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-c-alias-rce",
+        "fix": "FIX-1b",
+        "command": "git -c alias.x='!id' x",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "R-5 핵심 사례 — 선행 옵션 스킵 패턴을 쓰면 임의 셸 실행이 확인된 벡터"
+        "(`_package_script_route:1436` 패턴 재사용 금지).",
+    },
+    {
+        "case_id": "fix1b-ac1b2-p-pager-flag",
+        "fix": "FIX-1b",
+        "command": "git -p log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='-p'(페이저 강제) — 서브커맨드 자리에 전역 옵션.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-paginate",
+        "fix": "FIX-1b",
+        "command": "git --paginate log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='--paginate'.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-no-pager",
+        "fix": "FIX-1b",
+        "command": "git --no-pager log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='--no-pager' — 기존 git-diff family 의 negative 와 동일 계열.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-capital-c",
+        "fix": "FIX-1b",
+        "command": "git -C /tmp log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='-C'(작업 디렉터리 변경) — 저장소 밖 경로로 이동 가능.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-exec-path",
+        "fix": "FIX-1b",
+        "command": "git --exec-path=/evil log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='--exec-path=/evil' — git 내장 실행 파일 탐색 경로 치환.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-git-dir",
+        "fix": "FIX-1b",
+        "command": "git --git-dir=/other/.git log -p",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "argv[1]='--git-dir=/other/.git' — 다른 저장소를 대상으로 재지정.",
+    },
+    {
+        "case_id": "fix1b-ac1b2-log-output",
+        "fix": "FIX-1b",
+        "command": "git log -p --output=/tmp/x",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "전역 옵션 우회가 아니라 서브커맨드 뒤 쓰기 플래그(임의 파일 쓰기) — "
+        "log 의 허용 집합에 --output 이 없어 거부.",
+    },
+    # --- FIX-1b 완화 — deny -> sanitize 전환(INV-B 대상), 표의 각 신규 행 대표 1건 ---
+    {
+        "case_id": "fix1b-relax-status",
+        "fix": "FIX-1b",
+        "command": "git status -s",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "status 행 신설 — 위치 인자 0개 조건으로 조회만 허용.",
+    },
+    {
+        "case_id": "fix1b-relax-log-oneline",
+        "fix": "FIX-1b",
+        "command": "git log --oneline -20",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "핵심 완화 — 개조 전에는 -p 없는 log 가 patch_output 요구로 거부됐다"
+        "(§0 정정 1). AC-1.9 부착형 -20 도 함께 검증.",
+    },
+    {
+        "case_id": "fix1b-relax-branch",
+        "fix": "FIX-1b",
+        "command": "git branch -a",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "branch 행 신설 — 위치 인자 0개 조건으로 조회만 허용.",
+    },
+    {
+        "case_id": "fix1b-relax-tag",
+        "fix": "FIX-1b",
+        "command": "git tag -l",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "tag 행 신설 — 위치 인자 0개 조건으로 조회만 허용.",
+    },
+    {
+        "case_id": "fix1b-relax-rev-parse",
+        "fix": "FIX-1b",
+        "command": "git rev-parse --show-toplevel",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "rev-parse 행 신설 — 위치 인자 무제한(revision 문자열).",
+    },
+    {
+        "case_id": "fix1b-relax-describe",
+        "fix": "FIX-1b",
+        "command": "git describe --tags --always",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "describe 행 신설.",
+    },
+    {
+        "case_id": "fix1b-relax-ls-files",
+        "fix": "FIX-1b",
+        "command": "git ls-files --cached --modified",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "ls-files 행 신설.",
+    },
+    {
+        "case_id": "fix1b-relax-shortlog",
+        "fix": "FIX-1b",
+        "command": "git shortlog -sn HEAD",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "shortlog 행 신설 — AC-1.9 묶음 단축 플래그(-sn -> {s,n}) 검증 겸용. "
+        "리비전 HEAD 를 주어 stdin 을 읽지 않는 형태만 승인된다.",
+    },
+    {
+        "case_id": "fix1b-inv-a-shortlog-no-revision",
+        "fix": "FIX-1b",
+        "command": "git shortlog -sn",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": None,
+        "note": "리비전 없는 shortlog 는 stdin 에서 커밋 로그를 읽어 래퍼의 600초 "
+        "워치독까지 블록한다(실측). `tail -f` 를 거부하는 것과 같은 비종료 방지 "
+        "불변식이므로 승인 범위를 좁히는 방향으로 고정한다.",
+    },
+    {
+        "case_id": "fix1b-inv-a-shortlog-pathspec-only",
+        "fix": "FIX-1b",
+        "command": "git shortlog -sn -- README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": None,
+        "note": "`--` 뒤 토큰은 pathspec 이라 리비전 요건을 충족하지 못한다 — "
+        "위치 인자 총계만 세면 이 형태가 승인되지만 git 은 여전히 stdin 을 "
+        "읽고 블록한다(실측).",
+    },
+    {
+        "case_id": "fix1b-relax-blame",
+        "fix": "FIX-1b",
+        "command": "git blame -w README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "blame 행 신설 — 경로 1개 이상 필수 조건 충족.",
+    },
+    {
+        "case_id": "fix1b-relax-stash-list",
+        "fix": "FIX-1b",
+        "command": "git stash list",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "stash 행 신설 — list/show 만 허용(맨 stash 는 계속 거부, 위 앵커 참고).",
+    },
+    {
+        "case_id": "fix1b-relax-stash-show",
+        "fix": "FIX-1b",
+        "command": "git stash show",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "stash show 도 동일 완화 대상.",
+    },
+    # --- 완화 표면 인접 역방향 케이스(INV-A 대상) — D1/AC-1.9/AC-1.10 고정 ---
+    {
+        "case_id": "fix1b-inv-a-branch-bundled-write-flag",
+        "fix": "FIX-1b",
+        "command": "git branch -ad",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "AC-1.9 역방향 — 묶음 단축 플래그를 분해해도({a,d}) d 가 branch 의 "
+        "허용 집합에 없어 거부된다. 완화가 쓰기 플래그를 재승인하지 않는지 확인.",
+    },
+    {
+        "case_id": "fix1b-inv-a-tag-positional-after-double-dash",
+        "fix": "FIX-1b",
+        "command": "git tag -l -- v1.0.0",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "AC-1.10 역방향 — `--` 자체는 위치 인자로 계수하지 않지만 그 이후 토큰은 "
+        "정상 계수한다. v1.0.0 이 위치 인자 1개로 계수되어 tag 의 엄격 0 상한을 "
+        "위반한다(-- 뒤에 두면 우회된다는 오독을 막는다).",
+    },
+    {
+        "case_id": "fix1b-inv-a-stash-unlisted-subcommand",
+        "fix": "FIX-1b",
+        "command": "git stash pop",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "미등재 인접 서브커맨드 — stash 행은 list/show 만 허용, pop 은 실제 쓰기"
+        "(스태시 적용+삭제)이며 표에 없어 거부된다.",
+    },
+]
+
+
+def fix1b_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """INV-B 가 실제로 전환을 검사해야 하는 행(완화 대상)만 골라낸다."""
+    return [
+        case
+        for case in FIX1B_ROUTE_PREDICATE_CASES
+        if case.get("expected_decision") != "deny"
+    ]
+
+
+def fix1b_relaxation_case_count() -> int:
+    """AC-1b.1 이 요구하는 11건의 완화 대상(표 신설 행) 케이스 수를 검증한다.
+
+    `fix1b_route_predicate_relaxations` 는 `expected_decision != "deny"` 로
+    구성원을 고르므로, 어떤 행의 기대값을 `deny` 로 오염시키면 그 행이 완화
+    집합에서 조용히 빠져 단언이 공허해진다. 이 개수 가드가 그 이탈을 즉시
+    빌드 실패로 만든다(AC-1.4/AC-1b.2 가드와 같은 역할)."""
+    return len(fix1b_route_predicate_relaxations())
+
+
+def fix1b_ac1_4_case_count() -> int:
+    """AC-1.4 가 요구하는 14건의 위치 인자 0개 쓰기 고정 케이스 수를 검증한다."""
+    return sum(
+        1
+        for case in FIX1B_ROUTE_PREDICATE_CASES
+        if case["case_id"].startswith("fix1b-ac1-4-")
+    )
+
+
+def fix1b_ac1b2_case_count() -> int:
+    """AC-1b.2 가 요구하는 9건의 전역 옵션 우회 고정 케이스 수를 검증한다."""
+    return sum(
+        1
+        for case in FIX1B_ROUTE_PREDICATE_CASES
+        if case["case_id"].startswith("fix1b-ac1b2-")
+    )

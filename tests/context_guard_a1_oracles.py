@@ -162,6 +162,147 @@ def _route_examples() -> list[dict[str, str]]:
         "rewrite_sanitize",
         ("git --no-pager diff", "git diff --ext-diff", "git diff --textconv"),
     )
+    # -------------------------------------------------------------------
+    # FIX-1b — git (subcommand, argument-shape) pair allowlist (plan §6.1b).
+    # git-diff was the only pre-existing git family (AC-1b.3 defect: a
+    # pair-allowlist prototype measured 0 oracle impact because nothing else
+    # watched git route decisions — absence of surveillance, not safety).
+    # One family per *subcommand* (not per table row) so `diff`/`show`/`grep`
+    # — which share one table row — still get independent surveillance.
+    # `test_ac_1b_3_git_oracle_family_set_matches_table_subcommands` asserts
+    # this family set equals `GIT_TABLE_SUBCOMMANDS`; a row added without a
+    # family fails that test (R-11).
+    #
+    # §5.5 5-column check (applies to every family below, per plan's own
+    # "나머지 11행 판정" conclusion, reproduced here per-subcommand):
+    #   1. before/after: route_policy_denied -> rewrite_sanitize (all new
+    #      subcommands) or unchanged (diff/show/grep, extraction only).
+    #   2. output boundedness: sanitize_output.py's 240-line cap already
+    #      bounds every git subcommand's output regardless of flags/args.
+    #   3. axis-b non-impact: none of these predicates touch parsing,
+    #      `_routing_start`, or gates 1-10 — only the route gate.
+    #   4. reverse case: every family below carries >=1 negative (positional
+    #      overflow, a write flag absent from the table, an unlisted
+    #      adjacent subcommand, or an R-5 global-option bypass).
+    #   5. reads outside the repo / credential store: no — `status`, `log`,
+    #      `branch`, `tag`, `rev-parse`, `describe`, `ls-files`, `shortlog`,
+    #      `blame`, `stash list|show`, `diff`, `show`, `grep` all print
+    #      refs/commits/file content from the working repository, never a
+    #      bare value with no key context (unlike `git config --get`, R-13)
+    #      and never a URL with embedded credentials (unlike `git remote -v`,
+    #      R-13) — both of those rows were deleted from the table for
+    #      exactly this reason and are not reintroduced here.
+    # -------------------------------------------------------------------
+    add(
+        "git-status",
+        ("standalone", "first"),
+        ("git status -s", "git status --porcelain --branch"),
+        "rewrite_sanitize",
+        ("git status README.md", "git --no-pager status"),
+        note="positional overflow negative + R-5 global-option-bypass negative",
+    )
+    add(
+        "git-log",
+        ("standalone", "first"),
+        (
+            "git log --oneline -20",
+            "git log -5",
+            "git log --graph --decorate --pretty=oneline",
+        ),
+        "rewrite_sanitize",
+        ("git log -p --output=/tmp/x", "git -c core.pager=cat log -p"),
+        note="AC-1.9 bundled/attached-value positives; AC-1b.2 write-flag + "
+        "R-5 global-option-bypass negatives",
+    )
+    add(
+        "git-branch",
+        ("standalone", "first"),
+        ("git branch -a", "git branch -r --no-color"),
+        "rewrite_sanitize",
+        ("git branch newfeature", "git branch -ad"),
+        note="AC-1.4 zero-arity-write negative; AC-1.9 bundled-write-flag negative",
+    )
+    add(
+        "git-tag",
+        ("standalone", "first"),
+        ("git tag -l", "git tag -l -n3"),
+        "rewrite_sanitize",
+        ("git tag v1.0.0", "git tag -l -- v1.0.0"),
+        note="AC-1.4 zero-arity-write negative; AC-1.10 -- counting negative "
+        "(positional after -- still counts)",
+    )
+    add(
+        "git-rev-parse",
+        ("standalone", "first"),
+        ("git rev-parse --show-toplevel", "git rev-parse --abbrev-ref HEAD"),
+        "rewrite_sanitize",
+        ("git rev-parse --resolve-git-dir=/tmp", "git -C /tmp rev-parse HEAD"),
+        note="unknown-flag negative + R-5 global-option-bypass negative",
+    )
+    add(
+        "git-describe",
+        ("standalone", "first"),
+        ("git describe --tags --always", "git describe --dirty --long"),
+        "rewrite_sanitize",
+        ("git describe --match=foo", "git --exec-path=/evil describe"),
+        note="unknown-flag negative + R-5 global-option-bypass negative",
+    )
+    add(
+        "git-ls-files",
+        ("standalone", "first"),
+        ("git ls-files --cached --modified", "git ls-files -o --exclude-standard"),
+        "rewrite_sanitize",
+        ("git ls-files --recurse-submodules", "git ls-files -z"),
+        note="unknown long-flag negative + unknown bundled-short-flag negative",
+    )
+    add(
+        "git-shortlog",
+        ("standalone", "first"),
+        ("git shortlog -sn HEAD", "git shortlog --summary --email HEAD"),
+        "rewrite_sanitize",
+        ("git shortlog -sn", "git --paginate shortlog -sn"),
+        note="AC-1.9 bundled-flag positive (subcommand-local -n=--numbered); "
+        "missing-required-revision negative (>=1 revision rule — bare shortlog "
+        "reads commits from stdin and blocks until the 600s wrapper watchdog) "
+        "+ R-5 global-option-bypass negative",
+    )
+    add(
+        "git-blame",
+        ("standalone", "first"),
+        ("git blame -w README.md", "git blame -- README.md"),
+        "rewrite_sanitize",
+        ("git blame -w", "git --no-pager blame README.md"),
+        note="missing-required-path negative (>=1 path rule) + R-5 "
+        "global-option-bypass negative",
+    )
+    add(
+        "git-stash",
+        ("standalone", "first"),
+        ("git stash list", "git stash show"),
+        "rewrite_sanitize",
+        ("git stash", "git stash pop"),
+        note="AC-1.4 zero-arity-write negative (bare `git stash`) + "
+        "unlisted-adjacent-subcommand negative (`pop`)",
+    )
+    add(
+        "git-show",
+        ("standalone", "first"),
+        ("git show --stat HEAD", "git show HEAD~1 -- README.md"),
+        "rewrite_sanitize",
+        ("git --no-pager show", "git show --output=/tmp/x"),
+        note="R-5 global-option-bypass negative + write-flag negative "
+        "(arbitrary-file-write --output=, same class as AC-1b.2 case 9)",
+    )
+    add(
+        "git-grep",
+        ("standalone", "first"),
+        ("git grep -n token -- README.md", "git grep -e token README.md"),
+        "rewrite_sanitize",
+        ("git grep -f patterns.txt", "git --no-pager grep token"),
+        note="pre-existing _grep_is_safe negative (-f/--file) + R-5 "
+        "global-option-bypass negative — delegation unchanged by FIX-1b, "
+        "family added purely for surveillance (AC-1b.3)",
+    )
     add(
         "ripgrep",
         ("standalone", "first"),
