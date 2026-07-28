@@ -279,6 +279,22 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "잡혀야 한다(기존 구현은 `--` 를 명령으로 오인해 라우팅했다).",
     },
     {
+        "case_id": "fix5-bypass-env-path-qualified",
+        "fix": "FIX-5",
+        "command": "/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "경로 한정 `env` 도 basename 으로 인식되므로 동일하게 막혀야 한다.",
+    },
+    {
+        "case_id": "fix5-bypass-env-path-qualified-quoted",
+        "fix": "FIX-5",
+        "command": "/usr/bin/env -- 'GIT_PAGER'=/tmp/evil.sh git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "unsafe_env_name_denied",
+        "note": "경로 한정 + `--` + 인용 피연산자 조합.",
+    },
+    {
         "case_id": "fix5-bypass-env-quoted-operand",
         "fix": "FIX-5",
         "command": "env 'GIT_EXTERNAL_DIFF'=/tmp/evil.sh git diff",
