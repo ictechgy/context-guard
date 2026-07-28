@@ -38,6 +38,7 @@ from tests.corpus_adversarial_pins import (
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
+    fix1b_relaxation_case_count,
     fix1b_route_predicate_relaxations,
     fix5_case_count,
 )
@@ -1219,6 +1220,44 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     case_id=case["case_id"],
                 ):
                     self.assertEqual(classify_command(case["command"]).action, "deny")
+
+    def test_ac1b1_fix1b_relaxations_are_admitted_unconditionally(self) -> None:
+        """AC-1b.1 — 표 신설 행 11건이 **무조건** 기대한 action/reason_code 로
+        승인되는지 고정한다.
+
+        FIX-1a 의 INV-B 테스트는 `if decision.action != "deny":` 안에서만 기대값을
+        검사한다 — 개조 전/후 두 커밋 단계에서 모두 초록이어야 한다는 구조적
+        제약 때문이며 그 자체는 의도된 설계다. 그러나 FIX-1b 는 이미 개조가
+        끝난 시점이므로 같은 조건부 형태를 쓸 이유가 없고, 조건부로 두면 구현이
+        모든 행을 다시 거부해도 테스트가 통과한다(공허). 여기서는 조건 없이
+        단언한다.
+
+        `fix1b_route_predicate_relaxations` 는 구성원을 `expected_decision`
+        으로 고르므로 기대값 오염이 곧 집합 이탈이 된다 — 개수 가드로 막는다.
+        """
+        self.assertEqual(
+            fix1b_relaxation_case_count(),
+            11,
+            "AC-1b.1 은 표 신설 행 11건 고정을 요구한다.",
+        )
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"ac1b1_{index}")
+            classify_command = namespace["classify_command"]
+            for case in fix1b_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code, case.get("expected_reason_code")
+                    )
 
     def test_ac1b3_git_table_subcommands_match_oracle_families(self) -> None:
         """AC-1b.3 — 표의 서브커맨드 집합과 A1 오라클의 `git-*` family 집합이

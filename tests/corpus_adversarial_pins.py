@@ -1029,6 +1029,16 @@ def fix1b_route_predicate_relaxations() -> list[RoutePredicateCase]:
     ]
 
 
+def fix1b_relaxation_case_count() -> int:
+    """AC-1b.1 이 요구하는 11건의 완화 대상(표 신설 행) 케이스 수를 검증한다.
+
+    `fix1b_route_predicate_relaxations` 는 `expected_decision != "deny"` 로
+    구성원을 고르므로, 어떤 행의 기대값을 `deny` 로 오염시키면 그 행이 완화
+    집합에서 조용히 빠져 단언이 공허해진다. 이 개수 가드가 그 이탈을 즉시
+    빌드 실패로 만든다(AC-1.4/AC-1b.2 가드와 같은 역할)."""
+    return len(fix1b_route_predicate_relaxations())
+
+
 def fix1b_ac1_4_case_count() -> int:
     """AC-1.4 가 요구하는 14건의 위치 인자 0개 쓰기 고정 케이스 수를 검증한다."""
     return sum(
