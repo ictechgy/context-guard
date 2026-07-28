@@ -186,16 +186,24 @@ def _route_examples() -> list[dict[str, str]]:
     add(
         "head-tail-producer",
         ("standalone", "first"),
-        ("head -20 README.md", "head -n20 README.md", "tail -50 README.md"),
+        (
+            "head -20 README.md",
+            "head -n20 README.md",
+            "tail -50 README.md",
+            "head README.md",
+            "tail README.md",
+            "head",
+            "tail",
+        ),
         {"standalone": "rewrite_trim", "first": "rewrite_trim"},
         ("head -c 20 README.md", "tail -f README.md"),
     )
     add(
         "head-tail-filter",
         ("filter",),
-        ("head -n 20", "tail --lines=50"),
+        ("head -n 20", "tail --lines=50", "head", "tail"),
         "rewrite_trim",
-        ("head -n 20 README.md", "tail -F"),
+        ("head -n 20 README.md", "tail -F", "head README.md"),
     )
     add(
         "cut",
@@ -226,11 +234,18 @@ def _route_examples() -> list[dict[str, str]]:
         ("uniq input.txt", "uniq -f0"),
     )
     add(
-        "wc",
-        ("standalone", "filter"),
+        "wc-producer",
+        ("standalone",),
+        ("wc -cl", "wc --", "wc README.md", "wc -- README.md"),
+        "noop",
+        ("wc -L",),
+    )
+    add(
+        "wc-filter",
+        ("filter",),
         ("wc -cl", "wc --"),
-        {"standalone": "noop", "filter": "rewrite_trim"},
-        ("wc README.md", "wc -L"),
+        "rewrite_trim",
+        ("wc README.md", "wc -L", "wc -- README.md"),
     )
     add(
         "direct-noisy",

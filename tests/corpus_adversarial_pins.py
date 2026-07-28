@@ -451,3 +451,180 @@ ALL_PINS: list[AdversarialPin] = [
 def fix5_case_count() -> int:
     """AC-5.1 이 요구하는 19개 적대적 벡터 수를 고정 검증하기 위한 헬퍼."""
     return len(FIX5_ADVERSARIAL_PINS)
+
+
+# ---------------------------------------------------------------------------
+# FIX-1a — 비-git 라우트 술어 정밀화(`wc`/`head`/`tail`), INV-A/B 회귀 앵커
+# (AC-1a.2, plan §5.2). AC-0.5 재확인: 실 트랜스크립트 코퍼스는 이 ContextGuard
+# 조사 세션 트리 자체에서만 route_policy_denied 가 나와 오염 제거 후 N=0 이므로
+# (plan §0.5), 실측 코퍼스 대신 이 hand-authored 코퍼스만 사용한다.
+#
+# baseline_reason_code 는 "개조 전" 코드를 읽어 수기로 판정했다(재실행으로 재검증
+# 불가 — 개조 전 predicate 는 더 이상 존재하지 않는다). expected_decision/
+# expected_reason_code 는 "개조 후" 기대값이다. 두 테스트가 이 표를 code-state에
+# 무관하게 소비한다:
+#   - INV-A 는 expected_decision == "deny" 인 행만 보고, 개조 전/후 어느 코드에
+#     대해 실행해도 항상 참이어야 한다("여전히 거부").
+#   - INV-B 는 baseline_reason_code == "route_policy_denied" 인 행만 보고,
+#     실제로 deny → non-deny 전환이 관측된 경우에만 expected_decision 과
+#     대조한다(개조 전 코드에서는 전환이 없어 이 대조가 트리거되지 않는다) — 이
+#     구조 덕분에 "1) 하네스+코퍼스 추가, 현행 녹색 확인 → 2) 술어 변경" 두 단계
+#     커밋이 모두 초록으로 통과한다(plan §6.1a 커밋 경계 1/2).
+# FIX-1b/FIX-2 는 자신의 항목을 이 표에 이어 붙인다(레인별 구획 분리로 병합 충돌
+# 축소, corpus_adversarial_pins.py:7-8 과 동일한 관례).
+# ---------------------------------------------------------------------------
+class RoutePredicateCase(TypedDict, total=False):
+    case_id: str
+    fix: str
+    command: str
+    baseline_reason_code: str | None
+    expected_decision: str
+    expected_reason_code: str | None
+    note: str
+
+
+FIX1A_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    # --- wc: _wc_is_safe 에 allow_files 신설 (완화, INV-B 대상) ---
+    {
+        "case_id": "fix1a-wc-file-standalone-allowed",
+        "fix": "FIX-1a",
+        "command": "wc README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "noop",
+        "expected_reason_code": None,
+        "note": "핵심 완화 — _cat_is_safe 와 대칭으로 allow_files 신설, standalone 은 "
+        "파일 피연산자를 허용한다.",
+    },
+    {
+        "case_id": "fix1a-wc-multi-file-standalone-allowed",
+        "fix": "FIX-1a",
+        "command": "wc -l a.txt b.txt",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "noop",
+        "expected_reason_code": None,
+        "note": "다중 파일 피연산자도 operand 계수만 사용하므로 개수 무관하게 허용된다.",
+    },
+    # --- wc: 역방향 케이스 — 완화 표면에 인접하지만 여전히 거부(INV-A 대상) ---
+    {
+        "case_id": "fix1a-wc-file-filter-still-denied",
+        "fix": "FIX-1a",
+        "command": "printf '%s\\n' ok | wc README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — filter 역할은 allow_files=False 라 파일 피연산자가 여전히 거부된다"
+        "(stdin 과 파일을 동시에 요구하는 모순 방지).",
+    },
+    {
+        "case_id": "fix1a-wc-unknown-flag-still-denied",
+        "fix": "FIX-1a",
+        "command": "wc -L README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — 미지 플래그는 allow_files 와 무관하게 항상 거부된다.",
+    },
+    {
+        "case_id": "fix1a-wc-first-role-still-denied",
+        "fix": "FIX-1a",
+        "command": "wc -l README.md | tee out.txt",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — wc 는 role=='first' 자체가 무조건 거부라 allow_files 완화와 "
+        "무관하게 여전히 route_policy_denied 로 거부되고, 두 번째 세그먼트(tee)까지 "
+        "도달하지 않는다(command_search_diff 의 wc 분기가 _wc_is_safe 호출 전에 컷).",
+    },
+    # --- head/tail: count_seen 필수 요구 완화 (완화, INV-B 대상) ---
+    {
+        "case_id": "fix1a-head-bare-file-standalone-allowed",
+        "fix": "FIX-1a",
+        "command": "head README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "핵심 완화 — bare head 는 기본 10줄 상한이 있어 -n 없이도 안전하다.",
+    },
+    {
+        "case_id": "fix1a-tail-bare-file-standalone-allowed",
+        "fix": "FIX-1a",
+        "command": "tail README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "tail 도 동일 완화 대상(-f/-F 가 아닌 한 기본 10줄 상한 적용).",
+    },
+    {
+        "case_id": "fix1a-head-bare-no-operand-filter-allowed",
+        "fix": "FIX-1a",
+        "command": "printf '%s\\n' ok | head",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "filter 역할에서도 count 없는 bare head 는 이제 허용된다(파일 피연산자가 "
+        "없어 allow_files=False 조건도 만족).",
+    },
+    # --- head/tail: 역방향 케이스 (INV-A 대상) ---
+    {
+        "case_id": "fix1a-tail-f-still-denied",
+        "fix": "FIX-1a",
+        "command": "tail -f README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — -f/-F 는 count_seen 완화와 무관하게 항상 거부(무제한 스트림 방어, "
+        "plan A3 폐기 이유이자 §0 정정 1의 A3 결함).",
+    },
+    {
+        "case_id": "fix1a-head-c-still-denied",
+        "fix": "FIX-1a",
+        "command": "head -c 20 README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — -c(바이트 단위)는 범위 밖. trim 예산 단위(줄)와 섞이면 "
+        "--max-lines 220 상한을 우회할 수 있다(plan §6.1a 항목 3).",
+    },
+    {
+        "case_id": "fix1a-head-file-filter-still-denied",
+        "fix": "FIX-1a",
+        "command": "printf '%s\\n' ok | head README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — filter 역할은 파일 피연산자가 있으면 count_seen 완화와 무관하게 "
+        "여전히 거부된다.",
+    },
+    # --- INV-A 실증 — reason_code 이동은 허용되지만 최종 deny 는 보존된다 ---
+    {
+        "case_id": "fix1a-inv-a-reason-code-drift-head-pipe-tee",
+        "fix": "FIX-1a",
+        "command": "head setup.py | tee out.txt",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "forbidden_command_denied",
+        "note": "plan §5.2 실증 사례 — head 완화로 첫 세그먼트(role=first)는 통과하지만 "
+        "두 번째 세그먼트의 tee 가 forbidden_command_denied 로 거부한다. reason_code 는 "
+        "이동했지만 최종 판정은 여전히 deny — INV-A 위반이 아니다(축 b/a 게이트가 "
+        "classify_command 의 단일 세그먼트 루프에 교차 배치된 결과, plan 원칙 1).",
+    },
+    {
+        "case_id": "fix1a-inv-a-tail-f-in-pipe-still-denied",
+        "fix": "FIX-1a",
+        "command": "tail -f README.md | grep error",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "무제한 스트림 방어는 파이프 첫 세그먼트에서도 유지되어 두 번째 세그먼트에 "
+        "도달하지 않는다(reason_code 도 이동하지 않음).",
+    },
+]
+
+
+def fix1a_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """INV-B 가 실제로 전환을 검사해야 하는 행(완화 대상)만 골라낸다."""
+    return [
+        case
+        for case in FIX1A_ROUTE_PREDICATE_CASES
+        if case.get("expected_decision") != "deny"
+    ]
