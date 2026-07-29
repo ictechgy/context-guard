@@ -227,6 +227,49 @@ class SanitizationModeTests(unittest.TestCase):
                 self.assertIn("(fetch)", proc.stdout)
                 self.assertIn("(push)", proc.stdout)
 
+    def test_grep_quiet_exit_status_survives_the_sanitize_wrapper_end_to_end(self) -> None:
+        """FIX-GREP — `grep -q` 는 stdout 을 내지 않고 **종료 코드만** 답이다.
+        그래서 sanitize 래퍼가 종료 코드를 보존하지 못하면 새로 허용한 `-q` 는
+        조용히 쓸모없어진다(또는 더 나쁘게, 매치 없음을 매치로 오독하게 만든다).
+
+        라우트 결정과 래핑 왕복은 test_context_guard_shell_contract.py 가
+        고정하지만, 그건 전부 **단언**이고 실제로 실행해 본 것이 아니다. 이
+        테스트만이 래퍼를 실제로 돌려 (a) 매치 시 0, (b) 불일치 시 1 이 그대로
+        올라오고 (c) stdout 이 비어 있음을 확인한다. 두 스크립트 사본 모두에서
+        돌린다.
+        """
+        with tempfile.TemporaryDirectory() as workdir:
+            haystack = Path(workdir) / "haystack.txt"
+            haystack.write_text("alpha token beta\ngamma\n", encoding="utf-8")
+            for script in (
+                KIT / "sanitize_output.py",
+                PLUGIN_BIN / "context-guard-sanitize-output",
+            ):
+                for pattern, expected_code in (("token", 0), ("no-such-needle", 1)):
+                    with self.subTest(script=script.name, pattern=pattern):
+                        proc = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                "--context-guard-wrapper-v1",
+                                "command_search_diff",
+                                "--",
+                                "bash",
+                                "-lc",
+                                f"grep -q {pattern} {haystack.name}",
+                            ],
+                            cwd=workdir,
+                            text=True,
+                            capture_output=True,
+                        )
+                        self.assertEqual(
+                            proc.returncode,
+                            expected_code,
+                            "sanitize 래퍼가 grep -q 의 종료 코드를 보존하지 못했다 — "
+                            "`-q` 재승인의 전제가 깨진다.",
+                        )
+                        self.assertEqual(proc.stdout, "")
+
     def test_context_is_immutable_and_git_global_options_keep_search_mode(self) -> None:
         context = self.sanitize.SanitizationContext(
             mode="filesystem_listing",
