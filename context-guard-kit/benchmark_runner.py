@@ -1129,6 +1129,344 @@ def parse_string_map(value: Any, *, field: str, owner: str) -> dict[str, str]:
     return items
 
 
+class _MeasurementDuplicateKey(ValueError):
+    pass
+
+
+def _measurement_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _MeasurementDuplicateKey(key)
+        result[key] = value
+    return result
+
+
+def _load_measurement_json(path: Path, *, owner: str) -> Any:
+    try:
+        return json.loads(
+            _read_text_no_follow(path),
+            object_pairs_hook=_measurement_object_no_duplicates,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite number")),
+        )
+    except _MeasurementDuplicateKey as exc:
+        raise SystemExit(f"{owner} contains duplicate JSON key: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{owner} must be valid JSON: {exc.msg}") from None
+    except ValueError as exc:
+        raise SystemExit(f"{owner} must be strict JSON: {exc}") from None
+
+
+def _measurement_exact_object(
+    value: Any,
+    *,
+    owner: str,
+    keys: frozenset[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemExit(f"{owner} must be a JSON object")
+    actual = set(value)
+    unknown = sorted(actual - keys)
+    missing = sorted(keys - actual)
+    if unknown:
+        raise SystemExit(f"{owner} has unknown key(s): {', '.join(unknown)}")
+    if missing:
+        raise SystemExit(f"{owner} is missing key(s): {', '.join(missing)}")
+    return value
+
+
+def _measurement_safe_path(
+    value: Any,
+    *,
+    owner: str,
+    base_dir: Path,
+    must_exist: bool,
+) -> Path:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise SystemExit(f"{owner} must be a non-empty filesystem path")
+    try:
+        os.fsencode(value)
+    except UnicodeError:
+        raise SystemExit(f"{owner} is not representable on the local filesystem") from None
+    raw = Path(value).expanduser()
+    if not raw.is_absolute():
+        if any(part in ("", ".", "..") for part in raw.parts):
+            raise SystemExit(f"{owner} must not contain '.', '..', or empty path components")
+        path = base_dir / raw
+    else:
+        path = raw
+    path = Path(os.path.normpath(str(path)))
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        # Artifact roots supplied by a test harness may be absolute, but relative
+        # paths are never allowed to escape their fixture directory.
+        if not raw.is_absolute():
+            raise SystemExit(f"{owner} escapes the variant fixture directory") from None
+    try:
+        if must_exist:
+            fd = _open_regular_no_symlink(path)
+            os.close(fd)
+        else:
+            probe = path
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            fd = _ensure_directory_no_symlink(probe)
+            os.close(fd)
+    except OSError as exc:
+        detail = exc.strerror or exc.__class__.__name__
+        raise SystemExit(f"{owner} is unsafe or inaccessible: {detail}") from None
+    return path
+
+
+def _measurement_env_name(value: Any, *, owner: str) -> str:
+    if not isinstance(value, str) or not MEASUREMENT_ENV_NAME_RE.fullmatch(value):
+        raise SystemExit(f"{owner} must be an uppercase environment variable name")
+    if MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
+        raise SystemExit(f"{owner} is secret/auth-shaped and is forbidden")
+    if value in MEASUREMENT_RUNNER_ENV_NAMES:
+        raise SystemExit(f"{owner} is runner-controlled and must not be configured")
+    return value
+
+
+def _measurement_string_tuple(
+    value: Any,
+    *,
+    owner: str,
+    maximum: int = 64,
+) -> tuple[str, ...]:
+    items = parse_string_list(value, field=owner.rsplit(".", 1)[-1], owner=owner.rsplit(".", 1)[0])
+    if len(items) > maximum:
+        raise SystemExit(f"{owner} exceeds the {maximum}-item limit")
+    if len(set(items)) != len(items):
+        raise SystemExit(f"{owner} must not contain duplicates")
+    return tuple(items)
+
+
+def _measurement_parse_identity(raw: Any, *, owner: str, variant_name: str) -> MeasurementIdentity:
+    value = _measurement_exact_object(
+        raw,
+        owner=owner,
+        keys=frozenset({"candidate_hash", "repetition", "arm", "attempt", "namespace"}),
+    )
+    candidate_hash = value["candidate_hash"]
+    if not isinstance(candidate_hash, str) or not SHA256_HEX_PATTERN.fullmatch(candidate_hash):
+        raise SystemExit(f"{owner}.candidate_hash must be 64 lowercase hexadecimal characters")
+    repetition = value["repetition"]
+    attempt = value["attempt"]
+    if isinstance(repetition, bool) or repetition != 0:
+        raise SystemExit(f"{owner}.repetition must be 0 in S001")
+    if isinstance(attempt, bool) or attempt != 0:
+        raise SystemExit(f"{owner}.attempt must be 0 in S001")
+    arm = value["arm"]
+    if arm not in {"baseline", "treatment"} or arm != variant_name:
+        raise SystemExit(f"{owner}.arm must be baseline or treatment and match the variant name")
+    namespace = value["namespace"]
+    if not isinstance(namespace, str) or not MEASUREMENT_ID_NAMESPACE_RE.fullmatch(namespace):
+        raise SystemExit(f"{owner}.namespace must be a bounded safe identifier")
+    return MeasurementIdentity(candidate_hash, repetition, arm, attempt, namespace)
+
+
+def _measurement_parse_variant(
+    raw: Any,
+    *,
+    owner: str,
+    variant_name: str,
+    base_dir: Path,
+) -> MeasurementVariant:
+    value = _measurement_exact_object(raw, owner=owner, keys=MEASUREMENT_VARIANT_KEYS)
+    if value["schema_version"] != MEASUREMENT_SUBSTRATE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"{owner}.schema_version must be {MEASUREMENT_SUBSTRATE_SCHEMA_VERSION}"
+        )
+
+    settings_file = _measurement_safe_path(
+        value["settings_file"], owner=f"{owner}.settings_file", base_dir=base_dir, must_exist=True,
+    )
+    settings_payload = _load_measurement_json(settings_file, owner=f"{owner}.settings_file")
+    if not isinstance(settings_payload, dict):
+        raise SystemExit(f"{owner}.settings_file must contain a JSON object")
+
+    setting_sources = _measurement_string_tuple(
+        value["setting_sources"], owner=f"{owner}.setting_sources", maximum=3,
+    )
+    allowed_setting_sources = {"user", "project", "local"}
+    if any(item not in allowed_setting_sources for item in setting_sources):
+        raise SystemExit(f"{owner}.setting_sources contains an unsupported source")
+    if setting_sources:
+        raise SystemExit(
+            f"{owner} settings/source conflict: exact settings_file requires empty setting_sources"
+        )
+
+    environment = _measurement_exact_object(
+        value["environment"],
+        owner=f"{owner}.environment",
+        keys=frozenset({"allow", "overrides"}),
+    )
+    allow_raw = _measurement_string_tuple(
+        environment["allow"], owner=f"{owner}.environment.allow", maximum=64,
+    )
+    environment_allow = tuple(
+        _measurement_env_name(item, owner=f"{owner}.environment.allow") for item in allow_raw
+    )
+    overrides_raw = environment["overrides"]
+    if not isinstance(overrides_raw, dict) or len(overrides_raw) > 64:
+        raise SystemExit(f"{owner}.environment.overrides must be a bounded JSON object")
+    overrides: list[tuple[str, str]] = []
+    for raw_name, raw_value in overrides_raw.items():
+        name = _measurement_env_name(raw_name, owner=f"{owner}.environment.overrides")
+        if name not in environment_allow:
+            raise SystemExit(f"{owner}.environment.overrides names must also appear in allow")
+        if not isinstance(raw_value, str) or len(raw_value.encode("utf-8")) > 4096:
+            raise SystemExit(f"{owner}.environment.overrides values must be bounded strings")
+        overrides.append((name, raw_value))
+
+    workspace = _measurement_exact_object(
+        value["workspace"], owner=f"{owner}.workspace", keys=frozenset({"mode"}),
+    )
+    if workspace["mode"] != "isolated":
+        raise SystemExit(f"{owner}.workspace.mode must be isolated")
+    session = _measurement_exact_object(
+        value["session"],
+        owner=f"{owner}.session",
+        keys=frozenset({"mode", "persistence"}),
+    )
+    if session["mode"] != "isolated" or session["persistence"] != "disabled":
+        raise SystemExit(f"{owner}.session must use isolated mode with disabled persistence")
+
+    hooks = _measurement_exact_object(
+        value["hook_events"],
+        owner=f"{owner}.hook_events",
+        keys=frozenset({"enabled", "expected_identities"}),
+    )
+    if hooks["enabled"] is not True:
+        raise SystemExit(f"{owner}.hook_events.enabled must be true")
+    expected_hook_identities = _measurement_string_tuple(
+        hooks["expected_identities"],
+        owner=f"{owner}.hook_events.expected_identities",
+        maximum=32,
+    )
+    if any(len(item) > MEASUREMENT_HOOK_TEXT_MAX_CHARS for item in expected_hook_identities):
+        raise SystemExit(f"{owner}.hook_events.expected_identities contains an oversized identity")
+    if variant_name == "baseline" and expected_hook_identities:
+        raise SystemExit(f"{owner} baseline must not expect managed hook identities")
+
+    cli_capabilities = _measurement_string_tuple(
+        value["cli_capabilities"], owner=f"{owner}.cli_capabilities", maximum=32,
+    )
+    for capability in cli_capabilities:
+        if not capability.startswith("--") or len(capability) > 128:
+            raise SystemExit(f"{owner}.cli_capabilities entries must be bounded long options")
+    mandatory_capabilities = {
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "--output-format",
+    }
+    if not mandatory_capabilities.issubset(cli_capabilities):
+        missing = sorted(mandatory_capabilities - set(cli_capabilities))
+        raise SystemExit(f"{owner}.cli_capabilities is missing required option(s): {', '.join(missing)}")
+
+    identity = _measurement_parse_identity(
+        value["identity"], owner=f"{owner}.identity", variant_name=variant_name,
+    )
+    artifact_root = _measurement_safe_path(
+        value["artifact_root"],
+        owner=f"{owner}.artifact_root",
+        base_dir=base_dir,
+        must_exist=False,
+    )
+    return MeasurementVariant(
+        settings_file=settings_file,
+        setting_sources=setting_sources,
+        environment_allow=environment_allow,
+        environment_overrides=tuple(overrides),
+        workspace_mode=str(workspace["mode"]),
+        session_mode=str(session["mode"]),
+        session_persistence=str(session["persistence"]),
+        hook_events_enabled=True,
+        expected_hook_identities=expected_hook_identities,
+        cli_capabilities=cli_capabilities,
+        identity=identity,
+        artifact_root=artifact_root,
+        settings_payload=settings_payload,
+    )
+
+
+def _measurement_prune_registered_hooks(value: Any, identities: frozenset[str]) -> Any:
+    if isinstance(value, list):
+        kept = []
+        for item in value:
+            encoded = json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            if any(identity in encoded for identity in identities):
+                continue
+            kept.append(_measurement_prune_registered_hooks(item, identities))
+        return kept
+    if isinstance(value, dict):
+        return {
+            key: _measurement_prune_registered_hooks(item, identities)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _validate_measurement_variant_set(variants: list[Variant]) -> None:
+    measured = [variant for variant in variants if variant.measurement is not None]
+    if not measured:
+        return
+    if any(variant.name not in {"baseline", "treatment"} for variant in measured):
+        raise SystemExit("measurement variants must be named baseline or treatment in S001")
+    identities = frozenset(
+        identity
+        for variant in measured
+        for identity in variant.measurement.expected_hook_identities  # type: ignore[union-attr]
+    )
+    normalized_settings: list[tuple[str, str]] = []
+    parity_projection: list[tuple[str, tuple[Any, ...]]] = []
+    for variant in measured:
+        spec = variant.measurement
+        assert spec is not None
+        hook_block = spec.settings_payload.get("hooks", {})
+        hook_text = json.dumps(hook_block, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if variant.name == "baseline" and (
+            "context-guard" in hook_text.lower()
+            or any(identity in hook_text for identity in identities)
+        ):
+            raise SystemExit("measurement baseline contains managed ContextGuard hook residue")
+        settings_without_registered = dict(spec.settings_payload)
+        if "hooks" in settings_without_registered:
+            settings_without_registered["hooks"] = _measurement_prune_registered_hooks(
+                settings_without_registered["hooks"], identities,
+            )
+        normalized_settings.append((
+            variant.name,
+            json.dumps(settings_without_registered, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+        ))
+        parity_projection.append((
+            variant.name,
+            (
+                spec.setting_sources,
+                spec.environment_allow,
+                spec.environment_overrides,
+                spec.workspace_mode,
+                spec.session_mode,
+                spec.session_persistence,
+                spec.hook_events_enabled,
+                spec.cli_capabilities,
+                spec.identity.candidate_hash,
+                spec.identity.repetition,
+                spec.identity.attempt,
+                spec.identity.namespace,
+                spec.artifact_root,
+            ),
+        ))
+    if len({value for _, value in normalized_settings}) != 1:
+        raise SystemExit("measurement baseline/treatment settings differ beyond registered hooks")
+    if len({value for _, value in parity_projection}) != 1:
+        raise SystemExit("measurement baseline/treatment configuration differs beyond arm/hooks")
+
+
 def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[str]:
     for index, arg in enumerate(extra_args):
         flag = arg.split("=", 1)[0]
@@ -1410,24 +1748,47 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
 
 
 def parse_variants(path: Path) -> list[Variant]:
-    raw = json.loads(_read_text_no_follow(path))
+    raw = _load_measurement_json(path, owner="variants file")
     if not isinstance(raw, list):
         raise SystemExit(f"variants file must be a JSON list: {path}")
     variants: list[Variant] = []
     for item in raw:
         if not isinstance(item, dict):
             raise SystemExit(f"variant entry must be a JSON object: {item}")
+        if "measurement" in item:
+            unknown = sorted(set(item) - {"name", "extra_args", "measurement"})
+            if unknown:
+                raise SystemExit(f"measurement variant has unknown key(s): {', '.join(unknown)}")
+        name = str(item["name"])
+        extra_args = validate_variant_extra_args(
+            parse_string_list(
+                item.get("extra_args", []),
+                field="extra_args",
+                owner=f"variant {name}",
+            ),
+            owner=f"variant {name}",
+        )
+        if "measurement" in item:
+            for index, arg in enumerate(extra_args):
+                flag = arg.split("=", 1)[0]
+                if flag in MEASUREMENT_PROTECTED_VARIANT_FLAGS:
+                    raise SystemExit(
+                        f"variant {name} extra_args[{index}] conflicts with the measurement runner: {flag}"
+                    )
         variants.append(Variant(
-            name=str(item["name"]),
-            extra_args=validate_variant_extra_args(
-                parse_string_list(
-                    item.get("extra_args", []),
-                    field="extra_args",
-                    owner=f"variant {item.get('name')}",
-                ),
-                owner=f"variant {item.get('name')}",
+            name=name,
+            extra_args=extra_args,
+            measurement=(
+                _measurement_parse_variant(
+                    item["measurement"],
+                    owner=f"variant {name}.measurement",
+                    variant_name=name,
+                    base_dir=path.parent,
+                )
+                if "measurement" in item else None
             ),
         ))
+    _validate_measurement_variant_set(variants)
     return variants
 
 
@@ -1716,13 +2077,92 @@ def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
     return None
 
 
-def claude_version(claude_bin: str) -> str:
+def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunContext | None = None) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for name in spec.environment_allow:
+        # Names were validated before this function; do not inspect values for
+        # rejected auth/secret-shaped names.
+        if name in os.environ:
+            env[name] = os.environ[name]
+    env.update(dict(spec.environment_overrides))
+    if "PATH" not in env:
+        env["PATH"] = os.defpath
+    if context is not None:
+        env.update({
+            "HOME": str(context.home),
+            "XDG_CONFIG_HOME": str(context.xdg_config),
+            "XDG_CACHE_HOME": str(context.xdg_cache),
+            "XDG_DATA_HOME": str(context.xdg_data),
+            "XDG_STATE_HOME": str(context.xdg_state),
+            "TMPDIR": str(context.tmp),
+            "CLAUDE_CONFIG_DIR": str(context.session),
+        })
+    return env
+
+
+@contextmanager
+def _measurement_preflight_env(spec: MeasurementVariant) -> Any:
+    with tempfile.TemporaryDirectory(prefix="contextguard-bench-preflight-") as tmp:
+        root = Path(tmp)
+        names = {
+            "home": root / "home",
+            "xdg-config": root / "xdg-config",
+            "xdg-cache": root / "xdg-cache",
+            "xdg-data": root / "xdg-data",
+            "xdg-state": root / "xdg-state",
+            "tmp": root / "tmp",
+            "workspace": root / "workspace",
+            "session": root / "session",
+        }
+        for path in names.values():
+            path.mkdir(mode=0o700)
+        context = MeasurementRunContext(
+            run_id="preflight",
+            run_root=root,
+            home=names["home"],
+            xdg_config=names["xdg-config"],
+            xdg_cache=names["xdg-cache"],
+            xdg_data=names["xdg-data"],
+            xdg_state=names["xdg-state"],
+            tmp=names["tmp"],
+            workspace=names["workspace"],
+            session=names["session"],
+            raw_path=root / "raw.ndjson",
+            receipt_path=root / "receipt.json",
+            index_path=root / "artifact-index.ndjson",
+        )
+        yield _measurement_child_env(spec, context), context.workspace
+
+
+def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVariant) -> None:
+    executable = executable_argv0(claude_bin)
+    with _measurement_preflight_env(spec) as (env, cwd):
+        try:
+            proc = run_bounded_command(
+                [executable, "--help"],
+                cwd=cwd,
+                timeout_seconds=10,
+                max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise SystemExit(f"measurement CLI capability probe failed: {exc}") from None
+    if proc.returncode != 0 or proc.timed_out or proc.output_truncated:
+        raise SystemExit("measurement CLI capability probe failed")
+    help_text = f"{proc.stdout}\n{proc.stderr}"
+    missing = [capability for capability in spec.cli_capabilities if capability not in help_text]
+    if missing:
+        raise SystemExit(f"measurement CLI lacks required capability: {', '.join(sorted(missing))}")
+
+
+def claude_version(claude_bin: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> str:
     try:
         proc = run_bounded_command(
             [claude_bin, "--version"],
-            cwd=Path.cwd(),
+            cwd=cwd or Path.cwd(),
             timeout_seconds=5,
             max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+            env=env,
         )
         return proc.stdout.strip().splitlines()[0] if proc.stdout else "unknown"
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -1736,9 +2176,10 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     이렇게 해야 baseline variant 의 실제 의미(=defaults 그대로)가 implicit
     runner default 로 왜곡되지 않는다.
     """
+    output_format = "stream-json" if variant.measurement is not None else task.output_format
     argv = [claude_bin, "-p", "--model", task.model,
-            "--max-turns", str(task.max_turns), "--output-format", task.output_format]
-    if task.output_format == "stream-json":
+            "--max-turns", str(task.max_turns), "--output-format", output_format]
+    if output_format == "stream-json":
         argv.append("--verbose")
     if task.effort:
         argv.extend(["--effort", task.effort])
@@ -1746,6 +2187,14 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
         argv.extend(["--max-budget-usd", str(task.max_budget_usd)])
     if task.allowed_tools:
         argv.extend(["--allowedTools", ",".join(task.allowed_tools)])
+    if variant.measurement is not None:
+        spec = variant.measurement
+        argv.extend([
+            "--settings", str(spec.settings_file),
+            "--setting-sources", ",".join(spec.setting_sources),
+            "--include-hook-events",
+            "--no-session-persistence",
+        ])
     argv.extend(variant.extra_args)
     argv.append("--")
     prompt = require_argv_safe_prompt(
@@ -1790,10 +2239,12 @@ def run_bounded_command(
     cwd: Path,
     timeout_seconds: int,
     max_output_bytes: int,
+    env: dict[str, str] | None = None,
 ) -> BoundedProcessResult:
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
