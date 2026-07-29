@@ -29742,6 +29742,34 @@ for malformed in malformed_values:
                 self.assertIn("Read(./.context-guard/**)", example["permissions"]["deny"])
                 self.assertIn("Read(./.claude-token-optimizer/**)", example["permissions"]["deny"])
 
+    def test_settings_examples_wire_failed_nudge_for_both_terminal_events(self):
+        examples = [
+            (
+                ROOT / "context-guard-kit" / "settings.example.json",
+                "python3 context-guard-kit/failed_attempt_nudge.py",
+            ),
+            (
+                ROOT / "plugins" / "context-guard" / "examples" / "settings.example.json",
+                "context-guard-failed-nudge",
+            ),
+        ]
+        for example_path, expected_command in examples:
+            with self.subTest(example=example_path):
+                example = json.loads(example_path.read_text())
+                for event in ("PostToolUse", "PostToolUseFailure"):
+                    matches = [
+                        hook
+                        for entry in example["hooks"].get(event, [])
+                        if entry.get("matcher") == "Bash"
+                        for hook in entry.get("hooks", [])
+                        if hook.get("command") == expected_command
+                    ]
+                    self.assertEqual(
+                        len(matches),
+                        1,
+                        f"{event} must wire exactly one Bash failed-nudge hook in {example_path}",
+                    )
+
     def test_plugin_settings_example_uses_plugin_bin_commands(self):
         example = json.loads((ROOT / "plugins" / "context-guard" / "examples" / "settings.example.json").read_text())
         status_cmd = example["statusLine"]["command"]

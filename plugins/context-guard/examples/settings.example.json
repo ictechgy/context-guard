@@ -60,6 +60,17 @@
           }
         ]
       }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-guard-failed-nudge"
+          }
+        ]
+      }
     ]
   }
 }
