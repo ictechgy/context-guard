@@ -2231,6 +2231,135 @@ FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "`len(expressions) > 1` 가드). 두 표현식이 각각은 유효한 범위라도 "
         "합쳐지면 거부되는지 고정한다.",
     },
+    # --- 리뷰 라운드에서 드러난 감시 공백을 메우는 핀 ---
+    # 공통 원인은 이 시리즈가 반복해 온 "능력이 아니라 철자로 고정"이다
+    # (`grep` 리뷰의 `--colour=always`). 아래 세 묶음은 각각 변이 테스트에서
+    # 생존한 변이를 하나씩 직접 사살한다.
+    {
+        "case_id": "fix-sed-inv-a-gnu-abbrev-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed --i -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `getopt_long` 은 **모호하지 않은 접두사 축약**을 받는다. GNU "
+        "sed 의 롱옵션 중 `i` 로 시작하는 것은 `--in-place` 하나뿐이므로 "
+        "`--i` 는 모호하지 않고, 따라서 GNU sed 에서 `--i` 는 곧 "
+        "`--in-place` 다 — 즉 파일 변조 능력이다. 철자 열거(`--in-place`, "
+        "`--in-place=.bak`)만으로는 이 능력이 감시되지 않는다. 정확 토큰 "
+        "표가 축약형까지 막는지 능력 단위로 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-gnu-abbrev-mid-length-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed --in-p -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "축약은 길이가 임의다 — `--in`, `--in-p`, `--in-plac` 이 전부 "
+        "`--in-place` 로 해석된다. 중간 길이 축약도 같은 능력이므로 함께 "
+        "고정한다(`--in-place` 접두사 매칭으로 우회 불가함을 보인다).",
+    },
+    {
+        "case_id": "fix-sed-inv-a-long-in-place-separate-suffix-arg-denied",
+        "fix": "FIX-SED",
+        "command": "sed --in-place .bak -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "롱 형태의 접미사를 별도 인자로 분리한 형태다. `--in-place` 토큰 "
+        "자체가 이미 거부되지만, 값 소비 분기가 새로 생겨도 이 형태가 "
+        "열리지 않는지 독립적으로 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-separate-flag-denied",
+        "fix": "FIX-SED",
+        "command": "sed -s -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-s`(separate)는 파일을 쓰지는 않지만 정확 토큰 허용목록 밖이다. "
+        "이 행은 **허용목록을 no-op 으로 넓히는 변이**를 잡는다 — `-s` 가 "
+        "무시되면 `-n` 이 quiet 를 채워 이 명령이 통과한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-separate-flag-without-quiet-denied",
+        "fix": "FIX-SED",
+        "command": "sed -s '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "위 행과 **두 축의 교차**다. `-n` 을 뺀 형태는 허용목록을 "
+        "`{-n, --quiet, --silent}` **집합에 얹어** 넓히는 변이(`-s` 가 "
+        "quiet 자리를 대신 채우는 변이)를 잡는다. `-n` 이 붙은 형태만 "
+        "있으면 그 변이에서 이 명령이 '중복 quiet' 라는 **엉뚱한 이유로** "
+        "거부돼 변이가 살아남는다 — 실제로 리뷰 라운드에서 그렇게 "
+        "생존했다(M11 과 같은 종). 두 행이 함께 있어야 감시가 성립한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-extended-regexp-flag-denied",
+        "fix": "FIX-SED",
+        "command": "sed -E -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-E`/`-r`(확장 정규식)도 허용목록 밖이다 — 스크립트 문법을 "
+        "바꾸는 플래그를 받으면 `_SED_SCRIPT_RE` 가 검사하는 문법과 sed 가 "
+        "실제로 해석하는 문법이 어긋난다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-extended-regexp-flag-without-quiet-denied",
+        "fix": "FIX-SED",
+        "command": "sed -E '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-E` 에 대한 quiet 축 교차(위 `-s` 쌍과 동일한 이유).",
+    },
+    {
+        "case_id": "fix-sed-inv-a-null-data-flag-denied",
+        "fix": "FIX-SED",
+        "command": "sed -z -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-z`(null-data)는 '줄'의 정의를 바꾼다 — `N,Mp` 가 뽑는 양이 "
+        "무계가 되므로 범위 읽기라는 전제가 깨진다. 허용목록 밖임을 "
+        "고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-null-data-flag-without-quiet-denied",
+        "fix": "FIX-SED",
+        "command": "sed -z '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-z` 에 대한 quiet 축 교차(위 `-s` 쌍과 동일한 이유).",
+    },
+    {
+        "case_id": "fix-sed-inv-a-line-length-flag-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n -l 80 '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-l N` 은 값을 먹는 플래그다 — 값 소비 분기가 없으므로 토큰 "
+        "단계에서 거부돼야 한다. 값 소비 분기를 새로 추가하는 변경이 "
+        "스크립트 위치 계산을 어긋내지 않는지 감시한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-line-number-upper-bound-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,1000001p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`_valid_n` 의 상한(1..1_000_000)이 실제로 검사되는지 고정한다. "
+        "이 검사는 옛 `_sed_is_safe` 에서 그대로 옮겨왔지만 어느 테스트도 "
+        "그 경계를 밟지 않았다 — `_valid_n` 루프를 통째로 삭제하는 변이가 "
+        "이 핀 없이는 생존했다(범위가 없는 검사, 이 저장소의 반복 실패 "
+        "유형).",
+    },
 ]
 
 

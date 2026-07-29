@@ -531,13 +531,20 @@ def _route_examples() -> list[dict[str, str]]:
             "sed -i '1,80p' README.md",
             "sed -n '1,5p' -i README.md",
             "sed -ni '1,5p' README.md",
+            "sed --i -n '1,5p' README.md",
+            "sed -s -n '1,5p' README.md",
+            "sed -n '1,1000001p' README.md",
             "sed -n '/re/,/re/p' README.md",
         ),
         note="AC sed range-read flag surface (design "
         "route-readmission-design-20260729.md §2.3): whole-argv scan admits "
         "file operands for producer roles. Negatives: in-place edit (plain "
-        "and permuted-position), a short-cluster smuggling -i, and a regex "
-        "address that fails the numeric-range script regex.",
+        "and permuted-position), a short-cluster smuggling -i, the GNU "
+        "unambiguous-prefix abbreviation --i (which GNU getopt_long resolves "
+        "to --in-place, i.e. the same file-mutating capability as the spelled-"
+        "out form), a non-writing but out-of-allowlist flag (-s), a line "
+        "number past the _valid_n upper bound, and a regex address that fails "
+        "the numeric-range script regex.",
     )
     add(
         "sort",
