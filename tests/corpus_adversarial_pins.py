@@ -2172,6 +2172,65 @@ FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "note": "`-f` 는 predicate 가 볼 수 없는 파일에서 스크립트를 읽는다 — "
         "허용목록 밖 토큰이라 여전히 거부된다.",
     },
+    # --- 변이 테스트로 드러난 감시 공백을 메우는 핀(추가 라운드) ---
+    {
+        "case_id": "fix-sed-inv-a-missing-dash-n-denied",
+        "fix": "FIX-SED",
+        "command": "sed '1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-n` 없이는 매칭되지 않은 모든 줄도 그대로 출력된다(sed 의 실제 "
+        "의미) — `quiet_seen` 요구가 정확히 한 번 검사되는지 고정한다. 변이 "
+        "테스트에서 `quiet_seen` 체크를 완전히 생략하는 변이가 이 케이스 "
+        "없이는 생존했다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-write-command-suffix-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80w' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "스크립트 마지막 글자가 `p` 대신 `w`(write) 면 `_SED_SCRIPT_RE` "
+        "가 거부해야 한다 — 정규식을 `[pwer]` 로 느슨하게 하는 변이가 이 "
+        "케이스 없이는 생존했다(스크립트 본문의 안전 경계가 진짜 안전 "
+        "경계라는 주장을 직접 검사).",
+    },
+    {
+        "case_id": "fix-sed-inv-a-permuted-attached-suffix-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,5p' -i.bak README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU 순열 위치(피연산자처럼 보이는 스크립트 뒤)에 붙임 접미사형 "
+        "`-i.bak` 이 와도 여전히 거부된다 — 기존 `-i.bak` 핀은 `-n` 이 없어 "
+        "quiet_seen 검사에서 먼저 걸렸고, 이 케이스는 `-i` 접두 토큰 자체의 "
+        "거부를 독립적으로 검사한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-double-quiet-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n -n '1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-n` 을 두 번 주면 거부된다(design §2.3 `quiet_seen` — 정확히 "
+        "한 번). `-n` 이 이미 나온 뒤 또 나오면 즉시 거부하는 가드가 실제로 "
+        "동작하는지 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-multi-expression-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n -e '1,40p' -e '41,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "다중 `-e` 스크립트는 범위 밖이다(design §2.3 — "
+        "`len(expressions) > 1` 가드). 두 표현식이 각각은 유효한 범위라도 "
+        "합쳐지면 거부되는지 고정한다.",
+    },
 ]
 
 

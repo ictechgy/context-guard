@@ -1722,8 +1722,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
         표의 크기를 고정한다(FIX-LS/FIX-GREP 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
         self.assertEqual(sed_relaxation_case_count(), 6)
-        self.assertEqual(sed_stay_denied_case_count(), 15)
-        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 21)
+        self.assertEqual(sed_stay_denied_case_count(), 20)
+        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 26)
 
     def test_sed_in_place_spellings_all_stay_denied(self) -> None:
         """FIX-SED 의 실패 모드는 이 세 클래스 중 유일하게 파일 변조다(`-i`).
