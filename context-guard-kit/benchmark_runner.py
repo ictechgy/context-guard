@@ -6217,6 +6217,37 @@ def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
     return targets
 
 
+def preflight_measurement_targets(
+    targets: list[tuple[TaskFixture, Variant]],
+    *,
+    claude_bin: str,
+    check_cli: bool,
+) -> None:
+    identities: set[tuple[str, str, int, str, int, str]] = set()
+    run_locations: set[tuple[Path, str]] = set()
+    checked_specs: set[tuple[str, ...]] = set()
+    for task, variant in targets:
+        spec = variant.measurement
+        if spec is None:
+            continue
+        if task.output_format != "stream-json":
+            raise SystemExit(f"measurement task {task.id} output_format must be stream-json")
+        identity = spec.identity.components(task.id)
+        if identity in identities:
+            raise SystemExit("duplicate immutable measurement identity in selected targets")
+        identities.add(identity)
+        run_id = spec.identity.run_id(task.id)
+        location = (spec.artifact_root, run_id)
+        if location in run_locations:
+            raise SystemExit("duplicate measurement run id in selected targets")
+        run_locations.add(location)
+        if (spec.artifact_root / run_id).exists():
+            raise SystemExit(f"duplicate measurement run id: {run_id}")
+        if check_cli and spec.cli_capabilities not in checked_specs:
+            validate_measurement_cli_capabilities(claude_bin, spec)
+            checked_specs.add(spec.cli_capabilities)
+
+
 def normalized_output_path(path: Path) -> Path:
     expanded = path.expanduser()
     if not expanded.is_absolute():
