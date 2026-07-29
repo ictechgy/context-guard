@@ -1444,12 +1444,19 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
             "context-guard" in hook_text.lower()
             or any(identity in hook_text for identity in identities)
         ):
-            raise SystemExit("measurement baseline contains managed ContextGuard hook residue")
+            raise SystemExit("measurement baseline settings contain managed ContextGuard hook")
         settings_without_registered = dict(spec.settings_payload)
         if "hooks" in settings_without_registered:
-            settings_without_registered["hooks"] = _measurement_prune_registered_hooks(
+            pruned_hooks = _measurement_prune_registered_hooks(
                 settings_without_registered["hooks"], identities,
             )
+            if pruned_hooks in ({}, []) or (
+                isinstance(pruned_hooks, dict)
+                and all(item in ({}, []) for item in pruned_hooks.values())
+            ):
+                settings_without_registered.pop("hooks")
+            else:
+                settings_without_registered["hooks"] = pruned_hooks
         normalized_settings.append((
             variant.name,
             json.dumps(settings_without_registered, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
@@ -1473,7 +1480,7 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
             ),
         ))
     if len({value for _, value in normalized_settings}) != 1:
-        raise SystemExit("measurement baseline/treatment settings differ beyond registered hooks")
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
     if len({value for _, value in parity_projection}) != 1:
         raise SystemExit("measurement baseline/treatment configuration differs beyond arm/hooks")
 
@@ -2549,11 +2556,12 @@ def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, str]]:
                 event.get("event"), event.get("subtype"), event.get("type"), hook.get("event_name"),
             )),
             ("hook_identity", (
+                event.get("hook_identity"), event.get("hookIdentity"),
                 event.get("hook_name"), event.get("hookName"), event.get("hook_id"),
                 event.get("hookId"), hook.get("name"), hook.get("id"),
             )),
             ("tool", (
-                event.get("tool_name"), event.get("toolName"), hook.get("tool"),
+                event.get("tool"), event.get("tool_name"), event.get("toolName"), hook.get("tool"),
             )),
             ("decision", (
                 event.get("decision"), event.get("hook_decision"), hook.get("decision"),
@@ -6231,6 +6239,54 @@ def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
     return targets
 
 
+def _verify_existing_measurement_run(spec: MeasurementVariant, task_id: str, run_id: str) -> None:
+    """Fail closed when an existing immutable run has missing or corrupt evidence."""
+    run_root = spec.artifact_root / "runs" / run_id
+    receipt_path = run_root / "receipt.json"
+    raw_path = run_root / "raw.ndjson"
+    try:
+        receipt = _load_measurement_json(receipt_path, owner="measurement receipt")
+        if not isinstance(receipt, dict) or receipt.get("schema_version") != MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION:
+            raise ValueError("receipt schema")
+        identity = receipt.get("run_identity")
+        if not isinstance(identity, dict) or identity.get("run_id") != run_id:
+            raise ValueError("receipt identity")
+        raw_meta = receipt.get("raw_artifact")
+        if not isinstance(raw_meta, dict) or raw_meta.get("path") != raw_path.name:
+            raise ValueError("raw binding")
+        declared_size = raw_meta.get("bytes")
+        declared_sha256 = raw_meta.get("sha256")
+        if (
+            isinstance(declared_size, bool)
+            or not isinstance(declared_size, int)
+            or declared_size < 0
+            or not isinstance(declared_sha256, str)
+            or not SHA256_HEX_PATTERN.fullmatch(declared_sha256)
+        ):
+            raise ValueError("raw metadata")
+
+        fd = _open_regular_no_symlink(raw_path)
+        try:
+            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                raise ValueError("raw mode")
+            digest = hashlib.sha256()
+            actual_size = 0
+            while True:
+                chunk = os.read(fd, 65_536)
+                if not chunk:
+                    break
+                actual_size += len(chunk)
+                if actual_size > MEASUREMENT_RAW_MAX_BYTES:
+                    raise ValueError("raw size limit")
+                digest.update(chunk)
+        finally:
+            os.close(fd)
+        if actual_size != declared_size or digest.hexdigest() != declared_sha256:
+            raise ValueError("raw digest")
+    except (OSError, SystemExit, TypeError, ValueError):
+        raise SystemExit("measurement artifact integrity check failed") from None
+
+
 def preflight_measurement_targets(
     targets: list[tuple[TaskFixture, Variant]],
     *,
@@ -6255,7 +6311,16 @@ def preflight_measurement_targets(
         if location in run_locations:
             raise SystemExit("duplicate measurement run id in selected targets")
         run_locations.add(location)
-        if (spec.artifact_root / run_id).exists():
+        run_root = spec.artifact_root / "runs" / run_id
+        try:
+            os.lstat(run_root)
+            run_exists = True
+        except FileNotFoundError:
+            run_exists = False
+        except OSError:
+            raise SystemExit("measurement artifact integrity check failed") from None
+        if run_exists:
+            _verify_existing_measurement_run(spec, task.id, run_id)
             raise SystemExit(f"duplicate measurement run id: {run_id}")
         if check_cli and spec.cli_capabilities not in checked_specs:
             validate_measurement_cli_capabilities(claude_bin, spec)
