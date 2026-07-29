@@ -9,6 +9,7 @@ and are intentionally not imported or modified here.
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 import hashlib
 import json
 import os
@@ -20,7 +21,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from collections.abc import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,7 +141,10 @@ def _write_fake_cli(root: Path) -> Path:
             import sys
 
             RAW_SECRET = {RAW_SECRET!r}
-            DEFAULT_CAPABILITIES = "--settings --setting-sources --include-hook-events --no-session-persistence stream-json"
+            DEFAULT_CAPABILITIES = (
+                "--settings --setting-sources --include-hook-events "
+                "--no-session-persistence stream-json"
+            )
 
             def log(kind):
                 path = os.environ.get("CG_FAKE_LOG")
