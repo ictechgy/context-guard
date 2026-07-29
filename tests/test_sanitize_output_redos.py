@@ -469,5 +469,117 @@ class QuotedValueEquivalenceTests(unittest.TestCase):
         )
 
 
+class SurvivingMutantClosureTests(unittest.TestCase):
+    """Closes mutants that survived a mutation sweep of sanitize_output.py.
+
+    A mutation sweep over both synced copies (mutating only one trips
+    test_owned_consumer_pairs_are_byte_identical and yields a false KILL for
+    every mutant) left four survivors. One -- making CALL_ARGUMENT_CHUNK's
+    outer star lazy -- was PROVEN EQUIVALENT by exhaustive differential testing
+    (299,593 inputs, zero divergence: ``)`` cannot be consumed by any
+    alternative, so lazy and greedy must stop at the same position). The other
+    three were real coverage holes and are pinned below.
+    """
+
+    def setUp(self) -> None:
+        self.context = so.SanitizationContext(mode="unknown_text")
+
+    def _assert(self, line: str, expected_line: str, expected_flag: bool) -> None:
+        out, was = so.redact_secret_assignments(line, context=self.context)
+        self.assertEqual(was, expected_flag, f"{line!r}: was_redacted changed")
+        self.assertEqual(out, expected_line, f"{line!r}: output changed")
+
+    # --- closes M8: disabling INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE ---
+    # Nothing in the suite exercised the `or`/`||`/`??`/ternary/`else` fallback
+    # shape, so deleting that entire substitution left every test green while
+    # `token = cfg.token or "<secret>"` leaked verbatim.
+    FALLBACK_CASES = [
+        ("fallback_or", 'token = cfg.token or "FAKE-fallback"', "token = [REDACTED]", True),
+        ("fallback_logical_or", 'password = opts.password || "FAKE-pw"', "password = [REDACTED]", True),
+        ("fallback_nullish", 'api_key = env.api_key ?? "FAKE-key"', "api_key = [REDACTED]", True),
+        ("fallback_ternary", "token = flag ? primary : session_token", "token = [REDACTED]", True),
+        ("fallback_else", "secret = a if b else client_secret", "secret = [REDACTED]", True),
+    ]
+
+    def test_fallback_shaped_secrets_are_redacted(self) -> None:
+        for name, line, expected, flag in self.FALLBACK_CASES:
+            with self.subTest(case=name):
+                self._assert(line, expected, flag)
+
+    # --- closes M2: CALL_ARGUMENT_CHUNK alt1 must EXCLUDE quote characters ---
+    # If alt1 were [^()\n;] instead of [^()\"'\n;], a quote would be eaten as an
+    # ordinary character rather than opening the quoted-string branch, and the
+    # redacted span would end one or more characters early -- leaving residue
+    # of the very value being redacted.
+    QUOTE_EXCLUSION_CASES = [
+        ("unterminated_dquote_then_text", 'token = f(")a', "token = [REDACTED]", True),
+        ("unterminated_squote_then_paren", "token = f(')(", "token = [REDACTED]", True),
+        ("unterminated_dquote_then_paren", 'token = f("))', "token = [REDACTED]", True),
+        ("unterminated_dquote_with_comma", 'password = build(")x, y', "password = [REDACTED], y", True),
+    ]
+
+    def test_call_chunk_quote_exclusion_is_load_bearing(self) -> None:
+        for name, line, expected, flag in self.QUOTE_EXCLUSION_CASES:
+            with self.subTest(case=name):
+                self._assert(line, expected, flag)
+
+    def test_quote_including_chunk_variant_would_leave_residue(self) -> None:
+        """Guards the guard: proves the cases above actually discriminate.
+
+        The discrimination is at PIPELINE level, not at the CALL regex alone.
+        On ``token = f(")a`` the shipped CALL regex does not match at all (no
+        closing paren), so BRACKETED/PLAIN redact the whole tail. The
+        quote-including variant *does* match -- its chunk consumes the ``"`` as
+        an ordinary character so the ``)`` satisfies the required closing paren
+        -- and it redacts only ``f(")``, leaving the trailing ``a`` behind.
+        """
+        variant_chunk = r"(?:[^()\n;]|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"
+        variant = _build_call_assignment_re(variant_chunk)
+        line = 'token = f(")a'
+
+        shipped_out = so.redact_secret_assignments(line, context=self.context)
+
+        saved = so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE
+        so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = variant
+        try:
+            variant_out = so.redact_secret_assignments(line, context=self.context)
+        finally:
+            so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = saved
+
+        self.assertEqual(shipped_out, ("token = [REDACTED]", True))
+        self.assertEqual(
+            variant_out,
+            ("token = [REDACTED]a", True),
+            "quote-including variant must leave residue, otherwise this test pins nothing",
+        )
+        self.assertNotEqual(shipped_out, variant_out)
+
+    # --- closes M16: the closing-quote lookahead in QUOTED_VALUE_BODY ---
+    # Without (?!(?P=quote)) the value body swallows the closing quote and runs
+    # to the LAST quote on the line, over-redacting unrelated content.
+    QUOTE_TERMINATION_CASES = [
+        ("second_quoted_literal_survives", 'token = "a" + b + "c"', 'token = "[REDACTED]" + b + "c"', True),
+        ("following_pair_survives", 'api_key = "k1", other = "k2"', 'api_key = "[REDACTED]", other = "k2"', True),
+        ("statement_tail_survives", 'secret = "a"; print("b")', 'secret = "[REDACTED]"; print("b")', True),
+        ("comment_tail_survives", 'password = "p" # comment "q"', 'password = "[REDACTED]" # comment "q"', True),
+    ]
+
+    def test_quoted_value_stops_at_its_own_closing_quote(self) -> None:
+        for name, line, expected, flag in self.QUOTE_TERMINATION_CASES:
+            with self.subTest(case=name):
+                self._assert(line, expected, flag)
+
+    def test_dropping_closing_quote_lookahead_would_over_redact(self) -> None:
+        """Guards the guard: proves the cases above actually discriminate."""
+        permissive = _build_quoted_assignment_re(r"(?:\\.|[^\\])*\\?")
+        line = 'token = "a" + b + "c"'
+        self.assertEqual(so.INLINE_QUOTED_SECRET_ASSIGNMENT_RE.search(line).group("value"), "a")
+        self.assertEqual(
+            permissive.search(line).group("value"),
+            'a" + b + "c',
+            "permissive variant must over-run, otherwise this test pins nothing",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
