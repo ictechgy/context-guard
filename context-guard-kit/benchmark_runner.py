@@ -2676,45 +2676,48 @@ def _run_measurement_fixture(
         if missing:
             hook_error = "measurement_expected_hook_missing"
 
+    if proc.output_truncated:
+        terminal_status = "byte_limit"
+    elif parsed.status == "terminal_error":
+        terminal_status = "terminal_error"
+    elif proc.returncode != 0 or proc.timed_out:
+        terminal_status = "process_error"
+    elif parsed.status == "missing_terminal":
+        terminal_status = "missing_terminal"
+    elif parsed.error_code == "stream_line_count_limit":
+        terminal_status = "line_limit"
+    elif parsed.error_code in {"stream_total_size_limit", "stream_line_size_limit"}:
+        terminal_status = "byte_limit"
+    elif parsed.status != "success":
+        terminal_status = "invalid_stream"
+    elif hook_error == "measurement_baseline_hook_contamination":
+        terminal_status = "baseline_hook_activity"
+    elif hook_error is not None:
+        terminal_status = "hook_identity_mismatch"
+    else:
+        terminal_status = "success"
+
     receipt = _measurement_receipt(
         context,
         task,
         spec,
         raw,
-        parsed,
         hooks,
-        process_returncode=proc.returncode,
-        timed_out=proc.timed_out,
-        output_truncated=proc.output_truncated,
+        terminal_status=terminal_status,
     )
-    if hook_error is not None:
-        receipt["measurement_error"] = hook_error
     receipt_bytes = json.dumps(
         receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     _measurement_write_exclusive(context.receipt_path, receipt_bytes)
     _measurement_append_index(context.index_path, {
-        "schema_version": MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,
+        "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
         "run_id": context.run_id,
         "receipt_path": str(context.receipt_path),
         "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
-        "raw_path": str(context.raw_path),
-        "raw_sha256": receipt["raw_sha256"],
-        "raw_byte_count": receipt["raw_byte_count"],
         "terminal_status": receipt["terminal_status"],
     })
 
-    failure_code: str | None = None
-    if proc.timed_out:
-        failure_code = "measurement_process_timeout"
-    elif proc.output_truncated:
-        failure_code = "measurement_output_limit"
-    elif proc.returncode != 0:
-        failure_code = "measurement_process_nonzero"
-    elif parsed.status != "success":
-        failure_code = f"measurement_stream_{parsed.error_code or parsed.result_code}"
-    elif hook_error is not None:
-        failure_code = hook_error
+    failure_code = None if terminal_status == "success" else terminal_status
     if failure_code is not None or parsed.payload is None:
         return RunResult(
             task_id=task.id,
