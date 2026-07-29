@@ -1778,8 +1778,10 @@ def parse_variants(path: Path) -> list[Variant]:
             for index, arg in enumerate(extra_args):
                 flag = arg.split("=", 1)[0]
                 if flag in MEASUREMENT_PROTECTED_VARIANT_FLAGS:
+                    if flag in {"--safe-mode", "--bare"}:
+                        raise SystemExit(f"unsafe Claude flag: {flag}")
                     raise SystemExit(
-                        f"variant {name} extra_args[{index}] conflicts with the measurement runner: {flag}"
+                        f"runner-controlled Claude flag: {flag}"
                     )
         variants.append(Variant(
             name=name,
@@ -2158,7 +2160,7 @@ def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVari
     help_text = f"{proc.stdout}\n{proc.stderr}"
     missing = [capability for capability in spec.cli_capabilities if capability not in help_text]
     if missing:
-        raise SystemExit(f"measurement CLI lacks required capability: {', '.join(sorted(missing))}")
+        raise SystemExit(f"required CLI capability unavailable: {', '.join(sorted(missing))}")
 
 
 def claude_version(claude_bin: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> str:
@@ -6237,7 +6239,7 @@ def preflight_measurement_targets(
         if spec is None:
             continue
         if task.output_format != "stream-json":
-            raise SystemExit(f"measurement task {task.id} output_format must be stream-json")
+            raise SystemExit("measurement requires task output_format=stream-json")
         identity = spec.identity.components(task.id)
         if identity in identities:
             raise SystemExit("duplicate immutable measurement identity in selected targets")
