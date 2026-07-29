@@ -70,6 +70,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable
@@ -131,6 +132,14 @@ PROTECTED_VARIANT_FLAGS = frozenset({
     "--allowed-tools",
     "--max-budget-usd",
     "--effort",
+})
+MEASUREMENT_PROTECTED_VARIANT_FLAGS = frozenset({
+    "--settings",
+    "--setting-sources",
+    "--include-hook-events",
+    "--no-session-persistence",
+    "--safe-mode",
+    "--bare",
 })
 SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
 SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
@@ -326,6 +335,38 @@ CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 CLAUDE_STREAM_MAX_LINES = 10_000
 CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
 CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
+MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v1"
+MEASUREMENT_ID_NAMESPACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+MEASUREMENT_ENV_NAME_RE = re.compile(r"\A[A-Z][A-Z0-9_]{0,127}\Z")
+MEASUREMENT_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_?KEY|AUTH|AUTHORIZATION|BEARER|CREDENTIALS?|OAUTH|PASSWORD|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)",
+    re.IGNORECASE,
+)
+MEASUREMENT_RUNNER_ENV_NAMES = frozenset({
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "TMPDIR",
+    "CLAUDE_CONFIG_DIR",
+})
+MEASUREMENT_VARIANT_KEYS = frozenset({
+    "schema_version",
+    "settings_file",
+    "setting_sources",
+    "environment",
+    "workspace",
+    "session",
+    "hook_events",
+    "cli_capabilities",
+    "identity",
+    "artifact_root",
+})
+MEASUREMENT_RAW_MAX_BYTES = CLAUDE_OUTPUT_MAX_BYTES
+MEASUREMENT_RAW_MAX_LINES = CLAUDE_STREAM_MAX_LINES
+MEASUREMENT_HOOK_MAX_EVENTS = 1_000
+MEASUREMENT_HOOK_TEXT_MAX_CHARS = 256
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
