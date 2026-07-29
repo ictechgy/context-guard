@@ -31,7 +31,16 @@ HOMEBREW_TEMPLATE = ROOT / "packaging" / "homebrew" / "context-guard.rb.template
 TESTS_DIR = ROOT / "tests"
 BRIEF_MODE_SNIPPET_TEST = TESTS_DIR / "test_brief_mode_snippets.py"
 TEST_DISCOVERY_PATTERN = "test_*.py"
-TEST_DISCOVERY_TIMEOUT_SECONDS = 600
+# 이 값은 성능 예산이 아니라 **행(hang) 감시견**이다 — 걸려도 실패한 테스트는 없고,
+# 목적은 멈춰버린 실행이 CI 잡 전체를 잡아먹는 것을 막는 것뿐이다.
+#
+# 2026-07-29 측정 기준으로 macOS CI 러너의 전체 스위트 실행은 523초였고, 한계가 600초라
+# 여유가 12.8%밖에 없었다. 실제로 테스트 두 모듈(약 17초)이 추가되자 한계를 넘어
+# **통과하는 스위트가 CI에서 실패**했다. 감시견이 지키는 대상보다 작게 설정돼 있던 것이다.
+#
+# 진짜 행은 유한하지 않으므로 2배 여유를 줘도 감시견의 기능은 그대로 보존된다.
+# 다만 이건 증상 처리이며, 본 수리는 523초짜리 스위트 자체를 줄이는 것이다.
+TEST_DISCOVERY_TIMEOUT_SECONDS = 1200
 SKILLS_DIR = PLUGIN_DIR / "skills"
 PATH_OVERRIDE_FLAG = "CLAUDE_TOKEN_PREPUBLISH_ALLOW_PATH_OVERRIDES"
 PATH_OVERRIDE_ENVS = (
