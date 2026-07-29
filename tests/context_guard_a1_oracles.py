@@ -532,6 +532,7 @@ def _route_examples() -> list[dict[str, str]]:
             "sed -n '1,5p' -i README.md",
             "sed -ni '1,5p' README.md",
             "sed --i -n '1,5p' README.md",
+            "sed -I .bak -n '1,5p' README.md",
             "sed -s -n '1,5p' README.md",
             "sed -n '1,1000001p' README.md",
             "sed -n '/re/,/re/p' README.md",

@@ -2272,6 +2272,43 @@ FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "열리지 않는지 독립적으로 고정한다.",
     },
     {
+        "case_id": "fix-sed-inv-a-bsd-capital-i-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed -I .bak -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "BSD/macOS sed 의 **대문자 `-I`** 도 제자리 편집이다(`-i` 와 달리 "
+        "파일별 줄 번호를 리셋하지 않는다는 차이뿐, 파일을 쓴다는 능력은 "
+        "동일하다). in-place 철자 열거에서 통째로 빠져 있었다 — `-i` 소문자 "
+        "계열과 GNU 롱 스펠링만 세었기 때문이다. macOS `/usr/bin/sed` 로 "
+        "실측했다: `sed -I .bak -n '1,5p' f` 는 `f` 를 덮어쓰고 `f.bak` 을 "
+        "만든다. 정확 토큰 표가 이 능력도 막는지 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-bsd-capital-i-attached-suffix-denied",
+        "fix": "FIX-SED",
+        "command": "sed -I.bak -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-I` 의 붙임 접미사 형태. 실측에서 `f` 를 덮어쓰고 `f.bak` 을 "
+        "만든다 — `-i.bak` 과 동일한 능력의 대문자 짝이다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-bsd-capital-i-empty-suffix-denied",
+        "fix": "FIX-SED",
+        "command": "sed -I '' -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-I ''`(백업 없는 BSD 형태)는 실측에서 백업조차 남기지 않고 `f` "
+        "를 덮어쓴다 — 이 표면에서 가장 파괴적인 단일 형태다. `-i ''` 핀과 "
+        "달리 이 행은 `-n` 을 포함하므로 quiet 검사가 아니라 **`-I` 토큰 "
+        "자체의 거부**를 검사한다(PR 이 공개한 M11 과 같은 종의 함정을 "
+        "피한다).",
+    },
+    {
         "case_id": "fix-sed-inv-a-separate-flag-denied",
         "fix": "FIX-SED",
         "command": "sed -s -n '1,5p' README.md",

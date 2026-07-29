@@ -1722,8 +1722,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
         표의 크기를 고정한다(FIX-LS/FIX-GREP 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
         self.assertEqual(sed_relaxation_case_count(), 6)
-        self.assertEqual(sed_stay_denied_case_count(), 31)
-        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 37)
+        self.assertEqual(sed_stay_denied_case_count(), 34)
+        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 40)
 
     def test_sed_in_place_spellings_all_stay_denied(self) -> None:
         """FIX-SED 의 실패 모드는 이 세 클래스 중 유일하게 파일 변조다(`-i`).
@@ -1738,7 +1738,11 @@ class MiniShellBoundaryTests(unittest.TestCase):
         `--colour=always` 교훈). GNU `getopt_long` 의 모호하지 않은 접두사
         축약(`--i`/`--in`/`--in-p`)은 GNU sed 에서 `--in-place` 와 완전히
         같은 능력이므로, 그 축약형이 없으면 이 목록은 다시 철자 목록으로
-        퇴화한다 — 그래서 축약형과 분리 접미사 인자 형태를 포함한다."""
+        퇴화한다 — 그래서 축약형과 분리 접미사 인자 형태를 포함한다.
+
+        같은 이유로 BSD/macOS 의 **대문자 `-I`** 도 포함한다. `-i` 소문자
+        계열만 세면 능력이 아니라 철자를 센 것이다 — macOS `/usr/bin/sed`
+        실측에서 `-I .bak`/`-I.bak`/`-I ''` 는 전부 대상 파일을 덮어쓴다."""
         required_case_ids = {
             "fix-sed-inv-a-in-place-plain-denied",
             "fix-sed-inv-a-in-place-suffix-attached-denied",
@@ -1749,6 +1753,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
             "fix-sed-inv-a-long-in-place-separate-suffix-arg-denied",
             "fix-sed-inv-a-gnu-abbrev-in-place-denied",
             "fix-sed-inv-a-gnu-abbrev-mid-length-in-place-denied",
+            "fix-sed-inv-a-bsd-capital-i-in-place-denied",
+            "fix-sed-inv-a-bsd-capital-i-attached-suffix-denied",
+            "fix-sed-inv-a-bsd-capital-i-empty-suffix-denied",
             "fix-sed-inv-a-cluster-ni-smuggles-in-place-denied",
             "fix-sed-inv-a-cluster-in-smuggles-in-place-denied",
         }
