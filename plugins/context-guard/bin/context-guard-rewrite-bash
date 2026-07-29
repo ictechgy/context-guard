@@ -1338,22 +1338,79 @@ def _cut_is_safe(argv: tuple[str, ...]) -> bool:
     return selector is not None and (not delimiter or selector == "-f")
 
 
-def _sed_is_safe(argv: tuple[str, ...]) -> bool:
-    if len(argv) not in {3, 4} or argv[1] != "-n":
-        return False
-    if len(argv) == 3:
-        script = argv[2]
-    elif argv[2] in {"--", "-e"}:
-        script = argv[3]
+_SED_SCRIPT_RE = re.compile(r"(?:[1-9]\d*|[1-9]\d*,(?:[1-9]\d*|\$))p")
+
+
+def _sed_route_shape(argv: tuple[str, ...]) -> tuple[bool, int]:
+    """`sed`의 인자를 전체 스캔해 (안전 여부, 파일 피연산자 수)를 반환한다.
+
+    design route-readmission-design-20260729.md §2.3 의 정확한 재현이다. 세
+    가지 문법 함정을 여기서 막는다:
+      1) 스크립트 위치는 조건부다 — `-e`/`--expression=` 이 하나라도 있으면
+         모든 피연산자가 파일이고, 없으면 첫 피연산자가 스크립트다.
+      2) GNU sed 는 옵션을 순열(permute)한다 — `sed -n '1,5p' -i f` 처럼
+         피연산자 뒤에도 옵션이 온다. 그래서 접두부만 훑는 스캔이 아니라
+         `--` 전까지 argv 전체를 훑어야 `-i` 를 놓치지 않는다.
+      3) 짧은 옵션 클러스터는 `-i` 를 밀반입할 수 있다(`-ni` == `-n -i`).
+         `set(arg[1:]).issubset(allowed)` 패턴은 여기서 틀리다 — 클러스터는
+         전부 거부하고 정확한 토큰만 허용한다.
+
+    스크립트 본문 자체의 안전 경계(`w`/`W`/`s///w`/`e`/`s///e`/`r`/`R` 배제)는
+    `_SED_SCRIPT_RE` 의 `re.fullmatch` 가 담당하며 이번 변경으로 절대
+    느슨해지지 않는다 — 이 함수는 그 정규식이 실제로 검사하는 대상이 진짜
+    스크립트임을 보장하는 역할만 한다.
+    """
+    quiet_seen = False
+    expressions: list[str] = []
+    operands: list[str] = []
+    options_done = False
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if options_done:
+            operands.append(token)
+            index += 1
+            continue
+        if token == "--":
+            options_done = True
+            index += 1
+            continue
+        if token in {"-n", "--quiet", "--silent"}:
+            if quiet_seen:
+                return False, 0
+            quiet_seen = True
+            index += 1
+            continue
+        if token == "-e":
+            if index + 1 >= len(argv):
+                return False, 0
+            expressions.append(argv[index + 1])
+            index += 2
+            continue
+        if token.startswith("--expression="):
+            expressions.append(token.split("=", 1)[1])
+            index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            return False, 0
+        operands.append(token)
+        index += 1
+
+    if not quiet_seen:
+        return False, 0
+    if len(expressions) > 1:
+        return False, 0
+    if expressions:
+        script, files = expressions[0], operands
+    elif operands:
+        script, files = operands[0], operands[1:]
     else:
-        return False
-    return re.fullmatch(
-        r"(?:[1-9]\d*|[1-9]\d*,(?:[1-9]\d*|\$))p",
-        script,
-    ) is not None and all(
-        _valid_n(number)
-        for number in re.findall(r"\d+", script)
-    )
+        return False, 0
+    if _SED_SCRIPT_RE.fullmatch(script) is None:
+        return False, 0
+    if not all(_valid_n(number) for number in re.findall(r"\d+", script)):
+        return False, 0
+    return True, len(files)
 
 
 def _sort_is_safe(argv: tuple[str, ...]) -> bool:
@@ -2192,9 +2249,21 @@ def command_search_diff(
             return "deny"
         return "trim" if role == "filter" else "noop"
     if first == "sed":
-        if role == "first" or not _sed_is_safe(argv):
+        # design route-readmission-design-20260729.md §2.3 라우트 배선 —
+        # 기존 filter/standalone 판정을 전혀 움직이지 않는다(둘 다 파일
+        # 피연산자가 없는 stdin 형태만 오늘 존재했으므로 files == 0 으로
+        # 수렴). role == "first" 만 새로 열린다 — 단, 파일 피연산자가 있을
+        # 때만이다. 파일 없는 producer sed 는 훅이 물려준 stdin 을 읽어
+        # 600초 워치독까지 블록한다(`_git_shortlog_is_safe` 와 동일한
+        # non-termination 불변식).
+        safe, files = _sed_route_shape(argv)
+        if not safe:
             return "deny"
-        return "trim" if role == "filter" else "noop"
+        if role == "filter":
+            return "deny" if files else "trim"
+        if role == "first":
+            return "trim" if files else "deny"
+        return "trim" if files else "noop"
     if first == "sort":
         if role == "first" or not _sort_is_safe(argv):
             return "deny"

@@ -1946,6 +1946,259 @@ def fix_grep_stay_denied_case_count() -> int:
 
 
 # ---------------------------------------------------------------------------
+# FIX-SED — `sed -n 'N,Mp' <file>` 범위 읽기에 파일 피연산자 슬롯을 연다
+# (design doc route-readmission-design-20260729.md §2.3). 기존 `_sed_is_safe`
+# 는 `len(argv) in {3,4}` 형태 매처로 파일 피연산자 슬롯이 아예 없었다 —
+# stdin 형태만 통과시켰고, 그 형태는 Read 를 절약하지 않는 유일한 형태였다.
+# 세 클래스 중 유일하게 실패 모드가 **파일 변조**다(`-i`) — 그래서 predicate
+# 는 전체 argv 를 `--` 까지 스캔하고(GNU 순열 방어), 클러스터를 전부
+# 거부하며(정확한 토큰만 허용), 스크립트 본문의 `fullmatch` 경계는 전혀
+# 느슨해지지 않는다. 이 표의 완화 대상은 전부 deny -> allow(trim) 전환이므로
+# (§0 대칭) INV-A/INV-B/INV-C 하네스로 검증한다.
+# ---------------------------------------------------------------------------
+FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    # --- 완화 — deny -> trim 전환(INV-B 대상) ---
+    {
+        "case_id": "fix-sed-standalone-basic-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "핵심 완화 — standalone `sed -n 'N,Mp' <file>` 이 새로 파일 "
+        "피연산자 슬롯을 받는다. `sed -n '1,80p' README.md` 는 가장 값싼 "
+        "부분 읽기이자, 이걸 거부하면 에이전트가 파일 전체를 읽게 만드는 "
+        "정확한 역효과였다.",
+    },
+    {
+        "case_id": "fix-sed-first-basic-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80p' README.md | head -5",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "파이프라인 첫 세그먼트(role=first)도 파일 피연산자가 있으면 "
+        "동일하게 trim 으로 전환된다 — role==\"first\" 는 이번에 처음 열리는 "
+        "축이다(기존에는 무조건 deny).",
+    },
+    {
+        "case_id": "fix-sed-standalone-multi-file-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80p' a.txt b.txt",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "여러 파일 피연산자도 개수만 세므로(files > 0) 허용된다.",
+    },
+    {
+        "case_id": "fix-sed-standalone-dash-e-form-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n -e '1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`-e` 가 있으면 모든 피연산자가 파일이라는 조건부 스크립트 위치 "
+        "규칙(design §2.2 함정 1)이 정확히 반영됐는지 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-standalone-long-expression-form-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n --expression='1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`--expression=` 롱 스펠링도 `-e` 와 동일하게 처리된다.",
+    },
+    {
+        "case_id": "fix-sed-standalone-double-dash-operand-allowed",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80p' -- README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`--` 이후는 전부 피연산자다 — 옵션 스캔은 거기서 멈춰야 한다.",
+    },
+    # --- 역방향 — 완화 표면에 인접하지만 여전히 거부(INV-A 대상) ---
+    {
+        "case_id": "fix-sed-inv-a-filter-role-with-file-denied",
+        "fix": "FIX-SED",
+        "command": "printf '%s\\n' ok | sed -n '1,80p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "filter 역할에 파일 피연산자가 있으면 여전히 거부된다 — stdin 과 "
+        "파일을 동시에 요구하는 모순을 막는 기존 규칙은 이번 변경으로 전혀 "
+        "움직이지 않는다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-producer-file-less-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,80p' | head -5",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`files == 0 -> deny` 불변식(design §2.3, `_git_shortlog_is_safe` "
+        "와 동일한 non-termination 방어) — 파일 없는 producer sed 는 훅이 "
+        "물려준 stdin 을 읽어 600초 워치독까지 블록한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-in-place-plain-denied",
+        "fix": "FIX-SED",
+        "command": "sed -i '1p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-i` 는 파일을 변조한다 — 이 클래스의 유일한 파괴적 실패 모드. "
+        "정확 토큰 허용목록 밖이라 즉시 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-in-place-suffix-attached-denied",
+        "fix": "FIX-SED",
+        "command": "sed -i.bak '1p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "붙여쓴 백업 접미사(`-i.bak`)도 `-i` 로 시작하는 별도 토큰이라 "
+        "정확 토큰 매칭에 걸려 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-in-place-bsd-empty-suffix-denied",
+        "fix": "FIX-SED",
+        "command": "sed -i '' '1p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "BSD 형태(`-i ''`)도 `-i` 토큰 자체가 이미 거부 대상이라 뒤따르는 "
+        "빈 인자와 무관하게 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-permuted-in-place-after-operand-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,5p' -i README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU sed 는 옵션을 순열(permute)한다 — 피연산자처럼 보이는 "
+        "`'1,5p'` 뒤에 `-i` 가 와도 여전히 옵션이다(design §2.2 함정 2). "
+        "접두부만 훑는 스캔이면 이 형태를 놓친다 — 전체 argv 스캔이 그 "
+        "함정을 막는지 고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-long-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed --in-place -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--in-place` 롱 스펠링도 정확 토큰 허용목록 밖이라 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-long-in-place-with-suffix-denied",
+        "fix": "FIX-SED",
+        "command": "sed --in-place=.bak -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--in-place=` 값 붙임 형태도 동일하게 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-cluster-ni-smuggles-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed -ni '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "짧은 옵션 클러스터 `-ni` == `-n -i` — `-i` 를 밀반입한다(design "
+        "§2.2 함정 3). 클러스터를 전부 거부하는 규칙이 이 형태를 막는지 "
+        "고정한다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-cluster-in-smuggles-in-place-denied",
+        "fix": "FIX-SED",
+        "command": "sed -in '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "순서를 뒤집은 클러스터(`-in` == `-i -n`)도 동일하게 거부된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-cluster-ne-false-deny",
+        "fix": "FIX-SED",
+        "command": "sed -ne '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-ne` 는 `-i` 를 밀반입하지 않는 무해한 클러스터지만, '클러스터는 "
+        "전부 거부, 정확한 토큰만 허용'이라는 값싼 정답이 만드는 의도적인 "
+        "false-deny 다(design §2.4).",
+    },
+    {
+        "case_id": "fix-sed-inv-a-regex-address-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '/re/,/re/p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "정규식 주소는 숫자 범위 전용 `_SED_SCRIPT_RE` 를 통과하지 못한다 "
+        "— 선택 범위가 무계(unbounded)일 수 있어 Tier-2 로 유보된다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-multi-command-script-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n '1,5p;10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`;` 로 이어지는 다중 명령 스크립트는 `fullmatch` 에 걸려 거부된다 "
+        "— `;` 는 스크립트 언어 전체로 가는 입구다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-substitute-script-denied",
+        "fix": "FIX-SED",
+        "command": "sed -n 's/x/y/' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`s/x/y/` 는 출력이 입력과 거의 같은 '변환 옷을 입은 전체 파일 "
+        "읽기'다 — 스크립트 정규식이 여전히 막는다.",
+    },
+    {
+        "case_id": "fix-sed-inv-a-script-file-denied",
+        "fix": "FIX-SED",
+        "command": "sed -f script.sed -n '1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-f` 는 predicate 가 볼 수 없는 파일에서 스크립트를 읽는다 — "
+        "허용목록 밖 토큰이라 여전히 거부된다.",
+    },
+]
+
+
+def sed_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """INV-B 가 실제로 전환을 검사해야 하는 행(완화 대상)만 골라낸다."""
+    return [
+        case
+        for case in FIX_SED_ROUTE_PREDICATE_CASES
+        if case.get("expected_decision") != "deny"
+    ]
+
+
+def sed_relaxation_case_count() -> int:
+    """FIX-SED 완화 대상(deny -> trim) 행 수를 고정한다 — 루프 공허 통과 방지."""
+    return len(sed_route_predicate_relaxations())
+
+
+def sed_stay_denied_case_count() -> int:
+    """FIX-SED 거부 보존(INV-A) 행 수를 고정한다 — 루프 공허 통과 방지."""
+    return sum(
+        1
+        for case in FIX_SED_ROUTE_PREDICATE_CASES
+        if case["expected_decision"] == "deny"
+    )
+
+
+# ---------------------------------------------------------------------------
 # FIX-6 — `git remote`/`git remote -v` 를 §6.1b 쌍 화이트리스트에 재도입한다
 # (11행 -> 12행). FIX-1a/1b 와 동일하게 deny -> allow(sanitize) 전환이므로
 # INV-A/INV-B 하네스로 검증한다(FIX-1a 의 케이스 shape 를 그대로 따른다).

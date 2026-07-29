@@ -40,6 +40,7 @@ from tests.corpus_adversarial_pins import (
     FIX_GREP_ROUTE_PREDICATE_CASES,
     FIX_LS_ROUTE_PREDICATE_CASES,
     FIX_LS_STANDALONE_INVARIANT_COMMANDS,
+    FIX_SED_ROUTE_PREDICATE_CASES,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -54,6 +55,9 @@ from tests.corpus_adversarial_pins import (
     ls_relaxation_case_count,
     ls_route_predicate_relaxations,
     ls_stay_denied_case_count,
+    sed_relaxation_case_count,
+    sed_route_predicate_relaxations,
+    sed_stay_denied_case_count,
 )
 
 
@@ -1648,6 +1652,115 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         pinned_tokens,
                         f"{alias} 가 FIX_GREP_ROUTE_PREDICATE_CASES 에 "
                         "독립 토큰으로 등장하지 않는다 — 감시되지 않는 별칭이다.",
+                    )
+
+    def test_inv_a_sed_stay_denied_forms(self) -> None:
+        """INV-A(거부 보존) — `FIX_SED_ROUTE_PREDICATE_CASES` 중 거부로 남아야
+        하는 행(파일 있는 filter 역할, 파일 없는 producer 역할, in-place 편집의
+        모든 스펠링과 순열/클러스터 형태, 스크립트 정규식 밖 형태)이 개조 전/후
+        어느 코드에서도 항상 deny 인지 고정한다(design
+        route-readmission-design-20260729.md §2.3~§2.4)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_sed_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX_SED_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, "route_policy_denied")
+
+    def test_inv_b_sed_range_read_deny_to_allow_transition_requires_route_policy_denied_baseline(
+        self,
+    ) -> None:
+        """INV-B(허용 전환의 출처 제한) — FIX-SED(`sed -n 'N,Mp' <file>` 범위
+        읽기, design route-readmission-design-20260729.md §2.3)의 완화 대상
+        행은 전부 baseline `route_policy_denied` 여야 한다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_b_sed_{index}")
+            classify_command = namespace["classify_command"]
+            for case in sed_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code, case.get("expected_reason_code")
+                    )
+
+    def test_inv_c_newly_rewrapped_sed_range_read_commands_roundtrip(self) -> None:
+        """INV-C(재래핑 왕복) — FIX-SED 완화 대상(`sed_route_predicate_relaxations()`)을
+        전수 열거하고, `bash -lc` trim 경로로 재래핑된 명령을 되찢어 원본 명령
+        문자열이 손실 없이 보존되는지 확인한다. FIX-LS(:1430)와 동일한 패턴 —
+        sed 는 grep 과 달리 새 `bash -lc` trim 경로에 처음 진입한다(§2.3
+        route_wiring, `sanitize` 가 아니라 `trim`)."""
+        newly_rewrapped_candidates = tuple(
+            case["command"] for case in sed_route_predicate_relaxations()
+        )
+        for script in self.contract_scripts():
+            for command in newly_rewrapped_candidates:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(a1_route_decision(proc), "rewrite_trim")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_fix_sed_case_tables_are_not_vacuous(self) -> None:
+        """FIX-SED 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
+        표의 크기를 고정한다(FIX-LS/FIX-GREP 개수 가드와 동일한 역할). 이 표를
+        비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
+        self.assertEqual(sed_relaxation_case_count(), 6)
+        self.assertEqual(sed_stay_denied_case_count(), 15)
+        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 21)
+
+    def test_sed_in_place_spellings_all_stay_denied(self) -> None:
+        """FIX-SED 의 실패 모드는 이 세 클래스 중 유일하게 파일 변조다(`-i`).
+        `-i` 의 모든 스펠링 — 순수형, 붙임 접미사, BSD 빈 접미사형, GNU 순열
+        위치, 롱 스펠링(순수/접미사 붙임), 클러스터 두 순서 — 가
+        `FIX_SED_ROUTE_PREDICATE_CASES` 에 실제로 핀으로 고정돼 있는지, 그리고
+        전부 `deny` 인지 이중으로 확인한다. 표에서 in-place 케이스가 통째로
+        빠지는 변이는 위의 vacuity 가드(개수)로 잡히지만, 이 테스트는 *어떤*
+        스펠링이 반드시 있어야 하는지까지 이름으로 고정해 좁힌다."""
+        required_case_ids = {
+            "fix-sed-inv-a-in-place-plain-denied",
+            "fix-sed-inv-a-in-place-suffix-attached-denied",
+            "fix-sed-inv-a-in-place-bsd-empty-suffix-denied",
+            "fix-sed-inv-a-permuted-in-place-after-operand-denied",
+            "fix-sed-inv-a-long-in-place-denied",
+            "fix-sed-inv-a-long-in-place-with-suffix-denied",
+            "fix-sed-inv-a-cluster-ni-smuggles-in-place-denied",
+            "fix-sed-inv-a-cluster-in-smuggles-in-place-denied",
+        }
+        by_id = {case["case_id"]: case for case in FIX_SED_ROUTE_PREDICATE_CASES}
+        missing = required_case_ids - by_id.keys()
+        self.assertFalse(missing, f"in-place 스펠링 핀이 빠졌다: {missing}")
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"sed_in_place_pins_{index}")
+            classify_command = namespace["classify_command"]
+            for case_id in required_case_ids:
+                case = by_id[case_id]
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case_id,
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(
+                        decision.action,
+                        "deny",
+                        f"{case['command']!r} 이 in-place 편집 스펠링인데도 "
+                        "deny 로 남지 않았다 — 파일 변조 표면이 열렸다.",
                     )
 
 
