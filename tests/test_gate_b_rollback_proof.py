@@ -251,6 +251,48 @@ class GateBRollbackProofTests(unittest.TestCase):
             ):
                 rollback_proof.run_proof(repo)
 
+    def test_run_proof_rejects_malformed_record_before_checking_history_availability(
+        self,
+    ) -> None:
+        """``run_proof``의 *자기* ``assert_generation_records_wellformed`` 호출부를
+        고정한다 (문서화된 순서: 레코드 결함은 체크아웃 모양과 무관하게 항상
+        '실패'(``ProofError``)여야 하고, '증명 불가'(``ProofHistoryUnavailable``)로
+        오분류되면 안 된다).
+
+        ``resolve_history``도 같은 함수를 호출하지만(:696), 그 호출부는 이미
+        ``test_cli_reports_a_malformed_record_as_failure_not_unavailable``이
+        ``component paths overlap``(``assert_disjoint_paths``)로 고정하고 있어
+        ``run_proof``(:923) 자신의 호출부 하나가 지워져도 그 테스트는 계속
+        통과한다 — ``resolve_history``의 호출부가 대신 걸리기 때문이다. 여기서는
+        ``assert_disjoint_paths``는 통과하지만(``b1``/``b2``/``shared`` 서로소)
+        ``assert_generation_records_wellformed``만 걸리는 레코드(빈 Gate-B 마커)를
+        쓰고, 저장소는 ``BASE_COMMIT``을 전혀 포함하지 않는 무관 이력으로 만든다.
+        ``run_proof``의 사전 호출부가 지워지면 ``resolve_source_head``가 먼저
+        돌아 ``ProofHistoryUnavailable``을 던지므로 이 테스트가 실패한다.
+        """
+        bad = rollback_proof.Generation(
+            name="bad-no-markers",
+            bless_subject="proof: establish bad-no-markers residual",
+            b1_subject="proof: reapply bad-no-markers b1 component",
+            b2_subject="proof: reapply bad-no-markers b2 component",
+            shared_subject="proof: reapply bad-no-markers shared component",
+            b1_paths=frozenset({"bad/b1.txt"}),
+            b2_paths=frozenset({"bad/b2.txt"}),
+            shared_paths=frozenset({"bad/shared.txt"}),
+            residual_markers={"bad/shared.txt": ("N",)},
+            gate_b_markers=(),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-runproof-wired-") as tmp:
+            repo = self.make_snapshot_repo(Path(tmp))
+            with mock.patch.object(rollback_proof, "GENERATIONS", (bad,)):
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofError, "declares no Gate-B markers"
+                ) as raised:
+                    rollback_proof.run_proof(repo)
+            self.assertNotIsInstance(
+                raised.exception, rollback_proof.ProofHistoryUnavailable
+            )
+
     def test_complete_squashed_history_is_a_failed_proof(self) -> None:
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-squash-") as tmp:
             repo = self.make_snapshot_repo(Path(tmp))
@@ -1159,18 +1201,110 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ):
                 self.drive(tmp, (gen1, magic))
 
+    def test_resolve_history_rejects_pathspec_magic_component_path_in_b1_or_b2(
+        self,
+    ) -> None:
+        """D6-5 배선(범위) — 리터럴 검사가 ``shared_paths``만이 아니라
+        ``all_component_paths``(=``b1_paths | b2_paths | shared_paths``) 전체에
+        적용됨을 고정한다.
+
+        위 테스트와 ``test_shipped_component_paths_are_all_literal``은 둘 다 매직
+        경로를 ``shared_paths``에만 넣으므로, 검사 범위를 ``all_component_paths``에서
+        ``shared_paths``로 좁혀도(``b1_paths``/``b2_paths``를 빼먹어도) 스위트
+        전체가 초록으로 남는다. 여기서는 매직 경로를 ``b1_paths``와 ``b2_paths``
+        양쪽에 각각 따로 넣어 그 좁히기를 잡는다.
+        """
+        gen1, _ = self.make_pair()
+        for slot in ("b1_paths", "b2_paths"):
+            with self.subTest(slot=slot):
+                kwargs = {
+                    "b1_paths": frozenset({"g2/b1.txt"}),
+                    "b2_paths": frozenset({"g2/b2.txt"}),
+                    "shared_paths": frozenset({"shared/keep.txt"}),
+                }
+                kwargs[slot] = frozenset({":(exclude)component.txt"})
+                magic = self.make_generation(f"gen2-pathspec-magic-{slot}", **kwargs)
+                with tempfile.TemporaryDirectory(
+                    prefix=f"context-guard-proof-magic-{slot}-"
+                ) as tmp:
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError, "non-literal component"
+                    ):
+                        self.drive(tmp, (gen1, magic))
+
+    def test_resolve_history_rejects_other_pathspec_magic_spellings(self) -> None:
+        """D6-5 배선(스펠링) — ``startswith(":")``가 ``":(...)"`` 한 철자만이
+        아니라 모든 git pathspec 매직 서명(``:!``/``:^``/``:/`` 등, 전부 선행
+        ``:``를 공유한다)을 잡음을 고정한다.
+
+        구현을 ``startswith(":(")``로 약화해도 위 테스트들은 계속 초록이다 —
+        전부 ``:(exclude)…`` 철자만 쓰기 때문이다. 프로덕션 술어 자체
+        (``startswith(":")``)는 이미 완전하다(모든 git pathspec 매직은 선행
+        ``:``를 요구한다); 부족했던 것은 이 커버리지뿐이다.
+        """
+        gen1, _ = self.make_pair()
+        for magic_prefix in (":!", ":^", ":/"):
+            with self.subTest(magic_prefix=magic_prefix):
+                magic = self.make_generation(
+                    f"gen2-pathspec-magic-{magic_prefix.strip(':')}",
+                    b1_paths=frozenset({"g2/b1.txt"}),
+                    b2_paths=frozenset({"g2/b2.txt"}),
+                    shared_paths=frozenset({f"{magic_prefix}component.txt"}),
+                )
+                with tempfile.TemporaryDirectory(
+                    prefix="context-guard-proof-magic-spelling-"
+                ) as tmp:
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError, "non-literal component"
+                    ):
+                        self.drive(tmp, (gen1, magic))
+
+    def test_resolve_history_rejects_unsafe_shell_characters_in_component_path(
+        self,
+    ) -> None:
+        """D6-5 확장 — 공백과 셸/glob 메타문자를 가진 컴포넌트 경로를 거부한다.
+
+        ``GIT_LITERAL_PATHSPECS=1``은 이 문제를 풀지 못한다: 공백은 git이 아니라
+        *사람의 셸*이 ``-- $(jq -r '.review_pathspec[]' ...)``를 인용 없이 확장할
+        때 워드 스플리팅으로 경로 하나를 여러 토큰으로 쪼갠다. 그 결과 git은
+        경로 일부만(또는 전혀 매치하지 않는 조각을) 받고, 기계 게이트는 여전히
+        전체 경로를 리터럴로 보므로 exit 0 그대로다 — 사람 검토만 조용히
+        좁아진다. ``self.drive``로 몰아 호출부까지 고정한다.
+        """
+        gen1, _ = self.make_pair()
+        cases = (
+            "shared/has space.txt",
+            "shared/glob[ab].txt",
+            "shared/star*.txt",
+        )
+        for unsafe_path in cases:
+            with self.subTest(unsafe_path=unsafe_path):
+                unsafe = self.make_generation(
+                    "gen2-unsafe-chars",
+                    b1_paths=frozenset({"g2/b1.txt"}),
+                    b2_paths=frozenset({"g2/b2.txt"}),
+                    shared_paths=frozenset({unsafe_path}),
+                )
+                with tempfile.TemporaryDirectory(
+                    prefix="context-guard-proof-unsafe-chars-"
+                ) as tmp:
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError, "unsafe character"
+                    ):
+                        self.drive(tmp, (gen1, unsafe))
+
     def test_shipped_component_paths_are_all_literal(self) -> None:
         """출하 중인 ``GENERATIONS``가 실제로 이 규칙을 지키는지 확인한다.
 
         위 테스트는 합성 레코드만 보므로, 규칙이 살아 있는 경로 목록에는
-        적용되지 않는 상태로도 통과한다.
+        적용되지 않는 상태로도 통과한다. 술어를 여기서 재구현하면(예:
+        ``path.startswith(":")``만 다시 짜면) 프로덕션의
+        ``assert_generation_records_wellformed`` 검사부가 지워지거나 약화돼도
+        이 테스트는 초록으로 남는다. 그래서 프로덕션 함수를 직접 호출한다 —
+        규칙이 바뀌어도 이 테스트는 자동으로 따라가고, 검사부가 지워지면
+        여기서도 함께 실패한다.
         """
-        for generation in rollback_proof.GENERATIONS:
-            for path in sorted(generation.all_component_paths):
-                self.assertFalse(
-                    path.startswith(":"),
-                    f"{generation.name} declares non-literal component path {path!r}",
-                )
+        rollback_proof.assert_generation_records_wellformed(rollback_proof.GENERATIONS)
 
     def test_resolve_history_rejects_overlapping_component_paths(self) -> None:
         """I1 배선 — ``assert_disjoint_paths``의 호출부를 지우면 실패한다.

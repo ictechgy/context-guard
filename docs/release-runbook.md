@@ -154,6 +154,7 @@ Re-blessing procedure:
    - its `gate_b_markers` is empty — that is the reverse anti-laundering check, and an empty tuple would make both the presence check at `HEAD` and the absence check on the `bless` tree pass without evaluating anything. The re-blesser must not be able to switch off the check that constrains the re-blessing;
    - its `residual_markers` is empty, or maps a path to an empty needle tuple, or contains an empty/whitespace-only needle — all three keep the outer collection non-empty while making the content check evaluate nothing (`"" in content` is true for any content);
    - any `gate_b_markers` entry has an empty literal, or names an `owner_path` that is not one of that generation's own component paths, or any `residual_markers` key is not one of them — the absence check skips a marker whose owner path is missing from the `bless` tree, and that skip is only sound when the path set check already constrains the path;
+   - any component path (`b1_paths`, `b2_paths`, or `shared_paths`) starts with `:`, or contains whitespace or a shell/glob metacharacter — a leading `:` is git pathspec magic, and whitespace lets unquoted shell word-splitting silently drop the path from the human review diff even though the mechanical gate (which sets `GIT_LITERAL_PATHSPECS=1`) still sees it;
    - it **drops a Gate-B marker that the previous generation declared for a path this generation still owns** (forward carry). Without this, "non-empty" is satisfied by a nonce marker: a re-blesser could declare one throwaway literal and leave the real Gate-B literals sitting in its `bless`. Carry is **not** retroactive — it checks the *new* `bless` against *old* markers, never the reverse, so the per-generation non-retroactive property is preserved. Carry is scoped to paths the new generation still owns, because a path removed from the component set cannot satisfy the owner-must-be-a-component-path rule; removing the path instead is the separately-documented narrowing vector, and `review_pathspec` still surfaces it.
 
    Beyond the record itself, the absence check also rejects an active generation where **no** marker was actually evaluated — i.e. every marker's owner path is absent from the `bless` tree. `commit_paths` uses `diff-tree --name-only` and is status-blind, so a path the `bless` deletes is still a legitimate component path; without this rule a generation could skip every marker and report success.
@@ -167,12 +168,16 @@ Re-blessing procedure:
    python3 scripts/verify_gate_b_rollback.py --json > /tmp/gate-b-proof.json
    jq -r '.review_pathspec[]' /tmp/gate-b-proof.json
    ```
-   then review the diff line by line, confirming every changed line is one of the declared `residual_edits`:
+   then review the diff line by line, confirming every changed line is one of the declared `residual_edits`. **Do not interpolate `jq`'s output directly with `$(...)` in the `git diff` argument list** — unquoted command substitution word-splits on whitespace before git ever runs, so a component path containing a space is silently dropped from the diff you review while the mechanical gate (which never goes through a shell) still sees it. Read each pathspec into an array, one per line, then expand the array quoted. This works on bash 3.2 (macOS's shipped `/bin/bash`, which has neither `mapfile -d ''` nor `git diff --pathspec-from-file`):
    ```bash
+   paths=()
+   while IFS= read -r path; do
+     paths+=("$path")
+   done < <(jq -r '.review_pathspec[]' /tmp/gate-b-proof.json)
    GIT_LITERAL_PATHSPECS=1 git diff <previous-generation-bless> <new-generation-bless> \
-     -- $(jq -r '.review_pathspec[]' /tmp/gate-b-proof.json)
+     -- "${paths[@]}"
    ```
-   **Keep the `GIT_LITERAL_PATHSPECS=1` prefix.** The proof script sets it internally for every git call it makes, but this command runs in *your* shell, where it is unset — and a component path spelled `:(exclude)<other>` would then hide `<other>` from the diff you are reading while the mechanical gate still sees both paths. The script now rejects component paths starting with `:` outright, so this prefix is a second line of defence rather than the only one; keep both, because the one that fails first is the one that keeps a human from reviewing a diff that has been quietly narrowed.
+   **Keep the `GIT_LITERAL_PATHSPECS=1` prefix and the quoted array expansion — both.** The proof script sets `GIT_LITERAL_PATHSPECS=1` internally for every git call it makes, but this command runs in *your* shell, where it is unset — and a component path spelled `:(exclude)<other>` would then hide `<other>` from the diff you are reading while the mechanical gate still sees both paths. The script now rejects component paths starting with `:`, or containing whitespace or a shell/glob metacharacter, outright, so both of these are a second line of defence rather than the only one; keep all of them, because the one that fails first is the one that keeps a human from reviewing a diff that has been quietly narrowed.
 6. Run the full proof (`--json` and plain) and the targeted Gate-B test modules locally before pushing; the publish workflow runs the proof as a blocking step, but a broken generation record should never reach CI first.
 
 ### Gate-B incident exception to append-only

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -370,11 +371,23 @@ def assert_disjoint_paths(generation: Generation) -> None:
             )
 
 
+# 컴포넌트 경로가 사람의 셸에서 안전하게 리터럴로 남으려면 선행 ``:`` 뿐 아니라
+# 공백과 셸/glob 메타문자도 없어야 한다. 공백은 `-- $(jq -r ...)` 같은 인용 없는
+# 확장에서 워드 스플리팅으로 경로 하나를 여러 토큰으로 쪼개 사람의 리뷰 diff에서
+# 조용히 사라지게 만든다(런북은 이제 인용된 배열 확장을 쓰지만, 레코드 자체를
+# 안전하게 만들어 두면 인용을 놓친 미래의 실수에도 방어선이 남는다). glob
+# 메타문자(``*?[``)는 git 자체를 속이지는 못한다고 측정으로 확인했지만(git은
+# wildmatch보다 먼저 정확 일치를 시도한다), 셸 쪽 경로명 확장은 별개의 위험이라
+# 함께 막는다.
+_UNSAFE_COMPONENT_PATH_CHARS = re.compile(r"[\s*?\[\]{}$`\"'\\|;&<>()~!#]")
+
+
 def assert_generation_records_wellformed(generations: tuple[Generation, ...]) -> None:
     """git 없이 세대 레코드 자체의 자기 신고 구멍을 막는다 (D6, 신규 구현).
 
     ``python -O``에서도 소거되지 않도록 ``assert`` 문을 쓰지 않고 명시적으로
-    ``raise``한다. 세 가지를 검사한다.
+    ``raise``한다. 다섯 가지를 검사한다(아래 번호는 코드 순서와 다르다 — 기존
+    순서를 그대로 두고 항목만 추가했다).
 
     1. ``name`` 전역 고유성. ``resolve_history``의 ``all_commits``는 ``name``을
        키로 쓰므로, 이름이 겹치면 앞 세대의 커밋이 조용히 덮어써지고 D3/D5가
@@ -420,18 +433,31 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
                 "the unrelated-feature preservation contract would pass vacuously"
             )
         components = generation.all_component_paths
-        # 5. 컴포넌트 경로는 리터럴이어야 한다. 기계 게이트 자체는 이미
-        #    ``GIT_LITERAL_PATHSPECS=1``로 pathspec 매직을 무력화하지만, 런북은
-        #    ``review_pathspec``을 **사람의 셸에 붙여넣으라**고 지시하고 거기엔
-        #    그 환경변수가 없다. 따라서 ``:(exclude)…`` 꼴 경로는 기계 검사에는
-        #    잡히면서 사람이 보는 리뷰 diff에서만 조용히 사라질 수 있다.
-        #    경로 목록 자체를 리터럴로 강제해 그 비대칭을 없앤다.
+        # 5. 컴포넌트 경로는 리터럴이고 셸에서 안전해야 한다. 기계 게이트 자체는
+        #    이미 ``GIT_LITERAL_PATHSPECS=1``로 pathspec 매직을 무력화하지만,
+        #    런북은 ``review_pathspec``을 **사람의 셸에 붙여넣으라**고 지시하고
+        #    거기엔 그 환경변수가 없다. 따라서 ``:(exclude)…`` 꼴 경로는 기계
+        #    검사에는 잡히면서 사람이 보는 리뷰 diff에서만 조용히 사라질 수
+        #    있다. 공백도 같은 비대칭을 다른 방식으로 만든다: 인용 없는 셸
+        #    확장은 공백에서 워드 스플리팅해 경로 하나를 여러 토큰으로 쪼개고,
+        #    git은 그중 일부만(또는 전혀 매치하지 않는 조각을) 받아 사람의 diff가
+        #    조용히 좁아진다. 런북 명령 자체는 인용된 배열 확장으로 고쳤지만,
+        #    레코드 단계에서도 막아 두 겹의 방어선을 유지한다.
         for path in sorted(components):
             if path.startswith(":"):
                 raise ProofError(
                     f"generation {generation.name!r} declares a non-literal component "
                     f"path {path!r}: a leading ':' is git pathspec magic and would hide "
                     "the path from the human review diff described in the runbook"
+                )
+            unsafe = _UNSAFE_COMPONENT_PATH_CHARS.search(path)
+            if unsafe:
+                raise ProofError(
+                    f"generation {generation.name!r} declares a component path "
+                    f"{path!r} containing unsafe character {unsafe.group()!r}: "
+                    "whitespace and shell/glob metacharacters can narrow or split "
+                    "the path when a human pastes review_pathspec into their own "
+                    "shell, hiding it from the review diff"
                 )
         for marker in generation.gate_b_markers:
             if not marker.literal.strip():
