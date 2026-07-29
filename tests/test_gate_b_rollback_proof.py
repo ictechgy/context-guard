@@ -1317,26 +1317,52 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
 
         ``drive``(합성 저장소 생성)를 쓰지 않고 술어 함수를 직접 부른다. 문자
         하나마다 저장소를 만들면 느리고, 호출부 고정은 이미 위 테스트가 맡고
-        있어 여기서 중복할 이유가 없다. 불안전 문자는 ``b1_paths``에 넣는다 —
-        ``shared_paths``는 기본 마커의 소유 경로로 쓰이므로 깨끗하게 둔다.
+        있어 여기서 중복할 이유가 없다.
+
+        **문자 × 슬롯 교차**를 전부 태운다. 문자 집합을 ``b1_paths``에만,
+        슬롯을 문자 하나씩만 태우면 두 축이 직교로만 고정돼 교차가 빈다:
+        그 상태에서는
+
+            if unsafe and (path in generation.b1_paths
+                           or unsafe.group() in {" ", "*", "["}):
+
+        같은 단일 편집이 스위트를 초록으로 통과하면서 ``b2_paths``의
+        ``x/has$dollar.txt``를 실제로 받아들인다(측정 확인). 교차를 전부
+        고정하면 어느 슬롯의 어느 문자가 빠져도 그 하위 테스트가 실패한다.
         """
         unsafe_characters = (
             " ", "\t", "\n", "\r", "\v", "\f",
+            # 비ASCII 공백류. bash의 IFS는 ASCII 공백만 쪼개므로 이들은 워드
+            # 스플리팅 위험은 아니지만, `jq -r` 목록을 눈으로 읽는 사람에게는
+            # 보통 공백과 구별되지 않는다 — 사람 검토 무결성이 곧 이 규칙의
+            # 위협 모델이므로 함께 막는다. 이 항목들이 없으면 정규식에
+            # ``re.ASCII``를 붙이는 단일 편집이 스위트를 초록으로 통과한다
+            # (측정 확인).
+            " ", " ", "　",
             "*", "?", "[", "]", "{", "}", "$", "`", '"', "'", "\\",
             "|", ";", "&", "<", ">", "(", ")", "~", "!", "#",
         )
-        for character in unsafe_characters:
-            with self.subTest(character=character):
-                generation = self.make_generation(
-                    "gen-unsafe-char",
-                    b1_paths=frozenset({f"g/a{character}b.txt"}),
-                    b2_paths=frozenset({"g/b2.txt"}),
-                    shared_paths=frozenset({"shared/keep.txt"}),
-                )
-                with self.assertRaisesRegex(
-                    rollback_proof.ProofError, "unsafe character"
-                ):
-                    rollback_proof.assert_generation_records_wellformed((generation,))
+        for slot in ("b1_paths", "b2_paths", "shared_paths"):
+            for character in unsafe_characters:
+                with self.subTest(slot=slot, character=character):
+                    kwargs = {
+                        "b1_paths": frozenset({"g/b1.txt"}),
+                        "b2_paths": frozenset({"g/b2.txt"}),
+                        # ``shared_paths``는 기본 마커의 소유 경로로 쓰이므로
+                        # 불안전 경로를 넣을 때도 깨끗한 경로를 함께 남긴다.
+                        "shared_paths": frozenset({"shared/keep.txt"}),
+                    }
+                    unsafe_path = f"g/a{character}b.txt"
+                    kwargs[slot] = frozenset({unsafe_path}) | (
+                        {"shared/keep.txt"} if slot == "shared_paths" else set()
+                    )
+                    generation = self.make_generation("gen-unsafe-char", **kwargs)
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError, "unsafe character"
+                    ):
+                        rollback_proof.assert_generation_records_wellformed(
+                            (generation,)
+                        )
 
     def test_shipped_component_paths_are_all_literal(self) -> None:
         """출하 중인 ``GENERATIONS``가 실제로 이 규칙을 지키는지 확인한다.
