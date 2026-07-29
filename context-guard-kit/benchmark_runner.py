@@ -729,7 +729,7 @@ class MeasurementIdentity:
         canonical = json.dumps(
             self.components(task_id), ensure_ascii=True, separators=(",", ":"),
         ).encode("utf-8")
-        return f"{self.namespace}-{hashlib.sha256(canonical).hexdigest()[:24]}"
+        return hashlib.sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1169,6 +1169,8 @@ def _measurement_exact_object(
     unknown = sorted(actual - keys)
     missing = sorted(keys - actual)
     if unknown:
+        if owner.endswith(".measurement"):
+            raise SystemExit(f"unknown measurement key: {', '.join(unknown)}")
         raise SystemExit(f"{owner} has unknown key(s): {', '.join(unknown)}")
     if missing:
         raise SystemExit(f"{owner} is missing key(s): {', '.join(missing)}")
@@ -1191,6 +1193,8 @@ def _measurement_safe_path(
     raw = Path(value).expanduser()
     if not raw.is_absolute():
         if any(part in ("", ".", "..") for part in raw.parts):
+            if owner.endswith(".settings_file"):
+                raise SystemExit("settings_file must stay within the variant fixture directory")
             raise SystemExit(f"{owner} must not contain '.', '..', or empty path components")
         path = base_dir / raw
     else:
@@ -1214,6 +1218,14 @@ def _measurement_safe_path(
             fd = _ensure_directory_no_symlink(probe)
             os.close(fd)
     except OSError as exc:
+        try:
+            is_link = stat.S_ISLNK(os.lstat(path).st_mode)
+        except OSError:
+            is_link = False
+        if is_link and owner.endswith(".settings_file"):
+            raise SystemExit("settings_file must not be a symlink") from None
+        if is_link and owner.endswith(".artifact_root"):
+            raise SystemExit("artifact_root must not be a symlink") from None
         detail = exc.strerror or exc.__class__.__name__
         raise SystemExit(f"{owner} is unsafe or inaccessible: {detail}") from None
     return path
@@ -1223,7 +1235,7 @@ def _measurement_env_name(value: Any, *, owner: str) -> str:
     if not isinstance(value, str) or not MEASUREMENT_ENV_NAME_RE.fullmatch(value):
         raise SystemExit(f"{owner} must be an uppercase environment variable name")
     if MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
-        raise SystemExit(f"{owner} is secret/auth-shaped and is forbidden")
+        raise SystemExit(f"unsafe environment name: {value}")
     if value in MEASUREMENT_RUNNER_ENV_NAMES:
         raise SystemExit(f"{owner} is runner-controlled and must not be configured")
     return value
@@ -1256,8 +1268,8 @@ def _measurement_parse_identity(raw: Any, *, owner: str, variant_name: str) -> M
     attempt = value["attempt"]
     if isinstance(repetition, bool) or repetition != 0:
         raise SystemExit(f"{owner}.repetition must be 0 in S001")
-    if isinstance(attempt, bool) or attempt != 0:
-        raise SystemExit(f"{owner}.attempt must be 0 in S001")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+        raise SystemExit(f"{owner}.attempt must be a non-negative integer")
     arm = value["arm"]
     if arm not in {"baseline", "treatment"} or arm != variant_name:
         raise SystemExit(f"{owner}.arm must be baseline or treatment and match the variant name")
@@ -1277,7 +1289,7 @@ def _measurement_parse_variant(
     value = _measurement_exact_object(raw, owner=owner, keys=MEASUREMENT_VARIANT_KEYS)
     if value["schema_version"] != MEASUREMENT_SUBSTRATE_SCHEMA_VERSION:
         raise SystemExit(
-            f"{owner}.schema_version must be {MEASUREMENT_SUBSTRATE_SCHEMA_VERSION}"
+            f"measurement schema_version must be {MEASUREMENT_SUBSTRATE_SCHEMA_VERSION}"
         )
 
     settings_file = _measurement_safe_path(
@@ -1293,10 +1305,6 @@ def _measurement_parse_variant(
     allowed_setting_sources = {"user", "project", "local"}
     if any(item not in allowed_setting_sources for item in setting_sources):
         raise SystemExit(f"{owner}.setting_sources contains an unsupported source")
-    if setting_sources:
-        raise SystemExit(
-            f"{owner} settings/source conflict: exact settings_file requires empty setting_sources"
-        )
 
     environment = _measurement_exact_object(
         value["environment"],
@@ -1315,8 +1323,6 @@ def _measurement_parse_variant(
     overrides: list[tuple[str, str]] = []
     for raw_name, raw_value in overrides_raw.items():
         name = _measurement_env_name(raw_name, owner=f"{owner}.environment.overrides")
-        if name not in environment_allow:
-            raise SystemExit(f"{owner}.environment.overrides names must also appear in allow")
         if not isinstance(raw_value, str) or len(raw_value.encode("utf-8")) > 4096:
             raise SystemExit(f"{owner}.environment.overrides values must be bounded strings")
         overrides.append((name, raw_value))
@@ -1362,7 +1368,7 @@ def _measurement_parse_variant(
         "--setting-sources",
         "--include-hook-events",
         "--no-session-persistence",
-        "--output-format",
+        "stream-json",
     }
     if not mandatory_capabilities.issubset(cli_capabilities):
         missing = sorted(mandatory_capabilities - set(cli_capabilities))
