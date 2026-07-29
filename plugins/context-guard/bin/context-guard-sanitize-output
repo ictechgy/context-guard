@@ -99,11 +99,22 @@ AUTH_HEADER_RE = re.compile(
 COOKIE_HEADER_RE = re.compile(
     r"(?i)^(?P<prefix>\s*(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:Set-)?Cookie\s*:\s*).+$"
 )
+# QUOTED_VALUE_BODY의 두 대안은 첫 문자가 서로 겹치지 않아야 한다.
+# 예전 형태 `(?:\\.|(?!(?P=quote)).)*`에서는 역슬래시 하나가 `\\.`의 시작이면서
+# 동시에 두 번째 대안의 `.`이기도 했다. 닫는 따옴표가 없는 줄에서는 역슬래시
+# 연속 구간을 나누는 방법이 피보나치 수만큼 생겨 지수 시간 백트래킹(ReDoS)이
+# 발생했다 — 47자짜리 줄이 7.6초를 소모했다.
+# 두 번째 대안에서 역슬래시를 제외해 각 위치에서 적용 가능한 대안이 하나뿐이도록
+# 만든다. 뒤에 붙은 `\\?`는 이 배제로 잃게 되는 유일한 문자열 부류, 즉 값이
+# 짝지어지지 않은 역슬래시 하나로 끝나는 경우(`token = "abc\"` → value `abc\`)를
+# 복원한다. 이 형태가 예전 형태와 언어·스팬·그룹 모두에서 동치임은
+# tests/test_sanitize_output_redos.py의 차분 배터리로 고정한다.
+QUOTED_VALUE_BODY = r"(?:\\.|(?!(?P=quote))[^\\])*\\?"
 INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
-    rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)(?P<tail>[^\s,;}}\]]*)"
+    rf"(?P<quote>[\"'])(?P<value>{QUOTED_VALUE_BODY})(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
 CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
 CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"

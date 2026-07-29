@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import signal
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -66,23 +67,40 @@ class _Timeout(Exception):
     pass
 
 
-def _search_with_budget(regex: re.Pattern[str], text: str, budget_seconds: float):
-    """Run regex.search under a SIGALRM budget; return (elapsed|None, match|'TIMEOUT')."""
+def _run_with_budget(call, budget_seconds: float):
+    """Run ``call()`` under a SIGALRM budget; return (elapsed|None, result|'TIMEOUT').
+
+    The previously-installed ITIMER_REAL deadline is saved and restored, not
+    merely cancelled: unconditionally clearing it would silently disarm an
+    outer timeout (a parallel test runner's own watchdog, for example) for the
+    remainder of the process.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        raise unittest.SkipTest("SIGALRM budgeting only works on the main thread")
 
     def _handler(signum, frame):
         raise _Timeout()
 
-    previous = signal.signal(signal.SIGALRM, _handler)
+    previous_handler = signal.signal(signal.SIGALRM, _handler)
+    previous_timer, previous_interval = signal.getitimer(signal.ITIMER_REAL)
     signal.setitimer(signal.ITIMER_REAL, budget_seconds)
     start = time.perf_counter()
     try:
-        match = regex.search(text)
-        return time.perf_counter() - start, match
+        result = call()
+        return time.perf_counter() - start, result
     except _Timeout:
         return None, "TIMEOUT"
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer:
+            remaining = max(previous_timer - (time.perf_counter() - start), 0.000001)
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_interval)
+
+
+def _search_with_budget(regex: re.Pattern[str], text: str, budget_seconds: float):
+    """Run regex.search under a SIGALRM budget; return (elapsed|None, match|'TIMEOUT')."""
+    return _run_with_budget(lambda: regex.search(text), budget_seconds)
 
 
 @unittest.skipUnless(hasattr(signal, "SIGALRM"), "SIGALRM-based timing guard requires POSIX")
@@ -191,17 +209,87 @@ class VerdictEquivalenceTests(unittest.TestCase):
                 if fixed_match is not None:
                     self.assertEqual(fixed_match.group(0), unfixed_match.group(0))
 
+    # Exact end-to-end outcome of redact_secret_assignments() for every case:
+    # (name, input, expected_output_line, expected_was_redacted).
+    #
+    # This table is a CHARACTERISATION pin, not an endorsement. Several entries
+    # record known partial-redaction behaviour (e.g. 'multi_arg_call' leaves
+    # ", b, c)" behind) that is tracked separately and deliberately out of scope
+    # for this PR. Pinning the exact strings means any change to WHAT gets
+    # redacted -- including a future fix to those defects -- shows up here as a
+    # visible, reviewed diff rather than passing silently.
+    REDACTION_GOLDEN = [
+        ("simple_call", "token = get_secret()", "token = get_secret()", False),
+        ("single_arg_call", "password = fetch_password(user_id)", "password = fetch_password(user_id)", False),
+        ("multi_arg_call", "secret = build(a, b, c)", "secret = [REDACTED], b, c)", True),
+        ("quoted_string_arg", 'api_key = os.getenv("API_KEY")', 'api_key = os.getenv("API_KEY")', False),
+        ("quoted_arg_with_parens_and_comma", 'token = lookup("a(b,c)", realm)', "token = [REDACTED]", True),
+        (
+            "nested_call_two_levels",
+            'password = fetch_password(get_user(uid), realm="prod")',
+            "password = [REDACTED]",
+            True,
+        ),
+        (
+            "nested_call_three_levels_unambiguous",
+            "token = safe_int(outer(mid(inner(x)), y))",
+            "token = [REDACTED], y))",
+            True,
+        ),
+        (
+            "three_level_keys_tuple",
+            'token = safe_int(first_present_mapping_value(telemetry, keys=("a", "b")))',
+            "token = [REDACTED]",
+            True,
+        ),
+        ("non_secret_name", "username = fetch_name(user_id)", "username = fetch_name(user_id)", False),
+        ("quoted_value_not_a_call", 'token = "static-looking-value"', 'token = "[REDACTED]"', True),
+        ("escaped_quote_inside_arg", 'secret = build("a \\"quoted\\" thing", b)', "secret = [REDACTED]", True),
+        ("unbalanced_paren_in_value", "token = get_secret(a, b", "token = [REDACTED], b", True),
+        ("empty_call", "token = noop()", "token = noop()", False),
+        (
+            "call_with_bracketed_literal_arg",
+            'password = derive(config["password"], salt)',
+            "password = [REDACTED]",
+            True,
+        ),
+    ]
+
     def test_redaction_outcome_matches_for_representative_battery(self) -> None:
         """End-to-end through redact_secret_assignments(), the public entry
-        point actually used by LineSanitizer -- not just the isolated regex."""
+        point actually used by LineSanitizer -- not just the isolated regex.
+
+        Asserts the EXACT output line and the EXACT was_redacted flag. The
+        previous version of this test only asserted ``if was_redacted:
+        assertIn("[REDACTED]", ...)``, which passes unchanged if redaction
+        stops happening entirely -- it pinned nothing.
+        """
         context = so.SanitizationContext(mode="unknown_text")
-        for name, line in self.POSITIVE_AND_NEGATIVE_CASES:
+        for name, line, expected_line, expected_flag in self.REDACTION_GOLDEN:
             with self.subTest(case=name):
                 redacted_line, was_redacted = so.redact_secret_assignments(line, context=context)
-                # Smoke check: redaction must never leave the raw secret-shaped
-                # call untouched *and* claim redacted=True, or vice versa.
-                if was_redacted:
-                    self.assertIn("[REDACTED]", redacted_line)
+                self.assertEqual(was_redacted, expected_flag, f"case {name!r}: was_redacted changed")
+                self.assertEqual(redacted_line, expected_line, f"case {name!r}: output line changed")
+
+    def test_redaction_golden_covers_every_battery_case(self) -> None:
+        """Guards the guard: if a case is added to POSITIVE_AND_NEGATIVE_CASES
+        but not to REDACTION_GOLDEN, the new case would silently have no
+        end-to-end outcome pinned at all."""
+        battery = {name for name, _ in self.POSITIVE_AND_NEGATIVE_CASES}
+        golden = {name for name, _, _, _ in self.REDACTION_GOLDEN}
+        self.assertEqual(battery, golden, "REDACTION_GOLDEN and POSITIVE_AND_NEGATIVE_CASES drifted apart")
+
+    def test_at_least_one_case_actually_redacts(self) -> None:
+        """A capability check, not a spelling check: if redaction became a
+        no-op for every input, the golden table above would need wholesale
+        editing -- but this makes the failure unmissable and self-explaining."""
+        context = so.SanitizationContext(mode="unknown_text")
+        redacted = [
+            name
+            for name, line, _, _ in self.REDACTION_GOLDEN
+            if so.redact_secret_assignments(line, context=context)[1]
+        ]
+        self.assertGreaterEqual(len(redacted), 8, "call-shaped secret redaction has largely stopped working")
 
 
 class AdversarialNestedCallBatteryTests(unittest.TestCase):
@@ -257,6 +345,128 @@ class AdversarialNestedCallBatteryTests(unittest.TestCase):
                 self.assertNotEqual(match, "TIMEOUT", f"case {name!r} still hangs the fixed regex")
                 self.assertIsNotNone(elapsed)
                 self.assertLess(elapsed, 1.0, f"case {name!r} took {elapsed}s, expected sub-second")
+
+
+# ---------------------------------------------------------------------------
+# INLINE_QUOTED_SECRET_ASSIGNMENT_RE (:102) -- a SECOND, strictly worse ReDoS
+# found on the same hot path (applied FIRST, at redact_secret_assignments():494)
+# and NOT covered by the original version of this file.
+#
+# Old value body:  (?:\\.|(?!(?P=quote)).)*
+#   A backslash starts alternative 1 (`\\.`) AND satisfies alternative 2 (`.`),
+#   so a run of n backslashes has Fibonacci-many parses. With no closing quote
+#   the engine explores all of them: EXPONENTIAL, not merely quadratic.
+#   Measured on this repo before the fix: a 47-character line cost 7.6 seconds
+#   -- far worse than the 195-character/90-second CALL_ARGUMENT_CHUNK case.
+# ---------------------------------------------------------------------------
+
+UNFIXED_QUOTED_VALUE_BODY = r"(?:\\.|(?!(?P=quote)).)*"
+
+
+def _build_quoted_assignment_re(value_body: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?i)(?P<lead>^|[\s;{{\[,])"
+        rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
+        rf"[\"']?(?:{so.SECRET_KEY})[\"']?\s*[:=]\s*)"
+        rf"(?P<quote>[\"'])(?P<value>{value_body})(?P=quote)(?P<tail>[^\s,;}}\]]*)"
+    )
+
+
+# A short line: 38 backslashes after an unterminated double quote. Under the
+# unfixed body this takes multiple seconds; under the shipped body, microseconds.
+QUOTED_PATHOLOGICAL_LINE = 'api_key = "' + "\\" * 38
+
+
+@unittest.skipUnless(hasattr(signal, "SIGALRM"), "SIGALRM-based timing guard requires POSIX")
+class QuotedValueRedosRegressionTests(unittest.TestCase):
+    def test_unfixed_quoted_body_times_out_on_short_backslash_run(self) -> None:
+        """Proves the bug was real: 38 backslashes is enough to hang it."""
+        unfixed = _build_quoted_assignment_re(UNFIXED_QUOTED_VALUE_BODY)
+        elapsed, match = _search_with_budget(unfixed, QUOTED_PATHOLOGICAL_LINE, budget_seconds=5.0)
+        self.assertEqual(match, "TIMEOUT", "expected the unfixed quoted regex to hang past 5s")
+        self.assertIsNone(elapsed)
+
+    def test_shipped_quoted_regex_completes_fast(self) -> None:
+        """Load-bearing: this fails if QUOTED_VALUE_BODY is reverted."""
+        elapsed, match = _search_with_budget(
+            so.INLINE_QUOTED_SECRET_ASSIGNMENT_RE, QUOTED_PATHOLOGICAL_LINE, budget_seconds=5.0
+        )
+        self.assertNotEqual(match, "TIMEOUT", "shipped quoted regex must not time out")
+        self.assertLess(elapsed, 0.25, f"shipped quoted regex took {elapsed}s")
+
+    def test_shipped_quoted_regex_scales_linearly_in_backslash_run(self) -> None:
+        """The exponential blowup doubled cost roughly every 1.4 extra
+        backslashes. Doubling the run length here must not blow up: a
+        quantitative check, so a partially-de-ambiguated pattern cannot pass."""
+        context = so.SanitizationContext(mode="unknown_text")
+        for n in (200, 400, 800, 1600):
+            line = 'api_key = "' + "\\" * n
+            elapsed, result = _run_with_budget(
+                lambda ln=line: so.redact_secret_assignments(ln, context=context), 5.0
+            )
+            self.assertNotEqual(result, "TIMEOUT", f"backslash run of {n} hangs the shipped regex")
+            self.assertLess(elapsed, 1.0, f"backslash run of {n} took {elapsed}s")
+
+
+class QuotedValueEquivalenceTests(unittest.TestCase):
+    """The quoted de-ambiguation must not change WHICH secrets get redacted.
+
+    Excluding backslash from the second alternative would, on its own, drop one
+    string class: a value ending in a single unpaired backslash. The trailing
+    ``\\?`` in QUOTED_VALUE_BODY restores exactly that class. The
+    'trailing_backslash' case below is what makes that term load-bearing --
+    remove the ``\\?`` and only that case flips from redacted to NOT redacted,
+    i.e. a real credential would leak.
+    """
+
+    QUOTED_GOLDEN = [
+        ("quoted_double", 'api_key = "FAKE-abc123"', 'api_key = "[REDACTED]"', True),
+        ("quoted_single", "password = 'FAKE-pw'", "password = '[REDACTED]'", True),
+        ("quoted_with_escaped_quote", 'token = "FAKE\\"esc"', 'token = "[REDACTED]"', True),
+        ("quoted_trailing_backslash", 'secret = "trailing-backslash\\"', 'secret = "[REDACTED]"', True),
+        ("quoted_no_space", 'aws_secret_access_key="FAKE0000"', 'aws_secret_access_key="[REDACTED]"', True),
+        ("quoted_unterminated", 'api_key = "FAKE-unterminated', 'api_key = "FAKE-unterminated', False),
+        ("quoted_empty", 'token = ""', 'token = "[REDACTED]"', True),
+        ("quoted_windows_path", 'token = "C:\\\\Users\\\\fake\\\\creds.txt"', 'token = "[REDACTED]"', True),
+    ]
+
+    def test_quoted_redaction_outcomes_are_pinned(self) -> None:
+        context = so.SanitizationContext(mode="unknown_text")
+        for name, line, expected_line, expected_flag in self.QUOTED_GOLDEN:
+            with self.subTest(case=name):
+                out, was = so.redact_secret_assignments(line, context=context)
+                self.assertEqual(was, expected_flag, f"case {name!r}: was_redacted changed")
+                self.assertEqual(out, expected_line, f"case {name!r}: output changed")
+
+    def test_shipped_and_unfixed_quoted_regexes_agree(self) -> None:
+        """Differential: span AND every named group, since unquoted/quoted
+        replacements are rebuilt from lead/prefix/quote/value."""
+        unfixed = _build_quoted_assignment_re(UNFIXED_QUOTED_VALUE_BODY)
+        for name, line, _expected, _flag in self.QUOTED_GOLDEN:
+            with self.subTest(case=name):
+                _, old = _search_with_budget(unfixed, line, budget_seconds=10.0)
+                self.assertNotEqual(old, "TIMEOUT", f"case {name!r} hangs the unfixed regex")
+                new = so.INLINE_QUOTED_SECRET_ASSIGNMENT_RE.search(line)
+                if old is None or new is None:
+                    self.assertIs(old, new, f"case {name!r}: match/no-match verdict diverged")
+                    continue
+                self.assertEqual(old.span(), new.span(), f"case {name!r}: span diverged")
+                for group in ("lead", "prefix", "quote", "value", "tail"):
+                    self.assertEqual(
+                        old.group(group), new.group(group), f"case {name!r}: group {group!r} diverged"
+                    )
+
+    def test_trailing_backslash_term_is_load_bearing(self) -> None:
+        """Guards the guard: without the trailing ``\\?`` the naive
+        de-ambiguation silently stops redacting a value that ends in a lone
+        backslash. Proves this test file would catch that regression."""
+        naive = _build_quoted_assignment_re(r"(?:\\.|(?!(?P=quote))[^\\])*")
+        line = 'secret = "trailing-backslash\\"'
+        self.assertIsNone(naive.search(line), "expected the naive body to MISS this value")
+        self.assertIsNotNone(
+            so.INLINE_QUOTED_SECRET_ASSIGNMENT_RE.search(line),
+            "shipped body must still redact a value ending in a lone backslash",
+        )
 
 
 if __name__ == "__main__":
