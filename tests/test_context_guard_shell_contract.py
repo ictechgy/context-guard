@@ -37,6 +37,7 @@ from tests.corpus_adversarial_pins import (
     FIX5_ENV_WRAPPER_BYPASS_PINS,
     FIX5_GLOB_REJECTION_PINS,
     FIX6_ROUTE_PREDICATE_CASES,
+    FIX_GREP_ROUTE_PREDICATE_CASES,
     FIX_LS_ROUTE_PREDICATE_CASES,
     FIX_LS_STANDALONE_INVARIANT_COMMANDS,
     fix1a_route_predicate_relaxations,
@@ -47,6 +48,9 @@ from tests.corpus_adversarial_pins import (
     fix2_route_predicate_relaxations,
     fix5_case_count,
     fix6_route_predicate_relaxations,
+    fix_grep_relaxation_case_count,
+    fix_grep_route_predicate_relaxations,
+    fix_grep_stay_denied_case_count,
     ls_relaxation_case_count,
     ls_route_predicate_relaxations,
     ls_stay_denied_case_count,
@@ -1521,6 +1525,130 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         self.assertEqual(
                             decision.reason_code, case.get("expected_reason_code")
                         )
+
+    def test_inv_a_grep_stay_denied_forms(self) -> None:
+        """INV-A(거부 보존) — `FIX_GREP_ROUTE_PREDICATE_CASES` 중 거부로 남아야
+        하는 행(값 소비 롱플래그, `--color=always`, 표 밖 짧은 플래그, filter
+        역할의 파일 피연산자)이 개조 전/후 어느 코드에서도 항상 deny 인지
+        고정한다(design route-readmission-design-20260729.md §4.2)."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_grep_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX_GREP_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, "route_policy_denied")
+
+    def test_inv_b_grep_flag_surface_deny_to_allow_transition_requires_route_policy_denied_baseline(
+        self,
+    ) -> None:
+        """INV-B(허용 전환의 출처 제한) — FIX-GREP(`grep -o`/`-q` + 롱플래그
+        정확 일치 별칭 표, design route-readmission-design-20260729.md §4.2)의
+        완화 대상 행은 전부 baseline `route_policy_denied` 여야 하고, 재플레이로
+        토큰-예산 축임이 확인된 형태만 여기 포함된다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_b_grep_{index}")
+            classify_command = namespace["classify_command"]
+            for case in fix_grep_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code, case.get("expected_reason_code")
+                    )
+
+    def test_inv_c_newly_rewrapped_grep_flag_surface_commands_roundtrip(self) -> None:
+        """INV-C(재래핑 왕복) — FIX-GREP 완화 대상(`fix_grep_route_predicate_relaxations()`)을
+        전수 열거하고, `sanitize_output.py`로 재래핑된 명령을 되찢어 원본 명령
+        문자열이 손실 없이 보존되는지 확인한다. grep 은 FIX-2/FIX-LS 의 trim
+        경로가 아니라 이미 배선된 `bash -lc` sanitize 경로로 들어간다(§4.2
+        INV-C — "새 wrapper 경로가 생기는 게 아니다") — `a1_route_decision`이
+        `rewrite_sanitize`를 반환하는지까지 함께 고정해 trim 경로로 잘못
+        새기 않는지 확인한다."""
+        newly_rewrapped_candidates = tuple(
+            case["command"] for case in fix_grep_route_predicate_relaxations()
+        )
+        for script in self.contract_scripts():
+            for command in newly_rewrapped_candidates:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_fix_grep_case_tables_are_not_vacuous(self) -> None:
+        """FIX-GREP 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
+        표의 크기를 고정한다(FIX-1b/FIX-LS 개수 가드와 동일한 역할). 이 표를
+        비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
+        self.assertEqual(fix_grep_relaxation_case_count(), 27)
+        self.assertEqual(fix_grep_stay_denied_case_count(), 25)
+        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 52)
+
+    def test_fix_grep_cases_cover_both_call_sites_of_the_shared_predicate(self) -> None:
+        """`_grep_is_safe` 는 `grep`/`egrep`/`fgrep` 라우트와 `git grep`(`_git_is_safe`
+        의 `grep` 서브커맨드 위임) **두 곳**에서 쓰인다. 케이스 표가 한쪽만 덮으면
+        공유 predicate 확장의 폭발 반경 절반이 감시 밖에 남는다 — 실제로 PR #251
+        최초 상태가 그랬다. 양쪽 모두에 완화 케이스와 거부 보존 케이스가 있는지
+        확인한다."""
+        git_grep_cases = [
+            case
+            for case in FIX_GREP_ROUTE_PREDICATE_CASES
+            if case["command"].startswith("git grep ")
+        ]
+        self.assertGreaterEqual(
+            sum(1 for case in git_grep_cases if case["expected_decision"] != "deny"),
+            3,
+            "`git grep` 완화 케이스가 없다 — 두 번째 호출 지점이 감시되지 않는다.",
+        )
+        self.assertGreaterEqual(
+            sum(1 for case in git_grep_cases if case["expected_decision"] == "deny"),
+            1,
+            "`git grep` 거부 보존 케이스가 없다.",
+        )
+
+    def test_every_grep_long_alias_table_entry_is_pinned(self) -> None:
+        """`_GREP_LONG_ALIASES` 의 모든 항목이 FIX-GREP 케이스 표에 실제 명령으로
+        등장하는지 확인한다. 표에 항목을 추가하면서 핀을 빠뜨리면(=감시 없는 확대)
+        여기서 즉시 실패한다.
+
+        예외는 두지 않는다. 리뷰 라운드는 `--recursive` 가 표에 있으면서도
+        도달 불가능한 중복(별칭 표 조회보다 앞선 독립 분기가 이미 처리)임을
+        10,728개 명령에 대해 결정 차이 0으로 실측했고, 이 테스트에 예외를 파는
+        대신 **표에서 그 항목을 뺐다** — 예외를 두면 '모든 항목이 하중을 받는다'는
+        이 테스트의 주장 자체가 거짓이 되기 때문이다.
+        """
+        pinned_tokens: set[str] = set()
+        for case in FIX_GREP_ROUTE_PREDICATE_CASES:
+            pinned_tokens.update(shlex.split(case["command"]))
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"grep_alias_pins_{index}")
+            aliases = namespace["_GREP_LONG_ALIASES"]
+            self.assertTrue(aliases, "별칭 표가 비었다 — 표 자체가 사라졌다.")
+            for alias in sorted(aliases):
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged", alias=alias
+                ):
+                    self.assertIn(
+                        alias,
+                        pinned_tokens,
+                        f"{alias} 가 FIX_GREP_ROUTE_PREDICATE_CASES 에 "
+                        "독립 토큰으로 등장하지 않는다 — 감시되지 않는 별칭이다.",
+                    )
 
 
 if __name__ == "__main__":

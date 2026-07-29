@@ -442,16 +442,45 @@ def _route_examples() -> list[dict[str, str]]:
     add(
         "grep-producer",
         ("standalone", "first"),
-        ("grep -n -e token -- README.md", "egrep -m2 token README.md"),
+        (
+            "grep -n -e token -- README.md",
+            "egrep -m2 token README.md",
+            "grep -o token README.md",
+            "grep -q token README.md",
+            "grep --only-matching token README.md",
+            "grep --color=auto token README.md",
+        ),
         "rewrite_sanitize",
-        ("grep -f patterns README.md", "grep --binary-files=text token README.md"),
+        (
+            "grep -f patterns README.md",
+            "grep --binary-files=text token README.md",
+            "grep --color=always token README.md",
+            "grep --only-matchingx token README.md",
+        ),
+        note="AC grep flag surface (design route-readmission-design-20260729.md "
+        "§4.2): -o/-q short flags plus exact-match long-flag alias table. "
+        "Negatives: value-taking long flags, --color=always (only never/auto "
+        "are in the table), and a near-miss long flag proving no startswith "
+        "matching.",
     )
     add(
         "grep-filter",
         ("filter",),
-        ("grep -n token", "fgrep -m2 token"),
+        (
+            "grep -n token",
+            "fgrep -m2 token",
+            "grep -o token",
+            "grep --quiet token",
+        ),
         "rewrite_sanitize",
-        ("grep token README.md", "grep -f patterns"),
+        (
+            "grep token README.md",
+            "grep -f patterns",
+            "grep -o token README.md",
+        ),
+        note="grep -o token README.md is rejected in filter role because "
+        "allow_files=False still applies to file operands — the newly "
+        "admitted flag does not relax that unrelated gate.",
     )
     add(
         "head-tail-producer",
