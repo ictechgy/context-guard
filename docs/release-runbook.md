@@ -167,7 +167,12 @@ Re-blessing procedure:
    python3 scripts/verify_gate_b_rollback.py --json > /tmp/gate-b-proof.json
    jq -r '.review_pathspec[]' /tmp/gate-b-proof.json
    ```
-   then review `git diff <previous-generation-bless> <new-generation-bless> -- <paths from review_pathspec>` line by line, confirming every changed line is one of the declared `residual_edits`.
+   then review the diff line by line, confirming every changed line is one of the declared `residual_edits`:
+   ```bash
+   GIT_LITERAL_PATHSPECS=1 git diff <previous-generation-bless> <new-generation-bless> \
+     -- $(jq -r '.review_pathspec[]' /tmp/gate-b-proof.json)
+   ```
+   **Keep the `GIT_LITERAL_PATHSPECS=1` prefix.** The proof script sets it internally for every git call it makes, but this command runs in *your* shell, where it is unset — and a component path spelled `:(exclude)<other>` would then hide `<other>` from the diff you are reading while the mechanical gate still sees both paths. The script now rejects component paths starting with `:` outright, so this prefix is a second line of defence rather than the only one; keep both, because the one that fails first is the one that keeps a human from reviewing a diff that has been quietly narrowed.
 6. Run the full proof (`--json` and plain) and the targeted Gate-B test modules locally before pushing; the publish workflow runs the proof as a blocking step, but a broken generation record should never reach CI first.
 
 ### Gate-B incident exception to append-only

@@ -420,6 +420,19 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
                 "the unrelated-feature preservation contract would pass vacuously"
             )
         components = generation.all_component_paths
+        # 5. 컴포넌트 경로는 리터럴이어야 한다. 기계 게이트 자체는 이미
+        #    ``GIT_LITERAL_PATHSPECS=1``로 pathspec 매직을 무력화하지만, 런북은
+        #    ``review_pathspec``을 **사람의 셸에 붙여넣으라**고 지시하고 거기엔
+        #    그 환경변수가 없다. 따라서 ``:(exclude)…`` 꼴 경로는 기계 검사에는
+        #    잡히면서 사람이 보는 리뷰 diff에서만 조용히 사라질 수 있다.
+        #    경로 목록 자체를 리터럴로 강제해 그 비대칭을 없앤다.
+        for path in sorted(components):
+            if path.startswith(":"):
+                raise ProofError(
+                    f"generation {generation.name!r} declares a non-literal component "
+                    f"path {path!r}: a leading ':' is git pathspec magic and would hide "
+                    "the path from the human review diff described in the runbook"
+                )
         for marker in generation.gate_b_markers:
             if not marker.literal.strip():
                 raise ProofError(

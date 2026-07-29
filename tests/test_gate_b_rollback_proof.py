@@ -1134,6 +1134,44 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ):
                 self.drive(tmp, (gen1, foreign))
 
+    def test_resolve_history_rejects_pathspec_magic_component_path(self) -> None:
+        """D6-5 배선 — 컴포넌트 경로가 리터럴이 아니면 거부한다.
+
+        기계 게이트는 모든 git 호출에 ``GIT_LITERAL_PATHSPECS=1``을 걸어 두므로
+        pathspec 매직에 속지 않는다. 그러나 런북은 ``review_pathspec``을
+        **사람의 셸에 붙여넣으라**고 지시하고 거기엔 그 환경변수가 없다. 따라서
+        ``:(exclude)…`` 꼴 경로는 기계 검사에는 그대로 걸리면서 사람이 읽는
+        리뷰 diff에서만 조용히 사라진다 — 사람 검토만 좁히는 비대칭이다.
+
+        ``self.drive``로 몰아 호출부까지 고정한다. 함수를 직접 부르면 검사를
+        호출하는 자리를 지워도 이 테스트가 통과해 버린다.
+        """
+        gen1, _ = self.make_pair()
+        magic = self.make_generation(
+            "gen2-pathspec-magic",
+            b1_paths=frozenset({"g2/b1.txt"}),
+            b2_paths=frozenset({"g2/b2.txt"}),
+            shared_paths=frozenset({":(exclude)shared/keep.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-magic-") as tmp:
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError, "non-literal component"
+            ):
+                self.drive(tmp, (gen1, magic))
+
+    def test_shipped_component_paths_are_all_literal(self) -> None:
+        """출하 중인 ``GENERATIONS``가 실제로 이 규칙을 지키는지 확인한다.
+
+        위 테스트는 합성 레코드만 보므로, 규칙이 살아 있는 경로 목록에는
+        적용되지 않는 상태로도 통과한다.
+        """
+        for generation in rollback_proof.GENERATIONS:
+            for path in sorted(generation.all_component_paths):
+                self.assertFalse(
+                    path.startswith(":"),
+                    f"{generation.name} declares non-literal component path {path!r}",
+                )
+
     def test_resolve_history_rejects_overlapping_component_paths(self) -> None:
         """I1 배선 — ``assert_disjoint_paths``의 호출부를 지우면 실패한다.
 
@@ -1503,6 +1541,10 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "        (gen('en', residual_markers={'en/y': ('',)}),))),",
                 "    ('foreignowner', lambda: m.assert_generation_records_wellformed(",
                 "        (gen('fo', gate_b_markers=(m.GateBMarker('L', 'nope'),)),))),",
+                "    ('pathspecmagic', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('pm', shared_paths=frozenset({':(exclude)pm/y'}),",
+                "             residual_markers={':(exclude)pm/y': ('N',)},",
+                "             gate_b_markers=(m.GateBMarker('L', ':(exclude)pm/y'),)),))),",
                 "]",
                 "missed = []",
                 "for label, call in cases:",
