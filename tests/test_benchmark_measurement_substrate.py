@@ -81,7 +81,7 @@ def _measurement(
     arm: str = "baseline",
     attempt: int = 0,
     expected_hooks: list[str] | None = None,
-    fake_mode: str = "valid-no-hooks",
+    fake_mode: str = "auto",
     artifact_root: str = "artifacts",
 ) -> dict:
     return {
@@ -184,7 +184,10 @@ def _write_fake_cli(root: Path) -> Path:
                 raise SystemExit(19)
             sentinel.write_text("unique", encoding="utf-8")
 
-            mode = os.environ.get("CG_FAKE_MODE", "valid-no-hooks")
+            mode = os.environ.get("CG_FAKE_MODE", "auto")
+            if mode == "auto":
+                settings_index = sys.argv.index("--settings") + 1
+                mode = "valid-hooks" if "treatment" in sys.argv[settings_index] else "valid-no-hooks"
             hook_events = [
                 {{
                     "type": "hook_event",
@@ -348,7 +351,6 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                     settings_file="baseline-settings.json",
                     arm="baseline",
                     attempt=0,
-                    fake_mode="valid-no-hooks",
                 ),
             ),
             _variant(
@@ -358,7 +360,6 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                     arm="treatment",
                     attempt=0,
                     expected_hooks=["context-guard-guard-read", "context-guard-failed-nudge"],
-                    fake_mode="valid-hooks",
                 ),
             ),
         ]
@@ -433,6 +434,11 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                 "runner-controlled Claude flag",
             ),
             (
+                "setting-sources-conflict",
+                lambda value: value["extra_args"].extend(["--setting-sources", "local"]),
+                "runner-controlled Claude flag",
+            ),
+            (
                 "safe-mode",
                 lambda value: value["extra_args"].append("--safe-mode"),
                 "unsafe Claude flag",
@@ -457,6 +463,30 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                     variant = copy.deepcopy(self._valid_pair()[1])
                     mutate(variant)
                     self.assert_prelaunch_rejection(harness, [variant], message=message)
+
+            with self.subTest(script=script, case="output-format-conflict"):
+                case_root = root / "output-format-conflict"
+                case_root.mkdir()
+                harness = MeasurementHarness(case_root, script)
+                harness.tasks_path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "id": "t01",
+                                "prompt": "offline fake task",
+                                "max_turns": 1,
+                                "output_format": "json",
+                                "success_command": "true",
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                self.assert_prelaunch_rejection(
+                    harness,
+                    [self._valid_pair()[1]],
+                    message="measurement requires task output_format=stream-json",
+                )
 
     def test_symlink_and_capability_failures_are_prelaunch_and_no_follow(self):
         for script, root in self._for_each_script():
