@@ -703,6 +703,67 @@ class TaskFixture:
 class Variant:
     name: str
     extra_args: list[str] = field(default_factory=list)
+    # S001 is opt-in. Legacy variants keep the historical execution path.
+    measurement: "MeasurementVariant | None" = None
+
+
+@dataclass(frozen=True)
+class MeasurementIdentity:
+    candidate_hash: str
+    repetition: int
+    arm: str
+    attempt: int
+    namespace: str
+
+    def components(self, task_id: str) -> tuple[str, str, int, str, int, str]:
+        return (
+            self.candidate_hash,
+            task_id,
+            self.repetition,
+            self.arm,
+            self.attempt,
+            self.namespace,
+        )
+
+    def run_id(self, task_id: str) -> str:
+        canonical = json.dumps(
+            self.components(task_id), ensure_ascii=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return f"{self.namespace}-{hashlib.sha256(canonical).hexdigest()[:24]}"
+
+
+@dataclass(frozen=True)
+class MeasurementVariant:
+    settings_file: Path
+    setting_sources: tuple[str, ...]
+    environment_allow: tuple[str, ...]
+    environment_overrides: tuple[tuple[str, str], ...]
+    workspace_mode: str
+    session_mode: str
+    session_persistence: str
+    hook_events_enabled: bool
+    expected_hook_identities: tuple[str, ...]
+    cli_capabilities: tuple[str, ...]
+    identity: MeasurementIdentity
+    artifact_root: Path
+    settings_payload: dict[str, Any] = field(compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class MeasurementRunContext:
+    run_id: str
+    run_root: Path
+    home: Path
+    xdg_config: Path
+    xdg_cache: Path
+    xdg_data: Path
+    xdg_state: Path
+    tmp: Path
+    workspace: Path
+    session: Path
+    raw_path: Path
+    receipt_path: Path
+    index_path: Path
 
 
 @dataclass
