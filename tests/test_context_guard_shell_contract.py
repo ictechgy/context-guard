@@ -1595,8 +1595,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
         """FIX-GREP 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
         표의 크기를 고정한다(FIX-1b/FIX-LS 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
-        self.assertEqual(fix_grep_relaxation_case_count(), 28)
-        self.assertEqual(fix_grep_stay_denied_case_count(), 24)
+        self.assertEqual(fix_grep_relaxation_case_count(), 27)
+        self.assertEqual(fix_grep_stay_denied_case_count(), 25)
         self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 52)
 
     def test_fix_grep_cases_cover_both_call_sites_of_the_shared_predicate(self) -> None:
@@ -1626,10 +1626,11 @@ class MiniShellBoundaryTests(unittest.TestCase):
         등장하는지 확인한다. 표에 항목을 추가하면서 핀을 빠뜨리면(=감시 없는 확대)
         여기서 즉시 실패한다.
 
-        `--recursive` 만 예외다 — `_grep_is_safe` 안에서 별칭 표 조회보다 앞선
-        독립 분기(`if argument == "--recursive"`)가 이미 처리하므로 표의 해당
-        항목은 도달 불가능한 중복이며, 삭제해도 어떤 명령의 결정도 바뀌지 않는다
-        (리뷰 라운드에서 10,728개 명령에 대해 결정 차이 0으로 실측 확인).
+        예외는 두지 않는다. 리뷰 라운드는 `--recursive` 가 표에 있으면서도
+        도달 불가능한 중복(별칭 표 조회보다 앞선 독립 분기가 이미 처리)임을
+        10,728개 명령에 대해 결정 차이 0으로 실측했고, 이 테스트에 예외를 파는
+        대신 **표에서 그 항목을 뺐다** — 예외를 두면 '모든 항목이 하중을 받는다'는
+        이 테스트의 주장 자체가 거짓이 되기 때문이다.
         """
         pinned_tokens: set[str] = set()
         for case in FIX_GREP_ROUTE_PREDICATE_CASES:
@@ -1639,8 +1640,6 @@ class MiniShellBoundaryTests(unittest.TestCase):
             aliases = namespace["_GREP_LONG_ALIASES"]
             self.assertTrue(aliases, "별칭 표가 비었다 — 표 자체가 사라졌다.")
             for alias in sorted(aliases):
-                if alias == "--recursive":
-                    continue
                 with self.subTest(
                     entrypoint="canonical" if index == 0 else "staged", alias=alias
                 ):

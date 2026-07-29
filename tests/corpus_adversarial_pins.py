@@ -1742,20 +1742,20 @@ FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "note": "`-P`의 롱 별칭.",
     },
     {
-        "case_id": "fix-grep-long-no-messages-allowed-asymmetry-pinned",
+        "case_id": "fix-grep-inv-a-long-no-messages-denied",
         "fix": "FIX-GREP",
         "command": "grep --no-messages token README.md",
         "baseline_reason_code": "route_policy_denied",
-        "expected_decision": "sanitize",
-        "expected_reason_code": None,
-        "note": "**알려진 비대칭** — `--no-messages`는 표에 있어 허용되지만 그 짧은 "
-        "형태 `-s`는 `allowed_flags` 밖이라 여전히 거부된다(바로 아래 "
-        "`fix-grep-inv-a-short-s-denied` 참조). `_GREP_LONG_ALIASES` 주석은 표가 "
-        "'이미 허용된 짧은 옵션과 동치인 것만' 담는다고 적고 있으나 이 항목은 "
-        "그 규칙의 예외다. `-s`는 stderr 진단만 억제하므로 출력이 줄기만 하고 "
-        "위험은 없다 — 즉 보안 결함이 아니라 철자 일관성 문제이며, 어느 쪽으로 "
-        "정렬할지는 별도 결정이다. 양쪽 현재 동작을 모두 핀으로 고정해 어느 쪽이든 "
-        "말없이 움직이지 못하게 한다.",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "짧은 형태 `-s`가 `allowed_flags` 밖이므로 롱 형태도 표에서 뺐다"
+        "(바로 아래 `fix-grep-inv-a-short-s-denied`와 짝). 리뷰 라운드는 이것을 "
+        "'표는 이미 허용된 짧은 옵션과 동치인 것만 담는다'는 주석과 표가 어긋나는 "
+        "비대칭으로 보고했고, 표를 좁혀 주석이 참이 되도록 정렬했다. `-s`는 stderr "
+        "진단만 억제해 위험하지 않지만, 규칙에 예외를 하나 두면 주석이 거짓이 되고 "
+        "거짓 주석은 이 저장소에서 결함이 전파되는 경로다. 넓히기로 결정한다면 "
+        "짧은 옵션 쪽을 먼저 넓히고 그 다음 롱 형태를 표에 넣는다. 실측상 실사용 "
+        "트랜스크립트에서 이 형태의 이동은 0건이라 좁혀도 잃는 것이 없다.",
     },
     {
         "case_id": "fix-grep-inv-a-short-s-denied",

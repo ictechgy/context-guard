@@ -1484,12 +1484,26 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
 #: grep 긴 옵션(long flag) 중 이미 허용된 짧은 옵션과 동치인 것만 정확히 나열한
 #: 화이트리스트. **접두사(startswith) 매칭 금지** — `--color`로 시작 매칭을 허용하면
 #: `--color=always`(ANSI 이스케이프 주입)가, `--f`류 접두사 매칭을 허용하면
-#: `--file=`(패턴을 파일에서 읽음, 예측 불가능한 I/O)이 함께 통과해버린다. 값
-#: 형태를 취하는 옵션(`--include=`, `--exclude=`, `--exclude-dir=`, `--devices=`,
+#: `--file=`(패턴을 파일에서 읽음, 예측 불가능한 I/O)이 함께 통과해버린다.
+#:
+#: 이 표는 **짧은 옵션 동치 규칙을 예외 없이** 지킨다. `--no-messages`는 그 짧은
+#: 형태 `-s`가 `allowed_flags` 밖이라 표에서 뺐다 — `-s` 자체는 stderr 진단만
+#: 억제해 위험하지 않지만, 규칙에 예외를 하나 두면 주석이 거짓이 되고 거짓 주석은
+#: 이 저장소에서 결함이 전파되는 경로다. `-s`를 허용하기로 결정한다면 짧은 옵션
+#: 쪽을 먼저 넓히고 그 다음 이 표에 롱 형태를 추가한다.
+#:
+#: 값 형태를 취하는 옵션(`--include=`, `--exclude=`, `--exclude-dir=`, `--devices=`,
 #: `--directories=`, `--label=`, `--binary-files=`, `-D/-U/-z/-Z/--null` 계열)은
-#: 의도적으로 제외한다 — 값이 동작을 바꾸거나(예: `--directories=read`) 파서
-#: 단계(`active_2a`)에서 이미 별도로 거부되는 글롭이라 여기서 다뤄도 아무것도
-#: 열어주지 않는다.
+#: 의도적으로 제외한다. 이유는 값이 동작을 바꾸기 때문이다(예: `--directories=read`).
+#:
+#: 주의 — 이 제외를 "어차피 파서 단계(`active_2a`)에서 글롭으로 거부된다"로
+#: 정당화하면 **틀린다.** 비인용 `--include=*.py`는 확실히 `active_2a`로 죽지만,
+#: 인용된 `--include='*.py'`는 셸이 확장하지 않아 롱플래그로 여기까지 도달하며
+#: `route_policy_denied`를 받는다(리뷰 라운드 실측: 그런 명령이 코퍼스에 66건).
+#: 즉 이들은 여기서 다루면 실제로 열린다. 다루지 않는 이유는 `--flag=value` 형태를
+#: 담으려면 값 문법을 갖춘 접두 규칙이 필요한데, 그 첫 접두 규칙을 "접두사 매칭
+#: 금지" 규율을 세우는 바로 이 변경에 함께 넣으면 규율 자체가 무너지기 때문이다.
+#: 별도 변경으로 다룬다.
 _GREP_LONG_ALIASES = frozenset(
     {
         "--only-matching",
@@ -1509,8 +1523,9 @@ _GREP_LONG_ALIASES = frozenset(
         "--perl-regexp",
         "--quiet",
         "--silent",
-        "--no-messages",
-        "--recursive",
+        # `--recursive`는 표에 두지 않는다 — 조회보다 앞선 독립 분기가 이미
+        # 처리하므로 여기 넣으면 도달 불가능한 중복 항목이 되고, 모든 항목이
+        # 하중을 받아야 한다는 성질이 깨진다.
         "--dereference-recursive",
         "--color=never",
         "--color=auto",
