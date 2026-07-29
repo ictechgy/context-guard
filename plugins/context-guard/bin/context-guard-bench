@@ -70,6 +70,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable
@@ -131,6 +132,14 @@ PROTECTED_VARIANT_FLAGS = frozenset({
     "--allowed-tools",
     "--max-budget-usd",
     "--effort",
+})
+MEASUREMENT_PROTECTED_VARIANT_FLAGS = frozenset({
+    "--settings",
+    "--setting-sources",
+    "--include-hook-events",
+    "--no-session-persistence",
+    "--safe-mode",
+    "--bare",
 })
 SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
 SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
@@ -326,6 +335,40 @@ CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 CLAUDE_STREAM_MAX_LINES = 10_000
 CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
 CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
+MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v1"
+MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION = "contextguard.bench.raw-receipt.v1"
+MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION = "contextguard.bench.artifact-index.v1"
+MEASUREMENT_ID_NAMESPACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+MEASUREMENT_ENV_NAME_RE = re.compile(r"\A[A-Z][A-Z0-9_]{0,127}\Z")
+MEASUREMENT_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_?KEY|AUTH|AUTHORIZATION|BEARER|CREDENTIALS?|OAUTH|PASSWORD|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)",
+    re.IGNORECASE,
+)
+MEASUREMENT_RUNNER_ENV_NAMES = frozenset({
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "TMPDIR",
+    "CLAUDE_CONFIG_DIR",
+})
+MEASUREMENT_VARIANT_KEYS = frozenset({
+    "schema_version",
+    "settings_file",
+    "setting_sources",
+    "environment",
+    "workspace",
+    "session",
+    "hook_events",
+    "cli_capabilities",
+    "identity",
+    "artifact_root",
+})
+MEASUREMENT_RAW_MAX_BYTES = CLAUDE_OUTPUT_MAX_BYTES
+MEASUREMENT_RAW_MAX_LINES = CLAUDE_STREAM_MAX_LINES
+MEASUREMENT_HOOK_MAX_EVENTS = 1_000
+MEASUREMENT_HOOK_TEXT_MAX_CHARS = 256
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
@@ -662,6 +705,67 @@ class TaskFixture:
 class Variant:
     name: str
     extra_args: list[str] = field(default_factory=list)
+    # S001 is opt-in. Legacy variants keep the historical execution path.
+    measurement: "MeasurementVariant | None" = None
+
+
+@dataclass(frozen=True)
+class MeasurementIdentity:
+    candidate_hash: str
+    repetition: int
+    arm: str
+    attempt: int
+    namespace: str
+
+    def components(self, task_id: str) -> tuple[str, str, int, str, int, str]:
+        return (
+            self.candidate_hash,
+            task_id,
+            self.repetition,
+            self.arm,
+            self.attempt,
+            self.namespace,
+        )
+
+    def run_id(self, task_id: str) -> str:
+        canonical = json.dumps(
+            self.components(task_id), ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+
+@dataclass(frozen=True)
+class MeasurementVariant:
+    settings_file: Path
+    setting_sources: tuple[str, ...]
+    environment_allow: tuple[str, ...]
+    environment_overrides: tuple[tuple[str, str], ...]
+    workspace_mode: str
+    session_mode: str
+    session_persistence: str
+    hook_events_enabled: bool
+    expected_hook_identities: tuple[str, ...]
+    cli_capabilities: tuple[str, ...]
+    identity: MeasurementIdentity
+    artifact_root: Path
+    settings_payload: dict[str, Any] = field(compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class MeasurementRunContext:
+    run_id: str
+    run_root: Path
+    home: Path
+    xdg_config: Path
+    xdg_cache: Path
+    xdg_data: Path
+    xdg_state: Path
+    tmp: Path
+    workspace: Path
+    session: Path
+    raw_path: Path
+    receipt_path: Path
+    index_path: Path
 
 
 @dataclass
@@ -1027,6 +1131,353 @@ def parse_string_map(value: Any, *, field: str, owner: str) -> dict[str, str]:
     return items
 
 
+class _MeasurementDuplicateKey(ValueError):
+    pass
+
+
+def _measurement_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _MeasurementDuplicateKey(key)
+        result[key] = value
+    return result
+
+
+def _load_measurement_json(path: Path, *, owner: str) -> Any:
+    try:
+        return json.loads(
+            _read_text_no_follow(path),
+            object_pairs_hook=_measurement_object_no_duplicates,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite number")),
+        )
+    except _MeasurementDuplicateKey as exc:
+        raise SystemExit(f"{owner} contains duplicate JSON key: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{owner} must be valid JSON: {exc.msg}") from None
+    except ValueError as exc:
+        raise SystemExit(f"{owner} must be strict JSON: {exc}") from None
+
+
+def _measurement_exact_object(
+    value: Any,
+    *,
+    owner: str,
+    keys: frozenset[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemExit(f"{owner} must be a JSON object")
+    actual = set(value)
+    unknown = sorted(actual - keys)
+    missing = sorted(keys - actual)
+    if unknown:
+        if owner.endswith(".measurement"):
+            raise SystemExit(f"unknown measurement key: {', '.join(unknown)}")
+        raise SystemExit(f"{owner} has unknown key(s): {', '.join(unknown)}")
+    if missing:
+        raise SystemExit(f"{owner} is missing key(s): {', '.join(missing)}")
+    return value
+
+
+def _measurement_safe_path(
+    value: Any,
+    *,
+    owner: str,
+    base_dir: Path,
+    must_exist: bool,
+) -> Path:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise SystemExit(f"{owner} must be a non-empty filesystem path")
+    try:
+        os.fsencode(value)
+    except UnicodeError:
+        raise SystemExit(f"{owner} is not representable on the local filesystem") from None
+    raw = Path(value).expanduser()
+    if not raw.is_absolute():
+        if any(part in ("", ".", "..") for part in raw.parts):
+            if owner.endswith(".settings_file"):
+                raise SystemExit("settings_file must stay within the variant fixture directory")
+            raise SystemExit(f"{owner} must not contain '.', '..', or empty path components")
+        path = base_dir / raw
+    else:
+        path = raw
+    path = Path(os.path.normpath(str(path)))
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        # Artifact roots supplied by a test harness may be absolute, but relative
+        # paths are never allowed to escape their fixture directory.
+        if not raw.is_absolute():
+            raise SystemExit(f"{owner} escapes the variant fixture directory") from None
+    try:
+        if must_exist:
+            fd = _open_regular_no_symlink(path)
+            os.close(fd)
+        else:
+            probe = path
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            fd = _ensure_directory_no_symlink(probe)
+            os.close(fd)
+    except OSError as exc:
+        try:
+            is_link = stat.S_ISLNK(os.lstat(path).st_mode)
+        except OSError:
+            is_link = False
+        if is_link and owner.endswith(".settings_file"):
+            raise SystemExit("settings_file must not be a symlink") from None
+        if is_link and owner.endswith(".artifact_root"):
+            raise SystemExit("artifact_root must not be a symlink") from None
+        detail = exc.strerror or exc.__class__.__name__
+        raise SystemExit(f"{owner} is unsafe or inaccessible: {detail}") from None
+    return path
+
+
+def _measurement_env_name(value: Any, *, owner: str) -> str:
+    if not isinstance(value, str) or not MEASUREMENT_ENV_NAME_RE.fullmatch(value):
+        raise SystemExit(f"{owner} must be an uppercase environment variable name")
+    if MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
+        raise SystemExit(f"unsafe environment name: {value}")
+    if value in MEASUREMENT_RUNNER_ENV_NAMES:
+        raise SystemExit(f"{owner} is runner-controlled and must not be configured")
+    return value
+
+
+def _measurement_string_tuple(
+    value: Any,
+    *,
+    owner: str,
+    maximum: int = 64,
+) -> tuple[str, ...]:
+    items = parse_string_list(value, field=owner.rsplit(".", 1)[-1], owner=owner.rsplit(".", 1)[0])
+    if len(items) > maximum:
+        raise SystemExit(f"{owner} exceeds the {maximum}-item limit")
+    if len(set(items)) != len(items):
+        raise SystemExit(f"{owner} must not contain duplicates")
+    return tuple(items)
+
+
+def _measurement_parse_identity(raw: Any, *, owner: str, variant_name: str) -> MeasurementIdentity:
+    value = _measurement_exact_object(
+        raw,
+        owner=owner,
+        keys=frozenset({"candidate_hash", "repetition", "arm", "attempt", "namespace"}),
+    )
+    candidate_hash = value["candidate_hash"]
+    if not isinstance(candidate_hash, str) or not SHA256_HEX_PATTERN.fullmatch(candidate_hash):
+        raise SystemExit(f"{owner}.candidate_hash must be 64 lowercase hexadecimal characters")
+    repetition = value["repetition"]
+    attempt = value["attempt"]
+    if isinstance(repetition, bool) or repetition != 0:
+        raise SystemExit(f"{owner}.repetition must be 0 in S001")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+        raise SystemExit(f"{owner}.attempt must be a non-negative integer")
+    arm = value["arm"]
+    if arm not in {"baseline", "treatment"} or arm != variant_name:
+        raise SystemExit(f"{owner}.arm must be baseline or treatment and match the variant name")
+    namespace = value["namespace"]
+    if not isinstance(namespace, str) or not MEASUREMENT_ID_NAMESPACE_RE.fullmatch(namespace):
+        raise SystemExit(f"{owner}.namespace must be a bounded safe identifier")
+    return MeasurementIdentity(candidate_hash, repetition, arm, attempt, namespace)
+
+
+def _measurement_parse_variant(
+    raw: Any,
+    *,
+    owner: str,
+    variant_name: str,
+    base_dir: Path,
+) -> MeasurementVariant:
+    value = _measurement_exact_object(raw, owner=owner, keys=MEASUREMENT_VARIANT_KEYS)
+    if value["schema_version"] != MEASUREMENT_SUBSTRATE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"measurement schema_version must be {MEASUREMENT_SUBSTRATE_SCHEMA_VERSION}"
+        )
+
+    settings_file = _measurement_safe_path(
+        value["settings_file"], owner=f"{owner}.settings_file", base_dir=base_dir, must_exist=True,
+    )
+    settings_payload = _load_measurement_json(settings_file, owner=f"{owner}.settings_file")
+    if not isinstance(settings_payload, dict):
+        raise SystemExit(f"{owner}.settings_file must contain a JSON object")
+
+    setting_sources = _measurement_string_tuple(
+        value["setting_sources"], owner=f"{owner}.setting_sources", maximum=3,
+    )
+    allowed_setting_sources = {"user", "project", "local"}
+    if any(item not in allowed_setting_sources for item in setting_sources):
+        raise SystemExit(f"{owner}.setting_sources contains an unsupported source")
+
+    environment = _measurement_exact_object(
+        value["environment"],
+        owner=f"{owner}.environment",
+        keys=frozenset({"allow", "overrides"}),
+    )
+    allow_raw = _measurement_string_tuple(
+        environment["allow"], owner=f"{owner}.environment.allow", maximum=64,
+    )
+    environment_allow = tuple(
+        _measurement_env_name(item, owner=f"{owner}.environment.allow") for item in allow_raw
+    )
+    overrides_raw = environment["overrides"]
+    if not isinstance(overrides_raw, dict) or len(overrides_raw) > 64:
+        raise SystemExit(f"{owner}.environment.overrides must be a bounded JSON object")
+    overrides: list[tuple[str, str]] = []
+    for raw_name, raw_value in overrides_raw.items():
+        name = _measurement_env_name(raw_name, owner=f"{owner}.environment.overrides")
+        if not isinstance(raw_value, str) or len(raw_value.encode("utf-8")) > 4096:
+            raise SystemExit(f"{owner}.environment.overrides values must be bounded strings")
+        overrides.append((name, raw_value))
+
+    workspace = _measurement_exact_object(
+        value["workspace"], owner=f"{owner}.workspace", keys=frozenset({"mode"}),
+    )
+    if workspace["mode"] != "isolated":
+        raise SystemExit(f"{owner}.workspace.mode must be isolated")
+    session = _measurement_exact_object(
+        value["session"],
+        owner=f"{owner}.session",
+        keys=frozenset({"mode", "persistence"}),
+    )
+    if session["mode"] != "isolated" or session["persistence"] != "disabled":
+        raise SystemExit(f"{owner}.session must use isolated mode with disabled persistence")
+
+    hooks = _measurement_exact_object(
+        value["hook_events"],
+        owner=f"{owner}.hook_events",
+        keys=frozenset({"enabled", "expected_identities"}),
+    )
+    if hooks["enabled"] is not True:
+        raise SystemExit(f"{owner}.hook_events.enabled must be true")
+    expected_hook_identities = _measurement_string_tuple(
+        hooks["expected_identities"],
+        owner=f"{owner}.hook_events.expected_identities",
+        maximum=32,
+    )
+    if any(len(item) > MEASUREMENT_HOOK_TEXT_MAX_CHARS for item in expected_hook_identities):
+        raise SystemExit(f"{owner}.hook_events.expected_identities contains an oversized identity")
+    if variant_name == "baseline" and expected_hook_identities:
+        raise SystemExit(f"{owner} baseline must not expect managed hook identities")
+
+    cli_capabilities = _measurement_string_tuple(
+        value["cli_capabilities"], owner=f"{owner}.cli_capabilities", maximum=32,
+    )
+    for capability in cli_capabilities:
+        # ``stream-json`` is a format capability rather than a long option;
+        # the remaining S001 capabilities are deliberately restricted to
+        # bounded long options so fixtures cannot smuggle arbitrary argv.
+        if (capability != "stream-json" and not capability.startswith("--")) or len(capability) > 128:
+            raise SystemExit(f"{owner}.cli_capabilities entries must be bounded long options or stream-json")
+    mandatory_capabilities = {
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "stream-json",
+    }
+    if not mandatory_capabilities.issubset(cli_capabilities):
+        missing = sorted(mandatory_capabilities - set(cli_capabilities))
+        raise SystemExit(f"{owner}.cli_capabilities is missing required option(s): {', '.join(missing)}")
+
+    identity = _measurement_parse_identity(
+        value["identity"], owner=f"{owner}.identity", variant_name=variant_name,
+    )
+    artifact_root = _measurement_safe_path(
+        value["artifact_root"],
+        owner=f"{owner}.artifact_root",
+        base_dir=base_dir,
+        must_exist=False,
+    )
+    return MeasurementVariant(
+        settings_file=settings_file,
+        setting_sources=setting_sources,
+        environment_allow=environment_allow,
+        environment_overrides=tuple(overrides),
+        workspace_mode=str(workspace["mode"]),
+        session_mode=str(session["mode"]),
+        session_persistence=str(session["persistence"]),
+        hook_events_enabled=True,
+        expected_hook_identities=expected_hook_identities,
+        cli_capabilities=cli_capabilities,
+        identity=identity,
+        artifact_root=artifact_root,
+        settings_payload=settings_payload,
+    )
+
+
+def _measurement_prune_registered_hooks(value: Any, identities: frozenset[str]) -> Any:
+    if isinstance(value, list):
+        kept = []
+        for item in value:
+            encoded = json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+            if any(identity in encoded for identity in identities):
+                continue
+            kept.append(_measurement_prune_registered_hooks(item, identities))
+        return kept
+    if isinstance(value, dict):
+        return {
+            key: _measurement_prune_registered_hooks(item, identities)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _validate_measurement_variant_set(variants: list[Variant]) -> None:
+    measured = [variant for variant in variants if variant.measurement is not None]
+    if not measured:
+        return
+    if any(variant.name not in {"baseline", "treatment"} for variant in measured):
+        raise SystemExit("measurement variants must be named baseline or treatment in S001")
+    identities = frozenset(
+        identity
+        for variant in measured
+        for identity in variant.measurement.expected_hook_identities  # type: ignore[union-attr]
+    )
+    normalized_settings: list[tuple[str, str]] = []
+    parity_projection: list[tuple[str, tuple[Any, ...]]] = []
+    for variant in measured:
+        spec = variant.measurement
+        assert spec is not None
+        hook_block = spec.settings_payload.get("hooks", {})
+        hook_text = json.dumps(hook_block, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        if variant.name == "baseline" and (
+            "context-guard" in hook_text.lower()
+            or any(identity in hook_text for identity in identities)
+        ):
+            raise SystemExit("measurement baseline contains managed ContextGuard hook residue")
+        settings_without_registered = dict(spec.settings_payload)
+        if "hooks" in settings_without_registered:
+            settings_without_registered["hooks"] = _measurement_prune_registered_hooks(
+                settings_without_registered["hooks"], identities,
+            )
+        normalized_settings.append((
+            variant.name,
+            json.dumps(settings_without_registered, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+        ))
+        parity_projection.append((
+            variant.name,
+            (
+                spec.setting_sources,
+                spec.environment_allow,
+                spec.environment_overrides,
+                spec.workspace_mode,
+                spec.session_mode,
+                spec.session_persistence,
+                spec.hook_events_enabled,
+                spec.cli_capabilities,
+                spec.identity.candidate_hash,
+                spec.identity.repetition,
+                spec.identity.attempt,
+                spec.identity.namespace,
+                spec.artifact_root,
+            ),
+        ))
+    if len({value for _, value in normalized_settings}) != 1:
+        raise SystemExit("measurement baseline/treatment settings differ beyond registered hooks")
+    if len({value for _, value in parity_projection}) != 1:
+        raise SystemExit("measurement baseline/treatment configuration differs beyond arm/hooks")
+
+
 def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[str]:
     for index, arg in enumerate(extra_args):
         flag = arg.split("=", 1)[0]
@@ -1308,24 +1759,49 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
 
 
 def parse_variants(path: Path) -> list[Variant]:
-    raw = json.loads(_read_text_no_follow(path))
+    raw = _load_measurement_json(path, owner="variants file")
     if not isinstance(raw, list):
         raise SystemExit(f"variants file must be a JSON list: {path}")
     variants: list[Variant] = []
     for item in raw:
         if not isinstance(item, dict):
             raise SystemExit(f"variant entry must be a JSON object: {item}")
+        if "measurement" in item:
+            unknown = sorted(set(item) - {"name", "extra_args", "measurement"})
+            if unknown:
+                raise SystemExit(f"measurement variant has unknown key(s): {', '.join(unknown)}")
+        name = str(item["name"])
+        extra_args = validate_variant_extra_args(
+            parse_string_list(
+                item.get("extra_args", []),
+                field="extra_args",
+                owner=f"variant {name}",
+            ),
+            owner=f"variant {name}",
+        )
+        if "measurement" in item:
+            for index, arg in enumerate(extra_args):
+                flag = arg.split("=", 1)[0]
+                if flag in MEASUREMENT_PROTECTED_VARIANT_FLAGS:
+                    if flag in {"--safe-mode", "--bare"}:
+                        raise SystemExit(f"unsafe Claude flag: {flag}")
+                    raise SystemExit(
+                        f"runner-controlled Claude flag: {flag}"
+                    )
         variants.append(Variant(
-            name=str(item["name"]),
-            extra_args=validate_variant_extra_args(
-                parse_string_list(
-                    item.get("extra_args", []),
-                    field="extra_args",
-                    owner=f"variant {item.get('name')}",
-                ),
-                owner=f"variant {item.get('name')}",
+            name=name,
+            extra_args=extra_args,
+            measurement=(
+                _measurement_parse_variant(
+                    item["measurement"],
+                    owner=f"variant {name}.measurement",
+                    variant_name=name,
+                    base_dir=path.parent,
+                )
+                if "measurement" in item else None
             ),
         ))
+    _validate_measurement_variant_set(variants)
     return variants
 
 
@@ -1614,13 +2090,92 @@ def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
     return None
 
 
-def claude_version(claude_bin: str) -> str:
+def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunContext | None = None) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for name in spec.environment_allow:
+        # Names were validated before this function; do not inspect values for
+        # rejected auth/secret-shaped names.
+        if name in os.environ:
+            env[name] = os.environ[name]
+    env.update(dict(spec.environment_overrides))
+    if "PATH" not in env:
+        env["PATH"] = os.defpath
+    if context is not None:
+        env.update({
+            "HOME": str(context.home),
+            "XDG_CONFIG_HOME": str(context.xdg_config),
+            "XDG_CACHE_HOME": str(context.xdg_cache),
+            "XDG_DATA_HOME": str(context.xdg_data),
+            "XDG_STATE_HOME": str(context.xdg_state),
+            "TMPDIR": str(context.tmp),
+            "CLAUDE_CONFIG_DIR": str(context.session),
+        })
+    return env
+
+
+@contextmanager
+def _measurement_preflight_env(spec: MeasurementVariant) -> Any:
+    with tempfile.TemporaryDirectory(prefix="contextguard-bench-preflight-") as tmp:
+        root = Path(tmp)
+        names = {
+            "home": root / "home",
+            "xdg-config": root / "xdg-config",
+            "xdg-cache": root / "xdg-cache",
+            "xdg-data": root / "xdg-data",
+            "xdg-state": root / "xdg-state",
+            "tmp": root / "tmp",
+            "workspace": root / "workspace",
+            "session": root / "session",
+        }
+        for path in names.values():
+            path.mkdir(mode=0o700)
+        context = MeasurementRunContext(
+            run_id="preflight",
+            run_root=root,
+            home=names["home"],
+            xdg_config=names["xdg-config"],
+            xdg_cache=names["xdg-cache"],
+            xdg_data=names["xdg-data"],
+            xdg_state=names["xdg-state"],
+            tmp=names["tmp"],
+            workspace=names["workspace"],
+            session=names["session"],
+            raw_path=root / "raw.ndjson",
+            receipt_path=root / "receipt.json",
+            index_path=root / "artifact-index.ndjson",
+        )
+        yield _measurement_child_env(spec, context), context.workspace
+
+
+def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVariant) -> None:
+    executable = executable_argv0(claude_bin)
+    with _measurement_preflight_env(spec) as (env, cwd):
+        try:
+            proc = run_bounded_command(
+                [executable, "--help"],
+                cwd=cwd,
+                timeout_seconds=10,
+                max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            raise SystemExit(f"measurement CLI capability probe failed: {exc}") from None
+    if proc.returncode != 0 or proc.timed_out or proc.output_truncated:
+        raise SystemExit("measurement CLI capability probe failed")
+    help_text = f"{proc.stdout}\n{proc.stderr}"
+    missing = [capability for capability in spec.cli_capabilities if capability not in help_text]
+    if missing:
+        raise SystemExit(f"required CLI capability unavailable: {', '.join(sorted(missing))}")
+
+
+def claude_version(claude_bin: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> str:
     try:
         proc = run_bounded_command(
             [claude_bin, "--version"],
-            cwd=Path.cwd(),
+            cwd=cwd or Path.cwd(),
             timeout_seconds=5,
             max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+            env=env,
         )
         return proc.stdout.strip().splitlines()[0] if proc.stdout else "unknown"
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -1634,9 +2189,10 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     이렇게 해야 baseline variant 의 실제 의미(=defaults 그대로)가 implicit
     runner default 로 왜곡되지 않는다.
     """
+    output_format = "stream-json" if variant.measurement is not None else task.output_format
     argv = [claude_bin, "-p", "--model", task.model,
-            "--max-turns", str(task.max_turns), "--output-format", task.output_format]
-    if task.output_format == "stream-json":
+            "--max-turns", str(task.max_turns), "--output-format", output_format]
+    if output_format == "stream-json":
         argv.append("--verbose")
     if task.effort:
         argv.extend(["--effort", task.effort])
@@ -1644,6 +2200,14 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
         argv.extend(["--max-budget-usd", str(task.max_budget_usd)])
     if task.allowed_tools:
         argv.extend(["--allowedTools", ",".join(task.allowed_tools)])
+    if variant.measurement is not None:
+        spec = variant.measurement
+        argv.extend([
+            "--settings", str(spec.settings_file),
+            "--setting-sources", ",".join(spec.setting_sources),
+            "--include-hook-events",
+            "--no-session-persistence",
+        ])
     argv.extend(variant.extra_args)
     argv.append("--")
     prompt = require_argv_safe_prompt(
@@ -1688,10 +2252,12 @@ def run_bounded_command(
     cwd: Path,
     timeout_seconds: int,
     max_output_bytes: int,
+    env: dict[str, str] | None = None,
 ) -> BoundedProcessResult:
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
@@ -1843,6 +2409,367 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
     return proc.returncode == 0, f"exit={proc.returncode}"
 
 
+def _measurement_create_exclusive(path: Path) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        fd = _open_regular_no_symlink(path, flags, 0o600)
+    except FileExistsError:
+        raise SystemExit(f"measurement artifact already exists: {path.name}") from None
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def _measurement_write_fd(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write while persisting measurement artifact")
+        view = view[written:]
+    os.fsync(fd)
+
+
+def _measurement_write_exclusive(path: Path, payload: bytes) -> None:
+    fd = _measurement_create_exclusive(path)
+    try:
+        _measurement_write_fd(fd, payload)
+    finally:
+        os.close(fd)
+
+
+def _measurement_create_run_context(spec: MeasurementVariant, task_id: str) -> MeasurementRunContext:
+    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    try:
+        os.fchmod(root_fd, 0o700)
+        if fcntl is not None:
+            fcntl.flock(root_fd, fcntl.LOCK_EX)
+        run_id = spec.identity.run_id(task_id)
+        try:
+            os.mkdir("runs", 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        runs_fd = _open_directory_at(root_fd, "runs", spec.artifact_root / "runs")
+        try:
+            os.fchmod(runs_fd, 0o700)
+            try:
+                os.mkdir(run_id, 0o700, dir_fd=runs_fd)
+            except FileExistsError:
+                raise SystemExit(f"duplicate measurement run id: {run_id}") from None
+            run_fd = _open_directory_at(runs_fd, run_id, spec.artifact_root / "runs" / run_id)
+            try:
+                os.fchmod(run_fd, 0o700)
+                for name in (
+                    "home",
+                    "xdg-config",
+                    "xdg-cache",
+                    "xdg-data",
+                    "xdg-state",
+                    "tmp",
+                    "workspace",
+                    "session",
+                ):
+                    os.mkdir(name, 0o700, dir_fd=run_fd)
+            finally:
+                os.close(run_fd)
+        finally:
+            os.close(runs_fd)
+    finally:
+        os.close(root_fd)
+    run_root = spec.artifact_root / "runs" / run_id
+    return MeasurementRunContext(
+        run_id=run_id,
+        run_root=run_root,
+        home=run_root / "home",
+        xdg_config=run_root / "xdg-config",
+        xdg_cache=run_root / "xdg-cache",
+        xdg_data=run_root / "xdg-data",
+        xdg_state=run_root / "xdg-state",
+        tmp=run_root / "tmp",
+        workspace=run_root / "workspace",
+        session=run_root / "session",
+        raw_path=run_root / "raw.ndjson",
+        receipt_path=run_root / "receipt.json",
+        index_path=spec.artifact_root / "artifact-index.ndjson",
+    )
+
+
+def _measurement_bounded_scalar(value: Any) -> str | None:
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        text = str(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        return None
+    if len(text) > MEASUREMENT_HOOK_TEXT_MAX_CHARS:
+        return text[:MEASUREMENT_HOOK_TEXT_MAX_CHARS]
+    return text
+
+
+def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if len(raw) > MEASUREMENT_RAW_MAX_BYTES:
+        return normalized
+    lines = raw.splitlines()
+    if len(lines) > MEASUREMENT_RAW_MAX_LINES:
+        return normalized
+    for line in lines:
+        if len(normalized) >= MEASUREMENT_HOOK_MAX_EVENTS:
+            break
+        try:
+            event = json.loads(
+                line,
+                object_pairs_hook=_stream_object_no_duplicates,
+                parse_constant=_stream_reject_nonfinite,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        hook = event.get("hook") if isinstance(event.get("hook"), dict) else {}
+        labels = [
+            event.get("type"), event.get("subtype"), event.get("event"),
+            event.get("event_name"), event.get("hook_event"), event.get("hookEventName"),
+        ]
+        contains_hook_label = any("hook" in str(label).lower() for label in labels if label is not None)
+        contains_hook_field = bool(hook) or any(
+            key in event
+            for key in ("hook_name", "hookName", "hook_id", "hookId", "hook_event_name")
+        )
+        if not (contains_hook_label or contains_hook_field):
+            continue
+        field_candidates: tuple[tuple[str, tuple[Any, ...]], ...] = (
+            ("event_name", (
+                event.get("hook_event_name"), event.get("hookEventName"), event.get("event_name"),
+                event.get("event"), event.get("subtype"), event.get("type"), hook.get("event_name"),
+            )),
+            ("hook_identity", (
+                event.get("hook_name"), event.get("hookName"), event.get("hook_id"),
+                event.get("hookId"), hook.get("name"), hook.get("id"),
+            )),
+            ("tool", (
+                event.get("tool_name"), event.get("toolName"), hook.get("tool"),
+            )),
+            ("decision", (
+                event.get("decision"), event.get("hook_decision"), hook.get("decision"),
+            )),
+            ("timestamp", (
+                event.get("timestamp"), event.get("created_at"), hook.get("timestamp"),
+            )),
+        )
+        projection: dict[str, str] = {}
+        for field_name, candidates in field_candidates:
+            for candidate in candidates:
+                bounded = _measurement_bounded_scalar(candidate)
+                if bounded is not None:
+                    projection[field_name] = bounded
+                    break
+        if projection:
+            normalized.append(projection)
+    return normalized
+
+
+def _measurement_append_index(path: Path, record: dict[str, Any]) -> None:
+    payload = json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    parent_fd = _ensure_directory_no_symlink(path.parent)
+    try:
+        if fcntl is not None:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        try:
+            fd = _measurement_create_exclusive(path)
+        except SystemExit:
+            flags = os.O_WRONLY | os.O_APPEND
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            fd = _open_regular_no_symlink(path, flags)
+            os.fchmod(fd, 0o600)
+        try:
+            _measurement_write_fd(fd, payload)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _measurement_receipt(
+    context: MeasurementRunContext,
+    task: TaskFixture,
+    spec: MeasurementVariant,
+    raw: bytes,
+    hooks: list[dict[str, str]],
+    *,
+    terminal_status: str,
+) -> dict[str, Any]:
+    raw_sha256 = hashlib.sha256(raw).hexdigest()
+    raw_lines = len(raw.splitlines())
+    return {
+        "schema_version": MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION,
+        "run_identity": {
+            "candidate_hash": spec.identity.candidate_hash,
+            "task": task.id,
+            "repetition": spec.identity.repetition,
+            "arm": spec.identity.arm,
+            "attempt": spec.identity.attempt,
+            "namespace": spec.identity.namespace,
+            "run_id": context.run_id,
+        },
+        "raw_artifact": {
+            "path": context.raw_path.name,
+            "sha256": raw_sha256,
+            "bytes": len(raw),
+            "lines": raw_lines,
+            "events": raw_lines,
+        },
+        "terminal_status": terminal_status,
+        "hooks": hooks,
+    }
+
+
+def _run_measurement_fixture(
+    task: TaskFixture,
+    variant: Variant,
+    claude_bin: str,
+    project_root: Path,
+) -> RunResult:
+    spec = variant.measurement
+    assert spec is not None
+    started_at = time.monotonic()
+    validate_measurement_cli_capabilities(claude_bin, spec)
+    context = _measurement_create_run_context(spec, task.id)
+    raw_fd = _measurement_create_exclusive(context.raw_path)
+    argv = build_claude_argv(executable_argv0(claude_bin), task, variant)
+    env = _measurement_child_env(spec, context)
+    try:
+        try:
+            proc = run_bounded_command(
+                argv,
+                cwd=context.workspace,
+                timeout_seconds=1800,
+                max_output_bytes=MEASUREMENT_RAW_MAX_BYTES,
+                env=env,
+            )
+            raw = proc.stdout_bytes
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            proc = BoundedProcessResult(126, "", "", False, False, b"", b"")
+            raw = b""
+        _measurement_write_fd(raw_fd, raw)
+    finally:
+        os.close(raw_fd)
+
+    parsed = parse_claude_stream_output(raw)
+    hooks = normalize_measurement_hook_events(raw)
+    observed_identities = {item.get("hook_identity") for item in hooks}
+    hook_error: str | None = None
+    managed_activity = {
+        identity for identity in observed_identities
+        if isinstance(identity, str) and (
+            "context-guard" in identity.lower()
+            or identity in spec.expected_hook_identities
+        )
+    }
+    if variant.name == "baseline" and managed_activity:
+        hook_error = "measurement_baseline_hook_contamination"
+    elif variant.name == "treatment":
+        missing = set(spec.expected_hook_identities) - observed_identities
+        if missing:
+            hook_error = "measurement_expected_hook_missing"
+
+    if proc.output_truncated:
+        terminal_status = "byte_limit"
+    elif parsed.status == "terminal_error":
+        terminal_status = "terminal_error"
+    elif proc.returncode != 0 or proc.timed_out:
+        terminal_status = "process_error"
+    elif parsed.status == "missing_terminal":
+        terminal_status = "missing_terminal"
+    elif parsed.error_code == "stream_line_count_limit":
+        terminal_status = "line_limit"
+    elif parsed.error_code in {"stream_total_size_limit", "stream_line_size_limit"}:
+        terminal_status = "byte_limit"
+    elif parsed.status != "success":
+        terminal_status = "invalid_stream"
+    elif hook_error == "measurement_baseline_hook_contamination":
+        terminal_status = "baseline_hook_activity"
+    elif hook_error is not None:
+        terminal_status = "hook_identity_mismatch"
+    else:
+        terminal_status = "success"
+
+    receipt = _measurement_receipt(
+        context,
+        task,
+        spec,
+        raw,
+        hooks,
+        terminal_status=terminal_status,
+    )
+    receipt_bytes = json.dumps(
+        receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    _measurement_write_exclusive(context.receipt_path, receipt_bytes)
+    _measurement_append_index(context.index_path, {
+        "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+        "run_id": context.run_id,
+        "receipt_path": str(context.receipt_path),
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "terminal_status": receipt["terminal_status"],
+    })
+
+    failure_code = None if terminal_status == "success" else terminal_status
+    if failure_code is not None or parsed.payload is None:
+        return RunResult(
+            task_id=task.id,
+            variant=variant.name,
+            model=task.model,
+            effort=task.effort or "",
+            tokens={key: 0 for key, _ in USAGE_KEY_GROUPS},
+            cost_usd=0.0,
+            success=False,
+            notes=failure_code or "measurement_stream_missing_payload",
+            wall_time_seconds=elapsed_seconds_since(started_at),
+        )
+
+    tokens, cost, cost_available, primary_tokens_measured = collect_usage(parsed.payload)
+    provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(parsed.payload)
+    shift_metrics = collect_shift_metrics(parsed.payload)
+    self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
+    success, success_note = run_success_command(task, project_root)
+    return RunResult(
+        task_id=task.id,
+        variant=variant.name,
+        model=task.model,
+        effort=task.effort or "",
+        tokens=tokens,
+        cost_usd=cost,
+        success=success,
+        notes=success_note,
+        cost_measured=False,
+        primary_cost_provenance=(
+            PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE
+            if cost_available else PRIMARY_COST_PROVENANCE_UNAVAILABLE
+        ),
+        primary_tokens_measured=primary_tokens_measured,
+        wall_time_seconds=elapsed_seconds_since(started_at),
+        turns=int(shift_metrics["turns"]),
+        hook_triggers=len(hooks),
+        bytes_before=int(shift_metrics["bytes_before"]),
+        bytes_after=int(shift_metrics["bytes_after"]),
+        artifacts_used=int(shift_metrics["artifacts_used"]),
+        external_tokens=int(shift_metrics["external_tokens"]),
+        external_tokens_measured=bool(shift_metrics["external_tokens_measured"]),
+        external_cost_usd=float(shift_metrics["external_cost_usd"]),
+        external_cost_measured=bool(shift_metrics["external_cost_measured"]),
+        provider_cached_tokens=provider_cached_tokens,
+        provider_cached_tokens_measured=provider_cached_tokens_measured,
+        self_hosted_metrics=self_hosted_metrics,
+    )
+
+
 def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
                 project_root: Path, dry_run: bool) -> RunResult:
     argv = build_claude_argv(claude_bin, task, variant)
@@ -1854,6 +2781,8 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             success=True, notes=f"dry-run: {shlex.join(argv)}",
             wall_time_seconds=0.0,
         )
+    if variant.measurement is not None:
+        return _run_measurement_fixture(task, variant, claude_bin, project_root)
     if is_placeholder_success_command(task.success_command):
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
@@ -5302,6 +6231,37 @@ def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
     return targets
 
 
+def preflight_measurement_targets(
+    targets: list[tuple[TaskFixture, Variant]],
+    *,
+    claude_bin: str,
+    check_cli: bool,
+) -> None:
+    identities: set[tuple[str, str, int, str, int, str]] = set()
+    run_locations: set[tuple[Path, str]] = set()
+    checked_specs: set[tuple[str, ...]] = set()
+    for task, variant in targets:
+        spec = variant.measurement
+        if spec is None:
+            continue
+        if task.output_format != "stream-json":
+            raise SystemExit("measurement requires task output_format=stream-json")
+        identity = spec.identity.components(task.id)
+        if identity in identities:
+            raise SystemExit("duplicate immutable measurement identity in selected targets")
+        identities.add(identity)
+        run_id = spec.identity.run_id(task.id)
+        location = (spec.artifact_root, run_id)
+        if location in run_locations:
+            raise SystemExit("duplicate measurement run id in selected targets")
+        run_locations.add(location)
+        if (spec.artifact_root / run_id).exists():
+            raise SystemExit(f"duplicate measurement run id: {run_id}")
+        if check_cli and spec.cli_capabilities not in checked_specs:
+            validate_measurement_cli_capabilities(claude_bin, spec)
+            checked_specs.add(spec.cli_capabilities)
+
+
 def normalized_output_path(path: Path) -> Path:
     expanded = path.expanduser()
     if not expanded.is_absolute():
@@ -5388,6 +6348,11 @@ def main() -> int:
     if not targets:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
+    preflight_measurement_targets(
+        targets,
+        claude_bin=args.claude_bin,
+        check_cli=not args.dry_run and args.evidence_jsonl is None,
+    )
 
     # profile gate 는 어떤 lock/read helper 보다 먼저 끝난다. existing_keys_snapshot 은
     # CSV lock sidecar 를 만들기 때문에, 그 뒤에서 거부하면 우리가 거절한 실행이 이미
@@ -5547,7 +6512,22 @@ def main() -> int:
         load_variant_prompt_files_for_targets(runnable_targets, task_file_dir=args.tasks.parent)
 
     project_root = args.project_root.resolve()
-    claude_ver = "dry-run" if args.dry_run else (claude_version(args.claude_bin) if runnable_targets else "skipped")
+    if args.dry_run:
+        claude_ver = "dry-run"
+    elif not runnable_targets:
+        claude_ver = "skipped"
+    else:
+        measurement_spec = next(
+            (variant.measurement for _, variant in runnable_targets if variant.measurement is not None),
+            None,
+        )
+        if measurement_spec is None:
+            claude_ver = claude_version(args.claude_bin)
+        else:
+            with _measurement_preflight_env(measurement_spec) as (version_env, version_cwd):
+                claude_ver = claude_version(
+                    executable_argv0(args.claude_bin), env=version_env, cwd=version_cwd,
+                )
 
     completed = 0
     for task, variant in targets:
