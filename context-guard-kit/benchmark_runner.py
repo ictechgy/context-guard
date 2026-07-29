@@ -6334,6 +6334,11 @@ def main() -> int:
     if not targets:
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
+    preflight_measurement_targets(
+        targets,
+        claude_bin=args.claude_bin,
+        check_cli=not args.dry_run and args.evidence_jsonl is None,
+    )
 
     # profile gate 는 어떤 lock/read helper 보다 먼저 끝난다. existing_keys_snapshot 은
     # CSV lock sidecar 를 만들기 때문에, 그 뒤에서 거부하면 우리가 거절한 실행이 이미
@@ -6493,7 +6498,22 @@ def main() -> int:
         load_variant_prompt_files_for_targets(runnable_targets, task_file_dir=args.tasks.parent)
 
     project_root = args.project_root.resolve()
-    claude_ver = "dry-run" if args.dry_run else (claude_version(args.claude_bin) if runnable_targets else "skipped")
+    if args.dry_run:
+        claude_ver = "dry-run"
+    elif not runnable_targets:
+        claude_ver = "skipped"
+    else:
+        measurement_spec = next(
+            (variant.measurement for _, variant in runnable_targets if variant.measurement is not None),
+            None,
+        )
+        if measurement_spec is None:
+            claude_ver = claude_version(args.claude_bin)
+        else:
+            with _measurement_preflight_env(measurement_spec) as (version_env, version_cwd):
+                claude_ver = claude_version(
+                    executable_argv0(args.claude_bin), env=version_env, cwd=version_cwd,
+                )
 
     completed = 0
     for task, variant in targets:
