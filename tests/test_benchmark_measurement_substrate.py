@@ -277,14 +277,15 @@ class MeasurementHarness:
 
     def run(
         self,
-        variants: list[dict],
+        variants: list[dict] | None,
         *,
         extra_args: list[str] | None = None,
         env_updates: dict[str, str] | None = None,
         csv_name: str = "results.csv",
         script: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        self.write_variants(variants)
+        if variants is not None:
+            self.write_variants(variants)
         env = os.environ.copy()
         env.update(
             {
@@ -374,11 +375,14 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
         *,
         message: str,
         env_updates: dict[str, str] | None = None,
+        allow_capability_probe: bool = False,
     ) -> None:
         proc = harness.run(variants, env_updates=env_updates)
         self.assertNotEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
         self.assertIn(message, proc.stderr)
         self.assertEqual(harness.provider_calls(), [])
+        if not allow_capability_probe:
+            self.assertEqual(harness.calls(), [])
         self.assertFalse(harness.csv_path.exists())
         self.assertFalse((harness.root / "artifacts").exists())
 
@@ -393,6 +397,8 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
             self.assertIn("--setting-sources user,project", proc.stdout)
             self.assertIn("--include-hook-events", proc.stdout)
             self.assertIn("--no-session-persistence", proc.stdout)
+            self.assertIn("--output-format stream-json", proc.stdout)
+            self.assertIn("--verbose", proc.stdout)
             self.assertFalse(harness.csv_path.exists())
             self.assertFalse((root / "artifacts").exists())
             self.assertEqual(harness.provider_calls(), [])
@@ -490,6 +496,50 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                     env_updates={
                         "CG_FAKE_CAPABILITIES": "--settings --setting-sources --no-session-persistence stream-json"
                     },
+                    allow_capability_probe=True,
+                )
+
+    def test_duplicate_json_keys_are_rejected_without_cli_or_output(self):
+        for script, root in self._for_each_script():
+            with self.subTest(script=script, fixture="variant"):
+                case_root = root / "variant-duplicate"
+                case_root.mkdir()
+                harness = MeasurementHarness(case_root, script)
+                measurement = _measurement(
+                    settings_file="treatment-settings.json",
+                    arm="treatment",
+                    expected_hooks=["context-guard-guard-read", "context-guard-failed-nudge"],
+                    fake_mode="valid-hooks",
+                )
+                encoded = json.dumps(measurement, separators=(",", ":"))
+                harness.variants_path.write_text(
+                    '[{"name":"treatment","extra_args":[],"measurement":'
+                    + encoded
+                    + ',"measurement":'
+                    + encoded
+                    + "}]",
+                    encoding="utf-8",
+                )
+                proc = harness.run(None)
+                self.assertNotEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+                self.assertIn("duplicate JSON key", proc.stderr)
+                self.assertEqual(harness.calls(), [])
+                self.assertFalse(harness.csv_path.exists())
+                self.assertFalse((case_root / "artifacts").exists())
+
+            with self.subTest(script=script, fixture="settings"):
+                case_root = root / "settings-duplicate"
+                case_root.mkdir()
+                harness = MeasurementHarness(case_root, script)
+                (case_root / "treatment-settings.json").write_text(
+                    '{"permissions":{"allow":["Read"]},"permissions":{"allow":["Read"]}}',
+                    encoding="utf-8",
+                )
+                variant = self._valid_pair()[1]
+                self.assert_prelaunch_rejection(
+                    harness,
+                    [variant],
+                    message="duplicate JSON key",
                 )
 
     def test_isolated_roots_identity_and_credential_boundary(self):
