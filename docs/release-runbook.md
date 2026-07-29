@@ -137,6 +137,43 @@ instead: restore the proof chain rather than treating it as unavailable.
 
 The proof checks the immutable B1 nudge/FSM and B2 usage-reducer feature commits against their exact owned canonical, packaged, and dedicated-test paths. In disposable clones it applies and reverts each feature independently from the same pre-B base, verifies the reverted tree equals that base, proves each feature can be reverted alone from the current head, and finally proves the integrated rollback order `B1 -> B2 -> shared integration`. It reports unavailable when the checkout lacks the required history, and fails when a component path set changes, either feature needs hunk surgery, or shared integration cannot be reverted last. CI therefore uses full Git history. Treat the emitted commit and tree hashes as the release evidence; do not substitute a successful source-only test for the mechanical history proof.
 
+### Gate B generations
+
+The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_rollback.py`, not a single hardcoded set of four commits. Every generation (retired or active) is checked forever for structure (parent chain, disjoint owned path sets), apply/revert tree equality, and its own residual contract. Only the **active generation** (the last element of `GENERATIONS`) is checked against the live `HEAD`: the freeze that rejects any post-reapplication edit to its component paths, the ordered live rollback (`B1 -> B2 -> shared integration`), and presence/absence of that generation's Gate-B markers. A retired generation's four commits stay immutable, so once its checks pass they remain true forever — the durable guarantee a retired generation keeps making is that its four proof commits stay uniquely reachable.
+
+**Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
+
+Re-blessing procedure:
+
+1. Confirm the freeze is actually the blocker (an otherwise-unrelated PR touches a frozen component path) and that no cheaper option — narrowing the frozen path set for a future generation, or splitting a large frozen test file — resolves it instead.
+2. Author the new generation's four reapply commits (`bless`, `b1`, `b2`, `shared-integration`) with subjects that are globally unique across the whole `GENERATIONS` history (uniqueness is enforced mechanically: two commits sharing a subject make the proof fail with "found N" instead of silently picking one).
+3. Append a new `Generation` record to `GENERATIONS` in the same commit that lands the fourth reapply commit's ancestor chain. Do not edit any prior generation's record — the list is append-only, including its path sets and markers.
+
+   The record itself is validated mechanically before any git work happens (`assert_generation_records_wellformed`, a git-free pre-pass so a malformed record fails loudly even in a truncated checkout). A new generation is rejected outright when:
+   - its `name` duplicates any existing generation's `name` — `all_commits` is keyed by name, so a collision would silently make one generation overwrite the other and both cross-generation checks (`residual_edits` and the existence-set invariant) would compare a `bless` commit against itself and pass vacuously;
+   - its `gate_b_markers` is empty — that is the reverse anti-laundering check, and an empty tuple would make both the presence check at `HEAD` and the absence check on the `bless` tree pass without evaluating anything. The re-blesser must not be able to switch off the check that constrains the re-blessing;
+   - its `residual_markers` is empty, or maps a path to an empty needle tuple, or contains an empty/whitespace-only needle — all three keep the outer collection non-empty while making the content check evaluate nothing (`"" in content` is true for any content);
+   - any `gate_b_markers` entry has an empty literal, or names an `owner_path` that is not one of that generation's own component paths, or any `residual_markers` key is not one of them — the absence check skips a marker whose owner path is missing from the `bless` tree, and that skip is only sound when the path set check already constrains the path;
+   - it **drops a Gate-B marker that the previous generation declared for a path this generation still owns** (forward carry). Without this, "non-empty" is satisfied by a nonce marker: a re-blesser could declare one throwaway literal and leave the real Gate-B literals sitting in its `bless`. Carry is **not** retroactive — it checks the *new* `bless` against *old* markers, never the reverse, so the per-generation non-retroactive property is preserved. Carry is scoped to paths the new generation still owns, because a path removed from the component set cannot satisfy the owner-must-be-a-component-path rule; removing the path instead is the separately-documented narrowing vector, and `review_pathspec` still surfaces it.
+
+   Beyond the record itself, the absence check also rejects an active generation where **no** marker was actually evaluated — i.e. every marker's owner path is absent from the `bless` tree. `commit_paths` uses `diff-tree --name-only` and is status-blind, so a path the `bless` deletes is still a legitimate component path; without this rule a generation could skip every marker and report success.
+
+   Note what is deliberately **not** required: full marker monotonicity. A generation need not carry markers for paths it no longer owns.
+
+   **Consequence to plan for: a Gate-B marker literal is an immutable anchor for as long as its owner path stays in the component set.** Forward carry forces the literal to keep being declared, and the presence check requires it to exist at live `HEAD`. So renaming a marked identifier (say `failures-v2.json` bumping to `v3`) hard-fails the publish gate, and no compliant re-blessing clears it: dropping the marker is rejected by carry, keeping it is rejected by the presence check. This fails **closed**, so it is not a laundering hole — but choose marker literals for structural stability (prefer stable symbol names over versioned data filenames). If a marked surface genuinely has to move, the only compliant resolutions are (a) keep the old literal present at `HEAD`, or (b) a reviewed decision to drop the owner path from the component set — which must be called out explicitly in the re-bless PR, because it also drops that path from the freeze. There is deliberately no marker-retirement escape field: such a field would let a re-blesser point at exactly the marker that would have caught them.
+4. Declare every component path whose blessed content legitimately changes relative to the previous generation in the new generation's `residual_edits`. An undeclared change to a path both generations own is rejected.
+5. **Pull the review pathspec from the proof itself — do not hand-maintain a path list.** Run `python3 scripts/verify_gate_b_rollback.py --json` and read the `review_pathspec` key: it is the sorted union of every generation's component paths, computed by the script, not typed in by a reviewer. A hardcoded list goes stale the moment a generation adds or drops a path; deriving from only the active generation would let a narrowing generation hide a path from review. Use it to scope the actual review diff:
+   ```bash
+   python3 scripts/verify_gate_b_rollback.py --json > /tmp/gate-b-proof.json
+   jq -r '.review_pathspec[]' /tmp/gate-b-proof.json
+   ```
+   then review `git diff <previous-generation-bless> <new-generation-bless> -- <paths from review_pathspec>` line by line, confirming every changed line is one of the declared `residual_edits`.
+6. Run the full proof (`--json` and plain) and the targeted Gate-B test modules locally before pushing; the publish workflow runs the proof as a blocking step, but a broken generation record should never reach CI first.
+
+### Gate-B incident exception to append-only
+
+`GENERATIONS` is append-only during normal operation. The one exception is a security incident: if a re-blessed generation is later found to have laundered Gate-B surface into the residual (a legitimate-looking `bless` diff that actually leaves Gate-B code reachable), the bad generation record may be removed. That removal is itself a reviewed commit with an incident note explaining what was found and why the generation was pulled, not a silent history rewrite. See the incident steps under Rollback notes below; do not use this exception to escape a normal freeze — that is exactly the softness this proof exists to prevent.
+
 ## Rollback notes
 
 If a release gate fails after a publish candidate has been prepared:
@@ -147,5 +184,6 @@ If a release gate fails after a publish candidate has been prepared:
 4. Revert shared package or release metadata only after its dependent feature units. Preserve unrelated managed bytes and fail closed if a setup rollback detects an external edit after the expected post-image.
 5. Revert or supersede the candidate with a focused fix PR. For an already-pushed tag or marketplace artifact, pin the bad version in the incident note and publish a corrected version rather than mutating history.
 6. Re-run this runbook from the beginning, including CI and quad-review evidence on the new head.
+7. Gate B generations specifically: if the incident is a laundered re-blessing (see "Gate-B incident exception to append-only" above), the fix PR that removes the bad generation record goes through the same CI-green-plus-blocker-free-quad-review bar as any other change — there is no separate approval path. Do not delete or edit an older, unaffected generation record to work around this; only the specific bad record is removed, and the incident note stays attached to the fix PR.
 
 Do not publish by bypassing `prepublish_check.py`, `release_smoke.py`, CI, or blocker-free quad review.
