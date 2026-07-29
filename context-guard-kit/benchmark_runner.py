@@ -2396,6 +2396,366 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
     return proc.returncode == 0, f"exit={proc.returncode}"
 
 
+def _measurement_create_exclusive(path: Path) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        fd = _open_regular_no_symlink(path, flags, 0o600)
+    except FileExistsError:
+        raise SystemExit(f"measurement artifact already exists: {path.name}") from None
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def _measurement_write_fd(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write while persisting measurement artifact")
+        view = view[written:]
+    os.fsync(fd)
+
+
+def _measurement_write_exclusive(path: Path, payload: bytes) -> None:
+    fd = _measurement_create_exclusive(path)
+    try:
+        _measurement_write_fd(fd, payload)
+    finally:
+        os.close(fd)
+
+
+def _measurement_create_run_context(spec: MeasurementVariant, task_id: str) -> MeasurementRunContext:
+    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    try:
+        os.fchmod(root_fd, 0o700)
+        if fcntl is not None:
+            fcntl.flock(root_fd, fcntl.LOCK_EX)
+        run_id = spec.identity.run_id(task_id)
+        try:
+            os.mkdir(run_id, 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            raise SystemExit(f"duplicate measurement run id: {run_id}") from None
+        run_fd = _open_directory_at(root_fd, run_id, spec.artifact_root / run_id)
+        try:
+            os.fchmod(run_fd, 0o700)
+            for name in (
+                "home",
+                "xdg-config",
+                "xdg-cache",
+                "xdg-data",
+                "xdg-state",
+                "tmp",
+                "workspace",
+                "session",
+            ):
+                os.mkdir(name, 0o700, dir_fd=run_fd)
+        finally:
+            os.close(run_fd)
+    finally:
+        os.close(root_fd)
+    run_root = spec.artifact_root / run_id
+    return MeasurementRunContext(
+        run_id=run_id,
+        run_root=run_root,
+        home=run_root / "home",
+        xdg_config=run_root / "xdg-config",
+        xdg_cache=run_root / "xdg-cache",
+        xdg_data=run_root / "xdg-data",
+        xdg_state=run_root / "xdg-state",
+        tmp=run_root / "tmp",
+        workspace=run_root / "workspace",
+        session=run_root / "session",
+        raw_path=run_root / "raw.ndjson",
+        receipt_path=run_root / "receipt.json",
+        index_path=spec.artifact_root / "artifact-index.ndjson",
+    )
+
+
+def _measurement_bounded_scalar(value: Any) -> str | None:
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        text = str(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        return None
+    if len(text) > MEASUREMENT_HOOK_TEXT_MAX_CHARS:
+        return text[:MEASUREMENT_HOOK_TEXT_MAX_CHARS]
+    return text
+
+
+def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    if len(raw) > MEASUREMENT_RAW_MAX_BYTES:
+        return normalized
+    lines = raw.splitlines()
+    if len(lines) > MEASUREMENT_RAW_MAX_LINES:
+        return normalized
+    for line in lines:
+        if len(normalized) >= MEASUREMENT_HOOK_MAX_EVENTS:
+            break
+        try:
+            event = json.loads(
+                line,
+                object_pairs_hook=_stream_object_no_duplicates,
+                parse_constant=_stream_reject_nonfinite,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        hook = event.get("hook") if isinstance(event.get("hook"), dict) else {}
+        labels = [
+            event.get("type"), event.get("subtype"), event.get("event"),
+            event.get("event_name"), event.get("hook_event"), event.get("hookEventName"),
+        ]
+        contains_hook_label = any("hook" in str(label).lower() for label in labels if label is not None)
+        contains_hook_field = bool(hook) or any(
+            key in event
+            for key in ("hook_name", "hookName", "hook_id", "hookId", "hook_event_name")
+        )
+        if not (contains_hook_label or contains_hook_field):
+            continue
+        field_candidates: tuple[tuple[str, tuple[Any, ...]], ...] = (
+            ("event_name", (
+                event.get("hook_event_name"), event.get("hookEventName"), event.get("event_name"),
+                event.get("event"), event.get("subtype"), event.get("type"), hook.get("event_name"),
+            )),
+            ("hook_identity", (
+                event.get("hook_name"), event.get("hookName"), event.get("hook_id"),
+                event.get("hookId"), hook.get("name"), hook.get("id"),
+            )),
+            ("tool", (
+                event.get("tool_name"), event.get("toolName"), hook.get("tool"),
+            )),
+            ("decision", (
+                event.get("decision"), event.get("hook_decision"), hook.get("decision"),
+            )),
+            ("timestamp", (
+                event.get("timestamp"), event.get("created_at"), hook.get("timestamp"),
+            )),
+        )
+        projection: dict[str, str] = {}
+        for field_name, candidates in field_candidates:
+            for candidate in candidates:
+                bounded = _measurement_bounded_scalar(candidate)
+                if bounded is not None:
+                    projection[field_name] = bounded
+                    break
+        if projection:
+            normalized.append(projection)
+    return normalized
+
+
+def _measurement_append_index(path: Path, record: dict[str, Any]) -> None:
+    payload = json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    parent_fd = _ensure_directory_no_symlink(path.parent)
+    try:
+        if fcntl is not None:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        try:
+            fd = _measurement_create_exclusive(path)
+        except SystemExit:
+            flags = os.O_WRONLY | os.O_APPEND
+            if hasattr(os, "O_CLOEXEC"):
+                flags |= os.O_CLOEXEC
+            fd = _open_regular_no_symlink(path, flags)
+            os.fchmod(fd, 0o600)
+        try:
+            _measurement_write_fd(fd, payload)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _measurement_receipt(
+    context: MeasurementRunContext,
+    task: TaskFixture,
+    spec: MeasurementVariant,
+    raw: bytes,
+    parsed: ClaudeStreamParseResult,
+    hooks: list[dict[str, str]],
+    *,
+    process_returncode: int,
+    timed_out: bool,
+    output_truncated: bool,
+) -> dict[str, Any]:
+    raw_sha256 = hashlib.sha256(raw).hexdigest()
+    raw_lines = len(raw.splitlines())
+    return {
+        "schema_version": MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,
+        "run_id": context.run_id,
+        "identity": {
+            "candidate_hash": spec.identity.candidate_hash,
+            "task": task.id,
+            "repetition": spec.identity.repetition,
+            "arm": spec.identity.arm,
+            "attempt": spec.identity.attempt,
+            "namespace": spec.identity.namespace,
+        },
+        "raw_artifact": {
+            "path": str(context.raw_path),
+            "sha256": raw_sha256,
+            "byte_count": len(raw),
+            "line_count": raw_lines,
+        },
+        "raw_sha256": raw_sha256,
+        "raw_byte_count": len(raw),
+        "raw_line_count": raw_lines,
+        "terminal_status": parsed.status,
+        "terminal_result_code": parsed.result_code,
+        "terminal_error_code": parsed.error_code,
+        "process_returncode": process_returncode,
+        "timed_out": timed_out,
+        "output_truncated": output_truncated,
+        "hook_events": hooks,
+        "hook_event_count": len(hooks),
+    }
+
+
+def _run_measurement_fixture(
+    task: TaskFixture,
+    variant: Variant,
+    claude_bin: str,
+    project_root: Path,
+) -> RunResult:
+    spec = variant.measurement
+    assert spec is not None
+    started_at = time.monotonic()
+    validate_measurement_cli_capabilities(claude_bin, spec)
+    context = _measurement_create_run_context(spec, task.id)
+    raw_fd = _measurement_create_exclusive(context.raw_path)
+    argv = build_claude_argv(executable_argv0(claude_bin), task, variant)
+    env = _measurement_child_env(spec, context)
+    try:
+        try:
+            proc = run_bounded_command(
+                argv,
+                cwd=context.workspace,
+                timeout_seconds=1800,
+                max_output_bytes=MEASUREMENT_RAW_MAX_BYTES,
+                env=env,
+            )
+            raw = proc.stdout_bytes
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            proc = BoundedProcessResult(126, "", "", False, False, b"", b"")
+            raw = b""
+        _measurement_write_fd(raw_fd, raw)
+    finally:
+        os.close(raw_fd)
+
+    parsed = parse_claude_stream_output(raw)
+    hooks = normalize_measurement_hook_events(raw)
+    observed_identities = {item.get("hook_identity") for item in hooks}
+    hook_error: str | None = None
+    managed_activity = {
+        identity for identity in observed_identities
+        if isinstance(identity, str) and (
+            "context-guard" in identity.lower()
+            or identity in spec.expected_hook_identities
+        )
+    }
+    if variant.name == "baseline" and managed_activity:
+        hook_error = "measurement_baseline_hook_contamination"
+    elif variant.name == "treatment":
+        missing = set(spec.expected_hook_identities) - observed_identities
+        if missing:
+            hook_error = "measurement_expected_hook_missing"
+
+    receipt = _measurement_receipt(
+        context,
+        task,
+        spec,
+        raw,
+        parsed,
+        hooks,
+        process_returncode=proc.returncode,
+        timed_out=proc.timed_out,
+        output_truncated=proc.output_truncated,
+    )
+    if hook_error is not None:
+        receipt["measurement_error"] = hook_error
+    receipt_bytes = json.dumps(
+        receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    _measurement_write_exclusive(context.receipt_path, receipt_bytes)
+    _measurement_append_index(context.index_path, {
+        "schema_version": MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,
+        "run_id": context.run_id,
+        "receipt_path": str(context.receipt_path),
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "raw_path": str(context.raw_path),
+        "raw_sha256": receipt["raw_sha256"],
+        "raw_byte_count": receipt["raw_byte_count"],
+        "terminal_status": receipt["terminal_status"],
+    })
+
+    failure_code: str | None = None
+    if proc.timed_out:
+        failure_code = "measurement_process_timeout"
+    elif proc.output_truncated:
+        failure_code = "measurement_output_limit"
+    elif proc.returncode != 0:
+        failure_code = "measurement_process_nonzero"
+    elif parsed.status != "success":
+        failure_code = f"measurement_stream_{parsed.error_code or parsed.result_code}"
+    elif hook_error is not None:
+        failure_code = hook_error
+    if failure_code is not None or parsed.payload is None:
+        return RunResult(
+            task_id=task.id,
+            variant=variant.name,
+            model=task.model,
+            effort=task.effort or "",
+            tokens={key: 0 for key, _ in USAGE_KEY_GROUPS},
+            cost_usd=0.0,
+            success=False,
+            notes=failure_code or "measurement_stream_missing_payload",
+            wall_time_seconds=elapsed_seconds_since(started_at),
+        )
+
+    tokens, cost, cost_available, primary_tokens_measured = collect_usage(parsed.payload)
+    provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(parsed.payload)
+    shift_metrics = collect_shift_metrics(parsed.payload)
+    self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
+    success, success_note = run_success_command(task, project_root)
+    return RunResult(
+        task_id=task.id,
+        variant=variant.name,
+        model=task.model,
+        effort=task.effort or "",
+        tokens=tokens,
+        cost_usd=cost,
+        success=success,
+        notes=success_note,
+        cost_measured=False,
+        primary_cost_provenance=(
+            PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE
+            if cost_available else PRIMARY_COST_PROVENANCE_UNAVAILABLE
+        ),
+        primary_tokens_measured=primary_tokens_measured,
+        wall_time_seconds=elapsed_seconds_since(started_at),
+        turns=int(shift_metrics["turns"]),
+        hook_triggers=len(hooks),
+        bytes_before=int(shift_metrics["bytes_before"]),
+        bytes_after=int(shift_metrics["bytes_after"]),
+        artifacts_used=int(shift_metrics["artifacts_used"]),
+        external_tokens=int(shift_metrics["external_tokens"]),
+        external_tokens_measured=bool(shift_metrics["external_tokens_measured"]),
+        external_cost_usd=float(shift_metrics["external_cost_usd"]),
+        external_cost_measured=bool(shift_metrics["external_cost_measured"]),
+        provider_cached_tokens=provider_cached_tokens,
+        provider_cached_tokens_measured=provider_cached_tokens_measured,
+        self_hosted_metrics=self_hosted_metrics,
+    )
+
+
 def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
                 project_root: Path, dry_run: bool) -> RunResult:
     argv = build_claude_argv(claude_bin, task, variant)
@@ -2407,6 +2767,8 @@ def run_fixture(task: TaskFixture, variant: Variant, claude_bin: str,
             success=True, notes=f"dry-run: {shlex.join(argv)}",
             wall_time_seconds=0.0,
         )
+    if variant.measurement is not None:
+        return _run_measurement_fixture(task, variant, claude_bin, project_root)
     if is_placeholder_success_command(task.success_command):
         return RunResult(
             task_id=task.id, variant=variant.name, model=task.model, effort=task.effort,
