@@ -60,6 +60,17 @@
           }
         ]
       }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 context-guard-kit/failed_attempt_nudge.py"
+          }
+        ]
+      }
     ]
   }
 }
