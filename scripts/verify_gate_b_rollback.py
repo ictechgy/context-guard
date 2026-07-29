@@ -294,8 +294,13 @@ def find_unique_subject(
     if proc.returncode:
         # 이 `git log BASE_COMMIT..source_head` 호출은 실전 저장소 상태로는 실패로
         # 도달할 수 없다 — 호출 시점에 resolve_source_head가 이미
-        # commit_exists(BASE_COMMIT)와 merge-base --is-ancestor를 통과시켰으므로 두
-        # 인자 모두 유효하고 정렬된 커밋이다. 트루케이티드 분기(304-307번째 줄)도
+        # `merge-base --is-ancestor`를 exit 0으로 통과시켰고, **그 호출 자체가
+        # BASE_COMMIT의 커밋 해석을 요구한다**. 따라서 두 인자 모두 유효하고
+        # 정렬된 커밋이며, 객체 DB 손상이 아닌 한 `git log A..B`에는 실패 모드가
+        # 없다. (이 자리에 예전에는 별도의 `commit_exists` 가드가 있었으나 같은
+        # 커밋에서 삭제됐다 — ancestor 호출이 이미 같은 보증을 주고, 실패 시
+        # exit 코드가 0도 1도 아닌 128이라 뒤따르는 ancestry 오류 분기가 잡는다.
+        # 근거 실측은 아래 문서 참조.) 트루케이티드 분기(304-307번째 줄)도
         # 마찬가지로 이론상으로만 도달 가능하다(얕은 클론의 shallow boundary 커밋
         # 자체가 손상된 극단적 graft 케이스) — 둘 다 unreachable-by-construction으로
         # 문서화만 한다.

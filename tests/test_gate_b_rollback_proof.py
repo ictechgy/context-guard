@@ -307,6 +307,11 @@ class GateBRollbackProofTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                # 이 파일의 다른 모든 git 호출과 같은 격리 환경을 쓴다. 맨
+                # subprocess로 두면 이 호출만 앰비언트 전역/시스템 git config를
+                # 상속한다(예: `protocol.file.allow`) — 테스트가 실행 머신의
+                # 설정에 따라 갈리게 되고, 그건 이 파일이 지키는 규율이 아니다.
+                env=rollback_proof.proof_environment(),
             )
             self.assertEqual(clone.returncode, 0, clone.stderr)
 
