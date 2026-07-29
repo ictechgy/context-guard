@@ -106,7 +106,7 @@ INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?P<quote>[\"'])(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
 CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
-CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]+|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"
+CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\([^()]*\))*"
 INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
