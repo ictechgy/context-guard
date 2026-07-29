@@ -1229,6 +1229,48 @@ def _printf_is_safe(argv: tuple[str, ...]) -> bool:
     return index < len(argv)
 
 
+_LS_SHORT_FLAGS = set("laAhtrS1dFpRincu")
+_LS_LONG_FLAGS = {
+    "--all",
+    "--almost-all",
+    "--human-readable",
+    "--reverse",
+    "--recursive",
+    "--directory",
+    "--classify",
+    "--group-directories-first",
+    "--color=never",
+    "--color=auto",
+    "--no-group",
+}
+
+
+def _ls_is_safe(argv: tuple[str, ...]) -> bool:
+    """`ls`가 producer 라우트로 허용되기에 안전한지 판단하는 순수 허용목록.
+
+    값(value)을 소비하는 `ls` 플래그가 존재하지 않고, 부수효과를 갖는 플래그도
+    없다는 성질 덕분에 짧은 플래그 클러스터(`-ltrh`)까지 안전하게 분해할 수
+    있다. 이 성질은 `sed`/`git`에는 성립하지 않으므로 이 패턴을 일반화하지
+    말 것 (설계 문서 4.1 참고).
+    """
+    options_done = False
+    for argument in argv[1:]:
+        if not options_done and argument == "--":
+            options_done = True
+            continue
+        if options_done:
+            continue
+        if argument.startswith("--"):
+            if argument not in _LS_LONG_FLAGS:
+                return False
+            continue
+        if argument.startswith("-") and argument != "-":
+            if not set(argument[1:]).issubset(_LS_SHORT_FLAGS):
+                return False
+            continue
+    return True
+
+
 def _cat_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     operands = 0
     options_done = False
@@ -2075,6 +2117,10 @@ def command_search_diff(
         if role == "filter" or not _printf_is_safe(argv):
             return "deny"
         return "trim" if role == "first" else ("noop" if role == "standalone" else "deny")
+    if first == "ls":
+        if role == "filter" or not _ls_is_safe(argv):
+            return "deny"
+        return "trim" if role == "first" else "noop"
     if first == "cat":
         if not _cat_is_safe(argv, allow_files=role != "filter"):
             return "deny"
