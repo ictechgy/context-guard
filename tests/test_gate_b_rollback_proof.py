@@ -242,6 +242,138 @@ class GateBRollbackProofTests(unittest.TestCase):
                 ):
                     rollback_proof.run_proof(repo)
 
+    def test_base_commit_not_an_ancestor_of_head_is_rejected(self) -> None:
+        """#35 — ``BASE_COMMIT``이 실존하지만 HEAD의 조상이 아니면 거부된다.
+
+        두 개의 서로소(disjoint) orphan 루트 커밋을 만든다 — 공통 조상이 전혀
+        없는 두 이력이라, 어느 쪽에서 봐도 다른 쪽은 조상이 아니다.
+        ``BASE_COMMIT``을 한쪽 orphan에 고정하고 다른 쪽 orphan을 HEAD로 두면
+        ``BASE_COMMIT``은 저장소에 실존하는 커밋이므로(#34가 있었다면 발화하지
+        않았을 사례 — 그 검사는 중복이라 삭제됐다) ``merge-base --is-ancestor``가
+        곧장 호출되고, exit 1(조상 아님)을 돌려줘야 한다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-not-ancestor-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            rollback_proof.run_git(
+                repo, "commit", "--quiet", "--allow-empty", "-m", "orphan root one"
+            )
+            branch_one = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+            rollback_proof.run_git(
+                repo, "checkout", "--quiet", "--orphan", "branch-two"
+            )
+            rollback_proof.run_git(
+                repo, "commit", "--quiet", "--allow-empty", "-m", "orphan root two"
+            )
+            branch_two = rollback_proof.run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            self.assertNotEqual(branch_one, branch_two)
+
+            with mock.patch.object(rollback_proof, "BASE_COMMIT", branch_one):
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofError, "is not an ancestor of"
+                ):
+                    rollback_proof.resolve_source_head(repo)
+
+    def test_shallow_clone_missing_subject_reports_unavailable(self) -> None:
+        """#5 — 얕은 클론의 시야 밖에 있는 subject는 '증명 불가'로 보고해야 한다.
+
+        전체 이력을 가진 합성 저장소를 ``git clone --depth 1``로 복제하면
+        HEAD 커밋 단 하나만 보이는 얕은 클론이 된다. ``BASE_COMMIT``을 그
+        하나뿐인 커밋(클론된 HEAD 자신, 조상 검사는 자기 자신을 조상으로
+        인정하므로 통과한다)으로 고정하면, ``BASE_COMMIT..source_head``
+        범위는 0개 커밋이므로 어떤 subject도 찾지 못한다(``ProofError``가
+        아니라 ``ProofHistoryUnavailable``이어야 한다 — 증명이 못 봤다고
+        스스로 신고하는 것이지, 봤는데 틀렸다고 말하는 게 아니다).
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-shallow-") as tmp:
+            root = Path(tmp)
+            repo, commits = self.make_gate_b_history_repo(root)
+            shallow = root / "shallow-clone"
+            clone = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--depth",
+                    "1",
+                    "--no-local",
+                    "--no-hardlinks",
+                    str(repo),
+                    str(shallow),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                # 이 파일의 다른 모든 git 호출과 같은 격리 환경을 쓴다. 맨
+                # subprocess로 두면 이 호출만 앰비언트 전역/시스템 git config를
+                # 상속한다(예: `protocol.file.allow`) — 테스트가 실행 머신의
+                # 설정에 따라 갈리게 되고, 그건 이 파일이 지키는 규율이 아니다.
+                env=rollback_proof.proof_environment(),
+            )
+            self.assertEqual(clone.returncode, 0, clone.stderr)
+
+            self.assertTrue(rollback_proof.is_shallow_repository(shallow))
+            shallow_head = rollback_proof.run_git(shallow, "rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(shallow_head, commits["shared-integration"])
+            # 얕은 클론이 정말로 목표 subject(bless)를 시야 밖으로 잘라냈는지
+            # 직접 확인한다 — 이 확인이 없으면 이 테스트는 "얕은 클론을
+            # 만들어봤다"만 증명할 뿐, "정말로 잘렸다"는 증명하지 못한다.
+            visible = rollback_proof.run_git(
+                shallow, "log", "--format=%H"
+            ).stdout.splitlines()
+            self.assertEqual(visible, [shallow_head])
+            self.assertNotIn(commits["bless"], visible)
+
+            with mock.patch.object(rollback_proof, "BASE_COMMIT", shallow_head):
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofHistoryUnavailable,
+                    "reachable commit .* was not found",
+                ):
+                    rollback_proof.run_proof(shallow)
+
+    def test_is_shallow_repository_reports_unavailable_on_git_failure(self) -> None:
+        """#2 — ``rev-parse --is-shallow-repository`` 호출 자체가 실패하면
+        '증명 불가'로 보고해야 한다.
+
+        이 가지는 실제 저장소 상태로는 도달할 수 없다(일단 유효한 저장소
+        안이면 이 plumbing 명령은 항상 성공한다) — 의존성 주입으로만
+        연습할 수 있다. ``run_git``을 통째로 실패시키는 와일드카드 패치는
+        쓰지 않는다: 그러면 이 테스트가 통과해도 어떤 호출이 실패해서
+        통과했는지 증명하지 못한다(이 조사 전체가 잡으려는 '범위가 고정되지
+        않은 패치'와 같은 결함이 된다). 대신 ``args[:2] ==
+        ("rev-parse", "--is-shallow-repository")``인 호출만 실패시키고
+        나머지는 패치 전에 잡아둔 진짜 ``run_git``으로 위임한다.
+        ``run_proof``를 앞에서부터 태워, HEAD 해석(``rev-parse HEAD``)은
+        실제로 성공한 뒤 이 호출에서만 걸리는지까지 함께 고정한다.
+        """
+        real_run_git = rollback_proof.run_git
+
+        def selectively_failing_run_git(
+            repo: Path, *args: str, check: bool = True
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ("rev-parse", "--is-shallow-repository"):
+                return subprocess.CompletedProcess(
+                    args=("git", *args),
+                    returncode=1,
+                    stdout="",
+                    stderr="simulated is-shallow-repository failure (test double)",
+                )
+            return real_run_git(repo, *args, check=check)
+
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-shallow-check-fail-") as tmp:
+            repo = self.make_snapshot_repo(Path(tmp))
+            with mock.patch.object(
+                rollback_proof, "run_git", side_effect=selectively_failing_run_git
+            ):
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofHistoryUnavailable,
+                    "could not inspect repository depth",
+                ):
+                    rollback_proof.run_proof(repo)
+
     def test_snapshot_repo_reports_history_unavailable(self) -> None:
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-snapshot-") as tmp:
             repo = self.make_snapshot_repo(Path(tmp))
@@ -565,6 +697,76 @@ class GateBGenerationsTests(SyntheticGenerationHelpers, unittest.TestCase):
             broken = {**all_commits["gen-a-retired"], "b1": all_commits["gen-b-active"]["b1"]}
             with self.assertRaisesRegex(rollback_proof.ProofError, "generation 'gen-a-retired'"):
                 rollback_proof.assert_generation_structure(repo, gen_a, broken)
+
+    def test_generation_parent_chain_mismatch_is_rejected(self) -> None:
+        """#21 — 부모 체인 검사만 단독으로 발화시킨다 (경로 집합은 그대로 둔다).
+
+        ``test_retired_generation_still_structurally_verified``는 부모와 경로
+        집합이 *동시에* 어긋나는 커밋을 넣으므로, 부모 체인 검사(:565-569 상당)를
+        중화해도 경로 집합 검사(:578-582 상당)가 대신 걸려 초록으로 남는다 —
+        이 스위트가 실제로 만든 mutation-survive 사례다. 여기서는 bless 위에
+        무관한 중간 커밋을 하나 끼워 넣고, 그 위에 정확히 b1_paths만 다시
+        커밋한다: 부모는 bless가 아니게 되지만(체인 검사만 발화), b1 커밋
+        자체가 바꾸는 경로 집합은 여전히 ``generation.b1_paths``와 정확히
+        같다(경로 집합 검사는 통과해야 정상이다).
+        """
+        gen = self.make_generation(
+            "gen-parent-mismatch",
+            b1_paths=frozenset({"p/b1.txt"}),
+            b2_paths=frozenset({"p/b2.txt"}),
+            shared_paths=frozenset({"p/shared.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-parent-mismatch-") as tmp:
+            repo, base, all_commits = self.make_repo_for_generations(Path(tmp), (gen,))
+            commits = all_commits["gen-parent-mismatch"]
+            rollback_proof.checkout(repo, commits["bless"])
+            commit_paths_for_test(
+                repo, {"scratch/intermediate.txt": "unrelated noise\n"},
+                "unrelated intermediate commit (test double)",
+            )
+            new_b1 = commit_paths_for_test(
+                repo,
+                {path: f"# b1: {path}\n" for path in gen.b1_paths},
+                gen.b1_subject + " (rebuilt on intermediate commit)",
+            )
+            broken = {**commits, "b1": new_b1}
+            with self.assertRaisesRegex(rollback_proof.ProofError, "parent mismatch"):
+                rollback_proof.assert_generation_structure(repo, gen, broken)
+
+    def test_generation_component_path_set_mismatch_is_rejected(self) -> None:
+        """#22 — 경로 집합 검사만 단독으로 발화시킨다 (부모 체인은 그대로 둔다).
+
+        ``shared-integration`` 자리를 바꾼다 — 부모 체인 검사에서 이 역할은
+        마지막 항(``(commits["shared-integration"], commits["b2"])``)이라 다른
+        어떤 역할의 기대 부모도 이 커밋을 가리키지 않는다. 그래서 실제 b2 바로
+        위에 다시 커밋하면(부모는 그대로 정상) 부모 체인 검사 전체가 깨끗이
+        통과하고, ``shared_paths``에 없는 경로를 하나 더 얹은 경로 집합 검사
+        (:578-582 상당)만 단독으로 걸린다. (b1을 바꾸면 그 부모가 바뀌어 b2의
+        기대 부모까지 연쇄로 어긋나 버려 부모 체인 검사가 먼저 걸린다 — 실제로
+        시도해서 확인했다.)
+        """
+        gen = self.make_generation(
+            "gen-pathset-mismatch",
+            b1_paths=frozenset({"q/b1.txt"}),
+            b2_paths=frozenset({"q/b2.txt"}),
+            shared_paths=frozenset({"q/shared.txt"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-pathset-mismatch-") as tmp:
+            repo, base, all_commits = self.make_repo_for_generations(Path(tmp), (gen,))
+            commits = all_commits["gen-pathset-mismatch"]
+            rollback_proof.checkout(repo, commits["b2"])
+            over_broad_contents = {
+                path: f"# shared: {path}\n" for path in gen.shared_paths
+            }
+            over_broad_contents["q/unexpected-extra.txt"] = "surprise\n"
+            new_shared = commit_paths_for_test(
+                repo,
+                over_broad_contents,
+                gen.shared_subject + " (over-broad, test double)",
+            )
+            broken = {**commits, "shared-integration": new_shared}
+            with self.assertRaisesRegex(rollback_proof.ProofError, "path set changed"):
+                rollback_proof.assert_generation_structure(repo, gen, broken)
 
     def test_retired_generation_is_not_frozen_against_head(self) -> None:
         """U-5 — 은퇴 세대가 소유한 경로가 HEAD에서 바뀌어도 통과한다 (해제가
@@ -1056,6 +1258,17 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 rollback_proof.assert_declared_residual_edits(
                     repo, gen1, {"bless": gen1_bless}, gen2, {"bless": gen2_bless}
                 )
+
+    def test_assert_generation_records_wellformed_rejects_empty_generations(self) -> None:
+        """D6-0 — ``GENERATIONS``가 비면 이 증명은 고정할 대상이 없다.
+
+        직접 호출 단위 테스트다. git 픽스처가 필요 없다 — ``not generations``
+        분기는 레코드 자체만 보고 저장소를 전혀 건드리지 않기 때문이다.
+        """
+        with self.assertRaisesRegex(
+            rollback_proof.ProofError, "GENERATIONS is empty"
+        ):
+            rollback_proof.assert_generation_records_wellformed(())
 
     def test_resolve_history_rejects_duplicate_generation_names(self) -> None:
         """D6-1 — 이름이 겹치면 ``all_commits``에서 앞 세대가 덮어써져 D3/D5가

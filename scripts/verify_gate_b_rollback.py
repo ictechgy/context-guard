@@ -257,13 +257,6 @@ def path_exists_in_tree(repo: Path, commit: str, path: str) -> bool:
     return False
 
 
-def commit_exists(repo: Path, commit: str) -> bool:
-    return (
-        run_git(repo, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode
-        == 0
-    )
-
-
 def is_shallow_repository(repo: Path) -> bool:
     proc = run_git(repo, "rev-parse", "--is-shallow-repository", check=False)
     if proc.returncode:
@@ -299,6 +292,19 @@ def find_unique_subject(
         check=False,
     )
     if proc.returncode:
+        # 이 `git log BASE_COMMIT..source_head` 호출은 실전 저장소 상태로는 실패로
+        # 도달할 수 없다 — 호출 시점에 resolve_source_head가 이미
+        # `merge-base --is-ancestor`를 exit 0으로 통과시켰고, **그 호출 자체가
+        # BASE_COMMIT의 커밋 해석을 요구한다**. 따라서 두 인자 모두 유효하고
+        # 정렬된 커밋이며, 객체 DB 손상이 아닌 한 `git log A..B`에는 실패 모드가
+        # 없다. (이 자리에 예전에는 별도의 `commit_exists` 가드가 있었으나 같은
+        # 커밋에서 삭제됐다 — ancestor 호출이 이미 같은 보증을 주고, 실패 시
+        # exit 코드가 0도 1도 아닌 128이라 뒤따르는 ancestry 오류 분기가 잡는다.
+        # 근거 실측은 아래 문서 참조.) 트루케이티드 분기(304-307번째 줄)도
+        # 마찬가지로 이론상으로만 도달 가능하다(얕은 클론의 shallow boundary 커밋
+        # 자체가 손상된 극단적 graft 케이스) — 둘 다 unreachable-by-construction으로
+        # 문서화만 한다.
+        # 근거: .omc/research/gate-b-guard-coverage-20260729.md, #3/#4 분류.
         detail = (proc.stderr or proc.stdout).strip()
         if history_may_be_truncated:
             raise ProofHistoryUnavailable(
@@ -786,6 +792,17 @@ def apply_then_revert(
     applied_tree = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     run_git(repo, "revert", "--no-edit", applied_commit)
     reverted_tree = run_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    # 이 분기는 unreachable by construction이다 — 두 겹으로 증명됨:
+    # (1) cherry-pick/revert가 충돌하면 run_git의 check=True가 그보다 먼저
+    #     ProofError를 던진다(이 함수까지 도달하지 않는다);
+    # (2) 충돌 없이 성공하면 git의 3-way merge 항등성(ours == merge-base일 때
+    #     결과는 항상 theirs)에 의해 reverted_tree == base_tree가 보장된다 —
+    #     revert는 (base=tree(applied_commit), ours=tree(HEAD)=applied_tree,
+    #     theirs=tree(parent(applied_commit))=base_tree)의 3-way merge이고
+    #     parent(applied_commit)은 cherry-pick이 base 위에 만든 커밋이므로 base다.
+    # 이 검사가 이 파일의 중심 주장(apply/revert가 트리를 복원한다)이면서도
+    # mutation으로 죽지 않는 것은 결함이 아니라, 그 불변이 git 자신에 의해
+    # 강제된다는 뜻이다. 근거: .omc/research/gate-b-guard-coverage-20260729.md, #30.
     if reverted_tree != base_tree:
         raise ProofError(
             f"apply/revert tree mismatch for {component}: {reverted_tree} != {base_tree}"
@@ -902,12 +919,12 @@ def resolve_source_head(repo: Path) -> tuple[str, bool]:
         )
     source_head = head.stdout.strip()
     history_may_be_truncated = is_shallow_repository(repo)
-    if not commit_exists(repo, BASE_COMMIT):
-        raise ProofHistoryUnavailable(
-            "full Gate-B proof history is unavailable: "
-            f"base commit {BASE_COMMIT} is missing; fetch full history or use a "
-            "merge-preserved checkout"
-        )
+    # 별도의 "BASE_COMMIT이 없다" 검사는 두지 않는다. commit_exists(BASE_COMMIT)이
+    # 거짓인 모든 경우, 바로 아래 merge-base --is-ancestor 호출도 BASE_COMMIT
+    # 자신을 해석해야 하므로 exit 0/1이 아닌 다른 코드로 실패하고, 그 실패는 이미
+    # ancestry.returncode != 1 분기(ProofHistoryUnavailable, "could not inspect
+    # ancestry")가 잡는다 — 메시지만 다를 뿐 판정은 갈라지지 않는 진짜 중복 검사였다
+    # (검증: .omc/research/gate-b-guard-coverage-20260729.md, #34 분류).
     ancestry = run_git(
         repo,
         "merge-base",
