@@ -336,6 +336,8 @@ CLAUDE_STREAM_MAX_LINES = 10_000
 CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
 CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
 MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v1"
+MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION = "contextguard.bench.raw-receipt.v1"
+MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION = "contextguard.bench.artifact-index.v1"
 MEASUREMENT_ID_NAMESPACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 MEASUREMENT_ENV_NAME_RE = re.compile(r"\A[A-Z][A-Z0-9_]{0,127}\Z")
 MEASUREMENT_SECRET_ENV_NAME_RE = re.compile(
@@ -727,7 +729,7 @@ class MeasurementIdentity:
 
     def run_id(self, task_id: str) -> str:
         canonical = json.dumps(
-            self.components(task_id), ensure_ascii=True, separators=(",", ":"),
+            self.components(task_id), ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
 
@@ -2442,28 +2444,37 @@ def _measurement_create_run_context(spec: MeasurementVariant, task_id: str) -> M
             fcntl.flock(root_fd, fcntl.LOCK_EX)
         run_id = spec.identity.run_id(task_id)
         try:
-            os.mkdir(run_id, 0o700, dir_fd=root_fd)
+            os.mkdir("runs", 0o700, dir_fd=root_fd)
         except FileExistsError:
-            raise SystemExit(f"duplicate measurement run id: {run_id}") from None
-        run_fd = _open_directory_at(root_fd, run_id, spec.artifact_root / run_id)
+            pass
+        runs_fd = _open_directory_at(root_fd, "runs", spec.artifact_root / "runs")
         try:
-            os.fchmod(run_fd, 0o700)
-            for name in (
-                "home",
-                "xdg-config",
-                "xdg-cache",
-                "xdg-data",
-                "xdg-state",
-                "tmp",
-                "workspace",
-                "session",
-            ):
-                os.mkdir(name, 0o700, dir_fd=run_fd)
+            os.fchmod(runs_fd, 0o700)
+            try:
+                os.mkdir(run_id, 0o700, dir_fd=runs_fd)
+            except FileExistsError:
+                raise SystemExit(f"duplicate measurement run id: {run_id}") from None
+            run_fd = _open_directory_at(runs_fd, run_id, spec.artifact_root / "runs" / run_id)
+            try:
+                os.fchmod(run_fd, 0o700)
+                for name in (
+                    "home",
+                    "xdg-config",
+                    "xdg-cache",
+                    "xdg-data",
+                    "xdg-state",
+                    "tmp",
+                    "workspace",
+                    "session",
+                ):
+                    os.mkdir(name, 0o700, dir_fd=run_fd)
+            finally:
+                os.close(run_fd)
         finally:
-            os.close(run_fd)
+            os.close(runs_fd)
     finally:
         os.close(root_fd)
-    run_root = spec.artifact_root / run_id
+    run_root = spec.artifact_root / "runs" / run_id
     return MeasurementRunContext(
         run_id=run_id,
         run_root=run_root,
@@ -2587,43 +2598,32 @@ def _measurement_receipt(
     task: TaskFixture,
     spec: MeasurementVariant,
     raw: bytes,
-    parsed: ClaudeStreamParseResult,
     hooks: list[dict[str, str]],
     *,
-    process_returncode: int,
-    timed_out: bool,
-    output_truncated: bool,
+    terminal_status: str,
 ) -> dict[str, Any]:
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     raw_lines = len(raw.splitlines())
     return {
-        "schema_version": MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,
-        "run_id": context.run_id,
-        "identity": {
+        "schema_version": MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION,
+        "run_identity": {
             "candidate_hash": spec.identity.candidate_hash,
             "task": task.id,
             "repetition": spec.identity.repetition,
             "arm": spec.identity.arm,
             "attempt": spec.identity.attempt,
             "namespace": spec.identity.namespace,
+            "run_id": context.run_id,
         },
         "raw_artifact": {
-            "path": str(context.raw_path),
+            "path": context.raw_path.name,
             "sha256": raw_sha256,
-            "byte_count": len(raw),
-            "line_count": raw_lines,
+            "bytes": len(raw),
+            "lines": raw_lines,
+            "events": raw_lines,
         },
-        "raw_sha256": raw_sha256,
-        "raw_byte_count": len(raw),
-        "raw_line_count": raw_lines,
-        "terminal_status": parsed.status,
-        "terminal_result_code": parsed.result_code,
-        "terminal_error_code": parsed.error_code,
-        "process_returncode": process_returncode,
-        "timed_out": timed_out,
-        "output_truncated": output_truncated,
-        "hook_events": hooks,
-        "hook_event_count": len(hooks),
+        "terminal_status": terminal_status,
+        "hooks": hooks,
     }
 
 
