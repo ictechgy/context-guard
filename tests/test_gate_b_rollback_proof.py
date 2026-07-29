@@ -259,10 +259,12 @@ class GateBRollbackProofTests(unittest.TestCase):
         '실패'(``ProofError``)여야 하고, '증명 불가'(``ProofHistoryUnavailable``)로
         오분류되면 안 된다).
 
-        ``resolve_history``도 같은 함수를 호출하지만(:696), 그 호출부는 이미
+        ``resolve_history``도 같은 함수를 호출하지만(그 함수 첫머리의 git-free
+        선행 호출), 그 호출부는 이미
         ``test_cli_reports_a_malformed_record_as_failure_not_unavailable``이
         ``component paths overlap``(``assert_disjoint_paths``)로 고정하고 있어
-        ``run_proof``(:923) 자신의 호출부 하나가 지워져도 그 테스트는 계속
+        ``run_proof``(``resolve_source_head`` 앞의 선행 호출) 자신의 호출부
+        하나가 지워져도 그 테스트는 계속
         통과한다 — ``resolve_history``의 호출부가 대신 걸리기 때문이다. 여기서는
         ``assert_disjoint_paths``는 통과하지만(``b1``/``b2``/``shared`` 서로소)
         ``assert_generation_records_wellformed``만 걸리는 레코드(빈 Gate-B 마커)를
@@ -1270,21 +1272,31 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         경로 일부만(또는 전혀 매치하지 않는 조각을) 받고, 기계 게이트는 여전히
         전체 경로를 리터럴로 보므로 exit 0 그대로다 — 사람 검토만 조용히
         좁아진다. ``self.drive``로 몰아 호출부까지 고정한다.
+
+        각 불안전 문자를 **서로 다른 경로 슬롯**에 넣는다. 셋 다
+        ``shared_paths``에만 넣으면 이 규칙의 적용 범위를 ``all_component_paths``
+        에서 ``shared_paths``로 좁혀도(=``b1_paths``/``b2_paths``를 빼먹어도)
+        스위트가 전부 초록으로 남는다 — 바로 위 매직 경로 테스트가 막으려던 것과
+        똑같은 구멍이 새 규칙 쪽에 그대로 재발한 것이었다(변이 측정으로 확인).
+        슬롯을 나눠 담으면 어느 슬롯 하나라도 검사에서 빠지는 순간 그 하위
+        테스트가 실패하고, 동시에 공백/glob 문자 커버리지도 그대로 유지된다.
         """
         gen1, _ = self.make_pair()
+        # (불안전 경로, 그 경로를 담을 슬롯) — 슬롯마다 하나씩 배치한다.
         cases = (
-            "shared/has space.txt",
-            "shared/glob[ab].txt",
-            "shared/star*.txt",
+            ("g2/has space.txt", "b1_paths"),
+            ("g2/glob[ab].txt", "b2_paths"),
+            ("shared/star*.txt", "shared_paths"),
         )
-        for unsafe_path in cases:
-            with self.subTest(unsafe_path=unsafe_path):
-                unsafe = self.make_generation(
-                    "gen2-unsafe-chars",
-                    b1_paths=frozenset({"g2/b1.txt"}),
-                    b2_paths=frozenset({"g2/b2.txt"}),
-                    shared_paths=frozenset({unsafe_path}),
-                )
+        for unsafe_path, slot in cases:
+            with self.subTest(unsafe_path=unsafe_path, slot=slot):
+                kwargs = {
+                    "b1_paths": frozenset({"g2/b1.txt"}),
+                    "b2_paths": frozenset({"g2/b2.txt"}),
+                    "shared_paths": frozenset({"shared/keep.txt"}),
+                }
+                kwargs[slot] = frozenset({unsafe_path})
+                unsafe = self.make_generation("gen2-unsafe-chars", **kwargs)
                 with tempfile.TemporaryDirectory(
                     prefix="context-guard-proof-unsafe-chars-"
                 ) as tmp:
@@ -1293,16 +1305,61 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                     ):
                         self.drive(tmp, (gen1, unsafe))
 
+    def test_every_unsafe_character_in_the_rule_is_individually_rejected(self) -> None:
+        """D6-5 확장(문자 커버리지) — ``_UNSAFE_COMPONENT_PATH_CHARS``가 나열한
+        문자 하나하나가 실제로 거부됨을 고정한다.
+
+        바로 위 ``drive`` 테스트는 호출부와 적용 범위를 고정하지만 문자는 셋
+        (공백/``[``/``*``)만 태운다. 그래서 규칙을 ``r"[\\s*?\\[]"``로 줄여
+        나머지 15개 문자를 빼도 스위트 전체가 초록이었다(측정 확인) — 문자
+        집합이 미핀 상태였다. 여기서 각 문자를 개별 하위 테스트로 태워, 어느
+        문자를 지우든 그 하위 테스트가 실패하게 만든다.
+
+        ``drive``(합성 저장소 생성)를 쓰지 않고 술어 함수를 직접 부른다. 문자
+        하나마다 저장소를 만들면 느리고, 호출부 고정은 이미 위 테스트가 맡고
+        있어 여기서 중복할 이유가 없다. 불안전 문자는 ``b1_paths``에 넣는다 —
+        ``shared_paths``는 기본 마커의 소유 경로로 쓰이므로 깨끗하게 둔다.
+        """
+        unsafe_characters = (
+            " ", "\t", "\n", "\r", "\v", "\f",
+            "*", "?", "[", "]", "{", "}", "$", "`", '"', "'", "\\",
+            "|", ";", "&", "<", ">", "(", ")", "~", "!", "#",
+        )
+        for character in unsafe_characters:
+            with self.subTest(character=character):
+                generation = self.make_generation(
+                    "gen-unsafe-char",
+                    b1_paths=frozenset({f"g/a{character}b.txt"}),
+                    b2_paths=frozenset({"g/b2.txt"}),
+                    shared_paths=frozenset({"shared/keep.txt"}),
+                )
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofError, "unsafe character"
+                ):
+                    rollback_proof.assert_generation_records_wellformed((generation,))
+
     def test_shipped_component_paths_are_all_literal(self) -> None:
         """출하 중인 ``GENERATIONS``가 실제로 이 규칙을 지키는지 확인한다.
 
-        위 테스트는 합성 레코드만 보므로, 규칙이 살아 있는 경로 목록에는
+        위 테스트들은 합성 레코드만 보므로, 규칙이 살아 있는 경로 목록에는
         적용되지 않는 상태로도 통과한다. 술어를 여기서 재구현하면(예:
-        ``path.startswith(":")``만 다시 짜면) 프로덕션의
-        ``assert_generation_records_wellformed`` 검사부가 지워지거나 약화돼도
-        이 테스트는 초록으로 남는다. 그래서 프로덕션 함수를 직접 호출한다 —
-        규칙이 바뀌어도 이 테스트는 자동으로 따라가고, 검사부가 지워지면
-        여기서도 함께 실패한다.
+        ``path.startswith(":")``만 다시 짜면) 규칙이 바뀔 때 재구현본이 조용히
+        낡는다. 그래서 프로덕션 함수를 직접 호출한다 — 규칙이 바뀌어도 이
+        테스트는 자동으로 따라간다.
+
+        이 테스트가 고정하는 것과 고정하지 **못하는** 것을 분명히 해 둔다(실측):
+
+        - 고정한다: 출하 중인 ``GENERATIONS``의 경로가 살아 있는 프로덕션 술어를
+          통과한다는 것. 누군가 규칙을 어기는 경로를 출하 목록에 넣으면 실패한다.
+        - 고정하지 못한다: **검사부의 존재**. 출하 경로는 전부 깨끗하므로
+          ``assert_generation_records_wellformed``는 검사부가 있든 없든 정상
+          반환한다. 실제로 ``:`` 검사나 unsafe 검사를 각각 무력화해도 이
+          테스트는 초록으로 남는다(측정 확인). 검사부와 그 적용 범위를 고정하는
+          것은 위의 합성 ``drive`` 테스트들이지 이 테스트가 아니다.
+
+        이 구분을 적어 두는 이유는, '이 테스트가 호출부를 고정한다'는 잘못된
+        믿음이 바로 이 PR 시리즈가 같은 결함을 네 번 반복한 전파 경로이기
+        때문이다.
         """
         rollback_proof.assert_generation_records_wellformed(rollback_proof.GENERATIONS)
 
@@ -1679,6 +1736,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 "        (gen('pm', shared_paths=frozenset({':(exclude)pm/y'}),",
                 "             residual_markers={':(exclude)pm/y': ('N',)},",
                 "             gate_b_markers=(m.GateBMarker('L', ':(exclude)pm/y'),)),))),",
+                # 공백/메타문자 분기도 -O 행렬에 넣는다. 이 분기가 빠져 있으면
+                # 검사가 ``assert not unsafe``로 회귀했을 때 이 테스트만 따로
+                # 돌리면 초록으로 남는다(측정 확인) — AC-2b가 보장한다고 말하는
+                # 범위에 새 분기가 빠진 상태였다. 불안전 경로는 ``b1_paths``에
+                # 넣어 ``shared_paths``와 마커 기본값은 깨끗하게 둔다.
+                "    ('unsafechars', lambda: m.assert_generation_records_wellformed(",
+                "        (gen('uc', b1_paths=frozenset({'uc/has space'})),))),",
                 "]",
                 "missed = []",
                 "for label, call in cases:",

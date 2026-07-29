@@ -414,6 +414,12 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
        검사가 이미 구속한다'인데, 그 논거는 소유 경로가 컴포넌트 경로일 때만
        성립한다. 컴포넌트 밖 경로를 소유자로 선언하면 C3-b가 아무것도 평가하지
        않고 성공을 보고한다.
+    5. 컴포넌트 경로가 리터럴이고 사람의 셸에서 안전함. 선행 ``:``는 git
+       pathspec 매직이고, 공백과 셸/glob 메타문자는 런북이 지시하는 사람의
+       리뷰 diff에서만 경로를 조용히 잃게 만든다 — 기계 게이트는
+       ``GIT_LITERAL_PATHSPECS=1``로 전체 경로를 그대로 보므로 exit 0인 채
+       사람 검토만 좁아지는 비대칭이 생긴다. 자세한 근거는 아래 검사부의
+       주석을 참고한다.
     """
     if not generations:
         raise ProofError("GENERATIONS is empty: the proof has no anchor")
