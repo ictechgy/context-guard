@@ -1363,8 +1363,11 @@ def _measurement_parse_variant(
         value["cli_capabilities"], owner=f"{owner}.cli_capabilities", maximum=32,
     )
     for capability in cli_capabilities:
-        if not capability.startswith("--") or len(capability) > 128:
-            raise SystemExit(f"{owner}.cli_capabilities entries must be bounded long options")
+        # ``stream-json`` is a format capability rather than a long option;
+        # the remaining S001 capabilities are deliberately restricted to
+        # bounded long options so fixtures cannot smuggle arbitrary argv.
+        if (capability != "stream-json" and not capability.startswith("--")) or len(capability) > 128:
+            raise SystemExit(f"{owner}.cli_capabilities entries must be bounded long options or stream-json")
     mandatory_capabilities = {
         "--settings",
         "--setting-sources",
