@@ -1481,10 +1481,47 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     return allow_files or index == len(argv)
 
 
+#: grep 긴 옵션(long flag) 중 이미 허용된 짧은 옵션과 동치인 것만 정확히 나열한
+#: 화이트리스트. **접두사(startswith) 매칭 금지** — `--color`로 시작 매칭을 허용하면
+#: `--color=always`(ANSI 이스케이프 주입)가, `--f`류 접두사 매칭을 허용하면
+#: `--file=`(패턴을 파일에서 읽음, 예측 불가능한 I/O)이 함께 통과해버린다. 값
+#: 형태를 취하는 옵션(`--include=`, `--exclude=`, `--exclude-dir=`, `--devices=`,
+#: `--directories=`, `--label=`, `--binary-files=`, `-D/-U/-z/-Z/--null` 계열)은
+#: 의도적으로 제외한다 — 값이 동작을 바꾸거나(예: `--directories=read`) 파서
+#: 단계(`active_2a`)에서 이미 별도로 거부되는 글롭이라 여기서 다뤄도 아무것도
+#: 열어주지 않는다.
+_GREP_LONG_ALIASES = frozenset(
+    {
+        "--only-matching",
+        "--count",
+        "--files-with-matches",
+        "--files-without-match",
+        "--line-number",
+        "--with-filename",
+        "--no-filename",
+        "--ignore-case",
+        "--invert-match",
+        "--word-regexp",
+        "--line-regexp",
+        "--extended-regexp",
+        "--fixed-strings",
+        "--basic-regexp",
+        "--perl-regexp",
+        "--quiet",
+        "--silent",
+        "--no-messages",
+        "--recursive",
+        "--dereference-recursive",
+        "--color=never",
+        "--color=auto",
+    }
+)
+
+
 def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     pattern_seen = False
     files = 0
-    allowed_flags = set("nHhivEFGPwxc lLrR".replace(" ", ""))
+    allowed_flags = set("nHhivEFGPwxcolLrRq".replace(" ", ""))
     index = 1
     while index < len(argv):
         argument = argv[index]
@@ -1515,6 +1552,9 @@ def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
             index += 1
             continue
         if argument == "--recursive":
+            index += 1
+            continue
+        if argument in _GREP_LONG_ALIASES:
             index += 1
             continue
         if argument.startswith("-") and argument != "-":

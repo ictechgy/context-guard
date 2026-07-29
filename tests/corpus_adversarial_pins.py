@@ -1376,6 +1376,306 @@ FIX_LS_STANDALONE_INVARIANT_COMMANDS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# FIX-GREP — `grep -o`/`-q` 와 롱플래그 표면을 재도입한다 (design doc
+# route-readmission-design-20260729.md §4.2). FIX-1a/FIX-6 과 동일한 shape —
+# `grep -r`/`-c`/`-l`/`-L`는 오늘도 이미 허용되어 있고(§4.2 서두, 브리핑 정정),
+# 실제 gap 은 `-o`/`-q` 두 짧은 플래그와 `:1479-1487`의 네 예외를 제외한 모든
+# `--` 접두 토큰 전체다. 이 표의 완화 대상은 전부 deny -> sanitize 전환이므로
+# (라우트 자체는 `_grep_is_safe`가 이미 `sanitize`로 배선돼 있다 — 새 라우트가
+# 아니라 predicate 문만 넓어진다) INV-A/INV-B/INV-C 하네스로 검증한다. ls와
+# 달리 grep 은 standalone 에서도 이미 `_grep_is_safe`를 통과하면 sanitize 이므로
+# (ls 처럼 "standalone 은 그대로 두는" 별도 설계 결정이 없다) standalone
+# invariant 표가 없다 — 완화 대상 자체가 standalone 명령이다(파이프 불필요).
+# ---------------------------------------------------------------------------
+FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
+    # --- 완화 — deny -> sanitize 전환(INV-B 대상) ---
+    {
+        "case_id": "fix-grep-short-o-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep -o token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "핵심 완화 1 — `-o`는 매치된 부분 문자열만 출력해 이미 허용된 "
+        "`-n` 형태보다 항상 적거나 같은 출력을 낸다.",
+    },
+    {
+        "case_id": "fix-grep-short-q-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep -q token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "핵심 완화 2 — `-q`는 아무것도 출력하지 않고 종료 코드만 낸다. "
+        "이 문서 전체에서 가장 출력이 유계인 명령.",
+    },
+    {
+        "case_id": "fix-grep-long-only-matching-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --only-matching token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-o`의 정확 일치 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-quiet-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --quiet token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-q`의 정확 일치 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-silent-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --silent token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-q`의 GNU 동의어(`--silent`)도 별도 정확 일치 항목으로 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-long-count-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --count token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "짧은 형태 `-c`는 이미 허용됐지만 그 롱 별칭 자체는 예전에는 "
+        "`:1479-1487`의 네 예외 밖이라 거부됐다 — 별칭 표가 이를 메운다.",
+    },
+    {
+        "case_id": "fix-grep-long-line-number-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --line-number token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-n`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-no-filename-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --no-filename token README.md README2.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "브리핑이 명시적으로 거부 사례로 든 형태(§0) — `-h`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-invert-match-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --invert-match token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-v`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-extended-regexp-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --extended-regexp token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-E`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-color-never-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --color=never token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "브리핑이 명시적으로 거부 사례로 든 형태(§0) — 값이 `never`인 경우만 "
+        "표에 정확히 일치해 허용된다.",
+    },
+    {
+        "case_id": "fix-grep-long-color-auto-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --color=auto token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`--color=auto`도 `--color=never`와 동일하게 정확 일치로 허용된다.",
+    },
+    {
+        "case_id": "fix-grep-long-dereference-recursive-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --dereference-recursive token src",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-r`/`--recursive`와 별개로 심볼릭 링크를 따라가는 변형 — 재귀 자체는 "
+        "이미 허용됐으므로 순수 표면 확장이다.",
+    },
+    {
+        "case_id": "fix-grep-cluster-oq-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep -oq token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`o`/`q`가 `allowed_flags`에 들어가 클러스터(`-oq`) 형태로도 허용된다.",
+    },
+    {
+        "case_id": "fix-grep-double-dash-terminator-with-o-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep -o -- --token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`--` 종결자 처리는 이번 변경으로 건드리지 않았다 — `-o` 추가 이후에도 "
+        "`--` 뒤 플래그처럼 보이는 패턴(`--token`)이 옵션으로 재해석되지 않고 "
+        "패턴 피연산자로 남는지 고정한다(변이: `--` 종결자 무시).",
+    },
+    # --- 역방향 케이스(INV-A 대상) — 값 소비 롱플래그와 표 밖 형태는 여전히 거부 ---
+    {
+        "case_id": "fix-grep-inv-a-file-eq-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --file=patterns.txt README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "패턴 목록을 predicate 가 볼 수 없는 파일에서 읽는다 — 기존 "
+        "명시적 거부(`:1449` 상당)를 그대로 보존한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-binary-files-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --binary-files=text README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "값을 취하는 롱플래그 — 별칭 표에 넣지 않는다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-color-always-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --color=always token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "ANSI 이스케이프를 출력에 주입해 컨텍스트를 오염시킨다 — "
+        "`never`/`auto`만 표에 있고 `always`는 없다. `--color` 접두 매칭을 "
+        "허용했다면(금지된 startswith 규칙) 이 케이스가 통과했을 것이다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-devices-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --devices=skip token src",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "값이 동작을 바꾸는 롱플래그 — 표 밖.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-directories-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --directories=read token src",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--directories=read`는 디렉터리 피연산자를 읽기 대상으로 바꾼다 — "
+        "값이 동작을 바꾸는 롱플래그라 표 밖으로 유지한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-a-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -a token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-a`는 `--binary-files=text`와 동일한 스위치의 짧은 표기다 — 같은 "
+        "불변식을 두 곳에 모순되게 적어두지 않으려 셋 다 거부 상태로 둔다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-cap-i-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -I token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-I`(대문자)는 `--binary-files=without-match`의 짧은 표기 — 소문자 "
+        "`-i`(대소문자 무시, 이미 허용)와 혼동하지 않도록 별도로 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-z-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -z token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-z`(NUL 구분)는 출력 프레이밍을 바꾼다 — 허용 짧은 플래그 집합 밖.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-null-long-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --null token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-Z`/`--null`은 출력 프레이밍을 바꾼다 — 별칭 표 밖.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-label-eq-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --label=x token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "값을 취하는 롱플래그 — 별칭 표 밖.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-near-miss-long-flag-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --only-matchingx token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--only-matching`과 접두사가 같지만 정확히 일치하지 않는 미등재 "
+        "롱플래그 — 정확 일치 규율(exact-match, startswith 금지)을 직접 "
+        "고정한다. startswith 매칭으로 회귀하면 이 케이스가 허용으로 뒤집힌다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-filter-role-file-operand-still-denied",
+        "fix": "FIX-GREP",
+        "command": "printf '%s\\n' ok | grep -o token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — `-o`가 새로 허용됐어도 filter 역할(`allow_files=False`, "
+        "`:1490` 상당)의 파일 피연산자 거부 불변식은 그대로 유지된다.",
+    },
+]
+
+
+def fix_grep_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """INV-B 가 실제로 전환을 검사해야 하는 행(완화 대상)만 골라낸다."""
+    return [
+        case
+        for case in FIX_GREP_ROUTE_PREDICATE_CASES
+        if case.get("expected_decision") != "deny"
+    ]
+
+
+def fix_grep_relaxation_case_count() -> int:
+    """FIX-GREP 완화 대상(deny -> sanitize) 행 수를 고정한다 — 루프 공허 통과 방지."""
+    return len(fix_grep_route_predicate_relaxations())
+
+
+def fix_grep_stay_denied_case_count() -> int:
+    """FIX-GREP 거부 보존(INV-A) 행 수를 고정한다 — 루프 공허 통과 방지."""
+    return sum(
+        1
+        for case in FIX_GREP_ROUTE_PREDICATE_CASES
+        if case["expected_decision"] == "deny"
+    )
+
+
+# ---------------------------------------------------------------------------
 # FIX-6 — `git remote`/`git remote -v` 를 §6.1b 쌍 화이트리스트에 재도입한다
 # (11행 -> 12행). FIX-1a/1b 와 동일하게 deny -> allow(sanitize) 전환이므로
 # INV-A/INV-B 하네스로 검증한다(FIX-1a 의 케이스 shape 를 그대로 따른다).
