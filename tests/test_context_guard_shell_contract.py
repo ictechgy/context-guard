@@ -1595,9 +1595,31 @@ class MiniShellBoundaryTests(unittest.TestCase):
         """FIX-GREP 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
         표의 크기를 고정한다(FIX-1b/FIX-LS 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
-        self.assertEqual(fix_grep_relaxation_case_count(), 25)
-        self.assertEqual(fix_grep_stay_denied_case_count(), 18)
-        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 43)
+        self.assertEqual(fix_grep_relaxation_case_count(), 28)
+        self.assertEqual(fix_grep_stay_denied_case_count(), 24)
+        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 52)
+
+    def test_fix_grep_cases_cover_both_call_sites_of_the_shared_predicate(self) -> None:
+        """`_grep_is_safe` 는 `grep`/`egrep`/`fgrep` 라우트와 `git grep`(`_git_is_safe`
+        의 `grep` 서브커맨드 위임) **두 곳**에서 쓰인다. 케이스 표가 한쪽만 덮으면
+        공유 predicate 확장의 폭발 반경 절반이 감시 밖에 남는다 — 실제로 PR #251
+        최초 상태가 그랬다. 양쪽 모두에 완화 케이스와 거부 보존 케이스가 있는지
+        확인한다."""
+        git_grep_cases = [
+            case
+            for case in FIX_GREP_ROUTE_PREDICATE_CASES
+            if case["command"].startswith("git grep ")
+        ]
+        self.assertGreaterEqual(
+            sum(1 for case in git_grep_cases if case["expected_decision"] != "deny"),
+            3,
+            "`git grep` 완화 케이스가 없다 — 두 번째 호출 지점이 감시되지 않는다.",
+        )
+        self.assertGreaterEqual(
+            sum(1 for case in git_grep_cases if case["expected_decision"] == "deny"),
+            1,
+            "`git grep` 거부 보존 케이스가 없다.",
+        )
 
     def test_every_grep_long_alias_table_entry_is_pinned(self) -> None:
         """`_GREP_LONG_ALIASES` 의 모든 항목이 FIX-GREP 케이스 표에 실제 명령으로

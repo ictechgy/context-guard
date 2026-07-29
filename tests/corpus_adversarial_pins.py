@@ -1396,8 +1396,10 @@ FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "baseline_reason_code": "route_policy_denied",
         "expected_decision": "sanitize",
         "expected_reason_code": None,
-        "note": "핵심 완화 1 — `-o`는 매치된 부분 문자열만 출력해 이미 허용된 "
-        "`-n` 형태보다 항상 적거나 같은 출력을 낸다.",
+        "note": "핵심 완화 1 — `-o`는 매치된 부분 문자열만 출력한다. **바이트 기준**"
+        "으로는 이미 허용된 `-n` 형태보다 항상 적거나 같다. 다만 줄 수 기준으로는 "
+        "그렇지 않다 — 한 줄에 매치가 N개면 `-o`는 N줄을 낸다. 줄 수는 sanitize "
+        "래퍼의 `--max-lines` 상한이 잡으므로 예산 위험은 없다.",
     },
     {
         "case_id": "fix-grep-short-q-allowed",
@@ -1821,6 +1823,101 @@ FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "expected_decision": "deny",
         "expected_reason_code": "route_policy_denied",
         "note": "위와 같은 이유 — 인용된 `--exclude-dir=` 도 route 축에서 죽는다.",
+    },
+    # --- `git grep` 동반 확장 (PR #251 리뷰 라운드 1, Claude 트랙 MEDIUM) ---
+    # `_git_is_safe` 는 `grep` 서브커맨드를 `_grep_is_safe(("grep", *arguments),
+    # allow_files=True)` 로 그대로 위임한다. 즉 이 PR 의 predicate 확장은 `grep`/
+    # `egrep`/`fgrep` 뿐 아니라 **`git grep` 에도 동시에 적용된다**. 실측으로
+    # `git grep -o`/`-q`/롱 별칭이 deny -> sanitize 로 함께 움직였는데 케이스 표에는
+    # `git grep` 행이 하나도 없었다 — 공유 predicate 의 폭발 반경 중 절반이 감시
+    # 밖이었다. 두 호출 지점 모두를 고정한다.
+    {
+        "case_id": "fix-grep-git-grep-short-o-allowed",
+        "fix": "FIX-GREP",
+        "command": "git grep -o token",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`git grep` 도 같은 predicate 를 쓰므로 `-o` 완화가 함께 적용된다.",
+    },
+    {
+        "case_id": "fix-grep-git-grep-short-q-allowed",
+        "fix": "FIX-GREP",
+        "command": "git grep -q token",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`git grep -q` 도 함께 열린다 — 두 번째 호출 지점의 완화를 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-git-grep-long-only-matching-allowed",
+        "fix": "FIX-GREP",
+        "command": "git grep --only-matching token",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "롱 별칭 표도 `git grep` 경로에 그대로 적용된다.",
+    },
+    {
+        "case_id": "fix-grep-git-grep-color-always-denied",
+        "fix": "FIX-GREP",
+        "command": "git grep --color=always token",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "역방향 — `git grep` 경로에서도 ANSI 주입 금지가 동일하게 유지된다.",
+    },
+    # --- 표에서 명시 제외했으나 어떤 핀도 감시하지 않던 능력들 ---
+    # (PR #251 리뷰 라운드 1, Claude 트랙 MEDIUM). 특히 `-D`/`-U` 는 GNU 에서
+    # 값을 소비하는 형태(`-D ACTION`)라, `allowed_flags` 에 `D` 를 넣는 변이는
+    # 능력을 여는 동시에 다음 피연산자를 조용히 삼킨다.
+    {
+        "case_id": "fix-grep-inv-a-exclude-eq-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --exclude='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--include=`/`--exclude-dir=` 와 같은 부류인데 핀이 없었다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-cap-z-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -Z token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--null` 의 짧은 형태 — 롱 형태만 핀이 있었다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-cap-d-value-consuming-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -D read token src",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-D ACTION` 은 값을 소비하는 짧은 플래그다 — `allowed_flags` 에 "
+        "`D` 를 넣는 변이는 능력을 여는 동시에 다음 토큰(`read`)을 플래그 값으로 "
+        "삼켜 피연산자 회계까지 망가뜨린다. 명시 제외 목록에 있었으나 감시가 없었다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-cap-u-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -U token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-U`(바이너리 취급) — 명시 제외 목록에 있었으나 감시가 없었다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-null-data-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --null-data token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-z`(입력 줄 구분자를 NUL 로) 의 롱 형태 — 출력/입력 프레이밍을 "
+        "바꾼다. 짧은 형태만 핀이 있었다.",
     },
 ]
 
