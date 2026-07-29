@@ -1444,12 +1444,16 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
             "context-guard" in hook_text.lower()
             or any(identity in hook_text for identity in identities)
         ):
-            raise SystemExit("measurement baseline contains managed ContextGuard hook residue")
+            raise SystemExit("measurement baseline settings contain managed ContextGuard hook")
         settings_without_registered = dict(spec.settings_payload)
         if "hooks" in settings_without_registered:
-            settings_without_registered["hooks"] = _measurement_prune_registered_hooks(
+            pruned_hooks = _measurement_prune_registered_hooks(
                 settings_without_registered["hooks"], identities,
             )
+            if pruned_hooks in ({}, []):
+                settings_without_registered.pop("hooks")
+            else:
+                settings_without_registered["hooks"] = pruned_hooks
         normalized_settings.append((
             variant.name,
             json.dumps(settings_without_registered, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
@@ -1473,7 +1477,7 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
             ),
         ))
     if len({value for _, value in normalized_settings}) != 1:
-        raise SystemExit("measurement baseline/treatment settings differ beyond registered hooks")
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
     if len({value for _, value in parity_projection}) != 1:
         raise SystemExit("measurement baseline/treatment configuration differs beyond arm/hooks")
 
@@ -2549,11 +2553,12 @@ def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, str]]:
                 event.get("event"), event.get("subtype"), event.get("type"), hook.get("event_name"),
             )),
             ("hook_identity", (
+                event.get("hook_identity"), event.get("hookIdentity"),
                 event.get("hook_name"), event.get("hookName"), event.get("hook_id"),
                 event.get("hookId"), hook.get("name"), hook.get("id"),
             )),
             ("tool", (
-                event.get("tool_name"), event.get("toolName"), hook.get("tool"),
+                event.get("tool"), event.get("tool_name"), event.get("toolName"), hook.get("tool"),
             )),
             ("decision", (
                 event.get("decision"), event.get("hook_decision"), hook.get("decision"),
