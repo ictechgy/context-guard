@@ -1649,6 +1649,179 @@ FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "note": "역방향 — `-o`가 새로 허용됐어도 filter 역할(`allow_files=False`, "
         "`:1490` 상당)의 파일 피연산자 거부 불변식은 그대로 유지된다.",
     },
+    # --- 변이 생존 차단 보강 (PR #251 리뷰 라운드 1) ---
+    # 아래 행들은 새 동작을 만들지 않는다. 전부 현재 실측 결정을 그대로 고정할
+    # 뿐이며, 목적은 감시 공백(surveillance gap)을 메우는 것이다. 리뷰 라운드에서
+    # `_GREP_LONG_ALIASES` 를 대상으로 변이 테스트를 돌린 결과, 표의 22개 항목 중
+    # 10개는 삭제해도 어떤 테스트도 깨지지 않았고(축소 방향), `--colour=always` /
+    # `--regexp=` / `--include=` 접두 허용을 새로 추가하는 변이(확대 방향)도
+    # 전부 생존했다. 특히 `--colour=always` 는 PR 이 "ANSI 이스케이프 주입"으로
+    # 명시 금지한 바로 그 능력의 다른 철자인데, 기존 핀은 `--color=always` 라는
+    # **철자 하나만** 고정하고 있었다.
+    {
+        "case_id": "fix-grep-long-ignore-case-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --ignore-case token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-i`의 롱 별칭 — 표에서 삭제해도 어떤 테스트도 깨지지 않던 항목.",
+    },
+    {
+        "case_id": "fix-grep-long-with-filename-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --with-filename token README.md README2.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-H`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-files-with-matches-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --files-with-matches token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-l`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-files-without-match-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --files-without-match token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-L`의 롱 별칭 — `--files-with-matches`와 한 글자 차이라 함께 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-long-word-regexp-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --word-regexp token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-w`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-line-regexp-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --line-regexp token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-x`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-fixed-strings-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --fixed-strings token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-F`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-basic-regexp-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --basic-regexp token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-G`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-perl-regexp-allowed",
+        "fix": "FIX-GREP",
+        "command": "grep --perl-regexp token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "`-P`의 롱 별칭.",
+    },
+    {
+        "case_id": "fix-grep-long-no-messages-allowed-asymmetry-pinned",
+        "fix": "FIX-GREP",
+        "command": "grep --no-messages token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "**알려진 비대칭** — `--no-messages`는 표에 있어 허용되지만 그 짧은 "
+        "형태 `-s`는 `allowed_flags` 밖이라 여전히 거부된다(바로 아래 "
+        "`fix-grep-inv-a-short-s-denied` 참조). `_GREP_LONG_ALIASES` 주석은 표가 "
+        "'이미 허용된 짧은 옵션과 동치인 것만' 담는다고 적고 있으나 이 항목은 "
+        "그 규칙의 예외다. `-s`는 stderr 진단만 억제하므로 출력이 줄기만 하고 "
+        "위험은 없다 — 즉 보안 결함이 아니라 철자 일관성 문제이며, 어느 쪽으로 "
+        "정렬할지는 별도 결정이다. 양쪽 현재 동작을 모두 핀으로 고정해 어느 쪽이든 "
+        "말없이 움직이지 못하게 한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-short-s-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -s token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--no-messages`의 짧은 형태 — `allowed_flags` 밖이라 거부다. "
+        "바로 위 항목과 짝을 이루는 비대칭 핀.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-colour-always-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --colour=always token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--color=always`의 영연방 철자. GNU grep 은 `--colour`를 `--color`의 "
+        "동의어로 받으므로 이 철자는 PR 이 금지한 ANSI 이스케이프 주입 능력에 "
+        "**다른 이름으로 도달한다**. 기존 핀은 `--color=always` 한 철자만 "
+        "고정하고 있어서, 표에 `--colour=always`를 넣는 변이가 전 테스트를 "
+        "통과했다. 능력 기준으로 고정하기 위해 철자별 핀을 추가한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-colour-never-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --colour=never token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "표는 `--color=` 철자만 담는다 — `--colour=never`는 무해하지만 "
+        "미등재라 거부다(fail-closed). 철자 집합의 경계를 명시적으로 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-regexp-eq-denied",
+        "fix": "FIX-GREP",
+        "command": "grep --regexp=token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`-e`의 값 결합 롱 형태. `-e PAT`는 이미 허용되지만 `--regexp=`는 "
+        "값 소비 롱플래그라 표 밖이다 — 이 경계에 `--regexp=` 접두 허용을 "
+        "추가하는 변이가 감시 없이 통과하지 못하게 한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-quoted-include-glob-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -rn --include='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "**인용된** `--include=` 는 셸 글롭 확장이 막히므로 파서의 "
+        "`active_2a` 축에 걸리지 않고 route 축까지 도달해 "
+        "`route_policy_denied` 로 죽는다(인용하지 않은 `--include=*.py` 는 "
+        "`active_2a`). 즉 이 형태의 재승인은 route 표의 결정이며, 값 소비 "
+        "롱플래그를 위한 통제된 접두 규칙이 별도로 설계될 때까지 의도적으로 "
+        "보류된 상태다. 그 보류가 조용히 뒤집히지 않도록 고정한다.",
+    },
+    {
+        "case_id": "fix-grep-inv-a-quoted-exclude-dir-glob-denied",
+        "fix": "FIX-GREP",
+        "command": "grep -rn --exclude-dir='.git' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "위와 같은 이유 — 인용된 `--exclude-dir=` 도 route 축에서 죽는다.",
+    },
 ]
 
 

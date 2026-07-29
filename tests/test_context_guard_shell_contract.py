@@ -1595,9 +1595,39 @@ class MiniShellBoundaryTests(unittest.TestCase):
         """FIX-GREP 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
         표의 크기를 고정한다(FIX-1b/FIX-LS 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
-        self.assertEqual(fix_grep_relaxation_case_count(), 15)
-        self.assertEqual(fix_grep_stay_denied_case_count(), 12)
-        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 27)
+        self.assertEqual(fix_grep_relaxation_case_count(), 25)
+        self.assertEqual(fix_grep_stay_denied_case_count(), 18)
+        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 43)
+
+    def test_every_grep_long_alias_table_entry_is_pinned(self) -> None:
+        """`_GREP_LONG_ALIASES` 의 모든 항목이 FIX-GREP 케이스 표에 실제 명령으로
+        등장하는지 확인한다. 표에 항목을 추가하면서 핀을 빠뜨리면(=감시 없는 확대)
+        여기서 즉시 실패한다.
+
+        `--recursive` 만 예외다 — `_grep_is_safe` 안에서 별칭 표 조회보다 앞선
+        독립 분기(`if argument == "--recursive"`)가 이미 처리하므로 표의 해당
+        항목은 도달 불가능한 중복이며, 삭제해도 어떤 명령의 결정도 바뀌지 않는다
+        (리뷰 라운드에서 10,728개 명령에 대해 결정 차이 0으로 실측 확인).
+        """
+        pinned_tokens: set[str] = set()
+        for case in FIX_GREP_ROUTE_PREDICATE_CASES:
+            pinned_tokens.update(shlex.split(case["command"]))
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"grep_alias_pins_{index}")
+            aliases = namespace["_GREP_LONG_ALIASES"]
+            self.assertTrue(aliases, "별칭 표가 비었다 — 표 자체가 사라졌다.")
+            for alias in sorted(aliases):
+                if alias == "--recursive":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged", alias=alias
+                ):
+                    self.assertIn(
+                        alias,
+                        pinned_tokens,
+                        f"{alias} 가 FIX_GREP_ROUTE_PREDICATE_CASES 에 "
+                        "독립 토큰으로 등장하지 않는다 — 감시되지 않는 별칭이다.",
+                    )
 
 
 if __name__ == "__main__":
