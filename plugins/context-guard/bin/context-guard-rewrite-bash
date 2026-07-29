@@ -2118,9 +2118,16 @@ def command_search_diff(
             return "deny"
         return "trim" if role == "first" else ("noop" if role == "standalone" else "deny")
     if first == "ls":
+        # standalone 은 오늘의 동작(`noop`)을 그대로 보존한다. `_ls_is_safe` 는
+        # producer(role == "first") 재승인의 게이트일 뿐이며, standalone 판정에
+        # 개입해서는 안 된다 — 개입하면 `ls -G`, `ls -x`, `ls --color=always`
+        # 처럼 지금 통과하는 standalone 형태가 새로 거부되어 "이미 동작하는 것을
+        # 움직이지 않는다"는 설계 불변식을 깨뜨린다.
+        if role == "standalone":
+            return "noop"
         if role == "filter" or not _ls_is_safe(argv):
             return "deny"
-        return "trim" if role == "first" else "noop"
+        return "trim"
     if first == "cat":
         if not _cat_is_safe(argv, allow_files=role != "filter"):
             return "deny"

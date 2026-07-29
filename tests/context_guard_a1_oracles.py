@@ -152,7 +152,8 @@ def _route_examples() -> list[dict[str, str]]:
     # 동작하는 것을 건드리지 않는다는 설계 원칙(§4.1 "Deliberately not
     # proposed").
     #   1. before/after: role=="first"만 route_policy_denied -> rewrite_trim.
-    #      standalone은 noop -> noop, 변화 없음.
+    #      standalone은 허용목록 안팎을 가리지 않고 noop -> noop, 변화 없음
+    #      (`ls-standalone-invariant` family 가 이를 고정한다).
     #   2. output boundedness: trim_command_output.py의 220줄 캡이 그대로
     #      적용된다.
     #   3. axis-b non-impact: `_ls_is_safe`는 순수 허용목록이며 값(value)을
@@ -164,13 +165,34 @@ def _route_examples() -> list[dict[str, str]]:
     # -------------------------------------------------------------------
     add(
         "ls-producer",
-        ("standalone", "first"),
+        ("first",),
         ("ls -la docs", "ls -R src"),
-        {"standalone": "noop", "first": "rewrite_trim"},
+        "rewrite_trim",
         ("ls --sort=size docs", "ls -Z docs"),
-        note="AC ls producer: standalone unchanged (noop); first newly "
-        "admitted (route_policy_denied -> rewrite_trim). Negatives: "
-        "long flags outside the table stay denied.",
+        note="AC ls producer: role==first newly admitted "
+        "(route_policy_denied -> rewrite_trim). Negatives: long flags "
+        "outside the table and unknown short flags stay denied.",
+    )
+    # standalone 불변식 — `_ls_is_safe` 는 producer 재승인 게이트일 뿐이고
+    # standalone 판정에 개입하지 않는다. 허용목록 밖 플래그(`--sort=`, `-Z`,
+    # `-G`, `--color=always`)를 쓴 standalone `ls` 도 변경 전과 동일하게 `noop`
+    # 이어야 한다. 이 family 가 없으면 게이트가 standalone 까지 좁혀
+    # 지금 통과하는 형태를 새로 거부해도 아무 테스트도 깨지지 않는다.
+    add(
+        "ls-standalone-invariant",
+        ("standalone",),
+        (
+            "ls -la docs",
+            "ls -R src",
+            "ls --sort=size docs",
+            "ls -Z docs",
+            "ls -G",
+            "ls --color=always",
+        ),
+        "noop",
+        (),
+        note="standalone ls is untouched by this change — every form, "
+        "allowlisted or not, keeps today's noop decision.",
     )
     add(
         "ls-filter",

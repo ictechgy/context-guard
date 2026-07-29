@@ -1222,6 +1222,27 @@ FIX_LS_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "지배된다 — ls 자체의 라우트와는 무관한 별개 축).",
     },
     {
+        "case_id": "fix-ls-first-double-dash-operands-allowed",
+        "fix": "FIX-LS",
+        "command": "ls -la -- docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`--` 이후는 전부 피연산자다 — 허용목록 검사는 거기서 멈춰야 "
+        "한다. 이 행이 없으면 `--` 처리를 지워도 아무 테스트가 깨지지 않는다"
+        "(변이 M8 생존).",
+    },
+    {
+        "case_id": "fix-ls-first-double-dash-flaglike-operand-allowed",
+        "fix": "FIX-LS",
+        "command": "ls -- -weird | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`--` 뒤의 플래그처럼 보이는 피연산자(`-weird`)는 플래그로 "
+        "재해석되지 않는다 — ls 자신의 해석과 일치한다.",
+    },
+    {
         "case_id": "fix-ls-inv-a-filter-role-still-denied",
         "fix": "FIX-LS",
         "command": "printf '%s\\n' ok | ls -la",
@@ -1252,6 +1273,60 @@ FIX_LS_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "note": "§5.5 4번째 열 — `-Z`(SELinux 컨텍스트)는 허용 짧은 플래그 집합 "
         "밖이라 여전히 deny.",
     },
+    # 짧은 플래그 클러스터 분해가 성립하는 근거는 "허용목록 안의 어떤 ls 플래그도
+    # 값을 소비하지 않는다"는 성질 하나뿐이다. 값을 소비하는 짧은 플래그가 단 하나
+    # 라도 허용목록에 새로 들어오면 그 근거가 무너지고 클러스터 분해가 값 인자를
+    # 플래그로 오독한다. 아래 4행이 그 경계를 고정한다 — GNU coreutils 의
+    # `-w COLS`/`-T COLS`/`-I PATTERN`, BSD(macOS)의 `-D format`.
+    {
+        "case_id": "fix-ls-inv-a-gnu-width-value-flag-denied",
+        "fix": "FIX-LS",
+        "command": "ls -w 80 docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `-w COLS` 는 값을 소비한다 — 허용목록에 들어오면 클러스터 "
+        "분해 논거가 깨진다.",
+    },
+    {
+        "case_id": "fix-ls-inv-a-gnu-ignore-value-flag-denied",
+        "fix": "FIX-LS",
+        "command": "ls -I '*.pyc' docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `-I PATTERN` 은 값을 소비한다.",
+    },
+    {
+        "case_id": "fix-ls-inv-a-gnu-tabsize-value-flag-denied",
+        "fix": "FIX-LS",
+        "command": "ls -T 4 docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `-T COLS` 는 값을 소비한다.",
+    },
+    {
+        "case_id": "fix-ls-inv-a-bsd-date-format-value-flag-denied",
+        "fix": "FIX-LS",
+        "command": "ls -D '%F' docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "BSD(macOS) `-D format` 은 값을 소비한다 — 두 구현 모두에서 "
+        "값 소비 플래그가 허용목록 밖임을 고정한다.",
+    },
+    {
+        "case_id": "fix-ls-inv-a-color-always-denied",
+        "fix": "FIX-LS",
+        "command": "ls --color=always docs | head -30",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`--color=always` 는 ANSI 이스케이프를 출력에 주입해 trim/"
+        "sanitize 대상 텍스트를 오염시키므로 허용목록 밖으로 유지한다 "
+        "(`--color=never`/`--color=auto` 만 허용).",
+    },
 ]
 
 
@@ -1262,6 +1337,42 @@ def ls_route_predicate_relaxations() -> list[RoutePredicateCase]:
         for case in FIX_LS_ROUTE_PREDICATE_CASES
         if case.get("expected_decision") != "deny"
     ]
+
+
+def ls_relaxation_case_count() -> int:
+    """FIX-LS 완화 대상(deny -> trim) 행 수를 고정한다.
+
+    `ls_route_predicate_relaxations` 는 `expected_decision != "deny"` 로 구성원을
+    고르므로, 행이 사라지거나 기대값이 `deny` 로 오염되면 INV-B/INV-C 루프가
+    조용히 0회 반복하며 공허하게 통과한다. FIX-1b 의 개수 가드와 동일한 역할."""
+    return len(ls_route_predicate_relaxations())
+
+
+def ls_stay_denied_case_count() -> int:
+    """FIX-LS 거부 보존(INV-A) 행 수를 고정한다 — 루프 공허 통과 방지."""
+    return sum(
+        1
+        for case in FIX_LS_ROUTE_PREDICATE_CASES
+        if case["expected_decision"] == "deny"
+    )
+
+
+# standalone 불변식 앵커 — `_ls_is_safe` 는 producer(role == "first") 재승인의
+# 게이트일 뿐이므로 standalone 판정에는 영향을 주면 안 된다. 허용목록 밖 플래그를
+# 쓴 standalone `ls` 도 변경 전(`noop`)과 동일해야 한다. 이 앵커가 없으면 게이트가
+# standalone 까지 좁혀 오늘 통과하는 `ls -G` 류를 새로 거부해도 통과한다.
+FIX_LS_STANDALONE_INVARIANT_COMMANDS: tuple[str, ...] = (
+    "ls",
+    "ls -la docs",
+    "ls -R src",
+    "ls --sort=size docs",
+    "ls -Z docs",
+    "ls -G",
+    "ls -x docs",
+    "ls -w 80",
+    "ls --color=always",
+    "ls --block-size=1K",
+)
 
 
 # ---------------------------------------------------------------------------

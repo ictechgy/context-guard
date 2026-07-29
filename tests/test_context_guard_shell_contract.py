@@ -38,6 +38,7 @@ from tests.corpus_adversarial_pins import (
     FIX5_GLOB_REJECTION_PINS,
     FIX6_ROUTE_PREDICATE_CASES,
     FIX_LS_ROUTE_PREDICATE_CASES,
+    FIX_LS_STANDALONE_INVARIANT_COMMANDS,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -46,7 +47,9 @@ from tests.corpus_adversarial_pins import (
     fix2_route_predicate_relaxations,
     fix5_case_count,
     fix6_route_predicate_relaxations,
+    ls_relaxation_case_count,
     ls_route_predicate_relaxations,
+    ls_stay_denied_case_count,
 )
 
 
@@ -1438,6 +1441,38 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     response = json.loads(proc.stdout)
                     wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
                     self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_inv_a_ls_standalone_route_stays_noop(self) -> None:
+        """INV-A(거부 보존의 대칭 — 허용 보존) — standalone `ls` 는 이 변경으로
+        전혀 움직이지 않아야 한다. `_ls_is_safe` 는 producer(role == "first")
+        재승인의 게이트일 뿐이므로, 허용목록 밖 플래그(`-G`, `-x`, `-Z`,
+        `--sort=`, `--color=always` 등)를 쓴 standalone `ls` 도 변경 전과 같은
+        `noop` 이어야 한다. 게이트가 standalone 까지 좁히면 오늘 통과하는
+        형태가 새로 거부되므로 즉시 실패한다."""
+        self.assertGreaterEqual(len(FIX_LS_STANDALONE_INVARIANT_COMMANDS), 10)
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_ls_standalone_{index}")
+            classify_command = namespace["classify_command"]
+            for command in FIX_LS_STANDALONE_INVARIANT_COMMANDS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    command=command,
+                ):
+                    decision = classify_command(command)
+                    self.assertEqual(
+                        decision.action,
+                        "noop",
+                        "standalone ls 가 새로 거부/재작성됐다 — 이미 동작하는 "
+                        "형태를 움직이지 않는다는 설계 불변식 위반.",
+                    )
+                    self.assertIsNone(decision.reason_code)
+
+    def test_fix_ls_case_tables_are_not_vacuous(self) -> None:
+        """FIX-LS 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스 표의
+        크기를 고정한다(FIX-1b 개수 가드와 동일한 역할)."""
+        self.assertEqual(ls_relaxation_case_count(), 5)
+        self.assertEqual(ls_stay_denied_case_count(), 8)
+        self.assertEqual(len(FIX_LS_ROUTE_PREDICATE_CASES), 13)
 
     def test_inv_a_fix6_git_remote_write_forms_stay_denied(self) -> None:
         """INV-A(거부 보존, plan §5.2) — `FIX6_ROUTE_PREDICATE_CASES`의 거부 앵커
