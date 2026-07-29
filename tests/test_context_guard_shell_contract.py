@@ -37,6 +37,8 @@ from tests.corpus_adversarial_pins import (
     FIX5_ENV_WRAPPER_BYPASS_PINS,
     FIX5_GLOB_REJECTION_PINS,
     FIX6_ROUTE_PREDICATE_CASES,
+    FIX_LS_ROUTE_PREDICATE_CASES,
+    FIX_LS_STANDALONE_INVARIANT_COMMANDS,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -45,6 +47,9 @@ from tests.corpus_adversarial_pins import (
     fix2_route_predicate_relaxations,
     fix5_case_count,
     fix6_route_predicate_relaxations,
+    ls_relaxation_case_count,
+    ls_route_predicate_relaxations,
+    ls_stay_denied_case_count,
 )
 
 
@@ -1373,6 +1378,101 @@ class MiniShellBoundaryTests(unittest.TestCase):
                             "재래핑된 명령을 실제 bash -lc 로 실행한 결과에서 "
                             "파일 내용을 찾지 못했다 — 파일명이 왕복 중 손상됐을 수 있다.",
                         )
+
+    def test_inv_b_ls_producer_deny_to_allow_transition_requires_route_policy_denied_baseline(
+        self,
+    ) -> None:
+        """INV-B(허용 전환의 출처 제한) — FIX-LS(`ls` producer route, design
+        route-readmission-design-20260729.md §4.1)의 완화 대상 행은 전부
+        baseline `route_policy_denied` 여야 한다. FIX-1a와 동일한 shape —
+        재플레이로 실측된 13건의 `ls` 거부가 전부 이 reason_code 였다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_b_ls_{index}")
+            classify_command = namespace["classify_command"]
+            for case in ls_route_predicate_relaxations():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    self.assertEqual(
+                        case["baseline_reason_code"],
+                        "route_policy_denied",
+                        "INV-B 위반 — 완화 대상의 baseline 이 route_policy_denied 가 아니다.",
+                    )
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code, case.get("expected_reason_code")
+                    )
+
+    def test_inv_a_ls_stay_denied_forms(self) -> None:
+        """INV-A(거부 보존) — `FIX_LS_ROUTE_PREDICATE_CASES` 중 거부로 남아야
+        하는 행(파이프라인 filter 역할, 표 밖 롱플래그, 미허용 짧은 플래그)이
+        개조 전/후 어느 코드에서도 항상 deny 인지 고정한다."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_ls_{index}")
+            classify_command = namespace["classify_command"]
+            for case in FIX_LS_ROUTE_PREDICATE_CASES:
+                if case["expected_decision"] != "deny":
+                    continue
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, "route_policy_denied")
+
+    def test_inv_c_newly_rewrapped_ls_producer_commands_roundtrip(self) -> None:
+        """INV-C(재래핑 왕복) — FIX-LS로 `bash -lc` trim 경로에 새로 진입하는
+        `ls` producer 명령(role=first)을 전수 열거하고, 래핑된 명령을 되찢어
+        원본 명령 문자열이 손실 없이 보존되는지 확인한다. FIX-2 cat 롤아웃
+        (:1306)과 동일한 패턴."""
+        newly_rewrapped_candidates = tuple(
+            case["command"]
+            for case in ls_route_predicate_relaxations()
+            if case["expected_decision"] in {"trim", "sanitize"}
+        )
+        for script in self.contract_scripts():
+            for command in newly_rewrapped_candidates:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(a1_route_decision(proc), "rewrite_trim")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_inv_a_ls_standalone_route_stays_noop(self) -> None:
+        """INV-A(거부 보존의 대칭 — 허용 보존) — standalone `ls` 는 이 변경으로
+        전혀 움직이지 않아야 한다. `_ls_is_safe` 는 producer(role == "first")
+        재승인의 게이트일 뿐이므로, 허용목록 밖 플래그(`-G`, `-x`, `-Z`,
+        `--sort=`, `--color=always` 등)를 쓴 standalone `ls` 도 변경 전과 같은
+        `noop` 이어야 한다. 게이트가 standalone 까지 좁히면 오늘 통과하는
+        형태가 새로 거부되므로 즉시 실패한다."""
+        self.assertGreaterEqual(len(FIX_LS_STANDALONE_INVARIANT_COMMANDS), 10)
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"inv_a_ls_standalone_{index}")
+            classify_command = namespace["classify_command"]
+            for command in FIX_LS_STANDALONE_INVARIANT_COMMANDS:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    command=command,
+                ):
+                    decision = classify_command(command)
+                    self.assertEqual(
+                        decision.action,
+                        "noop",
+                        "standalone ls 가 새로 거부/재작성됐다 — 이미 동작하는 "
+                        "형태를 움직이지 않는다는 설계 불변식 위반.",
+                    )
+                    self.assertIsNone(decision.reason_code)
+
+    def test_fix_ls_case_tables_are_not_vacuous(self) -> None:
+        """FIX-LS 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스 표의
+        크기를 고정한다(FIX-1b 개수 가드와 동일한 역할)."""
+        self.assertEqual(ls_relaxation_case_count(), 5)
+        self.assertEqual(ls_stay_denied_case_count(), 8)
+        self.assertEqual(len(FIX_LS_ROUTE_PREDICATE_CASES), 13)
 
     def test_inv_a_fix6_git_remote_write_forms_stay_denied(self) -> None:
         """INV-A(거부 보존, plan §5.2) — `FIX6_ROUTE_PREDICATE_CASES`의 거부 앵커

@@ -142,6 +142,68 @@ def _route_examples() -> list[dict[str, str]]:
         ("printf -v out ok",),
     )
     # -------------------------------------------------------------------
+    # ls producer route (design doc route-readmission-design-20260729.md §4.1).
+    # `ls`는 명령 자체로는 거부되지 않는다 — standalone `ls -la docs`는 이미
+    # 오늘도 `noop`이다. 13건의 실측 거부는 전부 파이프라인 역할(role=="first")
+    # 거부였다: `role == "first"`가 `{trim, sanitize}` 밖의 라우트를 전부
+    # deny하는데, `ls`는 어떤 라우트도 갖지 않아 항상 걸렸다. 그래서 이
+    # 변경은 "ls를 허용"하는 게 아니라 "ls에 producer 라우트를 부여"하는
+    # 것이다. standalone은 의도적으로 그대로 둔다(noop 유지) — 이미
+    # 동작하는 것을 건드리지 않는다는 설계 원칙(§4.1 "Deliberately not
+    # proposed").
+    #   1. before/after: role=="first"만 route_policy_denied -> rewrite_trim.
+    #      standalone은 허용목록 안팎을 가리지 않고 noop -> noop, 변화 없음
+    #      (`ls-standalone-invariant` family 가 이를 고정한다).
+    #   2. output boundedness: trim_command_output.py의 220줄 캡이 그대로
+    #      적용된다.
+    #   3. axis-b non-impact: `_ls_is_safe`는 순수 허용목록이며 값(value)을
+    #      소비하지 않는다. 파서/게이트에는 손대지 않는다.
+    #   4. reverse case: `ls`를 파이프라인 filter로 쓰는 경우(`ls`는 stdin을
+    #      무시하므로 항상 실수) 및 표 밖의 롱 플래그는 여전히 deny.
+    #   5. reads outside the repo: 오늘도 `ls`가 이미 저장소 밖 경로를 열람할
+    #      수 있으므로(standalone noop) 이 변경으로 새로 생기는 표면이 아니다.
+    # -------------------------------------------------------------------
+    add(
+        "ls-producer",
+        ("first",),
+        ("ls -la docs", "ls -R src"),
+        "rewrite_trim",
+        ("ls --sort=size docs", "ls -Z docs"),
+        note="AC ls producer: role==first newly admitted "
+        "(route_policy_denied -> rewrite_trim). Negatives: long flags "
+        "outside the table and unknown short flags stay denied.",
+    )
+    # standalone 불변식 — `_ls_is_safe` 는 producer 재승인 게이트일 뿐이고
+    # standalone 판정에 개입하지 않는다. 허용목록 밖 플래그(`--sort=`, `-Z`,
+    # `-G`, `--color=always`)를 쓴 standalone `ls` 도 변경 전과 동일하게 `noop`
+    # 이어야 한다. 이 family 가 없으면 게이트가 standalone 까지 좁혀
+    # 지금 통과하는 형태를 새로 거부해도 아무 테스트도 깨지지 않는다.
+    add(
+        "ls-standalone-invariant",
+        ("standalone",),
+        (
+            "ls -la docs",
+            "ls -R src",
+            "ls --sort=size docs",
+            "ls -Z docs",
+            "ls -G",
+            "ls --color=always",
+        ),
+        "noop",
+        (),
+        note="standalone ls is untouched by this change — every form, "
+        "allowlisted or not, keeps today's noop decision.",
+    )
+    add(
+        "ls-filter",
+        ("filter",),
+        (),
+        "deny",
+        ("ls -la",),
+        note="ls as a pipeline filter always stays denied — ls ignores "
+        "stdin, so `... | ls` is always a mistake.",
+    )
+    # -------------------------------------------------------------------
     # FIX-2 — `cat <bigfile>` read guard bypass (plan §6.2, AC-2.1/AC-2.4).
     # standalone cat이 `noop`(무변형 통과)이었던 것이 Read 가드
     # (`guard_large_read.py`, `tool_name == "Read"` 전용)와 Bash 훅 사이의

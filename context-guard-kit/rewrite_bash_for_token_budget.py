@@ -1229,6 +1229,48 @@ def _printf_is_safe(argv: tuple[str, ...]) -> bool:
     return index < len(argv)
 
 
+_LS_SHORT_FLAGS = set("laAhtrS1dFpRincu")
+_LS_LONG_FLAGS = {
+    "--all",
+    "--almost-all",
+    "--human-readable",
+    "--reverse",
+    "--recursive",
+    "--directory",
+    "--classify",
+    "--group-directories-first",
+    "--color=never",
+    "--color=auto",
+    "--no-group",
+}
+
+
+def _ls_is_safe(argv: tuple[str, ...]) -> bool:
+    """`ls`가 producer 라우트로 허용되기에 안전한지 판단하는 순수 허용목록.
+
+    값(value)을 소비하는 `ls` 플래그가 존재하지 않고, 부수효과를 갖는 플래그도
+    없다는 성질 덕분에 짧은 플래그 클러스터(`-ltrh`)까지 안전하게 분해할 수
+    있다. 이 성질은 `sed`/`git`에는 성립하지 않으므로 이 패턴을 일반화하지
+    말 것 (설계 문서 4.1 참고).
+    """
+    options_done = False
+    for argument in argv[1:]:
+        if not options_done and argument == "--":
+            options_done = True
+            continue
+        if options_done:
+            continue
+        if argument.startswith("--"):
+            if argument not in _LS_LONG_FLAGS:
+                return False
+            continue
+        if argument.startswith("-") and argument != "-":
+            if not set(argument[1:]).issubset(_LS_SHORT_FLAGS):
+                return False
+            continue
+    return True
+
+
 def _cat_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     operands = 0
     options_done = False
@@ -2075,6 +2117,17 @@ def command_search_diff(
         if role == "filter" or not _printf_is_safe(argv):
             return "deny"
         return "trim" if role == "first" else ("noop" if role == "standalone" else "deny")
+    if first == "ls":
+        # standalone 은 오늘의 동작(`noop`)을 그대로 보존한다. `_ls_is_safe` 는
+        # producer(role == "first") 재승인의 게이트일 뿐이며, standalone 판정에
+        # 개입해서는 안 된다 — 개입하면 `ls -G`, `ls -x`, `ls --color=always`
+        # 처럼 지금 통과하는 standalone 형태가 새로 거부되어 "이미 동작하는 것을
+        # 움직이지 않는다"는 설계 불변식을 깨뜨린다.
+        if role == "standalone":
+            return "noop"
+        if role == "filter" or not _ls_is_safe(argv):
+            return "deny"
+        return "trim"
     if first == "cat":
         if not _cat_is_safe(argv, allow_files=role != "filter"):
             return "deny"
