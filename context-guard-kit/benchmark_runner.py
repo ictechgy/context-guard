@@ -1269,6 +1269,8 @@ def _measurement_safe_path(
     except ValueError:
         # Artifact roots supplied by a test harness may be absolute, but relative
         # paths are never allowed to escape their fixture directory.
+        if owner.endswith(".settings_file"):
+            raise SystemExit("settings_file must stay within the variant fixture directory") from None
         if not raw.is_absolute():
             raise SystemExit(f"{owner} escapes the variant fixture directory") from None
     try:

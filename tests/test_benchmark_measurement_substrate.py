@@ -653,6 +653,28 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                     message="measurement requires task output_format=stream-json",
                 )
 
+    def test_settings_file_rejects_absolute_and_tilde_expanded_external_paths(self):
+        for script, root in self._for_each_script():
+            for label, path_value, env_updates in (
+                ("absolute", str(root / "external-settings.json"), None),
+                ("tilde", "~/external-settings.json", {"HOME": str(root)}),
+            ):
+                with self.subTest(script=script, case=label):
+                    (root / "external-settings.json").write_text(
+                        json.dumps(_settings(managed_hooks=True)), encoding="utf-8"
+                    )
+                    case_root = root / label
+                    case_root.mkdir()
+                    harness = MeasurementHarness(case_root, script)
+                    variant = copy.deepcopy(self._valid_pair()[1])
+                    variant["measurement"]["settings_file"] = path_value
+                    self.assert_prelaunch_rejection(
+                        harness,
+                        [variant],
+                        message="settings_file must stay within the variant fixture directory",
+                        env_updates=env_updates,
+                    )
+
     def test_symlink_and_capability_failures_are_prelaunch_and_no_follow(self):
         for script, root in self._for_each_script():
             with self.subTest(script=script, case="settings-symlink"):
