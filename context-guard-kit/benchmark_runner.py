@@ -68,6 +68,7 @@ import shlex
 import shutil
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -335,15 +336,25 @@ CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
 CLAUDE_STREAM_MAX_LINES = 10_000
 CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
 CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
-MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v1"
-MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION = "contextguard.bench.raw-receipt.v1"
-MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION = "contextguard.bench.artifact-index.v1"
+MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v2"
+MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION = "contextguard.bench.raw-receipt.v2"
+MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION = "contextguard.bench.artifact-index.v2"
 MEASUREMENT_ID_NAMESPACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 MEASUREMENT_ENV_NAME_RE = re.compile(r"\A[A-Z][A-Z0-9_]{0,127}\Z")
 MEASUREMENT_SECRET_ENV_NAME_RE = re.compile(
     r"(?:^|_)(?:API_?KEY|AUTH|AUTHORIZATION|BEARER|CREDENTIALS?|OAUTH|PASSWORD|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)",
     re.IGNORECASE,
 )
+MEASUREMENT_CREDENTIAL_ENV_NAMES = frozenset({
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_PAT",
+    "NETRC",
+    "KUBECONFIG",
+    "NPM_CONFIG_USERCONFIG",
+})
 MEASUREMENT_RUNNER_ENV_NAMES = frozenset({
     "HOME",
     "XDG_CONFIG_HOME",
@@ -367,8 +378,25 @@ MEASUREMENT_VARIANT_KEYS = frozenset({
 })
 MEASUREMENT_RAW_MAX_BYTES = CLAUDE_OUTPUT_MAX_BYTES
 MEASUREMENT_RAW_MAX_LINES = CLAUDE_STREAM_MAX_LINES
+MEASUREMENT_RAW_MAX_LINE_BYTES = 256_000
 MEASUREMENT_HOOK_MAX_EVENTS = 1_000
 MEASUREMENT_HOOK_TEXT_MAX_CHARS = 256
+MEASUREMENT_HOOK_FIELD_MAX_BYTES = 4_096
+MEASUREMENT_HOOK_OUTPUT_MAX_BYTES = 64_000
+MEASUREMENT_DOCUMENTED_HOOK_EVENTS = (
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Notification",
+    "UserPromptSubmit",
+    "SessionStart",
+    "SessionEnd",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+)
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
@@ -728,6 +756,12 @@ class MeasurementIdentity:
         )
 
     def run_id(self, task_id: str) -> str:
+        values = (MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,) + self.components(task_id)
+        canonical = json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        payload = b"contextguard.bench.run-id.v2\0" + struct.pack(">Q", len(canonical)) + canonical
+        return hashlib.sha256(payload).hexdigest()
+
+    def legacy_v1_run_id(self, task_id: str) -> str:
         canonical = json.dumps(
             self.components(task_id), ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")
@@ -744,11 +778,14 @@ class MeasurementVariant:
     session_mode: str
     session_persistence: str
     hook_events_enabled: bool
-    expected_hook_identities: tuple[str, ...]
+    registered_bindings: tuple[tuple[str, str], ...]
+    required_event_classes: tuple[str, ...]
+    pair_registered_bindings: tuple[tuple[str, str], ...]
     cli_capabilities: tuple[str, ...]
     identity: MeasurementIdentity
     artifact_root: Path
     settings_payload: dict[str, Any] = field(compare=False, repr=False)
+    settings_source_bytes: bytes = field(compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -862,6 +899,7 @@ class BoundedProcessResult:
     # 끝에 추가해 기존 positional constructor의 timed_out/truncated 순서를 보존한다.
     stdout_bytes: bytes = b""
     stderr_bytes: bytes = b""
+    launch_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -1135,6 +1173,10 @@ class _MeasurementDuplicateKey(ValueError):
     pass
 
 
+class _MeasurementLaunchError(OSError):
+    pass
+
+
 def _measurement_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -1144,10 +1186,10 @@ def _measurement_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str,
     return result
 
 
-def _load_measurement_json(path: Path, *, owner: str) -> Any:
+def _parse_measurement_json_text(text: str, *, owner: str) -> Any:
     try:
         return json.loads(
-            _read_text_no_follow(path),
+            text,
             object_pairs_hook=_measurement_object_no_duplicates,
             parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite number")),
         )
@@ -1157,6 +1199,26 @@ def _load_measurement_json(path: Path, *, owner: str) -> Any:
         raise SystemExit(f"{owner} must be valid JSON: {exc.msg}") from None
     except ValueError as exc:
         raise SystemExit(f"{owner} must be strict JSON: {exc}") from None
+
+
+def _load_measurement_json(path: Path, *, owner: str) -> Any:
+    return _parse_measurement_json_text(_read_text_no_follow(path), owner=owner)
+
+
+def _measurement_parse_canonical_json_bytes(raw: bytes, *, owner: str) -> Any:
+    if not raw.endswith(b"\n") or raw.endswith(b"\n\n") or b"\r" in raw:
+        raise ValueError(f"{owner} is not canonical JSON")
+    try:
+        text = raw[:-1].decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{owner} is not UTF-8") from None
+    value = _parse_measurement_json_text(text, owner=owner)
+    canonical = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    if raw != canonical:
+        raise ValueError(f"{owner} is not canonical JSON")
+    return value
 
 
 def _measurement_exact_object(
@@ -1236,7 +1298,7 @@ def _measurement_safe_path(
 def _measurement_env_name(value: Any, *, owner: str) -> str:
     if not isinstance(value, str) or not MEASUREMENT_ENV_NAME_RE.fullmatch(value):
         raise SystemExit(f"{owner} must be an uppercase environment variable name")
-    if MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
+    if value in MEASUREMENT_CREDENTIAL_ENV_NAMES or MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
         raise SystemExit(f"unsafe environment name: {value}")
     if value in MEASUREMENT_RUNNER_ENV_NAMES:
         raise SystemExit(f"{owner} is runner-controlled and must not be configured")
@@ -1276,7 +1338,10 @@ def _measurement_parse_identity(raw: Any, *, owner: str, variant_name: str) -> M
     if arm not in {"baseline", "treatment"} or arm != variant_name:
         raise SystemExit(f"{owner}.arm must be baseline or treatment and match the variant name")
     namespace = value["namespace"]
-    if not isinstance(namespace, str) or not MEASUREMENT_ID_NAMESPACE_RE.fullmatch(namespace):
+    if (
+        not isinstance(namespace, str) or not namespace or "\0" in namespace
+        or len(namespace.encode("utf-8")) > 256
+    ):
         raise SystemExit(f"{owner}.namespace must be a bounded safe identifier")
     return MeasurementIdentity(candidate_hash, repetition, arm, attempt, namespace)
 
@@ -1297,7 +1362,11 @@ def _measurement_parse_variant(
     settings_file = _measurement_safe_path(
         value["settings_file"], owner=f"{owner}.settings_file", base_dir=base_dir, must_exist=True,
     )
-    settings_payload = _load_measurement_json(settings_file, owner=f"{owner}.settings_file")
+    settings_source_text = _read_text_no_follow(settings_file)
+    settings_source_bytes = settings_source_text.encode("utf-8")
+    settings_payload = _parse_measurement_json_text(
+        settings_source_text, owner=f"{owner}.settings_file",
+    )
     if not isinstance(settings_payload, dict):
         raise SystemExit(f"{owner}.settings_file must contain a JSON object")
 
@@ -1345,19 +1414,41 @@ def _measurement_parse_variant(
     hooks = _measurement_exact_object(
         value["hook_events"],
         owner=f"{owner}.hook_events",
-        keys=frozenset({"enabled", "expected_identities"}),
+        keys=frozenset({"enabled", "registered_bindings", "required_event_classes"}),
     )
     if hooks["enabled"] is not True:
         raise SystemExit(f"{owner}.hook_events.enabled must be true")
-    expected_hook_identities = _measurement_string_tuple(
-        hooks["expected_identities"],
-        owner=f"{owner}.hook_events.expected_identities",
+    bindings_raw = hooks["registered_bindings"]
+    if not isinstance(bindings_raw, list) or len(bindings_raw) > 32:
+        raise SystemExit(f"{owner}.hook_events.registered_bindings must be a bounded array")
+    registered_bindings: list[tuple[str, str]] = []
+    for index, raw_binding in enumerate(bindings_raw):
+        binding = _measurement_exact_object(
+            raw_binding,
+            owner=f"{owner}.hook_events.registered_bindings[{index}]",
+            keys=frozenset({"hook_event", "configured_command"}),
+        )
+        hook_event = binding["hook_event"]
+        command = binding["configured_command"]
+        if hook_event not in MEASUREMENT_DOCUMENTED_HOOK_EVENTS:
+            raise SystemExit(f"{owner}.hook_events.registered_bindings contains unsupported hook event")
+        if not isinstance(command, str) or not command or "\0" in command or len(command.encode("utf-8")) > 4096:
+            raise SystemExit(f"{owner}.hook_events.registered_bindings contains invalid configured command")
+        registered_bindings.append((hook_event, command))
+    if len(set(registered_bindings)) != len(registered_bindings):
+        raise SystemExit(f"{owner}.hook_events.registered_bindings must not contain duplicates")
+    required_event_classes = _measurement_string_tuple(
+        hooks["required_event_classes"],
+        owner=f"{owner}.hook_events.required_event_classes",
         maximum=32,
     )
-    if any(len(item) > MEASUREMENT_HOOK_TEXT_MAX_CHARS for item in expected_hook_identities):
-        raise SystemExit(f"{owner}.hook_events.expected_identities contains an oversized identity")
-    if variant_name == "baseline" and expected_hook_identities:
-        raise SystemExit(f"{owner} baseline must not expect managed hook identities")
+    if any(item not in MEASUREMENT_DOCUMENTED_HOOK_EVENTS for item in required_event_classes):
+        raise SystemExit(f"{owner}.hook_events.required_event_classes contains unsupported hook event")
+    ordered_classes = tuple(dict.fromkeys(event for event, _command in registered_bindings))
+    if required_event_classes != ordered_classes:
+        raise SystemExit(f"{owner}.hook_events.required_event_classes must match binding order")
+    if variant_name == "baseline" and (registered_bindings or required_event_classes):
+        raise SystemExit(f"{owner} baseline hook configuration must be empty")
 
     cli_capabilities = _measurement_string_tuple(
         value["cli_capabilities"], owner=f"{owner}.cli_capabilities", maximum=32,
@@ -1397,29 +1488,134 @@ def _measurement_parse_variant(
         session_mode=str(session["mode"]),
         session_persistence=str(session["persistence"]),
         hook_events_enabled=True,
-        expected_hook_identities=expected_hook_identities,
+        registered_bindings=tuple(registered_bindings),
+        required_event_classes=required_event_classes,
+        pair_registered_bindings=tuple(registered_bindings),
         cli_capabilities=cli_capabilities,
         identity=identity,
         artifact_root=artifact_root,
         settings_payload=settings_payload,
+        settings_source_bytes=settings_source_bytes,
     )
 
 
-def _measurement_prune_registered_hooks(value: Any, identities: frozenset[str]) -> Any:
-    if isinstance(value, list):
-        kept = []
-        for item in value:
-            encoded = json.dumps(item, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-            if any(identity in encoded for identity in identities):
+def _measurement_is_registered_hook(value: Any, command: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return value.get("type") == "command" and value.get("command") == command
+
+
+def _measurement_non_hook_source_members(raw: bytes) -> tuple[tuple[str, bytes], ...]:
+    """Project exact top-level member bytes while excluding only the hooks member.
+
+    Separating-comma whitespace is excluded from membership because adding or
+    removing the hooks member necessarily changes that delimiter. All bytes
+    inside every non-hook member remain literal and ordered.
+    """
+    stripped = raw.strip()
+    if not stripped.startswith(b"{") or not stripped.endswith(b"}"):
+        raise SystemExit("measurement settings file must be a JSON object")
+    body = stripped[1:-1]
+    members: list[bytes] = []
+    start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, byte in enumerate(body):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            in_string = True
+        elif byte in (0x7B, 0x5B):
+            depth += 1
+        elif byte in (0x7D, 0x5D):
+            depth -= 1
+        elif byte == 0x2C and depth == 0:
+            members.append(body[start:index].strip())
+            start = index + 1
+    tail = body[start:].strip()
+    if tail:
+        members.append(tail)
+    projection: list[tuple[str, bytes]] = []
+    for member in members:
+        try:
+            parsed = json.loads(b"{" + member + b"}")
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise SystemExit("measurement settings file must be strict JSON") from None
+        if isinstance(parsed, dict) and set(parsed) == {"hooks"}:
+            continue
+        if not isinstance(parsed, dict) or len(parsed) != 1:
+            raise SystemExit("measurement settings file must be a JSON object")
+        projection.append((next(iter(parsed)), member))
+    return tuple(sorted(projection, key=lambda item: item[0]))
+
+
+def _measurement_prune_registered_hooks(
+    settings: dict[str, Any], bindings: tuple[tuple[str, str], ...],
+) -> dict[str, Any]:
+    projected = json.loads(json.dumps(settings, ensure_ascii=False))
+    hooks = projected.get("hooks")
+    if not isinstance(hooks, dict):
+        return projected
+    commands_by_event: dict[str, set[str]] = {}
+    for event, command in bindings:
+        commands_by_event.setdefault(event, set()).add(command)
+    for event, commands in commands_by_event.items():
+        registrations = hooks.get(event)
+        if not isinstance(registrations, list):
+            continue
+        retained_registrations: list[Any] = []
+        for registration in registrations:
+            if not isinstance(registration, dict) or not isinstance(registration.get("hooks"), list):
+                retained_registrations.append(registration)
                 continue
-            kept.append(_measurement_prune_registered_hooks(item, identities))
-        return kept
-    if isinstance(value, dict):
-        return {
-            key: _measurement_prune_registered_hooks(item, identities)
-            for key, item in value.items()
-        }
-    return value
+            retained_hooks = [
+                hook for hook in registration["hooks"]
+                if not any(_measurement_is_registered_hook(hook, command) for command in commands)
+            ]
+            if retained_hooks:
+                registration["hooks"] = retained_hooks
+                retained_registrations.append(registration)
+        if retained_registrations:
+            hooks[event] = retained_registrations
+        else:
+            hooks.pop(event, None)
+    if not hooks:
+        projected.pop("hooks", None)
+    return projected
+
+
+def _measurement_validate_treatment_bindings(spec: MeasurementVariant) -> dict[str, Any]:
+    if not spec.registered_bindings:
+        return json.loads(json.dumps(spec.settings_payload, ensure_ascii=False))
+    hooks = spec.settings_payload.get("hooks")
+    if not isinstance(hooks, dict):
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+    binding_set = set(spec.registered_bindings)
+    occurrences = {binding: 0 for binding in spec.registered_bindings}
+    for event in spec.required_event_classes:
+        registrations = hooks.get(event)
+        if not isinstance(registrations, list) or not registrations:
+            raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+        for registration in registrations:
+            if not isinstance(registration, dict) or not isinstance(registration.get("hooks"), list) or not registration["hooks"]:
+                raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+            for hook in registration["hooks"]:
+                if not isinstance(hook, dict) or hook.get("type") != "command" or not isinstance(hook.get("command"), str):
+                    raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+                binding = (event, hook["command"])
+                if binding not in binding_set:
+                    raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+                occurrences[binding] += 1
+    if any(count != 1 for count in occurrences.values()):
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+    return _measurement_prune_registered_hooks(spec.settings_payload, spec.registered_bindings)
 
 
 def _validate_measurement_variant_set(variants: list[Variant]) -> None:
@@ -1428,39 +1624,32 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
         return
     if any(variant.name not in {"baseline", "treatment"} for variant in measured):
         raise SystemExit("measurement variants must be named baseline or treatment in S001")
-    identities = frozenset(
-        identity
-        for variant in measured
-        for identity in variant.measurement.expected_hook_identities  # type: ignore[union-attr]
-    )
-    normalized_settings: list[tuple[str, str]] = []
+    if len(measured) != 2 or {variant.name for variant in measured} != {"baseline", "treatment"}:
+        raise SystemExit("measurement fixture must contain exactly one baseline and treatment pair")
+    by_name = {variant.name: variant.measurement for variant in measured}
+    baseline = by_name["baseline"]
+    treatment = by_name["treatment"]
+    assert baseline is not None and treatment is not None
+    derived_baseline = _measurement_validate_treatment_bindings(treatment)
+    for event, command in treatment.registered_bindings:
+        hooks = baseline.settings_payload.get("hooks", {})
+        if isinstance(hooks, dict):
+            for registrations in hooks.values():
+                if isinstance(registrations, list):
+                    for registration in registrations:
+                        if isinstance(registration, dict) and isinstance(registration.get("hooks"), list):
+                            if any(_measurement_is_registered_hook(hook, command) for hook in registration["hooks"]):
+                                raise SystemExit("measurement baseline settings contain managed ContextGuard hook")
+    if baseline.settings_payload != derived_baseline:
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+    if _measurement_non_hook_source_members(baseline.settings_source_bytes) != _measurement_non_hook_source_members(treatment.settings_source_bytes):
+        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
+    object.__setattr__(baseline, "pair_registered_bindings", treatment.registered_bindings)
+    object.__setattr__(treatment, "pair_registered_bindings", treatment.registered_bindings)
     parity_projection: list[tuple[str, tuple[Any, ...]]] = []
     for variant in measured:
         spec = variant.measurement
         assert spec is not None
-        hook_block = spec.settings_payload.get("hooks", {})
-        hook_text = json.dumps(hook_block, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        if variant.name == "baseline" and (
-            "context-guard" in hook_text.lower()
-            or any(identity in hook_text for identity in identities)
-        ):
-            raise SystemExit("measurement baseline settings contain managed ContextGuard hook")
-        settings_without_registered = dict(spec.settings_payload)
-        if "hooks" in settings_without_registered:
-            pruned_hooks = _measurement_prune_registered_hooks(
-                settings_without_registered["hooks"], identities,
-            )
-            if pruned_hooks in ({}, []) or (
-                isinstance(pruned_hooks, dict)
-                and all(item in ({}, []) for item in pruned_hooks.values())
-            ):
-                settings_without_registered.pop("hooks")
-            else:
-                settings_without_registered["hooks"] = pruned_hooks
-        normalized_settings.append((
-            variant.name,
-            json.dumps(settings_without_registered, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-        ))
         parity_projection.append((
             variant.name,
             (
@@ -1479,8 +1668,6 @@ def _validate_measurement_variant_set(variants: list[Variant]) -> None:
                 spec.artifact_root,
             ),
         ))
-    if len({value for _, value in normalized_settings}) != 1:
-        raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
     if len({value for _, value in parity_projection}) != 1:
         raise SystemExit("measurement baseline/treatment configuration differs beyond arm/hooks")
 
@@ -2170,7 +2357,8 @@ def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVari
     if proc.returncode != 0 or proc.timed_out or proc.output_truncated:
         raise SystemExit("measurement CLI capability probe failed")
     help_text = f"{proc.stdout}\n{proc.stderr}"
-    missing = [capability for capability in spec.cli_capabilities if capability not in help_text]
+    capability_tokens = set(re.findall(r"--[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", help_text))
+    missing = [capability for capability in spec.cli_capabilities if capability not in capability_tokens]
     if missing:
         raise SystemExit(f"required CLI capability unavailable: {', '.join(sorted(missing))}")
 
@@ -2189,7 +2377,13 @@ def claude_version(claude_bin: str, *, env: dict[str, str] | None = None, cwd: P
         return "unknown"
 
 
-def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> list[str]:
+def build_claude_argv(
+    claude_bin: str,
+    task: TaskFixture,
+    variant: Variant,
+    *,
+    measurement_settings_file: Path | None = None,
+) -> list[str]:
     """`claude -p` argv 를 빌드한다.
 
     fixture 에 명시되지 않은 옵션(effort, max_budget_usd) 은 argv 에서 빠진다.
@@ -2210,7 +2404,7 @@ def build_claude_argv(claude_bin: str, task: TaskFixture, variant: Variant) -> l
     if variant.measurement is not None:
         spec = variant.measurement
         argv.extend([
-            "--settings", str(spec.settings_file),
+            "--settings", str(measurement_settings_file or spec.settings_file),
             "--setting-sources", ",".join(spec.setting_sources),
             "--include-hook-events",
             "--no-session-persistence",
@@ -2260,15 +2454,19 @@ def run_bounded_command(
     timeout_seconds: int,
     max_output_bytes: int,
     env: dict[str, str] | None = None,
+    stdout_sink_fd: int | None = None,
 ) -> BoundedProcessResult:
-    proc = subprocess.Popen(
-        argv,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise _MeasurementLaunchError(str(exc)) from exc
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
@@ -2290,6 +2488,7 @@ def run_bounded_command(
     terminated_at: float | None = None
     sent_kill = False
     deadline = time.monotonic() + timeout_seconds
+    pending_error: BaseException | None = None
     try:
         while selector.get_map():
             now = time.monotonic()
@@ -2323,13 +2522,19 @@ def run_bounded_command(
                     continue
                 buffer = buffers[name]
                 remaining = max_output_bytes - len(buffer)
+                accepted = chunk[:max(remaining, 0)]
                 if remaining > 0:
-                    buffer.extend(chunk[:remaining])
+                    buffer.extend(accepted)
+                    if name == "stdout" and stdout_sink_fd is not None:
+                        _measurement_write_fd(stdout_sink_fd, accepted)
                 if len(chunk) > remaining:
                     output_truncated = True
                     if terminated_at is None:
                         _signal_process_group(proc, signal.SIGTERM, pgid)
                         terminated_at = time.monotonic()
+    except BaseException as exc:
+        pending_error = exc
+        _signal_process_group(proc, signal.SIGKILL, pgid)
     finally:
         selector.close()
 
@@ -2342,6 +2547,8 @@ def run_bounded_command(
         except subprocess.TimeoutExpired:
             returncode = 124
             timed_out = True
+    if pending_error is not None:
+        raise pending_error
     if timed_out:
         returncode = 124
     elif output_truncated:
@@ -2356,6 +2563,7 @@ def run_bounded_command(
         stderr_bytes=stderr_bytes,
         timed_out=timed_out,
         output_truncated=output_truncated,
+        launch_error=False,
     )
 
 
@@ -2376,7 +2584,12 @@ def _has_shell_meta(argv: list[str]) -> bool:
     return False
 
 
-def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, str]:
+def run_success_command(
+    task: TaskFixture,
+    project_root: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     """fixture 의 success_command 를 실행한다.
 
     - `shlex.split + shell=False` 로 단일 argv 만 실행한다.
@@ -2406,6 +2619,7 @@ def run_success_command(task: TaskFixture, project_root: Path) -> tuple[bool, st
             cwd=cwd,
             timeout_seconds=600,
             max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
         return False, f"success_command failed to launch: {exc}"
@@ -2446,11 +2660,14 @@ def _measurement_write_exclusive(path: Path, payload: bytes) -> None:
         os.close(fd)
 
 
-def _measurement_create_run_context(spec: MeasurementVariant, task_id: str) -> MeasurementRunContext:
-    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+def _measurement_create_run_context(
+    spec: MeasurementVariant, task_id: str, *, locked_root_fd: int | None = None,
+) -> MeasurementRunContext:
+    root_fd = locked_root_fd if locked_root_fd is not None else _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    owns_root_fd = locked_root_fd is None
     try:
         os.fchmod(root_fd, 0o700)
-        if fcntl is not None:
+        if owns_root_fd and fcntl is not None:
             fcntl.flock(root_fd, fcntl.LOCK_EX)
         run_id = spec.identity.run_id(task_id)
         try:
@@ -2483,7 +2700,8 @@ def _measurement_create_run_context(spec: MeasurementVariant, task_id: str) -> M
         finally:
             os.close(runs_fd)
     finally:
-        os.close(root_fd)
+        if owns_root_fd:
+            os.close(root_fd)
     run_root = spec.artifact_root / "runs" / run_id
     return MeasurementRunContext(
         run_id=run_id,
@@ -2518,75 +2736,186 @@ def _measurement_bounded_scalar(value: Any) -> str | None:
     return text
 
 
-def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
-    if len(raw) > MEASUREMENT_RAW_MAX_BYTES:
-        return normalized
-    lines = raw.splitlines()
-    if len(lines) > MEASUREMENT_RAW_MAX_LINES:
-        return normalized
-    for line in lines:
-        if len(normalized) >= MEASUREMENT_HOOK_MAX_EVENTS:
-            break
+def _measurement_domain_hash(domain: bytes, *values: str) -> str:
+    encoded = b"".join(
+        struct.pack(">Q", len(value.encode("utf-8"))) + value.encode("utf-8")
+        for value in values
+    )
+    return hashlib.sha256(domain + b"\0" + encoded).hexdigest()
+
+
+def _measurement_binding_set_sha256(bindings: tuple[tuple[str, str], ...]) -> str:
+    encoded = json.dumps(
+        [list(binding) for binding in bindings], ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(
+        b"contextguard.bench.binding-set.v2\0" + struct.pack(">Q", len(encoded)) + encoded
+    ).hexdigest()
+
+
+def _parse_measurement_hook_events(raw: bytes) -> dict[str, Any]:
+    hooks: list[dict[str, Any]] = []
+    states: dict[tuple[str, str], dict[str, Any]] = {}
+    observed = 0
+    records = 0
+    failure_flags: set[str] = set()
+    classification: str | None = None
+    for line in raw.splitlines():
         try:
-            event = json.loads(
-                line,
-                object_pairs_hook=_stream_object_no_duplicates,
-                parse_constant=_stream_reject_nonfinite,
-            )
+            event = json.loads(line, object_pairs_hook=_stream_object_no_duplicates, parse_constant=_stream_reject_nonfinite)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
             continue
         if not isinstance(event, dict):
             continue
-        hook = event.get("hook") if isinstance(event.get("hook"), dict) else {}
-        labels = [
-            event.get("type"), event.get("subtype"), event.get("event"),
-            event.get("event_name"), event.get("hook_event"), event.get("hookEventName"),
-        ]
-        contains_hook_label = any("hook" in str(label).lower() for label in labels if label is not None)
-        contains_hook_field = bool(hook) or any(
-            key in event
-            for key in ("hook_name", "hookName", "hook_id", "hookId", "hook_event_name")
-        )
-        if not (contains_hook_label or contains_hook_field):
+        if event.get("type") == "hook_event":
+            classification = classification or "invalid_hook_lifecycle"
             continue
-        field_candidates: tuple[tuple[str, tuple[Any, ...]], ...] = (
-            ("event_name", (
-                event.get("hook_event_name"), event.get("hookEventName"), event.get("event_name"),
-                event.get("event"), event.get("subtype"), event.get("type"), hook.get("event_name"),
-            )),
-            ("hook_identity", (
-                event.get("hook_identity"), event.get("hookIdentity"),
-                event.get("hook_name"), event.get("hookName"), event.get("hook_id"),
-                event.get("hookId"), hook.get("name"), hook.get("id"),
-            )),
-            ("tool", (
-                event.get("tool"), event.get("tool_name"), event.get("toolName"), hook.get("tool"),
-            )),
-            ("decision", (
-                event.get("decision"), event.get("hook_decision"), hook.get("decision"),
-            )),
-            ("timestamp", (
-                event.get("timestamp"), event.get("created_at"), hook.get("timestamp"),
-            )),
-        )
-        projection: dict[str, str] = {}
-        for field_name, candidates in field_candidates:
-            for candidate in candidates:
-                bounded = _measurement_bounded_scalar(candidate)
-                if bounded is not None:
-                    projection[field_name] = bounded
-                    break
-        if projection:
-            normalized.append(projection)
-    return normalized
+        if event.get("type") != "system" or event.get("subtype") not in {"hook_started", "hook_progress", "hook_response"}:
+            continue
+        records += 1
+        if records > MEASUREMENT_HOOK_MAX_EVENTS:
+            failure_flags.add("hook_lifecycle_limit")
+        subtype = event["subtype"]
+        required = ("session_id", "hook_id", "hook_name", "hook_event", "uuid")
+        invalid = False
+        for field_name in required:
+            value = event.get(field_name)
+            if not isinstance(value, str) or not value or len(value.encode("utf-8")) > MEASUREMENT_HOOK_FIELD_MAX_BYTES:
+                invalid = True
+        if invalid:
+            failure_flags.add("invalid_hook_lifecycle")
+            continue
+        hook_event = event["hook_event"]
+        supported = hook_event in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
+        if not supported:
+            failure_flags.add("unexpected_hook_event_class")
+        key = (event["session_id"], event["hook_id"])
+        identity = (event["hook_name"], hook_event)
+        if subtype == "hook_started":
+            if key in states:
+                failure_flags.add("invalid_hook_lifecycle")
+                continue
+            states[key] = {"identity": identity, "progress_count": 0}
+            observed += 1
+            continue
+        outputs_valid = True
+        for output_name in ("stdout", "stderr", "output"):
+            output = event.get(output_name)
+            if not isinstance(output, str):
+                outputs_valid = False
+            elif len(output.encode("utf-8")) > MEASUREMENT_HOOK_OUTPUT_MAX_BYTES:
+                failure_flags.add("hook_payload_limit")
+                outputs_valid = False
+        if not outputs_valid:
+            if "hook_payload_limit" not in failure_flags:
+                failure_flags.add("invalid_hook_lifecycle")
+            continue
+        state = states.get(key)
+        if state is None or state["identity"] != identity:
+            failure_flags.add("invalid_hook_lifecycle")
+            continue
+        if subtype == "hook_progress":
+            state["progress_count"] += 1
+            continue
+        outcome = event.get("outcome")
+        exit_code = event.get("exit_code")
+        if outcome not in {"success", "error", "cancelled"} or (
+            exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int))
+        ):
+            failure_flags.add("invalid_hook_lifecycle")
+            continue
+        states.pop(key)
+        triggering = "not_applicable"
+        if hook_event == "PostToolUse":
+            triggering = "succeeded"
+        elif hook_event == "PostToolUseFailure":
+            triggering = "failed"
+        hooks.append({
+            "hook_event": hook_event,
+            "opaque_hook_name_sha256": _measurement_domain_hash(b"contextguard.bench.opaque-hook-name.v2", event["hook_name"]),
+            "lifecycle_key_sha256": _measurement_domain_hash(b"contextguard.bench.hook-lifecycle-key.v2", event["session_id"], event["hook_id"]),
+            "hook_process_outcome": outcome,
+            "hook_process_exit_code": exit_code,
+            "triggering_tool_outcome": triggering,
+            "progress_count": state["progress_count"],
+        })
+    if classification is not None:
+        failure_flags.add(classification)
+    if states:
+        failure_flags.add("invalid_hook_lifecycle")
+    classification = next(
+        (status for status in (
+            "hook_payload_limit", "hook_lifecycle_limit", "invalid_hook_lifecycle",
+            "unexpected_hook_event_class",
+        ) if status in failure_flags),
+        None,
+    )
+    return {
+        "hooks": hooks, "observed": observed, "records": records,
+        "classification": classification, "failure_flags": frozenset(failure_flags),
+    }
 
 
-def _measurement_append_index(path: Path, record: dict[str, Any]) -> None:
+def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, Any]]:
+    result = _parse_measurement_hook_events(raw)
+    if result["classification"] is not None:
+        raise ValueError(result["classification"])
+    return result["hooks"]
+
+
+def _measurement_resolve_terminal_status(
+    *, raw_byte_limit: bool, raw_line_limit: bool, raw_line_byte_limit: bool,
+    process_status: str, stream_status: str, hook_result: dict[str, Any],
+    arm: str, required_event_classes: tuple[str, ...],
+) -> str:
+    completed_classes = {item["hook_event"] for item in hook_result["hooks"]}
+    required_classes = set(required_event_classes)
+    hook_process_failed = any(
+        item["hook_process_outcome"] != "success" or item["hook_process_exit_code"] not in (None, 0)
+        for item in hook_result["hooks"]
+    )
+    if raw_byte_limit:
+        return "raw_byte_limit"
+    if raw_line_limit:
+        return "raw_line_limit"
+    if raw_line_byte_limit:
+        return "raw_line_byte_limit"
+    if process_status == "timed_out":
+        return "process_timeout"
+    if process_status == "launch_error":
+        return "process_launch_error"
+    if process_status == "exited_nonzero":
+        return "process_error"
+    if stream_status == "terminal_error":
+        return "terminal_error"
+    if stream_status == "missing_terminal":
+        return "missing_terminal"
+    if stream_status != "success":
+        return "invalid_stream"
+    for status in (
+        "hook_payload_limit", "hook_lifecycle_limit", "invalid_hook_lifecycle",
+        "unexpected_hook_event_class",
+    ):
+        if hook_result.get("classification") == status or status in hook_result.get("failure_flags", ()):
+            return status
+    if arm == "treatment" and completed_classes - required_classes:
+        return "unexpected_hook_event_class"
+    if arm == "baseline" and hook_result["observed"]:
+        return "baseline_hook_contamination"
+    if arm == "treatment" and required_classes - completed_classes:
+        return "missing_required_hook_event_class"
+    if hook_process_failed:
+        return "hook_process_failure"
+    return "success"
+
+
+def _measurement_append_index(
+    path: Path, record: dict[str, Any], *, artifact_root_locked: bool = False,
+) -> None:
     payload = json.dumps(record, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     parent_fd = _ensure_directory_no_symlink(path.parent)
     try:
-        if fcntl is not None:
+        if fcntl is not None and not artifact_root_locked:
             fcntl.flock(parent_fd, fcntl.LOCK_EX)
         try:
             fd = _measurement_create_exclusive(path)
@@ -2609,12 +2938,22 @@ def _measurement_receipt(
     task: TaskFixture,
     spec: MeasurementVariant,
     raw: bytes,
-    hooks: list[dict[str, str]],
+    hook_result: dict[str, Any],
+    settings_bytes: bytes,
     *,
+    process_status: str,
     terminal_status: str,
 ) -> dict[str, Any]:
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     raw_lines = len(raw.splitlines())
+    required_classes = tuple(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+    counts = collections.Counter(item["hook_event"] for item in hook_result["hooks"])
+    event_class_counts = [
+        {"hook_event": event, "count": counts[event]}
+        for event in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
+        if counts[event] or event in required_classes
+    ]
+    settings_relative = Path("session") / spec.settings_file.name
     return {
         "schema_version": MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION,
         "run_identity": {
@@ -2633,8 +2972,21 @@ def _measurement_receipt(
             "lines": raw_lines,
             "events": raw_lines,
         },
+        "settings_artifact": {
+            "path": settings_relative.as_posix(),
+            "sha256": hashlib.sha256(settings_bytes).hexdigest(),
+            "bytes": len(settings_bytes),
+            "binding_set_sha256": _measurement_binding_set_sha256(spec.pair_registered_bindings),
+        },
+        "process_status": process_status,
         "terminal_status": terminal_status,
-        "hooks": hooks,
+        "hook_summary": {
+            "required_event_classes": list(required_classes),
+            "observed_lifecycle_count": hook_result["observed"],
+            "completed_lifecycle_count": len(hook_result["hooks"]),
+            "event_class_counts": event_class_counts,
+        },
+        "hooks": hook_result["hooks"],
     }
 
 
@@ -2646,11 +2998,48 @@ def _run_measurement_fixture(
 ) -> RunResult:
     spec = variant.measurement
     assert spec is not None
-    started_at = time.monotonic()
     validate_measurement_cli_capabilities(claude_bin, spec)
-    context = _measurement_create_run_context(spec, task.id)
+    root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+    try:
+        os.fchmod(root_fd, 0o700)
+        if fcntl is not None:
+            fcntl.flock(root_fd, fcntl.LOCK_EX)
+        return _run_measurement_fixture_locked(
+            task, variant, claude_bin, project_root, locked_root_fd=root_fd,
+        )
+    finally:
+        os.close(root_fd)
+
+
+def _run_measurement_fixture_locked(
+    task: TaskFixture,
+    variant: Variant,
+    claude_bin: str,
+    project_root: Path,
+    *,
+    locked_root_fd: int,
+) -> RunResult:
+    spec = variant.measurement
+    assert spec is not None
+    started_at = time.monotonic()
+    run_id = spec.identity.run_id(task.id)
+    _measurement_check_artifact_identity_locked(
+        spec, task, run_id, artifact_root_locked=True,
+    )
+    context = _measurement_create_run_context(spec, task.id, locked_root_fd=locked_root_fd)
+    settings_snapshot = context.session / spec.settings_file.name
+    _measurement_write_exclusive(settings_snapshot, spec.settings_source_bytes)
+    try:
+        _measurement_validate_snapshot(context, spec)
+    except (OSError, SystemExit, TypeError, ValueError):
+        raise SystemExit("measurement artifact integrity check failed") from None
     raw_fd = _measurement_create_exclusive(context.raw_path)
-    argv = build_claude_argv(executable_argv0(claude_bin), task, variant)
+    argv = build_claude_argv(
+        executable_argv0(claude_bin),
+        task,
+        variant,
+        measurement_settings_file=settings_snapshot,
+    )
     env = _measurement_child_env(spec, context)
     try:
         try:
@@ -2660,60 +3049,52 @@ def _run_measurement_fixture(
                 timeout_seconds=1800,
                 max_output_bytes=MEASUREMENT_RAW_MAX_BYTES,
                 env=env,
+                stdout_sink_fd=raw_fd,
             )
             raw = proc.stdout_bytes
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            proc = BoundedProcessResult(126, "", "", False, False, b"", b"")
+        except _MeasurementLaunchError:
+            proc = BoundedProcessResult(126, "", "", False, False, b"", b"", True)
             raw = b""
-        _measurement_write_fd(raw_fd, raw)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            raise SystemExit("measurement artifact integrity check failed") from None
     finally:
         os.close(raw_fd)
 
-    parsed = parse_claude_stream_output(raw)
-    hooks = normalize_measurement_hook_events(raw)
-    observed_identities = {item.get("hook_identity") for item in hooks}
-    hook_error: str | None = None
-    managed_activity = {
-        identity for identity in observed_identities
-        if isinstance(identity, str) and (
-            "context-guard" in identity.lower()
-            or identity in spec.expected_hook_identities
-        )
-    }
-    if variant.name == "baseline" and managed_activity:
-        hook_error = "measurement_baseline_hook_contamination"
-    elif variant.name == "treatment":
-        missing = set(spec.expected_hook_identities) - observed_identities
-        if missing:
-            hook_error = "measurement_expected_hook_missing"
-
-    if proc.output_truncated:
-        terminal_status = "byte_limit"
-    elif parsed.status == "terminal_error":
-        terminal_status = "terminal_error"
-    elif proc.returncode != 0 or proc.timed_out:
-        terminal_status = "process_error"
-    elif parsed.status == "missing_terminal":
-        terminal_status = "missing_terminal"
-    elif parsed.error_code == "stream_line_count_limit":
-        terminal_status = "line_limit"
-    elif parsed.error_code in {"stream_total_size_limit", "stream_line_size_limit"}:
-        terminal_status = "byte_limit"
-    elif parsed.status != "success":
-        terminal_status = "invalid_stream"
-    elif hook_error == "measurement_baseline_hook_contamination":
-        terminal_status = "baseline_hook_activity"
-    elif hook_error is not None:
-        terminal_status = "hook_identity_mismatch"
+    try:
+        settings_bytes = _measurement_validate_snapshot(context, spec)
+    except (OSError, SystemExit, TypeError, ValueError):
+        raise SystemExit("measurement artifact integrity check failed") from None
+    parsed = parse_claude_stream_output(raw, max_line_bytes=MEASUREMENT_RAW_MAX_LINE_BYTES)
+    hook_result = _parse_measurement_hook_events(raw)
+    if proc.timed_out:
+        process_status = "timed_out"
+    elif proc.launch_error:
+        process_status = "launch_error"
+    elif proc.returncode == 0:
+        process_status = "exited_zero"
     else:
-        terminal_status = "success"
+        process_status = "exited_nonzero"
+    line_count = len(raw.splitlines())
+    raw_line_too_large = any(len(line) > MEASUREMENT_RAW_MAX_LINE_BYTES for line in raw.splitlines())
+    terminal_status = _measurement_resolve_terminal_status(
+        raw_byte_limit=proc.output_truncated,
+        raw_line_limit=line_count > MEASUREMENT_RAW_MAX_LINES,
+        raw_line_byte_limit=raw_line_too_large,
+        process_status=process_status,
+        stream_status=parsed.status,
+        hook_result=hook_result,
+        arm=variant.name,
+        required_event_classes=spec.required_event_classes,
+    )
 
     receipt = _measurement_receipt(
         context,
         task,
         spec,
         raw,
-        hooks,
+        hook_result,
+        settings_bytes,
+        process_status=process_status,
         terminal_status=terminal_status,
     )
     receipt_bytes = json.dumps(
@@ -2726,7 +3107,7 @@ def _run_measurement_fixture(
         "receipt_path": str(context.receipt_path),
         "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
         "terminal_status": receipt["terminal_status"],
-    })
+    }, artifact_root_locked=True)
 
     failure_code = None if terminal_status == "success" else terminal_status
     if failure_code is not None or parsed.payload is None:
@@ -2746,7 +3127,7 @@ def _run_measurement_fixture(
     provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(parsed.payload)
     shift_metrics = collect_shift_metrics(parsed.payload)
     self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
-    success, success_note = run_success_command(task, project_root)
+    success, success_note = run_success_command(task, project_root, env=env)
     return RunResult(
         task_id=task.id,
         variant=variant.name,
@@ -2764,7 +3145,7 @@ def _run_measurement_fixture(
         primary_tokens_measured=primary_tokens_measured,
         wall_time_seconds=elapsed_seconds_since(started_at),
         turns=int(shift_metrics["turns"]),
-        hook_triggers=len(hooks),
+        hook_triggers=len(hook_result["hooks"]),
         bytes_before=int(shift_metrics["bytes_before"]),
         bytes_after=int(shift_metrics["bytes_after"]),
         artifacts_used=int(shift_metrics["artifacts_used"]),
@@ -6239,20 +6620,198 @@ def filter_targets(tasks: list[TaskFixture], variants: list[Variant],
     return targets
 
 
-def _verify_existing_measurement_run(spec: MeasurementVariant, task_id: str, run_id: str) -> None:
-    """Fail closed when an existing immutable run has missing or corrupt evidence."""
+def _measurement_existing_context(
+    spec: MeasurementVariant,
+    run_id: str,
+) -> MeasurementRunContext:
     run_root = spec.artifact_root / "runs" / run_id
-    receipt_path = run_root / "receipt.json"
-    raw_path = run_root / "raw.ndjson"
+    return MeasurementRunContext(
+        run_id=run_id,
+        run_root=run_root,
+        home=run_root / "home",
+        xdg_config=run_root / "xdg-config",
+        xdg_cache=run_root / "xdg-cache",
+        xdg_data=run_root / "xdg-data",
+        xdg_state=run_root / "xdg-state",
+        tmp=run_root / "tmp",
+        workspace=run_root / "workspace",
+        session=run_root / "session",
+        raw_path=run_root / "raw.ndjson",
+        receipt_path=run_root / "receipt.json",
+        index_path=spec.artifact_root / "artifact-index.ndjson",
+    )
+
+
+def _measurement_read_private_raw(path: Path) -> bytes:
+    fd = _open_regular_no_symlink(path)
     try:
-        receipt = _load_measurement_json(receipt_path, owner="measurement receipt")
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            raise ValueError("raw mode")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 65_536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MEASUREMENT_RAW_MAX_BYTES:
+                raise ValueError("raw size limit")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _measurement_read_private_file(path: Path, *, maximum: int = MAX_FIXTURE_FILE_BYTES) -> bytes:
+    fd = _open_regular_no_symlink(path)
+    try:
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            raise ValueError("private file mode")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 65_536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum:
+                raise ValueError("private file size")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _measurement_validate_snapshot(context: MeasurementRunContext, spec: MeasurementVariant) -> bytes:
+    if spec.settings_file.name in {"", ".", ".."} or any(char in spec.settings_file.name for char in ("/", "\\", "\0")):
+        raise ValueError("settings snapshot basename")
+    snapshot = context.session / spec.settings_file.name
+    raw = _measurement_read_private_file(snapshot)
+    if raw != spec.settings_source_bytes:
+        raise ValueError("settings snapshot source binding")
+    parsed = _parse_measurement_json_text(raw.decode("utf-8"), owner="measurement settings snapshot")
+    if parsed != spec.settings_payload:
+        raise ValueError("settings snapshot parsed binding")
+    if spec.identity.arm == "treatment":
+        _measurement_validate_treatment_bindings(spec)
+    return raw
+
+
+def _measurement_load_index_rows(path: Path) -> list[dict[str, Any]]:
+    fd = _open_regular_no_symlink(path)
+    try:
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            raise ValueError("index mode")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            raw = handle.read(MAX_FIXTURE_FILE_BYTES + 1)
+        if len(raw) > MAX_FIXTURE_FILE_BYTES:
+            raise ValueError("index size")
+    finally:
+        if fd != -1:
+            os.close(fd)
+    if not raw.endswith(b"\n") or b"\r" in raw or b"\n\n" in raw:
+        raise ValueError("measurement artifact index is not canonical NDJSON")
+    rows: list[dict[str, Any]] = []
+    for line in raw[:-1].split(b"\n"):
+        value = _measurement_parse_canonical_json_bytes(
+            line + b"\n", owner="measurement artifact index row",
+        )
+        if not isinstance(value, dict):
+            raise ValueError("index row")
+        rows.append(value)
+    return rows
+
+
+def _measurement_recover_raw_only_run(
+    spec: MeasurementVariant,
+    task: TaskFixture,
+    run_id: str,
+    *,
+    artifact_root_locked: bool = False,
+) -> bool:
+    context = _measurement_existing_context(spec, run_id)
+    try:
+        os.lstat(context.raw_path)
+        raw_exists = True
+    except FileNotFoundError:
+        raw_exists = False
+    try:
+        os.lstat(context.receipt_path)
+        receipt_exists = True
+    except FileNotFoundError:
+        receipt_exists = False
+    if not raw_exists or receipt_exists:
+        return False
+
+    settings_bytes = _measurement_validate_snapshot(context, spec)
+    raw = _measurement_read_private_raw(context.raw_path)
+    lines = raw.splitlines()
+    if len(lines) > MEASUREMENT_RAW_MAX_LINES or any(len(line) > MEASUREMENT_RAW_MAX_LINE_BYTES for line in lines):
+        raise ValueError("raw recovery bounds")
+    parsed = parse_claude_stream_output(raw, max_line_bytes=MEASUREMENT_RAW_MAX_LINE_BYTES)
+    if parsed.status not in {"success", "terminal_error"}:
+        raise ValueError("raw recovery stream")
+    hook_result = _parse_measurement_hook_events(raw)
+    if hook_result["classification"] not in {None, "unexpected_hook_event_class"}:
+        raise ValueError("raw recovery hook lifecycle")
+    # Raw bytes prove only what was durably observed. They cannot prove the
+    # interrupted provider process return code or that no later bytes existed.
+    terminal_status = "recovered_process_status_unknown"
+
+    receipt = _measurement_receipt(
+        context, task, spec, raw, hook_result, settings_bytes,
+        process_status="unknown_after_crash", terminal_status=terminal_status,
+    )
+    receipt_bytes = json.dumps(
+        receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    if context.index_path.exists():
+        existing_rows = _measurement_load_index_rows(context.index_path)
+        if any(row.get("run_id") == run_id for row in existing_rows):
+            raise ValueError("orphaned index binding")
+    _measurement_write_exclusive(context.receipt_path, receipt_bytes)
+    _measurement_append_index(context.index_path, {
+        "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+        "run_id": run_id,
+        "receipt_path": str(context.receipt_path),
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "terminal_status": terminal_status,
+    }, artifact_root_locked=artifact_root_locked)
+    return True
+
+
+def _verify_existing_measurement_run(
+    spec: MeasurementVariant, task_id: str, run_id: str, *, require_index: bool = True,
+) -> dict[str, Any]:
+    """Fail closed when an existing immutable run has missing or corrupt evidence."""
+    context = _measurement_existing_context(spec, run_id)
+    receipt_path = context.receipt_path
+    raw_path = context.raw_path
+    try:
+        receipt_bytes = _measurement_read_private_file(receipt_path)
+        receipt = _measurement_parse_canonical_json_bytes(receipt_bytes, owner="measurement receipt")
         if not isinstance(receipt, dict) or receipt.get("schema_version") != MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION:
             raise ValueError("receipt schema")
+        if set(receipt) != {"schema_version", "run_identity", "raw_artifact", "settings_artifact", "process_status", "terminal_status", "hook_summary", "hooks"}:
+            raise ValueError("receipt keys")
         identity = receipt.get("run_identity")
-        if not isinstance(identity, dict) or identity.get("run_id") != run_id:
+        expected_identity = {
+            "candidate_hash": spec.identity.candidate_hash,
+            "task": task_id,
+            "repetition": spec.identity.repetition,
+            "arm": spec.identity.arm,
+            "attempt": spec.identity.attempt,
+            "namespace": spec.identity.namespace,
+            "run_id": run_id,
+        }
+        if identity != expected_identity:
             raise ValueError("receipt identity")
+        for identity_count in (identity.get("repetition"), identity.get("attempt")):
+            if isinstance(identity_count, bool) or not isinstance(identity_count, int) or identity_count < 0:
+                raise ValueError("receipt identity count")
         raw_meta = receipt.get("raw_artifact")
-        if not isinstance(raw_meta, dict) or raw_meta.get("path") != raw_path.name:
+        if not isinstance(raw_meta, dict) or set(raw_meta) != {"path", "sha256", "bytes", "lines", "events"} or raw_meta.get("path") != raw_path.name:
             raise ValueError("raw binding")
         declared_size = raw_meta.get("bytes")
         declared_sha256 = raw_meta.get("sha256")
@@ -6265,26 +6824,278 @@ def _verify_existing_measurement_run(spec: MeasurementVariant, task_id: str, run
         ):
             raise ValueError("raw metadata")
 
-        fd = _open_regular_no_symlink(raw_path)
-        try:
-            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
-                raise ValueError("raw mode")
-            digest = hashlib.sha256()
-            actual_size = 0
-            while True:
-                chunk = os.read(fd, 65_536)
-                if not chunk:
-                    break
-                actual_size += len(chunk)
-                if actual_size > MEASUREMENT_RAW_MAX_BYTES:
-                    raise ValueError("raw size limit")
-                digest.update(chunk)
-        finally:
-            os.close(fd)
-        if actual_size != declared_size or digest.hexdigest() != declared_sha256:
+        raw = _measurement_read_private_raw(raw_path)
+        if len(raw) != declared_size or hashlib.sha256(raw).hexdigest() != declared_sha256:
             raise ValueError("raw digest")
+        if raw_meta.get("lines") != len(raw.splitlines()) or raw_meta.get("events") != len(raw.splitlines()):
+            raise ValueError("raw counts")
+        for raw_count_name in ("bytes", "lines", "events"):
+            raw_count = raw_meta.get(raw_count_name)
+            if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+                raise ValueError("raw numeric field")
+        settings_bytes = _measurement_validate_snapshot(context, spec)
+        settings_meta = receipt.get("settings_artifact")
+        expected_settings = {
+            "path": f"session/{spec.settings_file.name}",
+            "sha256": hashlib.sha256(settings_bytes).hexdigest(),
+            "bytes": len(settings_bytes),
+            "binding_set_sha256": _measurement_binding_set_sha256(spec.pair_registered_bindings),
+        }
+        if settings_meta != expected_settings:
+            raise ValueError("settings binding")
+        settings_size = settings_meta.get("bytes") if isinstance(settings_meta, dict) else None
+        if isinstance(settings_size, bool) or not isinstance(settings_size, int) or settings_size < 0:
+            raise ValueError("settings numeric field")
+        if receipt.get("process_status") not in {"exited_zero", "exited_nonzero", "timed_out", "launch_error", "unknown_after_crash"}:
+            raise ValueError("process status")
+        if receipt.get("terminal_status") not in {
+            "raw_byte_limit", "raw_line_limit", "raw_line_byte_limit", "process_timeout",
+            "process_launch_error", "process_error", "terminal_error", "missing_terminal",
+            "invalid_stream", "hook_payload_limit", "hook_lifecycle_limit",
+            "invalid_hook_lifecycle", "unexpected_hook_event_class",
+            "baseline_hook_contamination", "missing_required_hook_event_class",
+            "hook_process_failure", "success", "recovered_process_status_unknown",
+        }:
+            raise ValueError("terminal status")
+        summary = receipt.get("hook_summary")
+        if not isinstance(summary, dict) or set(summary) != {"required_event_classes", "observed_lifecycle_count", "completed_lifecycle_count", "event_class_counts"}:
+            raise ValueError("hook summary")
+        hooks = receipt.get("hooks")
+        if not isinstance(hooks, list) or summary.get("completed_lifecycle_count") != len(hooks):
+            raise ValueError("hook count")
+        required_classes = list(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+        if summary.get("required_event_classes") != required_classes:
+            raise ValueError("required hook classes")
+        for count_name in ("observed_lifecycle_count", "completed_lifecycle_count"):
+            count = summary.get(count_name)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("hook summary count")
+        hook_keys = {"hook_event", "opaque_hook_name_sha256", "lifecycle_key_sha256", "hook_process_outcome", "hook_process_exit_code", "triggering_tool_outcome", "progress_count"}
+        if any(not isinstance(hook, dict) or set(hook) != hook_keys for hook in hooks):
+            raise ValueError("hook keys")
+        for hook in hooks:
+            if (
+                hook["hook_event"] not in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
+                and receipt.get("terminal_status") not in {
+                    "unexpected_hook_event_class", "recovered_process_status_unknown",
+                }
+            ):
+                raise ValueError("hook event")
+            if not isinstance(hook["opaque_hook_name_sha256"], str) or not SHA256_HEX_PATTERN.fullmatch(hook["opaque_hook_name_sha256"]):
+                raise ValueError("hook name hash")
+            if not isinstance(hook["lifecycle_key_sha256"], str) or not SHA256_HEX_PATTERN.fullmatch(hook["lifecycle_key_sha256"]):
+                raise ValueError("hook lifecycle hash")
+            if hook["hook_process_outcome"] not in {"success", "error", "cancelled"}:
+                raise ValueError("hook outcome")
+            exit_code = hook["hook_process_exit_code"]
+            if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
+                raise ValueError("hook exit code")
+            expected_trigger = "not_applicable"
+            if hook["hook_event"] == "PostToolUse":
+                expected_trigger = "succeeded"
+            elif hook["hook_event"] == "PostToolUseFailure":
+                expected_trigger = "failed"
+            if hook["triggering_tool_outcome"] != expected_trigger:
+                raise ValueError("triggering tool outcome")
+            progress_count = hook["progress_count"]
+            if isinstance(progress_count, bool) or not isinstance(progress_count, int) or progress_count < 0:
+                raise ValueError("progress count")
+        counts = collections.Counter(hook["hook_event"] for hook in hooks)
+        expected_counts = [
+            {"hook_event": event, "count": counts[event]}
+            for event in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
+            if counts[event] or event in required_classes
+        ]
+        if summary.get("event_class_counts") != expected_counts:
+            raise ValueError("event class counts")
+        event_counts = summary.get("event_class_counts")
+        if not isinstance(event_counts, list) or any(
+            not isinstance(item, dict) or set(item) != {"hook_event", "count"}
+            or isinstance(item.get("count"), bool) or not isinstance(item.get("count"), int)
+            or item["count"] < 0
+            for item in event_counts
+        ):
+            raise ValueError("event class count fields")
+        reparsed_stream = parse_claude_stream_output(raw, max_line_bytes=MEASUREMENT_RAW_MAX_LINE_BYTES)
+        reparsed_hooks = _parse_measurement_hook_events(raw)
+        process_status = receipt["process_status"]
+        recovered = process_status == "unknown_after_crash"
+        if recovered:
+            if receipt["terminal_status"] != "recovered_process_status_unknown":
+                raise ValueError("recovered status pair")
+            if (
+                len(raw) > MEASUREMENT_RAW_MAX_BYTES
+                or len(raw.splitlines()) > MEASUREMENT_RAW_MAX_LINES
+                or any(len(line) > MEASUREMENT_RAW_MAX_LINE_BYTES for line in raw.splitlines())
+                or reparsed_stream.status not in {"success", "terminal_error"}
+                or reparsed_hooks["classification"] not in {None, "unexpected_hook_event_class"}
+            ):
+                raise ValueError("recovered evidence eligibility")
+            expected_terminal = "recovered_process_status_unknown"
+        else:
+            if receipt["terminal_status"] == "recovered_process_status_unknown":
+                raise ValueError("recovered status pair")
+            expected_terminal = _measurement_resolve_terminal_status(
+                raw_byte_limit=(receipt["terminal_status"] == "raw_byte_limit" and len(raw) == MEASUREMENT_RAW_MAX_BYTES),
+                raw_line_limit=len(raw.splitlines()) > MEASUREMENT_RAW_MAX_LINES,
+                raw_line_byte_limit=any(len(line) > MEASUREMENT_RAW_MAX_LINE_BYTES for line in raw.splitlines()),
+                process_status=process_status,
+                stream_status=reparsed_stream.status,
+                hook_result=reparsed_hooks,
+                arm=spec.identity.arm,
+                required_event_classes=spec.required_event_classes,
+            )
+        expected_receipt = _measurement_receipt(
+            context,
+            TaskFixture(id=task_id, prompt=""),
+            spec,
+            raw,
+            reparsed_hooks,
+            settings_bytes,
+            process_status=process_status,
+            terminal_status=expected_terminal,
+        )
+        if receipt != expected_receipt:
+            raise ValueError("receipt semantic binding")
+        if not require_index:
+            return receipt
+        index_rows = _measurement_load_index_rows(context.index_path)
+        matching_rows = [row for row in index_rows if row.get("run_id") == run_id]
+        expected_index = {
+            "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+            "run_id": run_id,
+            "receipt_path": str(receipt_path),
+            "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+            "terminal_status": receipt.get("terminal_status"),
+        }
+        if matching_rows != [expected_index]:
+            raise ValueError("index binding")
+        return receipt
     except (OSError, SystemExit, TypeError, ValueError):
         raise SystemExit("measurement artifact integrity check failed") from None
+
+
+def _measurement_check_artifact_identity_locked(
+    spec: MeasurementVariant,
+    task: TaskFixture,
+    run_id: str,
+    *,
+    artifact_root_locked: bool,
+) -> None:
+    """Check all versioned immutable evidence while the artifact-root lock is held."""
+    legacy_run_id = spec.identity.legacy_v1_run_id(task.id)
+    if run_id == legacy_run_id:
+        raise SystemExit("run_id_version_collision")
+
+    legacy_root = spec.artifact_root / "runs" / legacy_run_id
+    try:
+        legacy_stat = os.lstat(legacy_root)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise SystemExit("measurement artifact integrity check failed") from None
+    else:
+        if not stat.S_ISDIR(legacy_stat.st_mode) or stat.S_ISLNK(legacy_stat.st_mode):
+            raise SystemExit("measurement artifact integrity check failed")
+        raise SystemExit("legacy_v1_artifact_conflict")
+
+    index_path = spec.artifact_root / "artifact-index.ndjson"
+    try:
+        index_rows = _measurement_load_index_rows(index_path)
+    except FileNotFoundError:
+        index_rows = []
+    except (OSError, SystemExit, TypeError, ValueError, json.JSONDecodeError):
+        raise SystemExit("measurement artifact integrity check failed") from None
+
+    index_keys = {"schema_version", "run_id", "receipt_path", "receipt_sha256", "terminal_status"}
+    terminal_statuses = {
+        "raw_byte_limit", "raw_line_limit", "raw_line_byte_limit", "process_timeout",
+        "process_launch_error", "process_error", "terminal_error", "missing_terminal",
+        "invalid_stream", "hook_payload_limit", "hook_lifecycle_limit",
+        "invalid_hook_lifecycle", "unexpected_hook_event_class",
+        "baseline_hook_contamination", "missing_required_hook_event_class",
+        "hook_process_failure", "success", "recovered_process_status_unknown",
+    }
+    matching_legacy_rows: list[dict[str, Any]] = []
+    for row in index_rows:
+        if (
+            set(row) != index_keys
+            or not isinstance(row.get("schema_version"), str)
+            or not isinstance(row.get("run_id"), str)
+            or not SHA256_HEX_PATTERN.fullmatch(row["run_id"])
+            or not isinstance(row.get("receipt_path"), str)
+            or not isinstance(row.get("receipt_sha256"), str)
+            or not SHA256_HEX_PATTERN.fullmatch(row["receipt_sha256"])
+            or row.get("terminal_status") not in terminal_statuses
+        ):
+            raise SystemExit("measurement artifact integrity check failed")
+        schema_version = row["schema_version"]
+        row_run_id = row["run_id"]
+        if row_run_id == legacy_run_id and schema_version in {
+            "contextguard.bench.artifact-index.v1",
+            MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+        }:
+            matching_legacy_rows.append(row)
+        elif schema_version != MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION:
+            raise SystemExit("measurement artifact integrity check failed")
+    if len(matching_legacy_rows) > 1:
+        raise SystemExit("measurement artifact integrity check failed")
+    if matching_legacy_rows:
+        raise SystemExit("legacy_v1_artifact_conflict")
+
+    current_index_rows = [row for row in index_rows if row["run_id"] == run_id]
+    if len(current_index_rows) > 1:
+        raise SystemExit("measurement artifact integrity check failed")
+
+    run_root = spec.artifact_root / "runs" / run_id
+    try:
+        run_stat = os.lstat(run_root)
+    except FileNotFoundError:
+        if current_index_rows:
+            raise SystemExit("measurement artifact integrity check failed")
+        return
+    except OSError:
+        raise SystemExit("measurement artifact integrity check failed") from None
+    if not stat.S_ISDIR(run_stat.st_mode) or stat.S_ISLNK(run_stat.st_mode):
+        raise SystemExit("measurement artifact integrity check failed")
+
+    context = _measurement_existing_context(spec, run_id)
+    try:
+        os.lstat(context.receipt_path)
+        receipt_exists = True
+    except FileNotFoundError:
+        receipt_exists = False
+    except OSError:
+        raise SystemExit("measurement artifact integrity check failed") from None
+    try:
+        os.lstat(context.index_path)
+        index_exists = True
+    except FileNotFoundError:
+        index_exists = False
+    except OSError:
+        raise SystemExit("measurement artifact integrity check failed") from None
+
+    try:
+        if not receipt_exists:
+            recovered = _measurement_recover_raw_only_run(
+                spec, task, run_id, artifact_root_locked=artifact_root_locked,
+            )
+            if not recovered:
+                raise ValueError("incomplete run")
+        elif not index_exists or not current_index_rows:
+            receipt = _verify_existing_measurement_run(spec, task.id, run_id, require_index=False)
+            receipt_bytes = _measurement_read_private_file(context.receipt_path)
+            _measurement_append_index(context.index_path, {
+                "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+                "run_id": run_id,
+                "receipt_path": str(context.receipt_path),
+                "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+                "terminal_status": receipt["terminal_status"],
+            }, artifact_root_locked=artifact_root_locked)
+        _verify_existing_measurement_run(spec, task.id, run_id)
+    except (OSError, SystemExit, TypeError, ValueError, json.JSONDecodeError):
+        raise SystemExit("measurement artifact integrity check failed") from None
+    raise SystemExit(f"duplicate measurement run id: {run_id}")
 
 
 def preflight_measurement_targets(
@@ -6307,21 +7118,29 @@ def preflight_measurement_targets(
             raise SystemExit("duplicate immutable measurement identity in selected targets")
         identities.add(identity)
         run_id = spec.identity.run_id(task.id)
+        legacy_run_id = spec.identity.legacy_v1_run_id(task.id)
+        if run_id == legacy_run_id:
+            raise SystemExit("run_id_version_collision")
         location = (spec.artifact_root, run_id)
         if location in run_locations:
             raise SystemExit("duplicate measurement run id in selected targets")
         run_locations.add(location)
-        run_root = spec.artifact_root / "runs" / run_id
         try:
-            os.lstat(run_root)
-            run_exists = True
+            artifact_lock_fd = _ensure_directory_no_symlink(spec.artifact_root)
         except FileNotFoundError:
-            run_exists = False
+            artifact_lock_fd = None
         except OSError:
             raise SystemExit("measurement artifact integrity check failed") from None
-        if run_exists:
-            _verify_existing_measurement_run(spec, task.id, run_id)
-            raise SystemExit(f"duplicate measurement run id: {run_id}")
+        try:
+            if artifact_lock_fd is not None:
+                if fcntl is not None:
+                    fcntl.flock(artifact_lock_fd, fcntl.LOCK_EX)
+                _measurement_check_artifact_identity_locked(
+                    spec, task, run_id, artifact_root_locked=True,
+                )
+        finally:
+            if artifact_lock_fd is not None:
+                os.close(artifact_lock_fd)
         if check_cli and spec.cli_capabilities not in checked_specs:
             validate_measurement_cli_capabilities(claude_bin, spec)
             checked_specs.add(spec.cli_capabilities)
