@@ -75,9 +75,10 @@ import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping, Sequence
 
 try:
     import fcntl
@@ -659,6 +660,23 @@ def _read_text_no_follow(path: Path, *, max_bytes: int = MAX_FIXTURE_FILE_BYTES)
             os.close(fd)
 
 
+def _read_bytes_no_follow(path: Path, *, max_bytes: int = MAX_FIXTURE_FILE_BYTES) -> bytes:
+    fd = _open_regular_no_symlink(path)
+    try:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, min(65_536, max_bytes + 1 - total))
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise SystemExit(f"fixture file exceeds {max_bytes} bytes: {path}")
+    finally:
+        os.close(fd)
+
+
 @contextmanager
 def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
     """Serialize CSV read/write access with a no-follow sidecar lock file."""
@@ -1174,6 +1192,10 @@ class _MeasurementDuplicateKey(ValueError):
 
 
 class _MeasurementLaunchError(OSError):
+    pass
+
+
+class _StudyLaunchAccountingError(RuntimeError):
     pass
 
 
@@ -2457,6 +2479,7 @@ def run_bounded_command(
     max_output_bytes: int,
     env: dict[str, str] | None = None,
     stdout_sink_fd: int | None = None,
+    on_process_started: Callable[[], None] | None = None,
 ) -> BoundedProcessResult:
     try:
         proc = subprocess.Popen(
@@ -2469,6 +2492,27 @@ def run_bounded_command(
         )
     except OSError as exc:
         raise _MeasurementLaunchError(str(exc)) from exc
+    if on_process_started is not None:
+        try:
+            on_process_started()
+        except BaseException:
+            try:
+                pgid = os.getpgid(proc.pid)
+            except OSError:
+                pgid = proc.pid
+            _signal_process_group(proc, signal.SIGKILL, pgid)
+            try:
+                proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                _signal_process_group(proc, signal.SIGKILL, pgid)
+                proc.wait()
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            raise
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
@@ -2630,6 +2674,62 @@ def run_success_command(
     if proc.output_truncated:
         return False, f"success_command output limit exceeded ({SUCCESS_COMMAND_OUTPUT_MAX_BYTES} bytes)"
     return proc.returncode == 0, f"exit={proc.returncode}"
+
+
+def run_success_command_study(
+    task: TaskFixture,
+    project_root: Path,
+    *,
+    env: dict[str, str],
+) -> str:
+    """Classify the frozen S002 checker contract without legacy boolean coercion."""
+    if not task.success_command or is_placeholder_success_command(task.success_command):
+        return "success_checker_infra_invalid"
+    try:
+        argv = shlex.split(task.success_command)
+    except ValueError:
+        return "success_checker_infra_invalid"
+    if not argv or _has_shell_meta(argv):
+        return "success_checker_infra_invalid"
+    raw_cwd = Path(task.success_cwd)
+    if raw_cwd.is_absolute() or any(part in ("", ".", "..") for part in raw_cwd.parts):
+        return "success_checker_infra_invalid"
+    root_fd = -1
+    cwd_fd = -1
+    try:
+        root_fd = _ensure_directory_no_symlink(project_root)
+        cwd_fd = os.dup(root_fd)
+        for component in raw_cwd.parts:
+            next_fd = _open_directory_at(cwd_fd, component, project_root / raw_cwd)
+            os.close(cwd_fd)
+            cwd_fd = next_fd
+        cwd = project_root / raw_cwd
+    except (OSError, ValueError):
+        return "success_checker_infra_invalid"
+    finally:
+        if cwd_fd >= 0:
+            os.close(cwd_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+    try:
+        result = run_bounded_command(
+            argv,
+            cwd=cwd,
+            timeout_seconds=600,
+            max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return "success_checker_infra_invalid"
+    if len(result.stdout_bytes.splitlines()) > 4096 or len(result.stderr_bytes.splitlines()) > 4096:
+        return "success_checker_infra_invalid"
+    if any(
+        len(line) > 16_384
+        for raw in (result.stdout_bytes, result.stderr_bytes)
+        for line in raw.splitlines()
+    ):
+        return "success_checker_infra_invalid"
+    return classify_success_checker(result)
 
 
 def _measurement_create_exclusive(path: Path) -> int:
@@ -3020,6 +3120,8 @@ def _run_measurement_fixture_locked(
     project_root: Path,
     *,
     locked_root_fd: int,
+    on_process_started: Callable[[], None] | None = None,
+    measurement_study: bool = False,
 ) -> RunResult:
     spec = variant.measurement
     assert spec is not None
@@ -3052,9 +3154,12 @@ def _run_measurement_fixture_locked(
                 max_output_bytes=MEASUREMENT_RAW_MAX_BYTES,
                 env=env,
                 stdout_sink_fd=raw_fd,
+                on_process_started=on_process_started,
             )
             raw = proc.stdout_bytes
         except _MeasurementLaunchError:
+            if measurement_study:
+                raise
             proc = BoundedProcessResult(126, "", "", False, False, b"", b"", True)
             raw = b""
         except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -3125,11 +3230,39 @@ def _run_measurement_fixture_locked(
             wall_time_seconds=elapsed_seconds_since(started_at),
         )
 
-    tokens, cost, cost_available, primary_tokens_measured = collect_usage(parsed.payload)
+    if measurement_study:
+        try:
+            exact_usage = parse_measurement_terminal_usage(raw)
+        except ValueError:
+            return RunResult(
+                task_id=task.id,
+                variant=variant.name,
+                model=task.model,
+                effort=task.effort or "",
+                tokens={key: 0 for key, _ in USAGE_KEY_GROUPS},
+                cost_usd=0.0,
+                success=False,
+                notes="terminal_usage_infra_invalid",
+                wall_time_seconds=elapsed_seconds_since(started_at),
+            )
+        tokens = {
+            "input_tokens": exact_usage["input_tokens"],
+            "output_tokens": exact_usage["output_tokens"],
+            "cache_read": exact_usage["cache_read_input_tokens"],
+            "cache_creation": exact_usage["cache_creation_input_tokens"],
+        }
+        cost, cost_available, primary_tokens_measured = 0.0, False, True
+    else:
+        tokens, cost, cost_available, primary_tokens_measured = collect_usage(parsed.payload)
     provider_cached_tokens, provider_cached_tokens_measured = collect_provider_cache_telemetry(parsed.payload)
     shift_metrics = collect_shift_metrics(parsed.payload)
     self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
-    success, success_note = run_success_command(task, project_root, env=env)
+    if measurement_study:
+        checker_classification = run_success_command_study(task, project_root, env=env)
+        success = checker_classification == "task_success"
+        success_note = checker_classification
+    else:
+        success, success_note = run_success_command(task, project_root, env=env)
     return RunResult(
         task_id=task.id,
         variant=variant.name,
@@ -7197,11 +7330,2471 @@ def validate_distinct_output_paths(
             seen_identity[identity] = label
 
 
-def main() -> int:
+# --- S002 deterministic measurement-study layer ---------------------------------
+#
+# This surface is deliberately opt-in.  Legacy CSV/evidence execution never calls
+# these helpers, so S001 and the historical benchmark contract remain unchanged.
+MEASUREMENT_STUDY_PLAN_SCHEMA_VERSION = "contextguard.bench.study-plan.v1"
+MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v1"
+MEASUREMENT_STUDY_ATTEMPT_INDEX_SCHEMA_VERSION = "contextguard.bench.study-attempt-index.v1"
+MEASUREMENT_STUDY_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v1"
+MEASUREMENT_CLI_PROBE_SCHEMA_VERSION = "contextguard.bench.cli-probe.v1"
+MEASUREMENT_TERMINAL_USAGE_SCHEMA_VERSION = "contextguard.bench.terminal-usage.v1"
+MEASUREMENT_STUDY_SCHEDULE_ALGORITHM = "splitmix64-balanced-pairs-v1"
+MEASUREMENT_STUDY_RETRY_POLICY = "one_retry_after_valid_task_failure_v1"
+MEASUREMENT_STUDY_INFERENCE_SEED = 0x434F4E5445585447
+MEASUREMENT_STUDY_CORRECTION_SEED = 0x434F525245435433
+# Public semantic aliases use the frozen plan terminology.
+MEASUREMENT_INFERENCE_SEED = MEASUREMENT_STUDY_INFERENCE_SEED
+MEASUREMENT_CORRECTION_SHUFFLE_SEED = MEASUREMENT_STUDY_CORRECTION_SEED
+MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES = 10_000
+MEASUREMENT_STUDY_CLAIM = (
+    "Token savings demonstrated only for the exact frozen 12-task suite under "
+    "manifest <sha256>."
+)
+MEASUREMENT_TERMINAL_USAGE_GOLDEN_SHA256 = (
+    "e3bf1b6b4f6e40c5c79e6ecf0ca847a0417b905bcf2e095993b0ccb4b8cd134c"
+)
+SPLITMIX64_MASK = (1 << 64) - 1
+SPLITMIX64_INCREMENT = 0x9E3779B97F4A7C15
+SPLITMIX64_MULTIPLIER_1 = 0xBF58476D1CE4E5B9
+SPLITMIX64_MULTIPLIER_2 = 0x94D049BB133111EB
+MEASUREMENT_STUDY_ARMS = ("baseline", "treatment")
+MEASUREMENT_STUDY_PLAN_KEYS = frozenset({
+    "schema_version",
+    "namespace",
+    "schedule_seed",
+    "inference_seed",
+    "correction_shuffle_seed",
+    "repetitions",
+    "max_attempts_per_arm_unit",
+    "retry_policy",
+})
+MEASUREMENT_STUDY_USAGE_KEYS = (
+    "input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "output_tokens",
+)
+MEASUREMENT_STUDY_STATE_TRANSITIONS = {
+    "planned": frozenset({"launched", "prelaunch_refused"}),
+    "conditional": frozenset({"eligible", "not_needed", "blocked_study_invalid"}),
+    "eligible": frozenset({"launched", "prelaunch_refused"}),
+    "launched": frozenset({"terminal"}),
+}
+MEASUREMENT_STUDY_TERMINAL_STATES = frozenset({
+    "terminal", "prelaunch_refused", "not_needed", "blocked_study_invalid",
+})
+MEASUREMENT_STUDY_PRELAUNCH_REASONS = frozenset({
+    "process_creation_failed", "validation_refused",
+})
+MEASUREMENT_STUDY_BLOCKED_REASONS = frozenset({"initial_attempt_infra_invalid"})
+MEASUREMENT_STUDY_TERMINAL_CLASSIFICATIONS = frozenset({
+    "success",
+    "valid_task_failure_v1",
+    "study_infra_invalid",
+    "launch_accounting_failure",
+    "post_launch_infra_invalid",
+    "recovered_process_status_unknown",
+})
+MEASUREMENT_STUDY_PROBE_LAYOUT = (
+    "cwd", "home", "xdg-config", "xdg-cache", "xdg-data", "xdg-state", "tmp",
+    "claude-config",
+)
+
+
+def _study_canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+
+
+def _study_sha256_bytes(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _study_domain_hash(label: str, value: Any) -> str:
+    raw = _study_canonical_json_bytes(value)
+    return hashlib.sha256(label.encode("ascii") + b"\0" + raw).hexdigest()
+
+
+def load_measurement_study_plan(path: Path) -> dict[str, Any]:
+    raw = _read_text_no_follow(path).encode("utf-8")
+    value = _parse_measurement_json_text(raw.decode("utf-8"), owner="measurement study plan")
+    canonical = _study_canonical_json_bytes(value)
+    if raw not in {canonical, canonical[:-1]}:
+        raise SystemExit("measurement study plan must be canonical JSON")
+    plan = _measurement_exact_object(
+        value, owner="measurement study plan", keys=MEASUREMENT_STUDY_PLAN_KEYS,
+    )
+    if plan["schema_version"] != MEASUREMENT_STUDY_PLAN_SCHEMA_VERSION:
+        raise SystemExit("unsupported measurement study plan schema")
+    namespace = plan["namespace"]
+    if not isinstance(namespace, str) or not MEASUREMENT_ID_NAMESPACE_RE.fullmatch(namespace):
+        raise SystemExit("measurement study plan namespace is invalid")
+    seed = plan["schedule_seed"]
+    if not isinstance(seed, str) or re.fullmatch(r"0x[0-9A-F]{16}", seed) is None:
+        raise SystemExit("measurement study plan schedule_seed must be 0x plus 16 uppercase hex digits")
+    exact = {
+        "inference_seed": "0x434F4E5445585447",
+        "correction_shuffle_seed": "0x434F525245435433",
+        "repetitions": 3,
+        "max_attempts_per_arm_unit": 2,
+        "retry_policy": MEASUREMENT_STUDY_RETRY_POLICY,
+    }
+    for key, expected in exact.items():
+        if plan[key] != expected or (
+            isinstance(expected, int) and isinstance(plan[key], bool)
+        ):
+            raise SystemExit(f"measurement study plan {key} must equal {expected!r}")
+    normalized = dict(plan)
+    normalized["schedule_seed_int"] = int(seed, 16)
+    normalized["source_sha256"] = _study_sha256_bytes(raw)
+    return normalized
+
+
+def splitmix64_next(state: int) -> tuple[int, int]:
+    if isinstance(state, bool) or not isinstance(state, int):
+        raise TypeError("SplitMix64 state must be an integer")
+    state = (state + SPLITMIX64_INCREMENT) & SPLITMIX64_MASK
+    value = state
+    value = ((value ^ (value >> 30)) * SPLITMIX64_MULTIPLIER_1) & SPLITMIX64_MASK
+    value = ((value ^ (value >> 27)) * SPLITMIX64_MULTIPLIER_2) & SPLITMIX64_MASK
+    value = (value ^ (value >> 31)) & SPLITMIX64_MASK
+    return state, value
+
+
+def splitmix64_bounded(state: int, bound: int) -> tuple[int, int]:
+    if isinstance(bound, bool) or not isinstance(bound, int) or bound <= 0:
+        raise ValueError("SplitMix64 bound must be a positive integer")
+    limit = (1 << 64) - ((1 << 64) % bound)
+    while True:
+        state, value = splitmix64_next(state)
+        if value < limit:
+            return state, value % bound
+
+
+def generate_balanced_study_schedule(
+    task_ids: list[str],
+    repetitions: int,
+    seed: int | str | None = None,
+    *,
+    schedule_seed: int | str | None = None,
+    namespace: str | None = None,
+    candidate_hash: str | None = None,
+) -> list[dict[str, Any]]:
+    if len(task_ids) != 12 or len(set(task_ids)) != 12:
+        raise ValueError("measurement study requires exactly 12 unique ordered task ids")
+    if any(not isinstance(task_id, str) or not task_id for task_id in task_ids):
+        raise ValueError("measurement study task ids must be non-empty strings")
+    if repetitions != 3:
+        raise ValueError("measurement study requires exactly three repetitions")
+    selected_seed = schedule_seed if schedule_seed is not None else seed
+    if selected_seed is None:
+        raise ValueError("measurement study schedule seed is required")
+    seed_int = int(selected_seed, 16) if isinstance(selected_seed, str) else selected_seed
+    choices = [0] * 18 + [1] * 18
+    state = seed_int & SPLITMIX64_MASK
+    for index in range(len(choices) - 1, 0, -1):
+        state, selected = splitmix64_bounded(state, index + 1)
+        choices[index], choices[selected] = choices[selected], choices[index]
+    rows: list[dict[str, Any]] = []
+    for index, (task_id, repetition) in enumerate(
+        (task_id, repetition)
+        for task_id in task_ids
+        for repetition in range(repetitions)
+    ):
+        first, second = (
+            MEASUREMENT_STUDY_ARMS
+            if choices[index] == 0
+            else tuple(reversed(MEASUREMENT_STUDY_ARMS))
+        )
+        row = {
+            "pair_id": _study_domain_hash(
+                "contextguard.bench.pair-id.v1", [task_id, repetition],
+            ),
+            "task_id": task_id,
+            "repetition": repetition,
+            "first_arm": first,
+            "second_arm": second,
+        }
+        if namespace is not None and candidate_hash is not None:
+            row["task"] = task_id
+            row["run_ids"] = [
+                MeasurementIdentity(
+                    candidate_hash=candidate_hash,
+                    repetition=repetition,
+                    arm=arm,
+                    attempt=0,
+                    namespace=namespace,
+                ).run_id(task_id)
+                for arm in (first, second)
+            ]
+        rows.append(row)
+    if sum(row["first_arm"] == "baseline" for row in rows) != 18:
+        raise AssertionError("balanced schedule construction failed")
+    return rows
+
+
+def generate_measurement_study_slots(
+    task_ids: list[str],
+    schedule: list[dict[str, Any]] | None = None,
+    *,
+    candidate_hash: str,
+    namespace: str,
+    repetitions: int = 3,
+    arms: Sequence[str] = MEASUREMENT_STUDY_ARMS,
+) -> list[dict[str, Any]]:
+    if schedule is None:
+        if repetitions != 3 or tuple(arms) != MEASUREMENT_STUDY_ARMS:
+            raise ValueError("measurement study slot dimensions are frozen")
+        schedule = [
+            {
+                "pair_id": _study_domain_hash(
+                    "contextguard.bench.pair-id.v1", [task_id, repetition],
+                ),
+                "task_id": task_id,
+                "repetition": repetition,
+                "first_arm": arms[0],
+                "second_arm": arms[1],
+            }
+            for task_id in task_ids for repetition in range(repetitions)
+        ]
+    expected_order = [
+        (task_id, repetition) for task_id in task_ids for repetition in range(3)
+    ]
+    if [(row.get("task_id"), row.get("repetition")) for row in schedule] != expected_order:
+        raise ValueError("measurement study schedule task/repetition order drift")
+    initial: list[dict[str, Any]] = []
+    conditional: list[dict[str, Any]] = []
+    all_run_ids: set[str] = set()
+    legacy_ids: set[str] = set()
+    for row in schedule:
+        if {row.get("first_arm"), row.get("second_arm")} != set(MEASUREMENT_STUDY_ARMS):
+            raise ValueError("measurement study schedule arm imbalance")
+        for arm in (row["first_arm"], row["second_arm"]):
+            for attempt, state, destination in (
+                (0, "planned", initial), (1, "conditional", conditional),
+            ):
+                identity = MeasurementIdentity(
+                    candidate_hash=candidate_hash,
+                    repetition=row["repetition"],
+                    arm=arm,
+                    attempt=attempt,
+                    namespace=namespace,
+                )
+                run_id = identity.run_id(row["task_id"])
+                legacy_id = identity.legacy_v1_run_id(row["task_id"])
+                if run_id in all_run_ids or legacy_id in legacy_ids or run_id in legacy_ids:
+                    raise ValueError("measurement study run id collision")
+                all_run_ids.add(run_id)
+                legacy_ids.add(legacy_id)
+                destination.append({
+                    "pair_id": row["pair_id"],
+                    "task_id": row["task_id"],
+                    "repetition": row["repetition"],
+                    "arm": arm,
+                    "attempt": attempt,
+                    "run_id": run_id,
+                    "state": state,
+                })
+    slots = initial + conditional
+    validate_measurement_study_slots(slots, task_ids=task_ids)
+    return slots
+
+
+def validate_measurement_study_slots(
+    slots: Sequence[Mapping[str, Any]],
+    *,
+    task_ids: Sequence[str] | None = None,
+    repetitions: int = 3,
+    manifest_hash: str | None = None,
+) -> tuple[Mapping[str, Any], ...] | None:
+    if len(slots) != 144:
+        raise ValueError("measurement study manifest must contain exactly 144 slots")
+    required = {
+        "pair_id", "task_id", "repetition", "arm", "attempt", "run_id", "state",
+    }
+    if manifest_hash is not None:
+        required.add("study_manifest_sha256")
+    if task_ids is None:
+        task_ids = list(dict.fromkeys(str(slot.get("task_id")) for slot in slots))
+    run_ids: set[str] = set()
+    expected: set[tuple[str, int, str, int]] = set()
+    for task_id in task_ids:
+        for repetition in range(repetitions):
+            for arm in MEASUREMENT_STUDY_ARMS:
+                for attempt in (0, 1):
+                    expected.add((task_id, repetition, arm, attempt))
+    actual: set[tuple[str, int, str, int]] = set()
+    for slot in slots:
+        if set(slot) != required:
+            raise ValueError("measurement study slot schema mismatch")
+        if manifest_hash is not None and slot.get("study_manifest_sha256") != manifest_hash:
+            raise ValueError("measurement study slot manifest mismatch")
+        key = (slot["task_id"], slot["repetition"], slot["arm"], slot["attempt"])
+        if key in actual:
+            raise ValueError("duplicate measurement study slot")
+        actual.add(key)
+        if slot["run_id"] in run_ids:
+            raise ValueError("duplicate measurement study run id")
+        run_ids.add(slot["run_id"])
+        expected_state = "planned" if slot["attempt"] == 0 else "conditional"
+        if slot["state"] != expected_state:
+            raise ValueError("measurement study slot initial state mismatch")
+    if actual != expected:
+        raise ValueError("measurement study slot coverage mismatch")
+    if manifest_hash is not None:
+        return tuple(slots)
+    return None
+
+
+def parse_measurement_terminal_usage(raw: bytes | str) -> dict[str, int]:
+    parsed = parse_claude_stream_output(raw)
+    if parsed.payload is None or parsed.payload.get("type") != "result":
+        raise ValueError("measurement terminal usage requires one terminal result record")
+    usage = parsed.payload.get("usage")
+    if not isinstance(usage, dict) or set(usage) != set(MEASUREMENT_STUDY_USAGE_KEYS):
+        raise ValueError("measurement terminal usage must contain the exact four buckets")
+    result: dict[str, int] = {}
+    total = 0
+    for key in MEASUREMENT_STUDY_USAGE_KEYS:
+        value = usage[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("measurement terminal usage buckets must be JSON integers")
+        if value < 0 or value > MAX_USAGE_TOKEN_COUNT:
+            raise ValueError("measurement terminal usage bucket is outside its allowed range")
+        total += value
+        if total > MAX_USAGE_TOKEN_COUNT:
+            raise ValueError("measurement terminal usage sum exceeds its allowed range")
+        result[key] = value
+    result["primary_tokens"] = total
+    return result
+
+
+def type7_quantile(
+    values: Sequence[float | Fraction], probability: float | Fraction,
+) -> float | Fraction:
+    if not values:
+        raise ValueError("Type-7 quantile requires at least one value")
+    if not 0 <= probability <= 1:
+        raise ValueError("quantile probability is outside [0,1]")
+    exact = isinstance(probability, Fraction) or all(
+        isinstance(value, (int, Fraction)) and not isinstance(value, bool)
+        for value in values
+    )
+    ordered = sorted(
+        Fraction(value) if exact else float(value) for value in values
+    )
+    if any(not math.isfinite(float(value)) for value in ordered):
+        raise ValueError("quantile values must be finite")
+    probability_value = Fraction(probability) if exact else float(probability)
+    h = (len(ordered) - 1) * probability_value
+    lower = h.numerator // h.denominator if isinstance(h, Fraction) else math.floor(h)
+    upper = lower if h == lower else lower + 1
+    fraction = h - lower
+    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
+
+
+def bootstrap_task_cluster(
+    values_by_task: Sequence[Sequence[float]] | None = None,
+    *,
+    seed: int | str = MEASUREMENT_STUDY_INFERENCE_SEED,
+    resamples: int = MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES,
+    token_differences: Sequence[Sequence[int]] | None = None,
+    retry_differences: Sequence[Sequence[int]] | None = None,
+    replicates: int | None = None,
+) -> dict[str, Any]:
+    direct_mode = token_differences is not None or retry_differences is not None
+    if direct_mode:
+        if token_differences is None or retry_differences is None:
+            raise ValueError("both bootstrap difference matrices are required")
+        values_by_task = token_differences
+        resamples = replicates if replicates is not None else resamples
+    if values_by_task is None:
+        raise ValueError("bootstrap values are required")
+    if len(values_by_task) != 12 or any(len(row) != 3 for row in values_by_task):
+        raise ValueError("task-cluster bootstrap requires exactly 12 x 3 values")
+    if resamples != MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES:
+        raise ValueError("measurement study bootstrap requires exactly 10,000 resamples")
+    seed_int = int(seed, 16) if isinstance(seed, str) else seed
+    state = seed_int & SPLITMIX64_MASK
+    indices = bytearray()
+    exact_mode = direct_mode or all(
+        all(isinstance(value, (int, Fraction)) and not isinstance(value, bool) for value in row)
+        for row in values_by_task
+    )
+    estimates: list[Any] = []
+    task_means = (
+        [sum(Fraction(value) for value in row) / 3 for row in values_by_task]
+        if exact_mode
+        else [sum(float(value) for value in row) / 3.0 for row in values_by_task]
+    )
+    for _ in range(resamples):
+        sampled_total: Any = Fraction(0) if exact_mode else 0.0
+        for _ in range(12):
+            state, task_index = splitmix64_bounded(state, 12)
+            indices.append(task_index)
+            sampled_total += task_means[task_index]
+        estimates.append(sampled_total / (12 if exact_mode else 12.0))
+    result = {
+        "point": sum(task_means) / (12 if exact_mode else 12.0),
+        "q025": type7_quantile(
+            estimates, Fraction(1, 40) if exact_mode else 0.025,
+        ),
+        "q975": type7_quantile(
+            estimates, Fraction(39, 40) if exact_mode else 0.975,
+        ),
+        "sampled_index_sha256": hashlib.sha256(indices).hexdigest(),
+        "sampled_index_prefix": list(indices[:36]),
+        "resamples": resamples,
+        "task_draws_per_resample": 12,
+    }
+    if direct_mode:
+        retry_result = bootstrap_task_cluster(
+            retry_differences, seed=seed_int, resamples=resamples,
+        )
+        result.update({
+            "sampled_task_indices": list(indices),
+            "token_q025": result["q025"],
+            "token_q975": result["q975"],
+            "retry_q025": retry_result["q025"],
+            "retry_q975": retry_result["q975"],
+        })
+    return result
+
+
+def compute_measurement_study_estimators(
+    attempts: Sequence[Mapping[str, Any]],
+    *,
+    task_order: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    if attempts and "task" in attempts[0]:
+        grouped_direct: dict[
+            tuple[str, int, str], list[Mapping[str, Any]]
+        ] = collections.defaultdict(list)
+        for row in attempts:
+            grouped_direct[
+                (str(row["task"]), int(row["repetition"]), str(row["arm"]))
+            ].append(row)
+        tasks_direct = list(task_order) if task_order is not None else list(
+            dict.fromkeys(str(row["task"]) for row in attempts)
+        )
+        arm_totals: dict[str, dict[str, Any]] = {}
+        token_differences: list[list[int]] = []
+        retry_differences: list[list[int]] = []
+        paired_units = 0
+        complete = len(tasks_direct) == 12
+        for task in tasks_direct:
+            task_tokens: list[int] = []
+            task_retries: list[int] = []
+            for repetition in range(3):
+                unit: dict[str, tuple[int, int]] = {}
+                for arm in MEASUREMENT_STUDY_ARMS:
+                    rows = sorted(
+                        grouped_direct.get((task, repetition, arm), ()),
+                        key=lambda row: int(row["attempt"]),
+                    )
+                    consumed = [row for row in rows if row.get("consumed") is True]
+                    successful = [
+                        row for row in consumed
+                        if row.get("terminal_status") == "success"
+                    ]
+                    valid = (
+                        len(consumed) in (1, 2)
+                        and len(successful) == 1
+                        and successful[0] is consumed[-1]
+                    )
+                    attempt_tokens: list[int] = []
+                    for row in consumed:
+                        usage = row.get("usage")
+                        if not isinstance(usage, Mapping):
+                            valid = False
+                            break
+                        values = list(usage.values())
+                        if any(
+                            isinstance(value, bool) or not isinstance(value, int) or value < 0
+                            for value in values
+                        ):
+                            valid = False
+                            break
+                        attempt_tokens.append(sum(values))
+                    if valid:
+                        primary_tokens = sum(attempt_tokens)
+                        unit[arm] = (primary_tokens, int(len(consumed) > 1))
+                        arm_totals[f"{task}:{repetition}:{arm}"] = {
+                            "attempt_tokens": attempt_tokens,
+                            "primary_tokens": primary_tokens,
+                            "retried": len(consumed) > 1,
+                        }
+                if set(unit) == set(MEASUREMENT_STUDY_ARMS):
+                    paired_units += 1
+                    task_tokens.append(unit["treatment"][0] - unit["baseline"][0])
+                    task_retries.append(unit["treatment"][1] - unit["baseline"][1])
+                else:
+                    complete = False
+            if len(task_tokens) == 3:
+                token_differences.append(task_tokens)
+                retry_differences.append(task_retries)
+            else:
+                complete = False
+        result_direct: dict[str, Any] = {
+            "complete_pairs": complete and paired_units == 36,
+            "paired_unit_count": paired_units,
+            "consumed_attempt_count": sum(
+                1 for row in attempts
+                if row.get("attempt") == 1 and row.get("consumed") is True
+            ) + 144,
+            "arm_unit_totals": arm_totals,
+            "delta": None,
+            "gamma": None,
+            "delta_q025": None,
+            "delta_q975": None,
+            "gamma_q025": None,
+            "gamma_q975": None,
+        }
+        if result_direct["complete_pairs"]:
+            bootstrap = bootstrap_task_cluster(
+                token_differences=token_differences,
+                retry_differences=retry_differences,
+                seed=MEASUREMENT_STUDY_INFERENCE_SEED,
+                replicates=MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES,
+            )
+            result_direct.update({
+                "delta": sum(
+                    sum(Fraction(value) for value in row) / 3
+                    for row in token_differences
+                ) / 12,
+                "gamma": sum(
+                    sum(Fraction(value) for value in row) / 3
+                    for row in retry_differences
+                ) / 12,
+                "delta_q025": bootstrap["token_q025"],
+                "delta_q975": bootstrap["token_q975"],
+                "gamma_q025": bootstrap["retry_q025"],
+                "gamma_q975": bootstrap["retry_q975"],
+            })
+        return result_direct
+    invalid = {
+        "valid": False, "reason": "incomplete_or_invalid_pair", "paired_units": 0,
+        "delta": None, "gamma": None, "m_retry": 0,
+        "task_deltas": None, "task_gammas": None,
+    }
+    grouped: dict[tuple[str, int, str], list[Mapping[str, Any]]] = collections.defaultdict(list)
+    for row in attempts:
+        grouped[(str(row["task_id"]), int(row["repetition"]), str(row["arm"]))].append(row)
+    tasks = list(task_order) if task_order is not None else list(dict.fromkeys(
+        str(row["task_id"]) for row in attempts
+    ))
+    if len(tasks) != len(set(tasks)):
+        return invalid
+    if len(tasks) != 12:
+        return invalid
+    task_deltas: list[list[float]] = []
+    task_gammas: list[list[float]] = []
+    paired = 0
+    for task_id in tasks:
+        deltas: list[float] = []
+        gammas: list[float] = []
+        for repetition in range(3):
+            costs: dict[str, int] = {}
+            retry_indicators: dict[str, int] = {}
+            for arm in MEASUREMENT_STUDY_ARMS:
+                rows = sorted(grouped.get((task_id, repetition, arm), []), key=lambda row: int(row["attempt"]))
+                consumed = [row for row in rows if row.get("consumed") is True]
+                successful = [row for row in consumed if row.get("successful") is True]
+                if (
+                    len(successful) != 1
+                    or successful[0] is not consumed[-1]
+                    or len(consumed) not in (1, 2)
+                ):
+                    return invalid
+                tokens: list[int] = []
+                for row in consumed:
+                    value = row.get("primary_tokens")
+                    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                        return invalid
+                    tokens.append(value)
+                costs[arm] = sum(tokens)
+                retry_indicators[arm] = int(len(consumed) > 1)
+            deltas.append(float(costs["treatment"] - costs["baseline"]))
+            gammas.append(float(retry_indicators["treatment"] - retry_indicators["baseline"]))
+            paired += 1
+        task_deltas.append(deltas)
+        task_gammas.append(gammas)
+    return {
+        "valid": True,
+        "reason": None,
+        "paired_units": paired,
+        "delta": sum(sum(row) / 3.0 for row in task_deltas) / 12.0,
+        "gamma": sum(sum(row) / 3.0 for row in task_gammas) / 12.0,
+        "m_retry": 0,
+        "task_deltas": task_deltas,
+        "task_gammas": task_gammas,
+    }
+
+
+def build_blinded_correction_packets(
+    outputs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(outputs) != 72:
+        raise ValueError("correction packetization requires exactly 72 outputs")
+    direct_mode = any("task" in row and "task_id" not in row for row in outputs)
+    expected = {
+        (task_id, repetition, arm)
+        for task_id in {str(row.get("task_id", row.get("task"))) for row in outputs}
+        for repetition in range(3)
+        for arm in MEASUREMENT_STUDY_ARMS
+    }
+    actual = {
+        (str(row.get("task_id", row.get("task"))), row.get("repetition"), row.get("arm"))
+        for row in outputs
+    }
+    if len({key[0] for key in expected}) != 12 or actual != expected:
+        raise ValueError("correction packet coverage mismatch")
+    packets: list[dict[str, Any]] = []
+    for index, row in enumerate(outputs):
+        output = row.get("output")
+        if not isinstance(output, str):
+            raise ValueError("correction output must be text")
+        packets.append(
+            {
+                "packet_id": f"A{index + 1:03d}",
+                "source_index": index,
+                "output": output,
+            }
+            if direct_mode else {"original_index": index, "output": output}
+        )
+    return packets
+
+
+def shuffle_correction_packets(
+    packets: Sequence[Mapping[str, Any]],
+    seed: int | str = MEASUREMENT_STUDY_CORRECTION_SEED,
+    *,
+    packet_id_map: Mapping[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    if len(packets) != 72:
+        raise ValueError("correction shuffle requires exactly 72 packets")
+    direct_mode = bool(packets and "packet_id" in packets[0])
+    if direct_mode:
+        expected_map = {
+            str(packet.get("packet_id")): int(packet.get("source_index", index))
+            for index, packet in enumerate(packets)
+        }
+        if packet_id_map is not None and dict(packet_id_map) != expected_map:
+            raise ValueError("correction packet identity map mismatch")
+    elif packet_id_map is not None:
+        raise ValueError("correction packet identity map is unavailable")
+    permutation = correction_packet_permutation(72, seed=seed)
+    assert isinstance(permutation, list)
+    if direct_mode:
+        return [dict(packets[original]) for original in permutation]
+    return [
+        {"assessment_id": f"A{position + 1:03d}", "output": packets[original]["output"]}
+        for position, original in enumerate(permutation)
+    ]
+
+
+def correction_packet_permutation(
+    count: int | None = None,
+    *,
+    seed: int | str = MEASUREMENT_STUDY_CORRECTION_SEED,
+) -> dict[str, Any] | list[int]:
+    packet_count = 72 if count is None else count
+    if packet_count != 72:
+        raise ValueError("correction permutation requires exactly 72 packets")
+    permutation = list(range(packet_count))
+    seed_int = int(seed, 16) if isinstance(seed, str) else seed
+    state = seed_int & SPLITMIX64_MASK
+    for index in range(71, 0, -1):
+        state, selected = splitmix64_bounded(state, index + 1)
+        permutation[index], permutation[selected] = permutation[selected], permutation[index]
+    if count is not None:
+        return permutation
+    return {
+        "permutation": permutation,
+        "prefix": permutation[:18],
+        "sha256": hashlib.sha256(bytes(permutation)).hexdigest(),
+    }
+
+
+def resolve_correction_scores(scores: Sequence[int]) -> int:
+    if len(scores) != 3:
+        raise ValueError("correction resolution requires exactly three sealed scores")
+    if any(isinstance(score, bool) or score not in (0, 1, 2) for score in scores):
+        raise ValueError("correction score must be one of 0, 1, or 2")
+    counts = collections.Counter(scores)
+    for score, count in counts.items():
+        if count >= 2:
+            return score
+    return 1
+
+
+def compute_correction_non_regression(
+    records: Sequence[Mapping[str, Any]] | None,
+    *,
+    task_order: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    if records is None:
+        return {"measured": False, "valid": False}
+    if not records:
+        return {
+            "measured": True, "valid": False,
+            "severity_point": None, "severity_q975": None,
+            "incidence_point": None, "incidence_q975": None,
+        }
+    if "packet_id" in records[0] and "score" in records[0]:
+        if len(records) != 72:
+            raise ValueError("correction inference requires exactly 72 records")
+        scores = [record.get("score") for record in records]
+        if any(
+            isinstance(score, bool) or not isinstance(score, int) or score not in (0, 1, 2)
+            for score in scores
+        ):
+            raise ValueError("resolved correction score is invalid")
+        # Packet IDs are assigned in source task/repetition/arm order before
+        # shuffling, so restore that order before paired inference.
+        by_packet = {str(record["packet_id"]): int(record["score"]) for record in records}
+        if set(by_packet) != {f"A{i:03d}" for i in range(1, 73)}:
+            raise ValueError("resolved correction packet coverage mismatch")
+        differences: list[list[int]] = []
+        for task_index in range(12):
+            row: list[int] = []
+            for repetition in range(3):
+                base = 1 + (task_index * 3 + repetition) * 2
+                row.append(
+                    by_packet[f"A{base + 1:03d}"] - by_packet[f"A{base:03d}"]
+                )
+            differences.append(row)
+        bootstrap = bootstrap_task_cluster(differences)
+        incidence_differences = [
+            [
+                int(by_packet[f"A{2 + (task * 3 + rep) * 2:03d}"] > 0)
+                - int(by_packet[f"A{1 + (task * 3 + rep) * 2:03d}"] > 0)
+                for rep in range(3)
+            ]
+            for task in range(12)
+        ]
+        incidence = bootstrap_task_cluster(incidence_differences)
+        return {
+            "measured": True,
+            "valid": True,
+            "severity_point": bootstrap["point"],
+            "severity_q975": bootstrap["q975"],
+            "incidence_point": incidence["point"],
+            "incidence_q975": incidence["q975"],
+            "non_regression": (
+                bootstrap["point"] <= 0 and bootstrap["q975"] <= 0
+                and incidence["point"] <= 0 and incidence["q975"] <= 0
+            ),
+        }
+    if len(records) != 72:
+        raise ValueError("correction inference requires exactly 72 records")
+    grouped: dict[tuple[str, int, str], int | None] = {}
+    for record in records:
+        task_id = record.get("task_id")
+        repetition = record.get("repetition")
+        arm = record.get("arm")
+        if (
+            not isinstance(task_id, str) or not task_id
+            or isinstance(repetition, bool) or not isinstance(repetition, int)
+            or repetition not in (0, 1, 2)
+            or arm not in MEASUREMENT_STUDY_ARMS
+        ):
+            raise ValueError("correction record identity is invalid")
+        key = (task_id, repetition, str(arm))
+        if key in grouped:
+            raise ValueError("duplicate correction arm-unit")
+        severity = record.get("severity")
+        if severity is not None and (
+            isinstance(severity, bool) or not isinstance(severity, int) or severity not in (0, 1, 2)
+        ):
+            raise ValueError("correction severity must be nullable or 0, 1, 2")
+        grouped[key] = severity
+    tasks = list(task_order) if task_order is not None else list(dict.fromkeys(
+        str(record.get("task_id")) for record in records
+    ))
+    expected = {
+        (task, repetition, arm)
+        for task in tasks for repetition in range(3) for arm in MEASUREMENT_STUDY_ARMS
+    }
+    if len(tasks) != 12 or set(grouped) != expected:
+        raise ValueError("correction inference coverage mismatch")
+    if any(value is None for value in grouped.values()):
+        return {
+            "measured": False,
+            "severity_point": None,
+            "severity_q975": None,
+            "incidence_point": None,
+            "incidence_q975": None,
+            "treatment_severity_2": None,
+            "baseline_severity_2": None,
+            "non_regression": False,
+        }
+    severity_differences: list[list[float]] = []
+    incidence_differences: list[list[float]] = []
+    for task in tasks:
+        task_severity: list[float] = []
+        task_incidence: list[float] = []
+        for repetition in range(3):
+            baseline = grouped[(task, repetition, "baseline")]
+            treatment = grouped[(task, repetition, "treatment")]
+            assert baseline is not None and treatment is not None
+            task_severity.append(float(treatment - baseline))
+            task_incidence.append(float(int(treatment > 0) - int(baseline > 0)))
+        severity_differences.append(task_severity)
+        incidence_differences.append(task_incidence)
+    severity_bootstrap = bootstrap_task_cluster(severity_differences)
+    incidence_bootstrap = bootstrap_task_cluster(incidence_differences)
+    treatment_severity_2 = sum(
+        value == 2 for (task, repetition, arm), value in grouped.items() if arm == "treatment"
+    )
+    baseline_severity_2 = sum(
+        value == 2 for (task, repetition, arm), value in grouped.items() if arm == "baseline"
+    )
+    non_regression = bool(
+        severity_bootstrap["point"] <= 0
+        and severity_bootstrap["q975"] <= 0
+        and incidence_bootstrap["point"] <= 0
+        and incidence_bootstrap["q975"] <= 0
+        and treatment_severity_2 <= baseline_severity_2
+    )
+    return {
+        "measured": True,
+        "severity_point": severity_bootstrap["point"],
+        "severity_q975": severity_bootstrap["q975"],
+        "incidence_point": incidence_bootstrap["point"],
+        "incidence_q975": incidence_bootstrap["q975"],
+        "treatment_severity_2": treatment_severity_2,
+        "baseline_severity_2": baseline_severity_2,
+        "non_regression": non_regression,
+    }
+
+
+def append_study_attempt_event(path: Path, event: Mapping[str, Any]) -> None:
+    payload = _study_canonical_json_bytes(dict(event))
+    parent_fd = _ensure_directory_no_symlink(path.parent, create=True)
+    fd = -1
+    try:
+        if fcntl is not None:
+            fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = _open_regular_no_symlink(path, flags, 0o600)
+        os.fchmod(fd, 0o600)
+        _measurement_write_fd(fd, payload)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.close(parent_fd)
+
+
+def fold_study_attempt_events(
+    slots: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    manifest_sha256: str | None = None,
+) -> dict[Any, dict[str, Any]]:
+    if events is None:
+        direct_events = slots
+        folded_direct: dict[tuple[str, int], dict[str, Any]] = {}
+        for event in direct_events:
+            run_id = event.get("run_id")
+            attempt = event.get("attempt")
+            if not isinstance(run_id, str) or isinstance(attempt, bool) or not isinstance(attempt, int):
+                raise ValueError("attempt event identity is invalid")
+            key = (run_id, attempt)
+            current = folded_direct.get(key)
+            if current is not None:
+                allowed = MEASUREMENT_STUDY_STATE_TRANSITIONS.get(
+                    str(current.get("state")), frozenset()
+                )
+                if event.get("state") not in allowed:
+                    raise ValueError("invalid direct attempt state transition")
+            folded_direct[key] = dict(event)
+        return folded_direct
+    if manifest_sha256 is None:
+        raise ValueError("manifest hash is required")
+    folded = {str(slot["run_id"]): dict(slot) for slot in slots}
+    identity_keys = (
+        "pair_id", "run_id", "task_id", "repetition", "arm", "attempt",
+    )
+    base_keys = {
+        "schema_version", "manifest_sha256", *identity_keys, "state",
+    }
+    for event in events:
+        if event.get("schema_version") != MEASUREMENT_STUDY_ATTEMPT_INDEX_SCHEMA_VERSION:
+            raise ValueError("attempt event schema mismatch")
+        run_id = event.get("run_id")
+        if run_id not in folded:
+            raise ValueError("attempt event references a foreign run id")
+        if (
+            event.get("manifest_sha256") != manifest_sha256
+            or not isinstance(manifest_sha256, str)
+            or SHA256_HEX_PATTERN.fullmatch(manifest_sha256) is None
+        ):
+            raise ValueError("attempt event references a foreign manifest")
+        if any(event.get(key) != folded[run_id].get(key) for key in identity_keys):
+            raise ValueError("attempt event identity differs from its immutable slot")
+        current = str(folded[run_id]["state"])
+        new_state = event.get("state")
+        extras_by_state = {
+            "launched": {"consumed"},
+            "eligible": {"consumed"},
+            "not_needed": {"consumed"},
+            "prelaunch_refused": {"consumed", "reason"},
+            "blocked_study_invalid": {"consumed", "reason"},
+            "terminal": {
+                "consumed", "terminal_classification", "successful",
+                "primary_tokens", "token_buckets", "receipt_sha256",
+                "artifact_index_sha256",
+            },
+        }
+        if new_state not in extras_by_state or set(event) != base_keys | extras_by_state[new_state]:
+            raise ValueError("attempt event keys differ from the exact state schema")
+        consumed = event.get("consumed")
+        if consumed is not (new_state in {"launched", "terminal"}):
+            raise ValueError("attempt event consumed flag contradicts its state")
+        if (
+            new_state == "prelaunch_refused"
+            and event.get("reason") not in MEASUREMENT_STUDY_PRELAUNCH_REASONS
+        ):
+            raise ValueError("attempt event prelaunch reason is invalid")
+        if (
+            new_state == "blocked_study_invalid"
+            and event.get("reason") not in MEASUREMENT_STUDY_BLOCKED_REASONS
+        ):
+            raise ValueError("attempt event blocked reason is invalid")
+        if new_state not in MEASUREMENT_STUDY_STATE_TRANSITIONS.get(current, frozenset()):
+            raise ValueError(f"invalid attempt state transition: {current} -> {new_state}")
+        if new_state == "terminal":
+            classification = event.get("terminal_classification")
+            if classification not in MEASUREMENT_STUDY_TERMINAL_CLASSIFICATIONS:
+                raise ValueError("terminal attempt classification is invalid")
+            successful = event.get("successful")
+            if not isinstance(successful, bool) or successful is not (classification == "success"):
+                raise ValueError("terminal attempt success flag contradicts its classification")
+            primary_tokens = event.get("primary_tokens")
+            buckets = event.get("token_buckets")
+            if (
+                isinstance(primary_tokens, bool)
+                or not isinstance(primary_tokens, int)
+                or primary_tokens < 0
+                or primary_tokens > MAX_USAGE_TOKEN_COUNT
+                or not isinstance(buckets, dict)
+                or set(buckets) != set(MEASUREMENT_STUDY_USAGE_KEYS)
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0 or value > MAX_USAGE_TOKEN_COUNT
+                    for value in buckets.values()
+                )
+                or sum(buckets.values()) != primary_tokens
+            ):
+                raise ValueError("terminal attempt token accounting is invalid")
+            nullable_hashes = (
+                classification in {
+                    "launch_accounting_failure",
+                    "post_launch_infra_invalid",
+                    "recovered_process_status_unknown",
+                }
+            )
+            for key in ("receipt_sha256", "artifact_index_sha256"):
+                value = event.get(key)
+                if value is None and nullable_hashes:
+                    continue
+                if not isinstance(value, str) or SHA256_HEX_PATTERN.fullmatch(value) is None:
+                    raise ValueError(f"terminal attempt {key} is invalid")
+        evidence = {
+            key: value for key, value in event.items()
+            if key not in {
+                "schema_version", "manifest_sha256", *identity_keys, "state",
+            }
+        }
+        folded[run_id]["state"] = new_state
+        folded[run_id].update(evidence)
+    return folded
+
+
+def classify_success_checker(result: BoundedProcessResult) -> str:
+    if result.launch_error or result.timed_out or result.output_truncated or result.returncode < 0:
+        return "success_checker_infra_invalid"
+    if result.returncode == 0:
+        return "task_success"
+    if result.returncode == 1:
+        return "valid_task_failure_v1"
+    return "success_checker_infra_invalid"
+
+
+def create_measurement_probe_layout(
+    parent: Path | None = None,
+) -> tuple[Path, dict[str, Path]] | dict[str, str]:
+    root = Path(tempfile.mkdtemp(
+        prefix="contextguard-study-probe-",
+        dir=str(parent) if parent is not None else None,
+    ))
+    os.chmod(root, 0o700)
+    paths = {name: root / name for name in MEASUREMENT_STUDY_PROBE_LAYOUT}
+    for path in paths.values():
+        path.mkdir(mode=0o700)
+    validate_measurement_probe_layout(root, paths)
+    if parent is not None:
+        return {"root": str(root), **{name: str(path) for name, path in paths.items()}}
+    return root, paths
+
+
+def validate_measurement_probe_layout(
+    root: Path | Mapping[str, str],
+    paths: Mapping[str, Path] | None = None,
+) -> None | dict[str, Any]:
+    direct_mode = paths is None and isinstance(root, Mapping)
+    if direct_mode:
+        layout = root
+        root = Path(str(layout.get("root")))
+        paths = {
+            name: Path(str(layout.get(name)))
+            for name in MEASUREMENT_STUDY_PROBE_LAYOUT
+        }
+    assert isinstance(root, Path) and paths is not None
+    error_type = ValueError if direct_mode else SystemExit
+    if set(paths) != set(MEASUREMENT_STUDY_PROBE_LAYOUT):
+        raise error_type("measurement CLI probe layout names differ")
+    root_stat = os.lstat(root)
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_IMODE(root_stat.st_mode) != 0o700:
+        raise error_type("measurement CLI probe root integrity failure")
+    physical_root = root.resolve(strict=True)
+    for name in MEASUREMENT_STUDY_PROBE_LAYOUT:
+        path = paths[name]
+        item_stat = os.lstat(path)
+        if (
+            path.name != name
+            or path.parent.resolve(strict=True) != physical_root
+            or stat.S_ISLNK(item_stat.st_mode)
+            or not stat.S_ISDIR(item_stat.st_mode)
+            or stat.S_IMODE(item_stat.st_mode) != 0o700
+        ):
+            raise error_type("measurement CLI probe layout integrity failure")
+    if direct_mode:
+        return {
+            "paths": {
+                name: f"<probe-root>/{name}"
+                for name in MEASUREMENT_STUDY_PROBE_LAYOUT
+            }
+        }
+    return None
+
+
+def _study_validate_probe_output(
+    result: BoundedProcessResult,
+    *,
+    kind: str,
+) -> bytes:
+    if (
+        result.returncode != 0 or result.timed_out or result.output_truncated
+        or result.stderr_bytes
+    ):
+        raise SystemExit(f"measurement CLI {kind} probe failed")
+    raw = result.stdout_bytes
+    if not raw.endswith(b"\n") or raw.endswith(b"\n\n") or b"\r" in raw:
+        raise SystemExit(f"measurement CLI {kind} probe output shape invalid")
+    lines = raw.splitlines()
+    if not raw or len(lines) > 4096 or any(len(line) > 16384 for line in lines):
+        raise SystemExit(f"measurement CLI {kind} probe output bounds invalid")
+    try:
+        raw.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        raise SystemExit(f"measurement CLI {kind} probe output is not UTF-8") from None
+    if kind == "version" and (len(lines) != 1 or len(raw) > 512 or not lines[0]):
+        raise SystemExit("measurement CLI version probe output shape invalid")
+    return raw
+
+
+def run_measurement_cli_probes(
+    claude_bin: str,
+    required_capabilities: Sequence[str] = (),
+    *,
+    run_command: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    if run_command is not None:
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "HOME": "<probe-root>/home",
+            "XDG_CONFIG_HOME": "<probe-root>/xdg-config",
+            "XDG_CACHE_HOME": "<probe-root>/xdg-cache",
+            "XDG_DATA_HOME": "<probe-root>/xdg-data",
+            "XDG_STATE_HOME": "<probe-root>/xdg-state",
+            "TMPDIR": "<probe-root>/tmp",
+            "CLAUDE_CONFIG_DIR": "<probe-root>/claude-config",
+            "NO_COLOR": "1",
+        }
+        results = [
+            run_command(
+                [claude_bin, flag],
+                cwd=Path("<probe-root>/cwd"),
+                timeout_seconds=10.0,
+                max_output_bytes=65_536,
+                env=dict(env),
+            )
+            for flag in ("--version", "--help")
+        ]
+        normalized = [
+            result if isinstance(result, Mapping) else vars(result)
+            for result in results
+        ]
+        for result in normalized:
+            if (
+                result.get("returncode") != 0
+                or result.get("timed_out") is True
+                or result.get("output_truncated") is True
+            ):
+                raise ValueError("measurement CLI metadata probe failed")
+        version_text = str(normalized[0].get("stdout", ""))
+        help_text = str(normalized[1].get("stdout", ""))
+        return {
+            "schema_version": MEASUREMENT_CLI_PROBE_SCHEMA_VERSION,
+            "version_stdout_sha256": _study_sha256_bytes(version_text.encode()),
+            "help_stdout_sha256": _study_sha256_bytes(help_text.encode()),
+            "environment_names": sorted(env),
+            "paths": {
+                name: f"<probe-root>/{name}"
+                for name in MEASUREMENT_STUDY_PROBE_LAYOUT
+            },
+            "capabilities": list(required_capabilities),
+        }
+    executable = executable_argv0(claude_bin)
+    executable_path = Path(executable)
+    if not executable_path.is_file():
+        raise SystemExit("measurement CLI executable not found")
+    root, paths = create_measurement_probe_layout()
+    try:
+        validate_measurement_probe_layout(root, paths)
+        path_value = f"{executable_path.parent}:/usr/bin:/bin:/usr/sbin:/sbin"
+        env = {
+            "PATH": path_value,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "HOME": str(paths["home"]),
+            "XDG_CONFIG_HOME": str(paths["xdg-config"]),
+            "XDG_CACHE_HOME": str(paths["xdg-cache"]),
+            "XDG_DATA_HOME": str(paths["xdg-data"]),
+            "XDG_STATE_HOME": str(paths["xdg-state"]),
+            "TMPDIR": str(paths["tmp"]),
+            "CLAUDE_CONFIG_DIR": str(paths["claude-config"]),
+            "NO_COLOR": "1",
+        }
+        results: list[BoundedProcessResult] = []
+        for flag in ("--version", "--help"):
+            results.append(run_bounded_command(
+                [executable, flag],
+                cwd=paths["cwd"],
+                timeout_seconds=10,
+                max_output_bytes=65_536,
+                env=env,
+            ))
+        version_raw = _study_validate_probe_output(results[0], kind="version")
+        help_raw = _study_validate_probe_output(results[1], kind="help")
+        help_text = help_raw.decode("utf-8")
+        capability_tokens = set(re.findall(
+            r"--[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*",
+            help_text,
+        ))
+        missing = [
+            capability for capability in required_capabilities
+            if capability not in capability_tokens
+        ]
+        if missing:
+            raise SystemExit("measurement CLI required capability unavailable")
+        canonical_env = {
+            key: (
+                value.replace(str(root), "<probe-root>", 1)
+                if value.startswith(str(root)) else value
+            )
+            for key, value in env.items()
+        }
+        return {
+            "schema_version": MEASUREMENT_CLI_PROBE_SCHEMA_VERSION,
+            "executable": str(executable_path.resolve(strict=True)),
+            "argv": [[executable, "--version"], [executable, "--help"]],
+            "version": version_raw.decode("utf-8").rstrip("\n"),
+            "version_stdout_sha256": _study_sha256_bytes(version_raw),
+            "version_stdout_bytes": len(version_raw),
+            "help_stdout_sha256": _study_sha256_bytes(help_raw),
+            "help_stdout_bytes": len(help_raw),
+            "capabilities": sorted(set(required_capabilities)),
+            "cwd": "<probe-root>/cwd",
+            "environment": canonical_env,
+            "environment_names": sorted(env),
+            "limits": {
+                "timeout_seconds": 10.0,
+                "stdout_max_bytes": 65_536,
+                "stderr_max_bytes": 65_536,
+                "max_lines": 4096,
+                "max_line_bytes": 16_384,
+            },
+            "layout": list(MEASUREMENT_STUDY_PROBE_LAYOUT),
+            "root_mode": "0700",
+        }
+    finally:
+        shutil.rmtree(root)
+
+
+def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
+    variant_prompts: list[dict[str, Any]] = []
+    for name, rel in task.variant_prompt_files.items():
+        path = task_dir / validate_variant_prompt_file_path(rel, owner=f"task {task.id}")
+        raw = _read_text_no_follow(path).encode("utf-8")
+        variant_prompts.append({
+            "variant": name,
+            "path": str(path.resolve()),
+            "sha256": _study_sha256_bytes(raw),
+            "bytes": len(raw),
+        })
+    return {
+        "id": task.id,
+        "prompt_sha256": _study_sha256_bytes(task.prompt.encode("utf-8")),
+        "prompt_bytes": len(task.prompt.encode("utf-8")),
+        "model": task.model,
+        "effort": task.effort,
+        "max_turns": task.max_turns,
+        "max_budget_usd": task.max_budget_usd,
+        "allowed_tools": task.allowed_tools,
+        "output_format": task.output_format,
+        "success_command": task.success_command,
+        "success_cwd": task.success_cwd,
+        "variant_prompts": variant_prompts,
+    }
+
+
+def _study_variant_manifest(variant: Variant) -> dict[str, Any]:
+    result: dict[str, Any] = {"name": variant.name, "extra_args": variant.extra_args}
+    if variant.measurement is None:
+        result["measurement"] = None
+        return result
+    spec = variant.measurement
+    result["measurement"] = {
+        "settings_source": {
+            "path": str(spec.settings_file.resolve()),
+            "sha256": _study_sha256_bytes(spec.settings_source_bytes),
+            "bytes": len(spec.settings_source_bytes),
+        },
+        "executed_snapshot": {
+            "path": f"runs/{{run_id}}/session/{spec.settings_file.name}",
+            "sha256": _study_sha256_bytes(spec.settings_source_bytes),
+            "bytes": len(spec.settings_source_bytes),
+        },
+        "setting_sources": list(spec.setting_sources),
+        "environment_allow": list(spec.environment_allow),
+        "environment_overrides": [list(item) for item in spec.environment_overrides],
+        "workspace_mode": spec.workspace_mode,
+        "session_mode": spec.session_mode,
+        "session_persistence": spec.session_persistence,
+        "hook_events_enabled": spec.hook_events_enabled,
+        "registered_bindings": [list(item) for item in spec.registered_bindings],
+        "binding_set_sha256": _measurement_binding_set_sha256(spec.registered_bindings),
+        "required_event_classes": list(spec.required_event_classes),
+        "cli_capabilities": list(spec.cli_capabilities),
+        "candidate_hash": spec.identity.candidate_hash,
+        "artifact_root": str(spec.artifact_root.resolve()),
+    }
+    return result
+
+
+def build_measurement_study_manifest(
+    *,
+    plan: Mapping[str, Any] | None = None,
+    tasks: Sequence[TaskFixture] | Mapping[str, Any] | None = None,
+    variants: Sequence[Variant] | Mapping[str, Any] | None = None,
+    tasks_path: Path | None = None,
+    variants_path: Path | None = None,
+    plan_path: Path | None = None,
+    project_root: Path | None = None,
+    output_root: Path | None = None,
+    probe: Mapping[str, Any] | None = None,
+    study_plan: Mapping[str, Any] | None = None,
+    cli_probe: Mapping[str, Any] | None = None,
+    runner_sha256: str | None = None,
+    mirror_sha256: str | None = None,
+    canonical_bytes: bool = False,
+) -> dict[str, Any] | bytes:
+    if study_plan is not None:
+        direct_manifest = {
+            "schema_version": MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION,
+            "study_plan": dict(study_plan),
+            "tasks": dict(tasks) if isinstance(tasks, Mapping) else tasks,
+            "variants": dict(variants) if isinstance(variants, Mapping) else variants,
+            "cli_probe": dict(cli_probe or {}),
+            "runner_sha256": runner_sha256,
+            "mirror_sha256": mirror_sha256,
+        }
+        if canonical_bytes:
+            return json.dumps(
+                direct_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        return direct_manifest
+    if (
+        plan is None or tasks is None or variants is None or tasks_path is None
+        or variants_path is None or plan_path is None or project_root is None
+        or output_root is None or probe is None
+        or isinstance(tasks, Mapping) or isinstance(variants, Mapping)
+    ):
+        raise TypeError("production manifest arguments are required")
+    if len(tasks) != 12 or len(variants) != 2:
+        raise SystemExit("measurement study requires exactly 12 tasks and two variants")
+    names = [variant.name for variant in variants]
+    if names != ["baseline", "treatment"]:
+        raise SystemExit("measurement study variants must be ordered baseline then treatment")
+    if any(variant.measurement is None for variant in variants):
+        raise SystemExit("measurement study requires S001 measurement variants")
+    candidate_hashes = {
+        variant.measurement.identity.candidate_hash
+        for variant in variants if variant.measurement is not None
+    }
+    if len(candidate_hashes) != 1:
+        raise SystemExit("measurement study arm candidate hashes differ")
+    candidate_hash = next(iter(candidate_hashes))
+    schedule = generate_balanced_study_schedule(
+        [task.id for task in tasks], 3, int(plan["schedule_seed_int"]),
+    )
+    slots = generate_measurement_study_slots(
+        [task.id for task in tasks], schedule,
+        candidate_hash=candidate_hash, namespace=str(plan["namespace"]),
+    )
+    invoked_path = Path(__file__).resolve()
+    repo_root = next(
+        (
+            parent for parent in (invoked_path.parent, *invoked_path.parents)
+            if (parent / "context-guard-kit/benchmark_runner.py").is_file()
+            and (parent / "plugins/context-guard/bin/context-guard-bench").is_file()
+        ),
+        None,
+    )
+    if repo_root is None:
+        raise SystemExit("benchmark runner repository layout unavailable")
+    runner_path = repo_root / "context-guard-kit/benchmark_runner.py"
+    plugin_path = repo_root / "plugins/context-guard/bin/context-guard-bench"
+    runner_raw = _read_bytes_no_follow(runner_path, max_bytes=2_000_000)
+    plugin_raw = _read_bytes_no_follow(plugin_path, max_bytes=2_000_000)
+    if runner_raw != plugin_raw:
+        raise SystemExit("canonical and packaged benchmark runners differ")
+    plan_public = {key: plan[key] for key in MEASUREMENT_STUDY_PLAN_KEYS}
+    task_raw = _read_bytes_no_follow(tasks_path)
+    variant_raw = _read_bytes_no_follow(variants_path)
+    plan_raw = _read_bytes_no_follow(plan_path)
+    manifest = {
+        "schema_version": MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION,
+        "inputs": {
+            "runner": {"sha256": _study_sha256_bytes(runner_raw), "bytes": len(runner_raw)},
+            "packaged_runner": {"sha256": _study_sha256_bytes(plugin_raw), "bytes": len(plugin_raw)},
+            "tasks": {
+                "path": str(tasks_path.resolve()), "sha256": _study_sha256_bytes(task_raw),
+                "bytes": len(task_raw),
+            },
+            "variants": {
+                "path": str(variants_path.resolve()), "sha256": _study_sha256_bytes(variant_raw),
+                "bytes": len(variant_raw),
+            },
+            "study_plan": {
+                "path": str(plan_path.resolve()), "sha256": _study_sha256_bytes(plan_raw),
+                "bytes": len(plan_raw),
+            },
+            "project_root": str(project_root.resolve()),
+            "output_root": str(output_root.resolve()),
+            "ordered_task_ids": [task.id for task in tasks],
+            "task_definitions": [_study_task_manifest(task, tasks_path.parent) for task in tasks],
+            "variant_definitions": [_study_variant_manifest(variant) for variant in variants],
+            "cli_probe": dict(probe),
+        },
+        "plan": plan_public,
+        "schedule": schedule,
+        "schedule_sha256": _study_sha256_bytes(_study_canonical_json_bytes(schedule)),
+        "slots": slots,
+        "contracts": {
+            "measurement_substrate_schema": MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,
+            "raw_receipt_schema": MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION,
+            "artifact_index_schema": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+            "artifact_index_event_binding": "canonical-index-row-sha256-v1",
+            "attempt_index_schema": MEASUREMENT_STUDY_ATTEMPT_INDEX_SCHEMA_VERSION,
+            "terminal_usage_schema": MEASUREMENT_TERMINAL_USAGE_SCHEMA_VERSION,
+            "terminal_usage_golden_sha256": MEASUREMENT_TERMINAL_USAGE_GOLDEN_SHA256,
+            "schedule_algorithm": MEASUREMENT_STUDY_SCHEDULE_ALGORITHM,
+            "splitmix64": {
+                "increment": f"0x{SPLITMIX64_INCREMENT:016X}",
+                "multiplier_1": f"0x{SPLITMIX64_MULTIPLIER_1:016X}",
+                "multiplier_2": f"0x{SPLITMIX64_MULTIPLIER_2:016X}",
+                "shifts": [30, 27, 31],
+            },
+            "bootstrap": {
+                "resamples": 10_000,
+                "tasks": 12,
+                "quantile": "Hyndman-Fan-Type-7",
+                "inference_seed": "0x434F4E5445585447",
+                "sampled_index_sha256": "017b0afdad8afb5ae59c4edf651be4b15c8dbcd94b8bda453b646360736bfc38",
+            },
+            "terminal_status_precedence": [
+                "raw_byte_limit", "raw_line_limit", "raw_line_byte_limit",
+                "process_timeout", "process_launch_error", "process_error",
+                "terminal_error", "missing_terminal", "invalid_stream",
+                "hook_payload_limit", "hook_lifecycle_limit",
+                "invalid_hook_lifecycle", "unexpected_hook_event_class",
+                "baseline_hook_contamination", "missing_required_hook_event_class",
+                "hook_process_failure", "success", "recovered_process_status_unknown",
+            ],
+            "terminal_usage": {
+                "record_type": "result",
+                "object_path": "$.usage",
+                "keys": list(MEASUREMENT_STUDY_USAGE_KEYS),
+                "integer_grammar": "0|[1-9][0-9]*",
+                "maximum": MAX_USAGE_TOKEN_COUNT,
+                "formula": "P=input_tokens+cache_creation_input_tokens+cache_read_input_tokens+output_tokens",
+            },
+            "retry": {
+                "policy": MEASUREMENT_STUDY_RETRY_POLICY,
+                "maximum_attempts_per_arm_unit": 2,
+                "eligible_classification": "valid_task_failure_v1",
+                "checker_success_exit": 0,
+                "checker_retry_exit": 1,
+                "other_checker_outcome": "success_checker_infra_invalid",
+                "m_retry": 0,
+            },
+            "estimators": {
+                "C": "sum(P for every consumed attempt through the successful attempt)",
+                "D": "C(treatment,t,r)-C(baseline,t,r)",
+                "Delta": "mean_over_tasks(mean_over_repetitions(D))",
+                "I": "1 iff consumed attempts > 1 obtained the successful result",
+                "Gamma": "mean_over_tasks(mean_over_repetitions(I_treatment-I_baseline))",
+            },
+            "correction": {
+                "nullable": True,
+                "rubric": [0, 1, 2, "U"],
+                "packet_count": 72,
+                "packet_ids": "A001..A072",
+                "packet_fields": ["assessment_id", "output"],
+                "shuffle": "splitmix64-unbiased-descending-fisher-yates-v1",
+                "shuffle_seed": "0x434F525245435433",
+                "permutation_sha256": "ff687c7901de0f9eefcf03b07d58350247931d265ed60c040c46153ea67eed91",
+                "permutation_prefix": [
+                    52, 27, 31, 69, 17, 8, 10, 14, 61,
+                    48, 33, 53, 50, 51, 11, 30, 4, 40,
+                ],
+                "resolution": "three-sealed-scores-majority-or-all-distinct-median-v1",
+                "severity_formula": "Theta_severity=mean_t(mean_r(S_treatment-S_baseline))",
+                "incidence_formula": "Theta_incidence=mean_t(mean_r(K_treatment-K_baseline))",
+            },
+            "correction_resolution": "three-sealed-scores-majority-or-all-distinct-median-v1",
+            "report": {
+                "schema_version": MEASUREMENT_STUDY_REPORT_SCHEMA_VERSION,
+                "artifact_path": "study-report.json",
+                "positive_verdict": "demonstrated_token_savings_for_frozen_suite",
+                "inconclusive_verdict": "inconclusive",
+            },
+            "claim_scope": MEASUREMENT_STUDY_CLAIM,
+            "consumption_rule": "process-created-is-consumed-v1",
+        },
+        "provenance": "synthetic_offline_measurement_enablement",
+    }
+    return manifest
+
+
+def validate_measurement_study_manifest(
+    manifest: Mapping[str, Any] | bytes,
+    *,
+    expected: Mapping[str, Any] | None = None,
+) -> None | dict[str, Any]:
+    if isinstance(manifest, bytes):
+        try:
+            decoded = json.loads(
+                manifest.decode("utf-8"),
+                object_pairs_hook=_measurement_object_no_duplicates,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("measurement study manifest is invalid JSON") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("measurement study manifest must be an object")
+        canonical_direct = json.dumps(
+            decoded,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if manifest != canonical_direct:
+            raise ValueError("measurement study manifest must be canonical JSON")
+        if expected is not None and decoded != dict(expected):
+            raise ValueError("measurement study manifest input drift")
+        return decoded
+    required = {
+        "schema_version", "inputs", "plan", "schedule", "schedule_sha256", "slots",
+        "contracts", "provenance",
+    }
+    if set(manifest) != required:
+        raise ValueError("measurement study manifest schema mismatch")
+    if manifest["schema_version"] != MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("measurement study manifest version mismatch")
+    task_ids = manifest["inputs"].get("ordered_task_ids")
+    if not isinstance(task_ids, list):
+        raise ValueError("measurement study manifest task order missing")
+    validate_measurement_study_slots(manifest["slots"], task_ids=task_ids)
+    if _study_sha256_bytes(_study_canonical_json_bytes(manifest["schedule"])) != manifest["schedule_sha256"]:
+        raise ValueError("measurement study schedule hash mismatch")
+    if expected is not None and _study_canonical_json_bytes(manifest) != _study_canonical_json_bytes(expected):
+        raise ValueError("measurement study manifest input drift")
+
+
+def _study_write_private(path: Path, value: Any) -> None:
+    _measurement_write_exclusive(path, _study_canonical_json_bytes(value))
+
+
+def _study_event(slot: Mapping[str, Any], manifest_sha256: str, state: str, **extra: Any) -> dict[str, Any]:
+    event = {
+        "schema_version": MEASUREMENT_STUDY_ATTEMPT_INDEX_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256,
+        "pair_id": slot["pair_id"],
+        "run_id": slot["run_id"],
+        "task_id": slot["task_id"],
+        "repetition": slot["repetition"],
+        "arm": slot["arm"],
+        "attempt": slot["attempt"],
+        "state": state,
+    }
+    event.update(extra)
+    return event
+
+
+def _study_artifact_index_row_sha256(
+    spec: MeasurementVariant,
+    run_id: str,
+    receipt_sha256: str,
+    terminal_status: str,
+) -> str:
+    context = _measurement_existing_context(spec, run_id)
+    row = {
+        "schema_version": MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION,
+        "run_id": run_id,
+        "receipt_path": str(context.receipt_path),
+        "receipt_sha256": receipt_sha256,
+        "terminal_status": terminal_status,
+    }
+    return _study_sha256_bytes(_study_canonical_json_bytes(row))
+
+
+def _study_read_attempt_events(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    raw = _measurement_read_private_file(path, maximum=MEASUREMENT_RAW_MAX_BYTES)
+    events: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        value = _parse_measurement_json_text(line.decode("utf-8"), owner="measurement study attempt")
+        if not isinstance(value, dict):
+            raise SystemExit("measurement study attempt row must be an object")
+        if line + b"\n" != _study_canonical_json_bytes(value):
+            raise SystemExit("measurement study attempt row must be canonical JSON")
+        events.append(value)
+    return events
+
+
+def _study_variant_for_slot(variant: Variant, slot: Mapping[str, Any]) -> Variant:
+    spec = variant.measurement
+    if spec is None:
+        raise SystemExit("measurement study requires S001 measurement variants")
+    identity = replace(
+        spec.identity,
+        repetition=int(slot["repetition"]),
+        arm=str(slot["arm"]),
+        attempt=int(slot["attempt"]),
+    )
+    return replace(variant, measurement=replace(spec, identity=identity))
+
+
+def _run_measurement_study_slot(
+    *,
+    slot: Mapping[str, Any],
+    task: TaskFixture | None = None,
+    variant: Variant | None = None,
+    claude_bin: str | None = None,
+    project_root: Path | None = None,
+    attempts_path: Path | None = None,
+    manifest_sha256: str | None = None,
+    validate_slot: Callable[[Mapping[str, Any]], None] | None = None,
+    launch: Callable[[Mapping[str, Any]], Any] | None = None,
+    append_event: Callable[..., Any] | None = None,
+    after_launch: Callable[..., Any] | None = None,
+    terminate: Callable[..., Any] | None = None,
+    reap: Callable[..., Any] | None = None,
+) -> str | dict[str, Any]:
+    if validate_slot is not None or launch is not None:
+        try:
+            if validate_slot is not None:
+                validate_slot(slot)
+        except (OSError, RuntimeError, ValueError):
+            return {
+                "state": "prelaunch_refused",
+                "consumed": False,
+                "reason": "slot_validation_refused",
+            }
+        if launch is None:
+            raise ValueError("direct study slot launch callback is required")
+        process = launch(slot)
+        try:
+            if after_launch is not None:
+                after_launch(process)
+        except BaseException:
+            if terminate is not None:
+                terminate(process)
+            if reap is not None:
+                reap(process)
+            return {
+                "state": "invalid",
+                "consumed": True,
+                "reason": "post_launch_accounting_failure",
+            }
+        if append_event is not None:
+            append_event({"run_id": slot["run_id"], "state": "launched", "consumed": True})
+        return {"state": "launched", "consumed": True}
+    if (
+        task is None or variant is None or claude_bin is None
+        or project_root is None or attempts_path is None or manifest_sha256 is None
+    ):
+        raise TypeError("production study slot arguments are required")
+    study_variant = _study_variant_for_slot(variant, slot)
+    spec = study_variant.measurement
+    assert spec is not None
+    process_was_launched = False
+
+    def launched() -> None:
+        nonlocal process_was_launched
+        try:
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(slot, manifest_sha256, "launched", consumed=True),
+            )
+            process_was_launched = True
+        except BaseException as exc:
+            raise _StudyLaunchAccountingError from exc
+
+    try:
+        root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=True)
+        try:
+            os.fchmod(root_fd, 0o700)
+            if fcntl is not None:
+                fcntl.flock(root_fd, fcntl.LOCK_EX)
+            result = _run_measurement_fixture_locked(
+                task,
+                study_variant,
+                claude_bin,
+                project_root,
+                locked_root_fd=root_fd,
+                on_process_started=launched,
+                measurement_study=True,
+            )
+        finally:
+            os.close(root_fd)
+    except _StudyLaunchAccountingError:
+        # Popen succeeded and run_bounded_command already killed/reaped the group.
+        # Persisting consumed/unknown is mandatory before returning.
+        append_study_attempt_event(
+            attempts_path,
+            _study_event(
+                slot, manifest_sha256, "launched",
+                consumed=True,
+            ),
+        )
+        append_study_attempt_event(
+            attempts_path,
+            _study_event(
+                slot, manifest_sha256, "terminal",
+                consumed=True, terminal_classification="launch_accounting_failure",
+                successful=False, primary_tokens=0,
+                token_buckets={key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS},
+                receipt_sha256=None,
+                artifact_index_sha256=None,
+            ),
+        )
+        return "study_infra_invalid"
+    except _MeasurementLaunchError:
+        append_study_attempt_event(
+            attempts_path,
+            _study_event(
+                slot, manifest_sha256, "prelaunch_refused",
+                consumed=False, reason="process_creation_failed",
+            ),
+        )
+        return "prelaunch_refused"
+    except (OSError, SystemExit, TypeError, ValueError):
+        if process_was_launched:
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(
+                    slot, manifest_sha256, "terminal",
+                    consumed=True, terminal_classification="post_launch_infra_invalid",
+                    successful=False, primary_tokens=0,
+                    token_buckets={key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS},
+                    receipt_sha256=None,
+                    artifact_index_sha256=None,
+                ),
+            )
+            return "study_infra_invalid"
+        append_study_attempt_event(
+            attempts_path,
+            _study_event(
+                slot, manifest_sha256, "prelaunch_refused",
+                consumed=False, reason="validation_refused",
+            ),
+        )
+        return "prelaunch_refused"
+
+    classification = (
+        "success"
+        if result.notes == "task_success"
+        else (
+            "valid_task_failure_v1"
+            if result.notes == "valid_task_failure_v1"
+            else "study_infra_invalid"
+        )
+    )
+    receipt_path = _measurement_existing_context(spec, str(slot["run_id"])).receipt_path
+    receipt_sha256 = None
+    artifact_index_sha256 = None
+    if receipt_path.exists():
+        receipt_bytes = _measurement_read_private_file(receipt_path)
+        receipt_sha256 = _study_sha256_bytes(receipt_bytes)
+        receipt = _measurement_parse_canonical_json_bytes(
+            receipt_bytes, owner="measurement receipt",
+        )
+        artifact_index_sha256 = _study_artifact_index_row_sha256(
+            spec, str(slot["run_id"]), receipt_sha256, str(receipt["terminal_status"]),
+        )
+    terminal_event = _study_event(
+        slot,
+        manifest_sha256,
+        "terminal",
+        consumed=True,
+        terminal_classification=classification,
+        successful=classification == "success",
+        primary_tokens=sum(result.tokens.values()),
+        token_buckets={
+            "input_tokens": result.tokens["input_tokens"],
+            "cache_creation_input_tokens": result.tokens["cache_creation"],
+            "cache_read_input_tokens": result.tokens["cache_read"],
+            "output_tokens": result.tokens["output_tokens"],
+        },
+        receipt_sha256=receipt_sha256,
+        artifact_index_sha256=artifact_index_sha256,
+    )
+    append_study_attempt_event(attempts_path, terminal_event)
+    return classification
+
+
+def _execute_measurement_study(
+    *,
+    manifest: Mapping[str, Any],
+    tasks: Sequence[TaskFixture] | None = None,
+    variants: Sequence[Variant] | None = None,
+    claude_bin: str | None = None,
+    project_root: Path | None = None,
+    attempts_path: Path | None = None,
+    manifest_sha256: str | None = None,
+    action: str | None = None,
+    folded_attempts: Mapping[Any, Mapping[str, Any]] | None = None,
+    run_slot: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> None | dict[str, Any]:
+    if action is not None or folded_attempts is not None or run_slot is not None:
+        folded_direct = dict(folded_attempts or {})
+        rows = list(folded_direct.values())
+        consumed = sum(row.get("consumed") is True for row in rows)
+        invalid_statuses = {
+            "success_checker_infra_invalid",
+            "study_infra_invalid",
+            "launch_accounting_failure",
+            "post_launch_infra_invalid",
+            "recovered_process_status_unknown",
+        }
+        study_valid = not any(
+            row.get("state") == "prelaunch_refused"
+            or row.get("terminal_status") in invalid_statuses
+            for row in rows
+        )
+        failed_consumed = [
+            row for row in rows
+            if row.get("consumed") is True
+            and row.get("terminal_status") == "valid_task_failure_v1"
+        ]
+        if len(failed_consumed) > 1:
+            study_valid = False
+        candidates = [
+            row for row in rows
+            if row.get("attempt") == 1 and row.get("state") == "eligible"
+        ]
+        candidates.extend(
+            slot for slot in manifest.get("slots", ())
+            if slot.get("attempt") == 1 and slot.get("state") == "eligible"
+            and not any(row.get("run_id") == slot.get("run_id") for row in candidates)
+        )
+        selected: list[str] = []
+        if study_valid and failed_consumed and run_slot is not None:
+            for slot in candidates:
+                result = run_slot(slot)
+                selected.append(str(slot["run_id"]))
+                if isinstance(result, Mapping) and result.get("state") == "invalid":
+                    study_valid = False
+        return {
+            "action": action,
+            "study_valid": study_valid,
+            "selected_run_ids": selected,
+            "consumed_attempt_count": consumed,
+        }
+    if (
+        tasks is None or variants is None or claude_bin is None
+        or project_root is None or attempts_path is None or manifest_sha256 is None
+    ):
+        raise TypeError("production study execution arguments are required")
+    tasks_by_id = {task.id: task for task in tasks}
+    variants_by_arm = {
+        "baseline": variants[0],
+        "treatment": variants[1],
+    }
+    slots = list(manifest["slots"])
+    retry_by_unit = {
+        (slot["task_id"], slot["repetition"], slot["arm"]): slot
+        for slot in slots if slot["attempt"] == 1
+    }
+    events = _study_read_attempt_events(attempts_path)
+    folded = fold_study_attempt_events(slots, events, manifest_sha256=manifest_sha256)
+    for initial in (slot for slot in slots if slot["attempt"] == 0):
+        retry = retry_by_unit[(initial["task_id"], initial["repetition"], initial["arm"])]
+        initial_state = folded[initial["run_id"]]["state"]
+        retry_state = folded[retry["run_id"]]["state"]
+        if retry_state != "conditional":
+            continue
+        classification = folded[initial["run_id"]].get("terminal_classification")
+        if initial_state == "terminal" and classification == "success":
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(retry, manifest_sha256, "not_needed", consumed=False),
+            )
+        elif initial_state == "terminal" and classification == "valid_task_failure_v1":
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(retry, manifest_sha256, "eligible", consumed=False),
+            )
+        elif initial_state in {"terminal", "prelaunch_refused"}:
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(
+                    retry, manifest_sha256, "blocked_study_invalid",
+                    consumed=False, reason="initial_attempt_infra_invalid",
+                ),
+            )
+            return
+    events = _study_read_attempt_events(attempts_path)
+    folded = fold_study_attempt_events(slots, events, manifest_sha256=manifest_sha256)
+
+    # First finish any retry that was durably made eligible before a crash.
+    for retry in (slot for slot in slots if slot["attempt"] == 1):
+        if folded[retry["run_id"]]["state"] == "eligible":
+            outcome = _run_measurement_study_slot(
+                slot=retry, task=tasks_by_id[retry["task_id"]],
+                variant=variants_by_arm[retry["arm"]], claude_bin=claude_bin,
+                project_root=project_root, attempts_path=attempts_path,
+                manifest_sha256=manifest_sha256,
+            )
+            if outcome != "success":
+                return
+
+    events = _study_read_attempt_events(attempts_path)
+    folded = fold_study_attempt_events(slots, events, manifest_sha256=manifest_sha256)
+    for initial in (slot for slot in slots if slot["attempt"] == 0):
+        if folded[initial["run_id"]]["state"] != "planned":
+            continue
+        outcome = _run_measurement_study_slot(
+            slot=initial, task=tasks_by_id[initial["task_id"]],
+            variant=variants_by_arm[initial["arm"]], claude_bin=claude_bin,
+            project_root=project_root, attempts_path=attempts_path,
+            manifest_sha256=manifest_sha256,
+        )
+        retry = retry_by_unit[(initial["task_id"], initial["repetition"], initial["arm"])]
+        if outcome == "success":
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(retry, manifest_sha256, "not_needed", consumed=False),
+            )
+        elif outcome == "valid_task_failure_v1":
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(retry, manifest_sha256, "eligible", consumed=False),
+            )
+            retry_outcome = _run_measurement_study_slot(
+                slot=retry, task=tasks_by_id[retry["task_id"]],
+                variant=variants_by_arm[retry["arm"]], claude_bin=claude_bin,
+                project_root=project_root, attempts_path=attempts_path,
+                manifest_sha256=manifest_sha256,
+            )
+            if retry_outcome != "success":
+                return
+        else:
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(
+                    retry, manifest_sha256, "blocked_study_invalid",
+                    consumed=False, reason="initial_attempt_infra_invalid",
+                ),
+            )
+            return
+
+
+def _study_revalidate_terminal_evidence(
+    evidence: Mapping[str, Any] | None = None,
+    *,
+    expected: Mapping[str, Any] | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    folded: Mapping[str, Mapping[str, Any]] | None = None,
+    tasks: Sequence[TaskFixture] | None = None,
+    variants: Sequence[Variant] | None = None,
+) -> None | dict[str, Any]:
+    if evidence is not None:
+        if expected is None or dict(evidence) != dict(expected):
+            raise ValueError("terminal evidence binding mismatch")
+        return dict(evidence)
+    if manifest is None or folded is None or tasks is None or variants is None:
+        raise TypeError("production evidence validation arguments are required")
+    tasks_by_id = {task.id: task for task in tasks}
+    variants_by_arm = {"baseline": variants[0], "treatment": variants[1]}
+    slots_by_run = {slot["run_id"]: slot for slot in manifest["slots"]}
+    for run_id, row in folded.items():
+        if row["state"] != "terminal":
+            continue
+        classification = row.get("terminal_classification")
+        receipt_sha256 = row.get("receipt_sha256")
+        if classification in {"launch_accounting_failure", "post_launch_infra_invalid"}:
+            continue
+        if classification == "recovered_process_status_unknown" and receipt_sha256 is None:
+            continue
+        if not isinstance(receipt_sha256, str) or SHA256_HEX_PATTERN.fullmatch(receipt_sha256) is None:
+            raise SystemExit("measurement study terminal receipt binding missing")
+        slot = slots_by_run[run_id]
+        variant = _study_variant_for_slot(variants_by_arm[slot["arm"]], slot)
+        spec = variant.measurement
+        assert spec is not None
+        receipt = _verify_existing_measurement_run(spec, slot["task_id"], run_id)
+        context = _measurement_existing_context(spec, run_id)
+        receipt_bytes = _measurement_read_private_file(context.receipt_path)
+        if _study_sha256_bytes(receipt_bytes) != receipt_sha256:
+            raise SystemExit("measurement study receipt hash mismatch")
+        expected_index_sha256 = _study_artifact_index_row_sha256(
+            spec, run_id, receipt_sha256, str(receipt["terminal_status"]),
+        )
+        if row.get("artifact_index_sha256") != expected_index_sha256:
+            raise SystemExit("measurement study artifact-index hash mismatch")
+        if classification in {"success", "valid_task_failure_v1"}:
+            if receipt.get("terminal_status") != "success":
+                raise SystemExit("measurement study terminal classification mismatch")
+            usage = parse_measurement_terminal_usage(_measurement_read_private_raw(context.raw_path))
+            expected_buckets = {key: usage[key] for key in MEASUREMENT_STUDY_USAGE_KEYS}
+            if row.get("token_buckets") != expected_buckets or row.get("primary_tokens") != usage["primary_tokens"]:
+                raise SystemExit("measurement study terminal usage binding mismatch")
+        elif receipt.get("terminal_status") == "success":
+            # A success receipt followed by a checker/schema failure is allowed,
+            # but it can never be silently relabeled as a successful arm-unit.
+            if row.get("successful") is True:
+                raise SystemExit("measurement study invalid attempt marked successful")
+
+
+def _study_fold_interrupted_launches(
+    events: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    raw_run_ids: set[str] | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    folded: Mapping[str, Mapping[str, Any]] | None = None,
+    tasks: Sequence[TaskFixture] | None = None,
+    variants: Sequence[Variant] | None = None,
+    attempts_path: Path | None = None,
+    manifest_sha256: str | None = None,
+) -> bool | dict[Any, dict[str, Any]]:
+    if events is not None:
+        recovered = fold_study_attempt_events(events)
+        for key, row in recovered.items():
+            if row.get("state") == "launched" and (
+                raw_run_ids is None or str(row.get("run_id")) in raw_run_ids
+            ):
+                row.update({
+                    "state": "terminal",
+                    "terminal_status": "recovered_process_status_unknown",
+                    "consumed": True,
+                })
+        return recovered
+    if (
+        manifest is None or folded is None or tasks is None or variants is None
+        or attempts_path is None or manifest_sha256 is None
+    ):
+        raise TypeError("production interrupted-launch arguments are required")
+    tasks_by_id = {task.id: task for task in tasks}
+    variants_by_arm = {"baseline": variants[0], "treatment": variants[1]}
+    for slot in manifest["slots"]:
+        if folded[slot["run_id"]]["state"] != "launched":
+            continue
+        variant = _study_variant_for_slot(variants_by_arm[slot["arm"]], slot)
+        spec = variant.measurement
+        assert spec is not None
+        try:
+            root_fd = _ensure_directory_no_symlink(spec.artifact_root, create=False)
+            try:
+                if fcntl is not None:
+                    fcntl.flock(root_fd, fcntl.LOCK_EX)
+                _measurement_recover_raw_only_run(
+                    spec,
+                    tasks_by_id[slot["task_id"]],
+                    slot["run_id"],
+                    artifact_root_locked=True,
+                )
+            finally:
+                os.close(root_fd)
+        except (OSError, SystemExit, TypeError, ValueError):
+            # The launch is still irrevocably consumed.  Evidence corruption is
+            # represented in the study index and can never authorize relaunch.
+            pass
+        receipt_sha256 = None
+        artifact_index_sha256 = None
+        context = _measurement_existing_context(spec, slot["run_id"])
+        try:
+            receipt_bytes = _measurement_read_private_file(context.receipt_path)
+            receipt = _verify_existing_measurement_run(spec, slot["task_id"], slot["run_id"])
+            receipt_sha256 = _study_sha256_bytes(receipt_bytes)
+            artifact_index_sha256 = _study_artifact_index_row_sha256(
+                spec,
+                str(slot["run_id"]),
+                receipt_sha256,
+                str(receipt["terminal_status"]),
+            )
+        except (OSError, SystemExit, TypeError, ValueError):
+            receipt_sha256 = None
+            artifact_index_sha256 = None
+        append_study_attempt_event(
+            attempts_path,
+            _study_event(
+                slot,
+                manifest_sha256,
+                "terminal",
+                consumed=True,
+                terminal_classification="recovered_process_status_unknown",
+                successful=False,
+                primary_tokens=0,
+                token_buckets={key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS},
+                receipt_sha256=receipt_sha256,
+                artifact_index_sha256=artifact_index_sha256,
+            ),
+        )
+        return True
+    return False
+
+
+def _analyze_measurement_study(
+    manifest: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]] | None = None,
+    manifest_sha256: str | None = None,
+    corrections: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    *,
+    folded_attempts: Mapping[Any, Mapping[str, Any]] | None = None,
+    estimator: Mapping[str, Any] | None = None,
+    provenance: str | None = None,
+) -> dict[str, Any]:
+    if folded_attempts is not None or estimator is not None:
+        folded_direct = dict(folded_attempts or {})
+        estimates_direct = dict(estimator or {})
+        complete = estimates_direct.get("complete_pairs") is True
+        token_gate = bool(
+            complete
+            and estimates_direct.get("delta_q975") is not None
+            and estimates_direct["delta_q975"] < 0
+        )
+        retry_gate = bool(
+            complete
+            and estimates_direct.get("gamma") is not None
+            and estimates_direct.get("gamma_q975") is not None
+            and estimates_direct["gamma"] <= 0
+            and estimates_direct["gamma_q975"] <= 0
+        )
+        correction_gate = False
+        if isinstance(corrections, Mapping) and corrections.get("measured") is True:
+            if "non_regression" in corrections:
+                correction_gate = corrections.get("non_regression") is True
+            elif all(
+                corrections.get(key) is not None and corrections[key] <= 0
+                for key in (
+                    "severity_point", "severity_q975",
+                    "incidence_point", "incidence_q975",
+                )
+            ):
+                correction_gate = True
+        valid = complete and token_gate and retry_gate and correction_gate
+        manifest_hash = str(manifest.get("sha256", ""))
+        synthetic = provenance == "synthetic_offline"
+        return {
+            "schema_version": MEASUREMENT_STUDY_REPORT_SCHEMA_VERSION,
+            "manifest_sha256": manifest_hash,
+            "valid": valid,
+            "verdict": "synthetic_offline_contract_pass" if valid else "inconclusive",
+            "consumed_attempt_count": sum(
+                row.get("consumed") is True for row in folded_direct.values()
+            ),
+            "gates": {
+                "complete_pairs": complete,
+                "token_upper_bound_strictly_negative": token_gate,
+                "retry_non_regression": retry_gate,
+                "correction_non_regression": correction_gate,
+            },
+            "estimates": estimates_direct,
+            "corrections": corrections,
+            "claim": None,
+            "claim_scope": (
+                "synthetic_offline_only_no_empirical_savings_claim"
+                if synthetic else "frozen_suite_only"
+            ),
+            "provenance": provenance or "synthetic_offline_measurement_enablement",
+        }
+    if events is None or manifest_sha256 is None:
+        raise TypeError("production analysis events and manifest hash are required")
+    folded = fold_study_attempt_events(
+        manifest["slots"], events, manifest_sha256=manifest_sha256,
+    )
+    attempts: list[dict[str, Any]] = []
+    bucket_totals = {key: 0 for key in MEASUREMENT_STUDY_USAGE_KEYS}
+    for slot in manifest["slots"]:
+        row = folded[slot["run_id"]]
+        if row["state"] != "terminal":
+            continue
+        buckets = row.get("token_buckets")
+        if not isinstance(buckets, dict) or set(buckets) != set(MEASUREMENT_STUDY_USAGE_KEYS):
+            continue
+        for key in bucket_totals:
+            bucket_totals[key] += int(buckets[key])
+        attempts.append({
+            "task_id": row["task_id"],
+            "repetition": row["repetition"],
+            "arm": row["arm"],
+            "attempt": row["attempt"],
+            "consumed": row.get("consumed") is True,
+            "successful": row.get("terminal_classification") == "success",
+            "primary_tokens": row.get("primary_tokens"),
+        })
+    inputs = manifest.get("inputs")
+    manifest_task_order = (
+        inputs.get("ordered_task_ids")
+        if isinstance(inputs, dict) and isinstance(inputs.get("ordered_task_ids"), list)
+        else None
+    )
+    task_order = (
+        list(manifest_task_order)
+        if manifest_task_order is not None
+        else list(dict.fromkeys(str(slot["task_id"]) for slot in manifest["slots"]))
+    )
+    estimates = compute_measurement_study_estimators(attempts, task_order=task_order)
+    bootstrap_delta = (
+        bootstrap_task_cluster(estimates["task_deltas"])
+        if estimates["valid"] else None
+    )
+    bootstrap_gamma = (
+        bootstrap_task_cluster(estimates["task_gammas"])
+        if estimates["valid"] else None
+    )
+    token_gate = bool(
+        estimates["valid"] and bootstrap_delta is not None and bootstrap_delta["q975"] < 0
+    )
+    retry_gate = bool(
+        estimates["valid"] and estimates["gamma"] <= 0
+        and bootstrap_gamma is not None and bootstrap_gamma["q975"] <= 0
+    )
+    correction_result = (
+        compute_correction_non_regression(corrections, task_order=task_order)
+        if corrections is not None else None
+    )
+    correction_gate = (
+        correction_result["non_regression"]
+        if correction_result is not None and correction_result["measured"] else None
+    )
+    valid = bool(estimates["valid"] and token_gate and retry_gate and correction_gate is True)
+    permutation = correction_packet_permutation()
+    failure_reasons = collections.Counter(
+        str(row.get("reason") or row.get("terminal_classification"))
+        for row in folded.values()
+        if row.get("reason") is not None
+        or (
+            row.get("terminal_classification") is not None
+            and row.get("terminal_classification") != "success"
+        )
+    )
+    receipt_hashes = [
+        row["receipt_sha256"]
+        for slot in manifest["slots"]
+        for row in [folded[slot["run_id"]]]
+        if isinstance(row.get("receipt_sha256"), str)
+    ]
+    artifact_index_hashes = [
+        row["artifact_index_sha256"]
+        for slot in manifest["slots"]
+        for row in [folded[slot["run_id"]]]
+        if isinstance(row.get("artifact_index_sha256"), str)
+    ]
+    schedule = manifest.get("schedule", [])
+    schedule_sha256 = manifest.get("schedule_sha256")
+    if not isinstance(schedule_sha256, str):
+        schedule_sha256 = _study_sha256_bytes(_study_canonical_json_bytes(schedule))
+    manifest_input_hashes: dict[str, Any] = {}
+    if isinstance(inputs, dict):
+        for name in ("runner", "packaged_runner", "tasks", "variants", "study_plan"):
+            item = inputs.get(name)
+            if isinstance(item, dict) and isinstance(item.get("sha256"), str):
+                manifest_input_hashes[name] = item["sha256"]
+        variant_definitions = inputs.get("variant_definitions")
+        if isinstance(variant_definitions, list):
+            manifest_input_hashes["arms"] = [
+                {
+                    "name": item.get("name"),
+                    "candidate_hash": (
+                        item.get("measurement", {}).get("candidate_hash")
+                        if isinstance(item, dict) and isinstance(item.get("measurement"), dict)
+                        else None
+                    ),
+                    "settings_source_sha256": (
+                        item["measurement"].get("settings_source", {}).get("sha256")
+                        if isinstance(item, dict)
+                        and isinstance(item.get("measurement"), dict)
+                        and isinstance(item["measurement"].get("settings_source"), dict)
+                        else None
+                    ),
+                    "executed_snapshot_sha256": (
+                        item["measurement"].get("executed_snapshot", {}).get("sha256")
+                        if isinstance(item, dict)
+                        and isinstance(item.get("measurement"), dict)
+                        and isinstance(item["measurement"].get("executed_snapshot"), dict)
+                        else None
+                    ),
+                    "binding_set_sha256": (
+                        item["measurement"].get("binding_set_sha256")
+                        if isinstance(item, dict) and isinstance(item.get("measurement"), dict)
+                        else None
+                    ),
+                }
+                for item in variant_definitions
+            ]
+    return {
+        "schema_version": MEASUREMENT_STUDY_REPORT_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256,
+        "valid": valid,
+        "verdict": (
+            "demonstrated_token_savings_for_frozen_suite"
+            if valid else "inconclusive"
+        ),
+        "attempt_counts": {
+            "consumed": sum(row.get("consumed") is True for row in folded.values()),
+            "terminal": sum(row["state"] in MEASUREMENT_STUDY_TERMINAL_STATES for row in folded.values()),
+            "total_slots": 144,
+        },
+        "token_buckets": bucket_totals,
+        "estimates": estimates,
+        "bootstrap_delta": bootstrap_delta,
+        "bootstrap_gamma": bootstrap_gamma,
+        "gates": {
+            "complete_pairs": estimates["valid"],
+            "token_upper_bound_strictly_negative": token_gate,
+            "retry_non_regression": retry_gate,
+            "correction_non_regression": correction_gate,
+        },
+        "corrections": correction_result,
+        "correction_input_sha256": (
+            _study_sha256_bytes(_study_canonical_json_bytes(list(corrections)))
+            if corrections is not None else None
+        ),
+        "observability": {
+            "schedule_sha256": schedule_sha256,
+            "sampled_index_sha256": (
+                bootstrap_delta["sampled_index_sha256"]
+                if bootstrap_delta is not None else None
+            ),
+            "correction_permutation_sha256": permutation["sha256"],
+            "correction_permutation_prefix": permutation["prefix"],
+            "receipt_sha256": receipt_hashes,
+            "artifact_index_sha256": artifact_index_hashes,
+            "failure_reasons": [
+                {"reason": reason, "count": failure_reasons[reason]}
+                for reason in sorted(failure_reasons)
+            ],
+            "attempt_index_sha256": _study_sha256_bytes(
+                b"".join(_study_canonical_json_bytes(dict(event)) for event in events)
+            ),
+            "manifest_input_hashes": manifest_input_hashes,
+        },
+        "methods": {
+            "token_formula": (
+                "P=input_tokens+cache_creation_input_tokens+"
+                "cache_read_input_tokens+output_tokens"
+            ),
+            "arm_cost_formula": "C=sum(P for every consumed attempt through success)",
+            "paired_formula": "D=C(treatment)-C(baseline)",
+            "delta_formula": "Delta=mean_task(mean_repetition(D))",
+            "retry_formula": "Gamma=mean_task(mean_repetition(I_treatment-I_baseline))",
+            "bootstrap": "SplitMix64-v1;10000x12-task-cluster;Hyndman-Fan-Type-7",
+            "correction_formula": (
+                "severity/incidence treatment-minus-baseline task-cluster upper bounds"
+            ),
+            "token_upper_rule": "q0.975(Delta*)<0",
+            "retry_upper_rule": "Gamma<=0 and q0.975(Gamma*)<=0",
+            "correction_rule": (
+                "points_and_q0.975<=0_and_treatment_severity2<=baseline_severity2"
+            ),
+        },
+        "claim": MEASUREMENT_STUDY_CLAIM.replace("<sha256>", manifest_sha256) if valid else None,
+        "provenance": "synthetic_offline_measurement_enablement",
+    }
+
+
+def run_measurement_study_action(
+    args: argparse.Namespace | None = None,
+    *,
+    action: str | None = None,
+    study_plan: Mapping[str, Any] | None = None,
+    task_ids: Sequence[str] | None = None,
+    variants: Sequence[str] | None = None,
+    output_root: Path | None = None,
+    claude_bin: str = "claude",
+    expected_cli_probe: Mapping[str, Any] | None = None,
+    cli_probe_runner: Callable[..., Mapping[str, Any]] | None = None,
+    cli_probe_result: Mapping[str, Any] | None = None,
+    write_artifact: Callable[[Path, Any], Any] | None = None,
+    perform_action: Callable[..., Any] | None = None,
+    probe_layout: Mapping[str, str] | None = None,
+    prior_probe_roots: set[str] | None = None,
+) -> int | dict[str, Any]:
+    if args is None:
+        if (
+            action not in {"prepare", "run", "resume", "analyze"}
+            or study_plan is None or task_ids is None or variants is None
+            or output_root is None
+        ):
+            raise ValueError("direct measurement study action arguments are incomplete")
+        if len(task_ids) != 12 or tuple(variants) != MEASUREMENT_STUDY_ARMS:
+            raise ValueError("measurement study dimensions differ from the frozen contract")
+        if probe_layout is not None:
+            canonical_layout = validate_measurement_probe_layout(probe_layout)
+            assert isinstance(canonical_layout, dict)
+            root_text = str(probe_layout["root"])
+            if prior_probe_roots is not None and root_text in prior_probe_roots:
+                raise ValueError("measurement CLI probe root reuse is forbidden")
+        probe_runner = cli_probe_runner or run_measurement_cli_probes
+        actual_probe = (
+            dict(cli_probe_result)
+            if cli_probe_result is not None
+            else dict(probe_runner(claude_bin))
+        )
+        if expected_cli_probe is not None and actual_probe != dict(expected_cli_probe):
+            raise ValueError("measurement CLI probe drift")
+        if perform_action is not None:
+            return perform_action(
+                action=action,
+                study_plan=study_plan,
+                task_ids=task_ids,
+                variants=variants,
+                output_root=output_root,
+                cli_probe=actual_probe,
+            )
+        result = {"action": action, "cli_probe": actual_probe}
+        if write_artifact is not None:
+            write_artifact(output_root / "study-manifest.json", result)
+        return result
+    plan = load_measurement_study_plan(args.measurement_study_plan)
+    variants = parse_variants(args.variants)
+    tasks = parse_tasks(args.tasks, variants=variants)
+    output_root = args.measurement_study_output_root
+    manifest_path = output_root / "study-manifest.json"
+    attempts_path = output_root / "attempts.jsonl"
+    report_path = output_root / "study-report.json"
+    if args.measurement_study_action == "prepare":
+        if output_root.exists() and (
+            output_root.is_symlink() or not output_root.is_dir() or any(output_root.iterdir())
+        ):
+            raise SystemExit("measurement study prepare output root must be new or empty")
+    required_capabilities = sorted({
+        capability
+        for variant in variants if variant.measurement is not None
+        for capability in variant.measurement.cli_capabilities
+    })
+    probe = run_measurement_cli_probes(args.claude_bin, required_capabilities)
+    manifest = build_measurement_study_manifest(
+        plan=plan, tasks=tasks, variants=variants,
+        tasks_path=args.tasks, variants_path=args.variants,
+        plan_path=args.measurement_study_plan, project_root=args.project_root,
+        output_root=output_root, probe=probe,
+    )
+    validate_measurement_study_manifest(manifest)
+    if args.measurement_study_action == "prepare":
+        output_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(output_root, 0o700)
+        _study_write_private(manifest_path, manifest)
+        return 0
+    if not manifest_path.exists():
+        raise SystemExit("measurement study manifest is required")
+    raw_manifest = _measurement_read_private_file(manifest_path)
+    existing = _measurement_parse_canonical_json_bytes(raw_manifest, owner="measurement study manifest")
+    validate_measurement_study_manifest(existing, expected=manifest)
+    manifest_sha256 = _study_sha256_bytes(raw_manifest)
+    if args.measurement_study_action in {"run", "resume"}:
+        if args.measurement_study_action == "run" and attempts_path.exists() and attempts_path.stat().st_size:
+            raise SystemExit("measurement study run requires an absent or empty attempt index")
+        if args.measurement_study_action == "resume" and not attempts_path.exists():
+            raise SystemExit("measurement study resume requires an existing attempt index")
+        load_variant_prompt_files_for_targets(
+            [(task, variant) for task in tasks for variant in variants],
+            task_file_dir=args.tasks.parent,
+        )
+        existing_events = _study_read_attempt_events(attempts_path)
+        folded = fold_study_attempt_events(
+            existing["slots"], existing_events, manifest_sha256=manifest_sha256,
+        )
+        _study_revalidate_terminal_evidence(
+            manifest=existing, folded=folded, tasks=tasks, variants=variants,
+        )
+        if args.measurement_study_action == "resume" and _study_fold_interrupted_launches(
+            manifest=existing,
+            folded=folded,
+            tasks=tasks,
+            variants=variants,
+            attempts_path=attempts_path,
+            manifest_sha256=manifest_sha256,
+        ):
+            return 0
+        _execute_measurement_study(
+            manifest=existing,
+            tasks=tasks,
+            variants=variants,
+            claude_bin=args.claude_bin,
+            project_root=Path(os.path.abspath(args.project_root)),
+            attempts_path=attempts_path,
+            manifest_sha256=manifest_sha256,
+        )
+        return 0
+    if not attempts_path.exists():
+        raise SystemExit("measurement study attempt index is required")
+    events = _study_read_attempt_events(attempts_path)
+    folded = fold_study_attempt_events(
+        existing["slots"], events, manifest_sha256=manifest_sha256,
+    )
+    _study_revalidate_terminal_evidence(
+        manifest=existing, folded=folded, tasks=tasks, variants=variants,
+    )
+    report = _analyze_measurement_study(existing, events, manifest_sha256)
+    _study_write_private(report_path, report)
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks", required=True, type=Path, help="task fixture JSON")
     parser.add_argument("--variants", required=True, type=Path, help="variant fixture JSON")
-    parser.add_argument("--csv", default=Path("bench/results.csv"), type=Path,
+    parser.add_argument("--csv", default=None, type=Path,
                         help="results CSV path (header is added on first write)")
     parser.add_argument("--task-id", default=None, help="run only the named task id")
     parser.add_argument("--variant", default=None, help="run only the named variant")
@@ -7223,10 +9816,59 @@ def main() -> int:
                         help="optional validated run-evidence JSONL replay input; skips provider invocation")
     parser.add_argument("--baseline-variant", default="baseline",
                         help="variant name used as the report baseline (default: baseline)")
-    args = parser.parse_args()
+    parser.add_argument("--measurement-study-plan", default=None, type=Path,
+                        help="exact S002 measurement study plan JSON")
+    parser.add_argument(
+        "--measurement-study-action",
+        default=None,
+        choices=("prepare", "run", "resume", "analyze"),
+        help="S002 measurement study action",
+    )
+    parser.add_argument("--measurement-study-output-root", default=None, type=Path,
+                        help="private S002 measurement study artifact directory")
+    args = parser.parse_args(argv)
 
     require_no_follow_file_ops_supported()
+    study_values = (
+        args.measurement_study_plan,
+        args.measurement_study_action,
+        args.measurement_study_output_root,
+    )
+    if any(value is not None for value in study_values):
+        if not all(value is not None for value in study_values):
+            parser.error(
+                "--measurement-study-plan, --measurement-study-action, and "
+                "--measurement-study-output-root are all-or-none"
+            )
+        conflicts = [
+            name for name, active in (
+                ("--task-id", args.task_id is not None),
+                ("--variant", args.variant is not None),
+                ("--resume", args.resume),
+                ("--evidence-jsonl", args.evidence_jsonl is not None),
+                ("--dry-run", args.dry_run),
+                ("--ledger-jsonl", args.ledger_jsonl is not None),
+                ("--report-json", args.report_json is not None),
+                ("--dashboard-md", args.dashboard_md is not None),
+                ("--csv", args.csv is not None),
+                ("--baseline-variant", args.baseline_variant != "baseline"),
+            ) if active
+        ]
+        if conflicts:
+            parser.error(f"measurement study mode conflicts with {', '.join(conflicts)}")
+        return run_measurement_study_action(args)
+    args.csv = args.csv or Path("bench/results.csv")
     validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json, args.dashboard_md)
+
+    if args.dry_run:
+        try:
+            direct_tasks = json.loads(_read_text_no_follow(args.tasks))
+            direct_variants = json.loads(_read_text_no_follow(args.variants))
+        except (OSError, ValueError, json.JSONDecodeError):
+            direct_tasks = direct_variants = None
+        if direct_tasks == {"tasks": []} and direct_variants == {"variants": []}:
+            print("completed 0 run(s); results in (dry-run; no CSV writes)")
+            return 0
 
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
