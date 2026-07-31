@@ -1,0 +1,245 @@
+contextguard sanitized build log (fixture)
+
+[001] resolve module cache entry 001 ... ok
+[002] resolve module cache entry 002 ... ok
+[003] resolve module cache entry 003 ... ok
+[004] resolve module cache entry 004 ... ok
+[005] resolve module cache entry 005 ... ok
+[006] resolve module cache entry 006 ... ok
+[007] resolve module cache entry 007 ... ok
+[008] resolve module cache entry 008 ... ok
+[009] resolve module cache entry 009 ... ok
+[010] resolve module cache entry 010 ... ok
+[011] resolve module cache entry 011 ... ok
+[012] resolve module cache entry 012 ... ok
+[013] resolve module cache entry 013 ... ok
+[014] resolve module cache entry 014 ... ok
+[015] resolve module cache entry 015 ... ok
+[016] resolve module cache entry 016 ... ok
+[017] resolve module cache entry 017 ... ok
+[018] resolve module cache entry 018 ... ok
+[019] resolve module cache entry 019 ... ok
+[020] resolve module cache entry 020 ... ok
+[021] resolve module cache entry 021 ... ok
+[022] resolve module cache entry 022 ... ok
+[023] resolve module cache entry 023 ... ok
+[024] resolve module cache entry 024 ... ok
+[025] resolve module cache entry 025 ... ok
+[026] resolve module cache entry 026 ... ok
+[027] resolve module cache entry 027 ... ok
+[028] resolve module cache entry 028 ... ok
+[029] resolve module cache entry 029 ... ok
+[030] resolve module cache entry 030 ... ok
+[031] resolve module cache entry 031 ... ok
+[032] resolve module cache entry 032 ... ok
+[033] resolve module cache entry 033 ... ok
+[034] resolve module cache entry 034 ... ok
+[035] resolve module cache entry 035 ... ok
+[036] resolve module cache entry 036 ... ok
+[037] resolve module cache entry 037 ... ok
+[038] resolve module cache entry 038 ... ok
+[039] resolve module cache entry 039 ... ok
+[040] resolve module cache entry 040 ... ok
+[041] resolve module cache entry 041 ... ok
+[042] resolve module cache entry 042 ... ok
+[043] resolve module cache entry 043 ... ok
+[044] resolve module cache entry 044 ... ok
+[045] resolve module cache entry 045 ... ok
+[046] resolve module cache entry 046 ... ok
+[047] resolve module cache entry 047 ... ok
+[048] resolve module cache entry 048 ... ok
+[049] resolve module cache entry 049 ... ok
+[050] resolve module cache entry 050 ... ok
+[051] resolve module cache entry 051 ... ok
+[052] resolve module cache entry 052 ... ok
+[053] resolve module cache entry 053 ... ok
+[054] resolve module cache entry 054 ... ok
+[055] resolve module cache entry 055 ... ok
+[056] resolve module cache entry 056 ... ok
+[057] resolve module cache entry 057 ... ok
+[058] resolve module cache entry 058 ... ok
+[059] resolve module cache entry 059 ... ok
+[060] resolve module cache entry 060 ... ok
+[061] resolve module cache entry 061 ... ok
+[062] resolve module cache entry 062 ... ok
+[063] resolve module cache entry 063 ... ok
+[064] resolve module cache entry 064 ... ok
+[065] resolve module cache entry 065 ... ok
+[066] resolve module cache entry 066 ... ok
+[067] resolve module cache entry 067 ... ok
+[068] resolve module cache entry 068 ... ok
+[069] resolve module cache entry 069 ... ok
+[070] resolve module cache entry 070 ... ok
+[071] resolve module cache entry 071 ... ok
+[072] resolve module cache entry 072 ... ok
+[073] resolve module cache entry 073 ... ok
+[074] resolve module cache entry 074 ... ok
+[075] resolve module cache entry 075 ... ok
+[076] resolve module cache entry 076 ... ok
+[077] resolve module cache entry 077 ... ok
+[078] resolve module cache entry 078 ... ok
+[079] resolve module cache entry 079 ... ok
+[080] resolve module cache entry 080 ... ok
+[081] resolve module cache entry 081 ... ok
+[082] resolve module cache entry 082 ... ok
+[083] resolve module cache entry 083 ... ok
+[084] resolve module cache entry 084 ... ok
+[085] resolve module cache entry 085 ... ok
+[086] resolve module cache entry 086 ... ok
+[087] resolve module cache entry 087 ... ok
+[088] resolve module cache entry 088 ... ok
+[089] resolve module cache entry 089 ... ok
+[090] resolve module cache entry 090 ... ok
+[091] resolve module cache entry 091 ... ok
+[092] resolve module cache entry 092 ... ok
+[093] resolve module cache entry 093 ... ok
+[094] resolve module cache entry 094 ... ok
+[095] resolve module cache entry 095 ... ok
+[096] resolve module cache entry 096 ... ok
+[097] resolve module cache entry 097 ... ok
+[098] resolve module cache entry 098 ... ok
+[099] resolve module cache entry 099 ... ok
+[100] resolve module cache entry 100 ... ok
+[101] resolve module cache entry 101 ... ok
+[102] resolve module cache entry 102 ... ok
+[103] resolve module cache entry 103 ... ok
+[104] resolve module cache entry 104 ... ok
+[105] resolve module cache entry 105 ... ok
+[106] resolve module cache entry 106 ... ok
+[107] resolve module cache entry 107 ... ok
+[108] resolve module cache entry 108 ... ok
+[109] resolve module cache entry 109 ... ok
+[110] resolve module cache entry 110 ... ok
+[111] resolve module cache entry 111 ... ok
+[112] resolve module cache entry 112 ... ok
+[113] resolve module cache entry 113 ... ok
+[114] resolve module cache entry 114 ... ok
+[115] resolve module cache entry 115 ... ok
+[116] resolve module cache entry 116 ... ok
+[117] resolve module cache entry 117 ... ok
+[118] resolve module cache entry 118 ... ok
+[119] resolve module cache entry 119 ... ok
+[120] resolve module cache entry 120 ... ok
+[121] npm run build ... ok
+[122] bundle chunk 001 ... ok
+[123] bundle chunk 002 ... ok
+[124] bundle chunk 003 ... ok
+[125] bundle chunk 004 ... ok
+[126] bundle chunk 005 ... ok
+[127] bundle chunk 006 ... ok
+[128] bundle chunk 007 ... ok
+[129] bundle chunk 008 ... ok
+[130] bundle chunk 009 ... ok
+[131] bundle chunk 010 ... ok
+[132] bundle chunk 011 ... ok
+[133] bundle chunk 012 ... ok
+[134] bundle chunk 013 ... ok
+[135] bundle chunk 014 ... ok
+[136] bundle chunk 015 ... ok
+[137] bundle chunk 016 ... ok
+[138] bundle chunk 017 ... ok
+[139] bundle chunk 018 ... ok
+[140] bundle chunk 019 ... ok
+[141] bundle chunk 020 ... ok
+[142] bundle chunk 021 ... ok
+[143] bundle chunk 022 ... ok
+[144] bundle chunk 023 ... ok
+[145] bundle chunk 024 ... ok
+[146] bundle chunk 025 ... ok
+[147] bundle chunk 026 ... ok
+[148] bundle chunk 027 ... ok
+[149] bundle chunk 028 ... ok
+[150] bundle chunk 029 ... ok
+[151] bundle chunk 030 ... ok
+[152] bundle chunk 031 ... ok
+[153] bundle chunk 032 ... ok
+[154] bundle chunk 033 ... ok
+[155] bundle chunk 034 ... ok
+[156] bundle chunk 035 ... ok
+[157] bundle chunk 036 ... ok
+[158] bundle chunk 037 ... ok
+[159] bundle chunk 038 ... ok
+[160] bundle chunk 039 ... ok
+[161] bundle chunk 040 ... ok
+[162] bundle chunk 041 ... ok
+[163] bundle chunk 042 ... ok
+[164] bundle chunk 043 ... ok
+[165] bundle chunk 044 ... ok
+[166] bundle chunk 045 ... ok
+[167] bundle chunk 046 ... ok
+[168] bundle chunk 047 ... ok
+[169] bundle chunk 048 ... ok
+[170] bundle chunk 049 ... ok
+[171] bundle chunk 050 ... ok
+[172] bundle chunk 051 ... ok
+[173] bundle chunk 052 ... ok
+[174] bundle chunk 053 ... ok
+[175] bundle chunk 054 ... ok
+[176] bundle chunk 055 ... ok
+[177] bundle chunk 056 ... ok
+[178] bundle chunk 057 ... ok
+[179] bundle chunk 058 ... ok
+[180] bundle chunk 059 ... ok
+[181] bundle chunk 060 ... ok
+[182] bundle chunk 061 ... ok
+[183] bundle chunk 062 ... ok
+[184] bundle chunk 063 ... ok
+[185] bundle chunk 064 ... ok
+[186] bundle chunk 065 ... ok
+[187] bundle chunk 066 ... ok
+[188] bundle chunk 067 ... ok
+[189] bundle chunk 068 ... ok
+[190] bundle chunk 069 ... ok
+[191] bundle chunk 070 ... ok
+[192] bundle chunk 071 ... ok
+[193] bundle chunk 072 ... ok
+[194] bundle chunk 073 ... ok
+[195] bundle chunk 074 ... ok
+[196] bundle chunk 075 ... ok
+[197] bundle chunk 076 ... ok
+[198] bundle chunk 077 ... ok
+[199] bundle chunk 078 ... ok
+[200] bundle chunk 079 ... ok
+[201] bundle chunk 080 ... ok
+[202] bundle chunk 081 ... ok
+[203] bundle chunk 082 ... ok
+[204] bundle chunk 083 ... ok
+[205] bundle chunk 084 ... ok
+[206] bundle chunk 085 ... ok
+[207] bundle chunk 086 ... ok
+[208] bundle chunk 087 ... ok
+[209] bundle chunk 088 ... ok
+[210] bundle chunk 089 ... ok
+[211] bundle chunk 090 ... ok
+[212] bundle chunk 091 ... ok
+[213] bundle chunk 092 ... ok
+[214] bundle chunk 093 ... ok
+[215] bundle chunk 094 ... ok
+[216] bundle chunk 095 ... ok
+[217] bundle chunk 096 ... ok
+[218] bundle chunk 097 ... ok
+[219] bundle chunk 098 ... ok
+[220] bundle chunk 099 ... ok
+[221] bundle chunk 100 ... ok
+[222] bundle chunk 101 ... ok
+[223] bundle chunk 102 ... ok
+[224] bundle chunk 103 ... ok
+[225] bundle chunk 104 ... ok
+[226] bundle chunk 105 ... ok
+[227] bundle chunk 106 ... ok
+[228] bundle chunk 107 ... ok
+[229] bundle chunk 108 ... ok
+[230] bundle chunk 109 ... ok
+[231] bundle chunk 110 ... ok
+[232] bundle chunk 111 ... ok
+[233] bundle chunk 112 ... ok
+[234] bundle chunk 113 ... ok
+[235] bundle chunk 114 ... ok
+[236] bundle chunk 115 ... ok
+[237] bundle chunk 116 ... ok
+[238] bundle chunk 117 ... ok
+[239] bundle chunk 118 ... ok
+[240] running: npm run lint -- --max-warnings 0
+[241] lint reported 3 warnings; treated as errors
+[242] FAILED command: npm run lint -- --max-warnings 0
+[243] build aborted

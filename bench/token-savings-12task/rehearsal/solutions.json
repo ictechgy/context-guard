@@ -1,0 +1,44 @@
+{
+  "purpose": "Rehearsal-only scripted fake-provider workspace writes. These are never used by a real provider run, are never part of a task fixture tree, and are never part of a success checker.",
+  "schema_version": "contextguard.bench.rehearsal-solutions.v1",
+  "solutions": {
+    "ts12_01_small_fix": {
+      "src/limits.py": "\"\"\"Request limits.\"\"\"\n\nMAX_ITEMS = 10\nMIN_ITEMS = 1\n"
+    },
+    "ts12_02_bugfix": {
+      "src/parser.py": "\"\"\"Request field parser.\"\"\"\n\n\ndef parse_fields(raw):\n    if raw is None:\n        return {}\n    fields = {}\n    for line in raw.splitlines():\n        if not line.strip() or '=' not in line:\n            continue\n        key, value = line.split('=', 1)\n        fields[key.strip()] = value.strip()\n    return fields\n"
+    },
+    "ts12_03_exploration": {
+      "answer.txt": "src/budget.py\n"
+    },
+    "ts12_04_review": {
+      "review.md": "## risk\nThe retry loop discards every earlier response and returns only the last attempt, so a transient success followed by a failure is reported as a failure.\n\n## test gap\nThere is no test covering attempts greater than one, so the loop's return-value selection is unverified.\n"
+    },
+    "ts12_05_long_log": {
+      "finding.txt": "npm run lint -- --max-warnings 0\n"
+    },
+    "ts12_06_migration": {
+      "src/cli.py": "\"\"\"Tiny option parser.\"\"\"\n\n\ndef parse_args(argv):\n    options = {\"value\": None, \"deprecated\": []}\n    index = 0\n    while index < len(argv):\n        token = argv[index]\n        if token in (\"--new-flag\", \"--old-flag\"):\n            options[\"value\"] = argv[index + 1]\n            if token == \"--old-flag\":\n                options[\"deprecated\"].append(\"--old-flag\")\n            index += 2\n            continue\n        raise SystemExit(\"unknown option: \" + token)\n    return options\n"
+    },
+    "ts12_07_docs": {
+      "docs/usage.md": "# Usage\n\n## Overview\n\nThe tool reads one input file and writes one report.\n\n## Options\n\n- `--new-flag VALUE`: select the report value.\n- `--old-flag VALUE`: deprecated alias of `--new-flag`; still accepted.\n"
+    },
+    "ts12_08_refactor": {
+      "src/alpha.py": "\"\"\"Alpha report.\"\"\"\nfrom shared import normalize_key\n\n\ndef alpha_keys(rows):\n    return [normalize_key(row) for row in rows]\n",
+      "src/beta.py": "\"\"\"Beta report.\"\"\"\nfrom shared import normalize_key\n\n\ndef beta_keys(rows):\n    return sorted(normalize_key(row) for row in rows)\n",
+      "src/shared.py": "\"\"\"Shared helpers.\"\"\"\n\n\ndef normalize_key(raw):\n    return raw.strip().lower().replace(' ', '_')\n"
+    },
+    "ts12_09_performance": {
+      "src/dedupe.py": "\"\"\"Deduplication helpers.\"\"\"\n\n\ndef first_unique(rows):\n    result = []\n    seen = set()\n    for row in rows:\n        if row in seen:\n            continue\n        seen.add(row)\n        result.append(row)\n    return result\n"
+    },
+    "ts12_10_telemetry": {
+      "src/telemetry.py": "\"\"\"Local telemetry record.\"\"\"\n\n\ndef build_record(event, payload):\n    return {\"event\": event, \"count\": len(payload)}\n"
+    },
+    "ts12_11_cache_layout": {
+      "prompt-layout.json": "{\n  \"segments\": [\n    {\"id\": \"system_rules\", \"stability\": \"stable\", \"text\": \"follow the project rules\"},\n    {\"id\": \"tool_catalog\", \"stability\": \"stable\", \"text\": \"tools: read, write\"},\n    {\"id\": \"request_timestamp\", \"stability\": \"volatile\", \"text\": \"request at 00:00:00\"},\n    {\"id\": \"user_turn\", \"stability\": \"volatile\", \"text\": \"current user question\"}\n  ]\n}\n"
+    },
+    "ts12_12_artifact_receipt": {
+      "report.md": "# Build report\n\n## Summary\n\nThe build failed during lint; the full sanitized log is stored locally.\n\n## Evidence\n\n- handle: contextguard-artifact:0123456789abcdef0123\n- re-expand: context-guard-artifact get 0123456789abcdef0123 --lines 1:40\n"
+    }
+  }
+}

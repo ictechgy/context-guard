@@ -1,0 +1,104 @@
+[
+  {
+    "extra_args": [],
+    "measurement": {
+      "artifact_root": "{{ARTIFACT_ROOT}}",
+      "cli_capabilities": [
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "stream-json"
+      ],
+      "environment": {
+        "allow": [
+          "PATH",
+          "LANG"
+        ],
+        "overrides": {}
+      },
+      "hook_events": {
+        "enabled": true,
+        "registered_bindings": [],
+        "required_event_classes": []
+      },
+      "identity": {
+        "arm": "baseline",
+        "attempt": 0,
+        "candidate_hash": "{{CANDIDATE_HASH}}",
+        "namespace": "{{NAMESPACE}}",
+        "repetition": 0
+      },
+      "schema_version": "contextguard.bench.measurement-substrate.v2",
+      "session": {
+        "mode": "isolated",
+        "persistence": "disabled"
+      },
+      "setting_sources": [
+        "project"
+      ],
+      "settings_file": "baseline.settings.json",
+      "workspace": {
+        "mode": "isolated"
+      }
+    },
+    "name": "baseline"
+  },
+  {
+    "extra_args": [],
+    "measurement": {
+      "artifact_root": "{{ARTIFACT_ROOT}}",
+      "cli_capabilities": [
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "stream-json"
+      ],
+      "environment": {
+        "allow": [
+          "PATH",
+          "LANG"
+        ],
+        "overrides": {}
+      },
+      "hook_events": {
+        "enabled": true,
+        "registered_bindings": [
+          {
+            "configured_command": "context-guard-guard-read",
+            "hook_event": "PreToolUse"
+          },
+          {
+            "configured_command": "context-guard-trim-output",
+            "hook_event": "PostToolUse"
+          }
+        ],
+        "required_event_classes": [
+          "PreToolUse",
+          "PostToolUse"
+        ]
+      },
+      "identity": {
+        "arm": "treatment",
+        "attempt": 0,
+        "candidate_hash": "{{CANDIDATE_HASH}}",
+        "namespace": "{{NAMESPACE}}",
+        "repetition": 0
+      },
+      "schema_version": "contextguard.bench.measurement-substrate.v2",
+      "session": {
+        "mode": "isolated",
+        "persistence": "disabled"
+      },
+      "setting_sources": [
+        "project"
+      ],
+      "settings_file": "treatment.settings.json",
+      "workspace": {
+        "mode": "isolated"
+      }
+    },
+    "name": "treatment"
+  }
+]

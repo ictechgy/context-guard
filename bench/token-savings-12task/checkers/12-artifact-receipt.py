@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Bounded S003 success check.
+
+Executed from a private directory outside the measured workspace, with the
+workspace as the current directory. It reads workspace files through bounded
+no-follow IO and never executes candidate code in its own process: anything that
+touches candidate modules runs in a child process whose reported values this
+parent re-verifies. A child that exits early, exits nonzero, or fails to emit
+exactly one well-formed PROBE line is a failure.
+"""
+import json
+import os
+import secrets
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_READ_BYTES = 262_144
+PROBE_TIMEOUT_SECONDS = 120
+
+
+def fail(reason):
+    print("FAIL " + str(reason))
+    raise SystemExit(1)
+
+
+def ok():
+    print("OK")
+    raise SystemExit(0)
+
+
+if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+    # 무결성 속성이 플랫폼에 따라 조용히 사라지는 것을 허용하지 않는다.
+    fail("platform lacks no-follow directory open support")
+
+NOFOLLOW = os.O_NOFOLLOW
+DIRFLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _open_no_follow(rel):
+    """Open one workspace-relative regular file, following no symlink component."""
+    path = Path(rel)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        fail("unsafe path: " + str(rel))
+    dir_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[:-1]:
+            try:
+                next_fd = os.open(part, DIRFLAGS, dir_fd=dir_fd)
+            except OSError:
+                fail("missing or symlinked directory component: " + str(rel))
+            os.close(dir_fd)
+            dir_fd = next_fd
+        try:
+            return os.open(
+                path.parts[-1], os.O_RDONLY | NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd,
+            )
+        except OSError:
+            fail("missing regular file: " + str(rel))
+    finally:
+        os.close(dir_fd)
+
+
+def read_bytes(rel):
+    fd = _open_no_follow(rel)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            fail("not a regular file: " + str(rel))
+        if info.st_size > MAX_READ_BYTES:
+            fail("file too large: " + str(rel))
+        chunks = []
+        remaining = MAX_READ_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if len(data) > MAX_READ_BYTES:
+        fail("file too large: " + str(rel))
+    return data
+
+
+def read(rel):
+    try:
+        return read_bytes(rel).decode("utf-8")
+    except UnicodeDecodeError:
+        fail("file is not valid UTF-8: " + str(rel))
+
+
+def load_json(rel):
+    try:
+        return json.loads(read(rel))
+    except ValueError:
+        fail("file is not valid JSON: " + str(rel))
+
+
+import hashlib as _hashlib
+if _hashlib.sha256(read_bytes("logs/receipt.json")).hexdigest() != "86cad69c84dc2a500f1c0f811998bb13d1344c6d3479a037a18262cac9a1e3ad":
+    fail("logs/receipt.json must remain byte-identical evidence")
+receipt = load_json("logs/receipt.json")
+if not isinstance(receipt, dict):
+    fail("logs/receipt.json must be a JSON object")
+for key in ("handle", "retrieval_command"):
+    if not isinstance(receipt.get(key), str) or not receipt[key]:
+        fail("logs/receipt.json is missing " + key)
+report = read("report.md")
+if "## summary" not in report.lower():
+    fail("report.md lost the Summary section")
+if receipt["handle"] not in report:
+    fail("report.md does not reference the artifact handle")
+if receipt["retrieval_command"] not in report:
+    fail("report.md does not include the exact retrieval command")
+if len(report.encode("utf-8")) > 2_000:
+    fail("report.md still inlines the bulk log body")
+import hashlib
+raw = read_bytes("logs/full.log")
+digest = hashlib.sha256(raw).hexdigest()
+if digest != "0cf865cef72a4b80e8c9dfd97ec5eb0cf2ff645d96e0f18bd60f39b574373821":
+    fail(
+        "logs/full.log must remain byte-identical evidence; expected "
+        "0cf865cef72a4b80 got " + digest[:16]
+    )
+ok()
