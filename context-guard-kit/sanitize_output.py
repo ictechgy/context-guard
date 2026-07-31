@@ -164,8 +164,12 @@ UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
 # 배가 비율 3.6~3.96). 대신 줄마다 앞머리 location prefix 를 단조 좌→우로 한 번만
 # 확정하고, consumer 에는 fragment 를 제거한 쌍둥이 패턴을 먹인다.
 LOCATION_PREFIX_FRAGMENT = r"(?:(?:[^:\n]+):\d+(?::\d+)?:)?"
+# path 성분에서 '=' 를 제외한다. 허용하면 'api_key=abc:123:456def' 처럼 비밀 값 안에서
+# 줄이 쪼개져 앞부분만 가려지고 뒷부분이 남는 절단 누출이 발생한다. grep/diff 경로에
+# '=' 가 들어가는 경우는 드물고, 그런 줄은 그냥 fast path 를 쓰지 않을 뿐이다.
+# 공백과 유니코드는 계약대로 계속 허용한다.
 LOCATION_PREFIX_SCAN_RE = re.compile(
-    r"\A(?P<lead>[ \t]*(?:[+-][ \t]*)?)(?P<location>[^:\n]+:\d+(?::\d+)?:)"
+    r"\A(?P<lead>[ \t]*(?:[+-][ \t]*)?)(?P<location>[^:\n=]+:\d+(?::\d+)?:)"
 )
 # 스캔 후보 안에 consumer 가 판정해야 할 신호가 있으면 그것은 location prefix 가 아니다.
 # 헤더 이름, 비밀 키 대입, 따옴표, private key 시작 표지를 모두 본다.

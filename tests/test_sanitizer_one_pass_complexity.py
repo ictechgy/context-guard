@@ -178,8 +178,11 @@ class SanitizeBeforeCapTest(unittest.TestCase):
 class ComplexityBudgetTest(unittest.TestCase):
     def test_repeated_delimiters_stay_within_the_doubling_ratio(self) -> None:
         sanitize_once("warmup a:1: line\n")
+        compared = 0
         previous = None
-        for count in (1000, 2000, 4000, 8000):
+        # 표본이 5 ms 노이즈 하한을 확실히 넘도록 크기를 잡는다. 작은 크기에서는
+        # 모든 비교가 스킵되어 단정이 0 회 실행됐다.
+        for count in (16_000, 32_000, 64_000):
             line = "a:1:" * count + "AUTHORIZATION: Bearer abcdefghijklmnop\n"
             elapsed = sanitize_best_of(line)
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
@@ -189,18 +192,24 @@ class ComplexityBudgetTest(unittest.TestCase):
                         ratio, MAX_DOUBLING_RATIO,
                         f"doubling ratio {ratio:.2f} exceeds the contract",
                     )
+                compared += 1
             previous = elapsed
+        # 하한 게이트가 모든 비교를 삼켜 단정이 0 회 실행되는 상태를 허용하지 않는다.
+        self.assertGreater(compared, 0, "all samples fell below the noise floor")
 
     def test_location_candidate_runs_stay_within_the_doubling_ratio(self) -> None:
         sanitize_once("warmup src/a.py:1: line\n")
+        compared = 0
         previous = None
-        for count in (1000, 2000, 4000, 8000):
+        for count in (8_000, 16_000, 32_000):
             line = "src/file.py:12:" * count + "token='abcdefghijklmnopqrstuvwx'\n"
             elapsed = sanitize_best_of(line)
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(candidates=count):
                     self.assertLessEqual(elapsed / previous, MAX_DOUBLING_RATIO)
+                compared += 1
             previous = elapsed
+        self.assertGreater(compared, 0, "all samples fell below the noise floor")
 
     def test_single_line_budgets(self) -> None:
         sanitize_once(no_colon_line(10_000))
@@ -215,8 +224,9 @@ class ComplexityBudgetTest(unittest.TestCase):
     def test_no_colon_run_is_no_longer_quadratic(self) -> None:
         """The measured pre-refactor shape: 82KB took 2.6s at ratios near 4."""
         sanitize_once(no_colon_line(4_000))
+        compared = 0
         previous = None
-        for size in (10_000, 20_000, 40_000, 80_000):
+        for size in (10_000, 20_000, 40_000, 80_000, 160_000):
             elapsed = sanitize_best_of(no_colon_line(size))
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(bytes=size):
@@ -225,7 +235,9 @@ class ComplexityBudgetTest(unittest.TestCase):
                         "quadratic growth yields about 4.0, so the bound must stay "
                         "below that to fail on the regression it names",
                     )
+                compared += 1
             previous = elapsed
+        self.assertGreater(compared, 0, "all samples fell below the noise floor")
 
 
 class MutationControlTest(unittest.TestCase):

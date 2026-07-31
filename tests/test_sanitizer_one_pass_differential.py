@@ -189,6 +189,18 @@ URL_PARAM_CORPUS = [
     "plain https://x.com/a?keep=me&also=here\n",
 ]
 
+# 비밀 값 안에 :digits: 가 있어 스캔이 값 중간을 쪼개 절단 누출이 났던 회귀를 고정한다.
+VALUE_SPLIT_CORPUS = [
+    "api_key=abc:123:456def\n",
+    "password=a:1:bcdefghijklmnop\n",
+    "api_key = 'abc:123:456'\n",
+    "secret_key: abc:123:456\n",
+    "token: v1:99:zzzz-secret-tail\n",
+    "note secret_key: abc:123:456 tail\n",
+    "x:1:secret_key: abc:123:456\n",
+    "export TOKEN=a:2:bcdefghijklmnopqrst\n",
+]
+
 EDGE_CORPUS = [
     "\n",
     "   \n",
@@ -234,6 +246,7 @@ CORPORA = {
     "prefix_absorption": PREFIX_ABSORPTION_CORPUS,
     "decline_path": DECLINE_PATH_CORPUS,
     "url_params": URL_PARAM_CORPUS,
+    "value_split": VALUE_SPLIT_CORPUS,
     "generated": generated_corpus(),
 }
 
