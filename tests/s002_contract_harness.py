@@ -86,23 +86,37 @@ class ProcessDouble:
         return self.returncode
 
 
-class EnvironmentSpy(dict[str, str]):
+class EnvironmentSpy(Mapping[str, str]):
     """Record attempted credential-shaped environment reads."""
 
     def __init__(self, values: Mapping[str, str], forbidden_names: Sequence[str]) -> None:
-        super().__init__(values)
+        self._values = dict(values)
         self._forbidden_names = frozenset(forbidden_names)
         self.forbidden_reads: list[str] = []
 
-    def __getitem__(self, key: str) -> str:
+    def _observe(self, key: str) -> None:
         if key in self._forbidden_names:
             self.forbidden_reads.append(key)
-        return super().__getitem__(key)
 
-    def get(self, key: str, default: Any = None) -> Any:
-        if key in self._forbidden_names:
-            self.forbidden_reads.append(key)
-        return super().get(key, default)
+    def __getitem__(self, key: str) -> str:
+        self._observe(key)
+        return self._values[key]
+
+    def __iter__(self):
+        for key in self._values:
+            self._observe(key)
+            yield key
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            self._observe(key)
+        return key in self._values
+
+    def copy(self) -> dict[str, str]:
+        return dict(self)
 
 
 def materialize_tree(root: Path, files: Mapping[str, bytes | str], *, mode: int = 0o600) -> dict[str, Path]:

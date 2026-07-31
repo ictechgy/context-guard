@@ -58,6 +58,7 @@ S002_BOUNDARIES = (
     "type7_quantile",
     "build_blinded_correction_packets",
     "shuffle_correction_packets",
+    "correction_packet_identity_map",
     "correction_packet_permutation",
     "resolve_correction_scores",
     "compute_correction_non_regression",
@@ -256,15 +257,100 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
 
     def test_postlaunch_abort_consumes_one(self):
         trace = TraceRecorder()
+        events = []
         result = self.runner._run_measurement_study_slot(
             slot={"run_id": "launched", "attempt": 0}, validate_slot=lambda _slot: None,
             launch=trace.callback("provider_process", result=ProcessDouble()),
+            append_event=lambda event: events.append(dict(event)),
             after_launch=trace.callback("postlaunch", failure=RuntimeError("accounting write failed")),
             terminate=trace.callback("terminate"), reap=trace.callback("reap"),
         )
         self.assertEqual(result["state"], "invalid")
         self.assertTrue(result["consumed"])
         self.assertEqual([call["kind"] for call in trace.calls], ["provider_process", "postlaunch", "terminate", "reap"])
+        self.assertEqual([event["state"] for event in events], ["launched", "terminal"])
+        self.assertEqual(events[-1]["terminal_status"], "post_launch_accounting_failure")
+        cleanup = []
+        with self.assertRaisesRegex(RuntimeError, "durability failure"):
+            self.runner._run_measurement_study_slot(
+                slot={"run_id": "launch-accounting", "attempt": 0},
+                validate_slot=lambda _slot: None,
+                launch=lambda _slot: ProcessDouble(),
+                append_event=lambda _event: (_ for _ in ()).throw(
+                    RuntimeError("durability failure")
+                ),
+                terminate=lambda _process: cleanup.append("terminate"),
+                reap=lambda _process: cleanup.append("reap"),
+            )
+        self.assertEqual(cleanup, ["terminate", "reap"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            slot = {
+                "pair_id": "pair-1", "run_id": "run-1",
+                "task_id": FIXTURE["task_ids"][0], "repetition": 0,
+                "arm": "baseline", "attempt": 0, "state": "planned",
+            }
+            production_events = []
+            fake_variant = SimpleNamespace(
+                measurement=SimpleNamespace(artifact_root=root)
+            )
+            fake_result = SimpleNamespace(
+                notes="task_success",
+                tokens={
+                    "input_tokens": 2, "cache_creation": 3,
+                    "cache_read": 5, "output_tokens": 7,
+                },
+            )
+            root_fd = self.runner.os.open(root, self.runner.os.O_RDONLY)
+            with (
+                mock.patch.object(
+                    self.runner, "_study_variant_for_slot",
+                    return_value=fake_variant,
+                ),
+                mock.patch.object(
+                    self.runner, "_ensure_directory_no_symlink",
+                    return_value=root_fd,
+                ),
+                mock.patch.object(
+                    self.runner, "_run_measurement_fixture_locked",
+                    side_effect=lambda *args, **kwargs: (
+                        kwargs["on_process_started"](), fake_result
+                    )[1],
+                ),
+                mock.patch.object(
+                    self.runner, "_measurement_existing_context",
+                    return_value=SimpleNamespace(
+                        receipt_path=root / "missing-receipt.json"
+                    ),
+                ),
+                mock.patch.object(
+                    self.runner, "append_study_attempt_event",
+                    side_effect=lambda _path, event: production_events.append(
+                        dict(event)
+                    ),
+                ),
+            ):
+                outcome = self.runner._run_measurement_study_slot(
+                    slot=slot, task=object(), variant=object(),
+                    claude_bin="claude", project_root=root,
+                    attempts_path=root / "attempts.jsonl",
+                    manifest_sha256="a" * 64,
+                )
+            self.assertEqual(outcome, "post_launch_infra_invalid")
+            self.assertEqual(
+                [event["state"] for event in production_events],
+                ["launched", "terminal"],
+            )
+            terminal = production_events[-1]
+            self.assertEqual(
+                terminal["terminal_classification"],
+                "post_launch_infra_invalid",
+            )
+            self.assertIsNone(terminal["receipt_sha256"])
+            folded = self.runner.fold_study_attempt_events(
+                [slot], production_events, manifest_sha256="a" * 64,
+            )
+            self.assertEqual(folded["run-1"]["state"], "terminal")
 
     def test_retry_eligibility_is_exact(self):
         eligible = self.runner.classify_success_checker(
@@ -315,6 +401,68 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         )
         self.assertEqual(trace.calls, [])
         self.assertEqual(result["selected_run_ids"], [])
+        slots = [
+            {
+                "pair_id": f"pair-{index}", "run_id": f"run-{index}",
+                "task_id": f"task-{index}", "repetition": 0,
+                "arm": "baseline", "attempt": 0, "state": "planned",
+            }
+            for index in (1, 2)
+        ]
+        folded = {
+            slot["run_id"]: {**slot, "state": "launched"}
+            for slot in slots
+        }
+        recovered_events = []
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fake_variant = SimpleNamespace(
+                measurement=SimpleNamespace(artifact_root=root)
+            )
+
+            def open_root(*_args, **_kwargs):
+                return self.runner.os.open(root, self.runner.os.O_RDONLY)
+
+            with (
+                mock.patch.object(
+                    self.runner, "_study_variant_for_slot",
+                    return_value=fake_variant,
+                ),
+                mock.patch.object(
+                    self.runner, "_ensure_directory_no_symlink",
+                    side_effect=open_root,
+                ),
+                mock.patch.object(
+                    self.runner, "_measurement_recover_raw_only_run",
+                ),
+                mock.patch.object(
+                    self.runner, "_measurement_existing_context",
+                    side_effect=lambda _spec, run_id: SimpleNamespace(
+                        receipt_path=root / f"{run_id}-missing.json"
+                    ),
+                ),
+                mock.patch.object(
+                    self.runner, "append_study_attempt_event",
+                    side_effect=lambda _path, event: recovered_events.append(
+                        dict(event)
+                    ),
+                ),
+            ):
+                recovered_any = self.runner._study_fold_interrupted_launches(
+                    manifest={"slots": slots}, folded=folded,
+                    tasks=[
+                        SimpleNamespace(id="task-1"),
+                        SimpleNamespace(id="task-2"),
+                    ],
+                    variants=[object(), object()],
+                    attempts_path=root / "attempts.jsonl",
+                    manifest_sha256="a" * 64,
+                )
+        self.assertTrue(recovered_any)
+        self.assertEqual(
+            [event["run_id"] for event in recovered_events],
+            ["run-1", "run-2"],
+        )
 
     def test_real_slot_set_and_manifest_join(self):
         slots = self.runner.generate_measurement_study_slots(
@@ -391,7 +539,7 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         result = self.runner.compute_measurement_study_estimators(attempts)
         self.assertTrue(result["complete_pairs"])
         self.assertEqual(result["paired_unit_count"], 36)
-        self.assertEqual(result["consumed_attempt_count"], 145)
+        self.assertEqual(result["consumed_attempt_count"], len(attempts))
         failed = next(item for item in attempts if item["terminal_status"] == "valid_task_failure_v1")
         self.assertIn(sum(failed["usage"].values()), result["arm_unit_totals"]["task-01:0:treatment"]["attempt_tokens"])
         self.assertEqual(
@@ -404,6 +552,37 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         self.assertIsNone(invalid["delta"])
         self.assertIsNone(invalid["gamma"])
         self.assertEqual(invalid["paired_unit_count"], 35)
+        noncanonical = [dict(item) for item in attempts]
+        noncanonical[0]["usage"] = {
+            **noncanonical[0]["usage"],
+            "total_tokens": sum(noncanonical[0]["usage"].values()),
+        }
+        schema_invalid = self.runner.compute_measurement_study_estimators(
+            noncanonical
+        )
+        self.assertFalse(schema_invalid["complete_pairs"])
+        production_attempts = [
+            {
+                "task_id": item["task"], "repetition": item["repetition"],
+                "arm": item["arm"], "attempt": item["attempt"],
+                "consumed": item["consumed"],
+                "successful": item["terminal_status"] == "success",
+                "terminal_classification": item["terminal_status"],
+                "primary_tokens": sum(item["usage"].values()),
+            }
+            for item in attempts
+        ]
+        recovered_unknown = next(
+            item for item in production_attempts
+            if item["terminal_classification"] == "valid_task_failure_v1"
+        )
+        recovered_unknown["terminal_classification"] = (
+            "recovered_process_status_unknown"
+        )
+        production_invalid = self.runner.compute_measurement_study_estimators(
+            production_attempts, task_order=FIXTURE["task_ids"],
+        )
+        self.assertFalse(production_invalid["valid"])
 
     def test_task_cluster_bootstrap_unit(self):
         golden = FIXTURE["bootstrap"]
@@ -453,7 +632,24 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         shuffled = self.runner.shuffle_correction_packets(
             packets, seed=FIXTURE["study_plan"]["correction_shuffle_seed"]
         )
-        self.assertEqual([item["source_index"] for item in shuffled[:18]], FIXTURE["correction"]["first_indices"])
+        self.assertTrue(all(
+            set(item) == {"assessment_id", "output"} for item in shuffled
+        ))
+        identity_map = self.runner.correction_packet_identity_map(
+            packets, seed=FIXTURE["study_plan"]["correction_shuffle_seed"],
+        )
+        by_packet = {packet["packet_id"]: packet for packet in packets}
+        self.assertEqual(
+            [
+                by_packet[identity_map[item["assessment_id"]]]["source_index"]
+                for item in shuffled[:18]
+            ],
+            FIXTURE["correction"]["first_indices"],
+        )
+        reordered = list(outputs)
+        reordered[0], reordered[1] = reordered[1], reordered[0]
+        with self.assertRaisesRegex(ValueError, "order mismatch"):
+            self.runner.build_blinded_correction_packets(reordered)
         wrong_map = {f"A{i:03d}": i for i in range(1, 73)}
         with self.assertRaises(ValueError):
             self.runner.shuffle_correction_packets(
@@ -479,12 +675,24 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         for scores in golden["unresolved_scores"]:
             with self.assertRaises(ValueError):
                 self.runner.resolve_correction_scores(scores)
-        packets = [{"packet_id": f"A{i:03d}", "scores": [0, 0, 0]} for i in range(1, 73)]
+        packets = [
+            {
+                "packet_id": f"A{i:03d}", "source_index": i - 1,
+                "output": f"candidate-output-{i}",
+            }
+            for i in range(1, 73)
+        ]
         shuffled = self.runner.shuffle_correction_packets(
             packets, seed=FIXTURE["study_plan"]["correction_shuffle_seed"]
         )
+        identity_map = self.runner.correction_packet_identity_map(
+            packets, seed=FIXTURE["study_plan"]["correction_shuffle_seed"],
+        )
         resolved = [
-            {"packet_id": packet["packet_id"], "score": self.runner.resolve_correction_scores(packet["scores"])}
+            {
+                "packet_id": identity_map[packet["assessment_id"]],
+                "score": self.runner.resolve_correction_scores([0, 0, 0]),
+            }
             for packet in shuffled
         ]
         correction = self.runner.compute_correction_non_regression(resolved)
@@ -528,7 +736,12 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
     def test_offline_forbidden_access_seams(self):
         trace = TraceRecorder()
         env_spy = EnvironmentSpy(
-            {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+            {
+                "PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C",
+                "ANTHROPIC_API_KEY": "forbidden",
+                "CLAUDE_CODE_OAUTH_TOKEN": "forbidden",
+                "AWS_SECRET_ACCESS_KEY": "forbidden",
+            },
             ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_SECRET_ACCESS_KEY"),
         )
         probe_responses = iter(
@@ -583,6 +796,23 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(env_spy.forbidden_reads, [])
+        bypass_spy = EnvironmentSpy(
+            {"ANTHROPIC_API_KEY": "forbidden"},
+            ("ANTHROPIC_API_KEY",),
+        )
+        self.assertEqual(dict(bypass_spy)["ANTHROPIC_API_KEY"], "forbidden")
+        self.assertIn("ANTHROPIC_API_KEY", bypass_spy)
+        self.assertEqual(
+            dict(bypass_spy.items())["ANTHROPIC_API_KEY"],
+            "forbidden",
+        )
+        self.assertEqual(
+            bypass_spy.copy()["ANTHROPIC_API_KEY"],
+            "forbidden",
+        )
+        self.assertGreaterEqual(
+            bypass_spy.forbidden_reads.count("ANTHROPIC_API_KEY"), 4
+        )
         forbidden_trace = list(trace.calls)
         forbidden_trace.insert(2, {"kind": "provider_process", "argv": ["claude", "-p", "task"]})
         with self.assertRaisesRegex(AssertionError, "forbidden offline access: provider_process"):
@@ -604,8 +834,8 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             root = Path(raw)
             plan = root / "plan.json"; tasks = root / "tasks.json"; variants = root / "variants.json"; output = root / "out"
             plan.write_bytes(canonical_json_bytes(FIXTURE["study_plan"]))
-            tasks.write_bytes(canonical_json_bytes({"tasks": []}))
-            variants.write_bytes(canonical_json_bytes({"variants": []}))
+            tasks.write_bytes(canonical_json_bytes([]))
+            variants.write_bytes(canonical_json_bytes([]))
             trace = TraceRecorder()
             argv = ["context-guard-bench", "--tasks", str(tasks), "--variants", str(variants), "--measurement-study-plan", str(plan), "--measurement-study-action", "prepare", "--measurement-study-output-root", str(output)]
             for action_name in ("prepare", "run", "resume", "analyze"):
@@ -656,6 +886,9 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                 legacy_rc = self.runner.main(common + ["--dry-run"])
             self.assertEqual(legacy_rc, 0)
             self.assertEqual(legacy_trace.calls, [])
+            tasks.write_bytes(canonical_json_bytes({"tasks": []}))
+            with self.assertRaises(SystemExit):
+                self.runner.main(common + ["--dry-run"])
 
     def test_manifest_input_class_mismatches(self):
         inputs = {
@@ -667,6 +900,12 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         raw = canonical_json_bytes(manifest)
         self.assertEqual(raw, self.runner.build_measurement_study_manifest(**inputs, canonical_bytes=True))
         self.assertEqual(self.runner.validate_measurement_study_manifest(raw, expected=manifest), manifest)
+        malformed = dict(manifest)
+        malformed.pop("runner_sha256")
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            self.runner.validate_measurement_study_manifest(
+                canonical_json_bytes(malformed)
+            )
         for key in inputs:
             altered = dict(manifest)
             altered[key] = {"drift": True} if isinstance(altered.get(key), dict) else "6" * 64

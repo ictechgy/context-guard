@@ -7809,7 +7809,10 @@ def compute_measurement_study_estimators(
                     attempt_tokens: list[int] = []
                     for row in consumed:
                         usage = row.get("usage")
-                        if not isinstance(usage, Mapping):
+                        if (
+                            not isinstance(usage, Mapping)
+                            or set(usage) != set(MEASUREMENT_STUDY_USAGE_KEYS)
+                        ):
                             valid = False
                             break
                         values = list(usage.values())
@@ -7843,9 +7846,8 @@ def compute_measurement_study_estimators(
             "complete_pairs": complete and paired_units == 36,
             "paired_unit_count": paired_units,
             "consumed_attempt_count": sum(
-                1 for row in attempts
-                if row.get("attempt") == 1 and row.get("consumed") is True
-            ) + 144,
+                row.get("consumed") is True for row in attempts
+            ),
             "arm_unit_totals": arm_totals,
             "delta": None,
             "gamma": None,
@@ -7903,6 +7905,12 @@ def compute_measurement_study_estimators(
             for arm in MEASUREMENT_STUDY_ARMS:
                 rows = sorted(grouped.get((task_id, repetition, arm), []), key=lambda row: int(row["attempt"]))
                 consumed = [row for row in rows if row.get("consumed") is True]
+                if any(
+                    row.get("terminal_classification")
+                    not in {"success", "valid_task_failure_v1"}
+                    for row in consumed
+                ):
+                    return invalid
                 successful = [row for row in consumed if row.get("successful") is True]
                 if (
                     len(successful) != 1
@@ -7953,6 +7961,25 @@ def build_blinded_correction_packets(
     }
     if len({key[0] for key in expected}) != 12 or actual != expected:
         raise ValueError("correction packet coverage mismatch")
+    task_order = list(dict.fromkeys(
+        str(row.get("task_id", row.get("task"))) for row in outputs
+    ))
+    expected_order = [
+        (task_id, repetition, arm)
+        for task_id in task_order
+        for repetition in range(3)
+        for arm in MEASUREMENT_STUDY_ARMS
+    ]
+    observed_order = [
+        (
+            str(row.get("task_id", row.get("task"))),
+            row.get("repetition"),
+            row.get("arm"),
+        )
+        for row in outputs
+    ]
+    if observed_order != expected_order:
+        raise ValueError("correction packet order mismatch")
     packets: list[dict[str, Any]] = []
     for index, row in enumerate(outputs):
         output = row.get("output")
@@ -7990,11 +8017,37 @@ def shuffle_correction_packets(
     permutation = correction_packet_permutation(72, seed=seed)
     assert isinstance(permutation, list)
     if direct_mode:
-        return [dict(packets[original]) for original in permutation]
+        return [
+            {
+                "assessment_id": f"A{position + 1:03d}",
+                "output": packets[original]["output"],
+            }
+            for position, original in enumerate(permutation)
+        ]
     return [
         {"assessment_id": f"A{position + 1:03d}", "output": packets[original]["output"]}
         for position, original in enumerate(permutation)
     ]
+
+
+def correction_packet_identity_map(
+    packets: Sequence[Mapping[str, Any]],
+    seed: int | str = MEASUREMENT_STUDY_CORRECTION_SEED,
+) -> dict[str, str]:
+    if len(packets) != 72:
+        raise ValueError("correction identity map requires exactly 72 packets")
+    packet_ids = [packet.get("packet_id") for packet in packets]
+    if (
+        any(not isinstance(packet_id, str) for packet_id in packet_ids)
+        or len(set(packet_ids)) != 72
+    ):
+        raise ValueError("correction identity map packet ids are invalid")
+    permutation = correction_packet_permutation(72, seed=seed)
+    assert isinstance(permutation, list)
+    return {
+        f"A{position + 1:03d}": str(packet_ids[original])
+        for position, original in enumerate(permutation)
+    }
 
 
 def correction_packet_permutation(
@@ -8825,9 +8878,25 @@ def validate_measurement_study_manifest(
         ).encode("utf-8")
         if manifest != canonical_direct:
             raise ValueError("measurement study manifest must be canonical JSON")
+        validate_measurement_study_manifest(decoded)
         if expected is not None and decoded != dict(expected):
             raise ValueError("measurement study manifest input drift")
         return decoded
+    direct_required = {
+        "schema_version", "study_plan", "tasks", "variants", "cli_probe",
+        "runner_sha256", "mirror_sha256",
+    }
+    if set(manifest) == direct_required:
+        if manifest["schema_version"] != MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION:
+            raise ValueError("measurement study manifest version mismatch")
+        for key in ("study_plan", "tasks", "variants", "cli_probe"):
+            if not isinstance(manifest[key], Mapping):
+                raise ValueError(f"measurement study manifest {key} must be an object")
+        for key in ("runner_sha256", "mirror_sha256"):
+            value = manifest[key]
+            if not isinstance(value, str) or SHA256_HEX_PATTERN.fullmatch(value) is None:
+                raise ValueError(f"measurement study manifest {key} is invalid")
+        return None
     required = {
         "schema_version", "inputs", "plan", "schedule", "schedule_sha256", "slots",
         "contracts", "provenance",
@@ -8941,6 +9010,12 @@ def _run_measurement_study_slot(
             raise ValueError("direct study slot launch callback is required")
         process = launch(slot)
         try:
+            if append_event is not None:
+                append_event({
+                    "run_id": slot["run_id"],
+                    "state": "launched",
+                    "consumed": True,
+                })
             if after_launch is not None:
                 after_launch(process)
         except BaseException:
@@ -8948,13 +9023,18 @@ def _run_measurement_study_slot(
                 terminate(process)
             if reap is not None:
                 reap(process)
+            if append_event is not None:
+                append_event({
+                    "run_id": slot["run_id"],
+                    "state": "terminal",
+                    "consumed": True,
+                    "terminal_status": "post_launch_accounting_failure",
+                })
             return {
                 "state": "invalid",
                 "consumed": True,
                 "reason": "post_launch_accounting_failure",
             }
-        if append_event is not None:
-            append_event({"run_id": slot["run_id"], "state": "launched", "consumed": True})
         return {"state": "launched", "consumed": True}
     if (
         task is None or variant is None or claude_bin is None
@@ -9025,7 +9105,7 @@ def _run_measurement_study_slot(
             ),
         )
         return "prelaunch_refused"
-    except (OSError, SystemExit, TypeError, ValueError):
+    except (KeyError, OSError, SystemExit, TypeError, ValueError):
         if process_was_launched:
             append_study_attempt_event(
                 attempts_path,
@@ -9057,10 +9137,14 @@ def _run_measurement_study_slot(
             else "study_infra_invalid"
         )
     )
-    receipt_path = _measurement_existing_context(spec, str(slot["run_id"])).receipt_path
     receipt_sha256 = None
     artifact_index_sha256 = None
-    if receipt_path.exists():
+    try:
+        receipt_path = _measurement_existing_context(
+            spec, str(slot["run_id"])
+        ).receipt_path
+        if not receipt_path.exists():
+            raise ValueError("measurement receipt is missing after launch")
         receipt_bytes = _measurement_read_private_file(receipt_path)
         receipt_sha256 = _study_sha256_bytes(receipt_bytes)
         receipt = _measurement_parse_canonical_json_bytes(
@@ -9069,6 +9153,10 @@ def _run_measurement_study_slot(
         artifact_index_sha256 = _study_artifact_index_row_sha256(
             spec, str(slot["run_id"]), receipt_sha256, str(receipt["terminal_status"]),
         )
+    except (OSError, SystemExit, TypeError, ValueError):
+        classification = "post_launch_infra_invalid"
+        receipt_sha256 = None
+        artifact_index_sha256 = None
     terminal_event = _study_event(
         slot,
         manifest_sha256,
@@ -9334,6 +9422,7 @@ def _study_fold_interrupted_launches(
         raise TypeError("production interrupted-launch arguments are required")
     tasks_by_id = {task.id: task for task in tasks}
     variants_by_arm = {"baseline": variants[0], "treatment": variants[1]}
+    recovered_any = False
     for slot in manifest["slots"]:
         if folded[slot["run_id"]]["state"] != "launched":
             continue
@@ -9388,8 +9477,8 @@ def _study_fold_interrupted_launches(
                 artifact_index_sha256=artifact_index_sha256,
             ),
         )
-        return True
-    return False
+        recovered_any = True
+    return recovered_any
 
 
 def _analyze_measurement_study(
@@ -9479,6 +9568,7 @@ def _analyze_measurement_study(
             "attempt": row["attempt"],
             "consumed": row.get("consumed") is True,
             "successful": row.get("terminal_classification") == "success",
+            "terminal_classification": row.get("terminal_classification"),
             "primary_tokens": row.get("primary_tokens"),
         })
     inputs = manifest.get("inputs")
@@ -9860,20 +9950,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.csv = args.csv or Path("bench/results.csv")
     validate_distinct_output_paths(args.csv, args.ledger_jsonl, args.report_json, args.dashboard_md)
 
-    if args.dry_run:
-        try:
-            direct_tasks = json.loads(_read_text_no_follow(args.tasks))
-            direct_variants = json.loads(_read_text_no_follow(args.variants))
-        except (OSError, ValueError, json.JSONDecodeError):
-            direct_tasks = direct_variants = None
-        if direct_tasks == {"tasks": []} and direct_variants == {"variants": []}:
-            print("completed 0 run(s); results in (dry-run; no CSV writes)")
-            return 0
-
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
     targets = filter_targets(tasks, variants, args.task_id, args.variant)
     if not targets:
+        if args.dry_run and (not tasks or not variants):
+            print("completed 0 run(s) (dry-run; no CSV writes)")
+            return 0
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
     preflight_measurement_targets(
@@ -9921,7 +10004,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"skip {task.id}/{variant.name} (already in {args.csv})")
                     continue
                 print(f"evidence replay dry-run: {task.id}/{variant.name} <- {args.evidence_jsonl}")
-            print("completed 0 run(s); results in (dry-run; no CSV writes)")
+            print("completed 0 run(s) (dry-run; no CSV writes)")
             return 0
         csv_had_preexisting_content = file_has_content_no_follow(args.csv)
         evidence_rows = read_evidence_jsonl(args.evidence_jsonl)
@@ -10090,14 +10173,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  {status} tokens={sum(result.tokens.values())} {primary_cost_display(result)} "
             f"wall_time={result.wall_time_seconds:.3f}s {sanitize_note_text(result.notes)}{suffix}"
         )
-    target = args.csv if not args.dry_run else "(dry-run; no CSV writes)"
+    target = args.csv if not args.dry_run else None
     if (args.report_json is not None or args.dashboard_md is not None) and not args.dry_run:
         report = write_report_outputs(args.csv, args.report_json, args.dashboard_md, args.baseline_variant)
         if args.report_json is not None:
             print(f"report {args.report_json}: {report['claim_status']}")
         if args.dashboard_md is not None:
             print(f"dashboard {args.dashboard_md}: {report_public_claim_status(report)[0]}")
-    print(f"completed {completed} run(s); results in {target}")
+    if target is None:
+        print(f"completed {completed} run(s) (dry-run; no CSV writes)")
+    else:
+        print(f"completed {completed} run(s); results in {target}")
     return 0
 
 
