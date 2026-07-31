@@ -111,8 +111,18 @@ receipt bytes. Only the `declared_timestamps` block changes between runs.
 
 ## Verified hook-event note
 
-`PostToolUseFailure` is a real Claude Code hook event, and the evidence is
-external rather than circular. `hook-event-evidence.json` records the resolved
+The measured treatment registers only **unconditional** hook classes,
+`PreToolUse` and `PostToolUse`. `PostToolUseFailure` is a real event, but it fires
+only when a tool call fails, and the frozen measurement contract requires the
+observed treatment event classes to equal the declared required classes exactly.
+Registering a conditional event therefore discards attempts either way: a missing
+required class when nothing failed, or an unexpected class when it did. Requiring
+it per attempt would have silently filtered the treatment sample down to attempts
+that happened to fail a tool. The failure-nudge hook is consequently **out of the
+measured treatment for this suite**, which narrows what the study can claim about
+that specific guardrail.
+
+The event evidence itself is external rather than circular. `hook-event-evidence.json` records the resolved
 `claude --version` output and literal occurrence counts for every event the
 treatment arm requires, measured against the installed CLI bundle: `PreToolUse`
 133, `PostToolUse` 185, `PostToolUseFailure` 54 in Claude Code 2.1.220. A test

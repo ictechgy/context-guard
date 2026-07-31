@@ -9,10 +9,12 @@
     "PostToolUseFailure": 54,
     "PreToolUse": 133
   },
+  "events_deliberately_not_registered": {
+    "PostToolUseFailure": "The event exists in the CLI (see event_occurrences) but it only fires when a tool call fails. The frozen measurement contract requires the observed treatment event classes to equal the declared required classes exactly, so registering a conditional event aborts an attempt either way: missing_required_hook_event_class when no tool fails, or unexpected_hook_event_class when it is registered but not required. Registering only unconditional classes keeps the treatment sample unfiltered."
+  },
   "events_required_by_treatment": [
     "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure"
+    "PostToolUse"
   ],
   "method": "Resolve the claude executable, read `claude --version`, then count literal ASCII occurrences of each event name in the resolved bundle bytes.",
   "purpose": "Direct external evidence that every hook event this suite registers exists in the provider CLI, so the claim does not rest only on this project's own frozen list.",

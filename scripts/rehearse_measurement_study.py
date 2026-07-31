@@ -195,10 +195,11 @@ def lifecycle(hook_id, hook_name, hook_event, progress=1):
 
 
 if arm == "treatment":
+    # 측정 treatment 는 무조건 발생하는 클래스만 등록하므로, 조건부 실패 훅 레코드를
+    # 내보내면 attempt 가 unexpected_hook_event_class 로 폐기된다.
     for event in (
         lifecycle("hook-pre", "opaque-pre-name", "PreToolUse")
         + lifecycle("hook-post", "opaque-post-name", "PostToolUse")
-        + lifecycle("hook-fail", "opaque-fail-name", "PostToolUseFailure", progress=0)
     ):
         print(json.dumps(event, separators=(",", ":")), flush=True)
 

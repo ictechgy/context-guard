@@ -11,17 +11,6 @@
         "matcher": "Bash"
       }
     ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "command": "context-guard-failed-nudge",
-            "type": "command"
-          }
-        ],
-        "matcher": "Bash"
-      }
-    ],
     "PreToolUse": [
       {
         "hooks": [

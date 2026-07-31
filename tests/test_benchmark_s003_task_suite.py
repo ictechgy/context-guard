@@ -417,7 +417,11 @@ class CheckerIsolationTest(unittest.TestCase):
         treatment = next(item for item in template if item["name"] == "treatment")
         hooks = treatment["measurement"]["hook_events"]
         events = [binding["hook_event"] for binding in hooks["registered_bindings"]]
-        self.assertIn("PostToolUseFailure", events)
+        # 조건부 이벤트는 등록하지 않는다. frozen 계약이 관측 클래스와 필수 클래스의
+        # 정확한 일치를 요구하므로, 실패 훅을 등록하면 어느 방향으로든 attempt 가 폐기된다.
+        self.assertNotIn("PostToolUseFailure", events)
+        self.assertEqual(events, ["PreToolUse", "PostToolUse"])
+        self.assertEqual(hooks["required_event_classes"], events)
         for event in events:
             with self.subTest(event=event):
                 self.assertIn(event, documented)
