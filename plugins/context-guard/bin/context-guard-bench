@@ -7336,6 +7336,9 @@ def validate_distinct_output_paths(
 # these helpers, so S001 and the historical benchmark contract remain unchanged.
 MEASUREMENT_STUDY_PLAN_SCHEMA_VERSION = "contextguard.bench.study-plan.v1"
 MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION = "contextguard.bench.study-manifest.v1"
+MEASUREMENT_STUDY_DIRECT_MANIFEST_SCHEMA_VERSION = (
+    "contextguard.bench.study-manifest-direct.v1"
+)
 MEASUREMENT_STUDY_ATTEMPT_INDEX_SCHEMA_VERSION = "contextguard.bench.study-attempt-index.v1"
 MEASUREMENT_STUDY_REPORT_SCHEMA_VERSION = "contextguard.bench.study-report.v1"
 MEASUREMENT_CLI_PROBE_SCHEMA_VERSION = "contextguard.bench.cli-probe.v1"
@@ -7377,9 +7380,10 @@ MEASUREMENT_STUDY_USAGE_KEYS = (
     "output_tokens",
 )
 MEASUREMENT_STUDY_STATE_TRANSITIONS = {
-    "planned": frozenset({"launched", "prelaunch_refused"}),
+    "planned": frozenset({"launch_reserved", "prelaunch_refused"}),
     "conditional": frozenset({"eligible", "not_needed", "blocked_study_invalid"}),
-    "eligible": frozenset({"launched", "prelaunch_refused"}),
+    "eligible": frozenset({"launch_reserved", "prelaunch_refused"}),
+    "launch_reserved": frozenset({"launched", "prelaunch_refused"}),
     "launched": frozenset({"terminal"}),
 }
 MEASUREMENT_STUDY_TERMINAL_STATES = frozenset({
@@ -8295,6 +8299,7 @@ def fold_study_attempt_events(
         current = str(folded[run_id]["state"])
         new_state = event.get("state")
         extras_by_state = {
+            "launch_reserved": {"consumed"},
             "launched": {"consumed"},
             "eligible": {"consumed"},
             "not_needed": {"consumed"},
@@ -8675,7 +8680,7 @@ def build_measurement_study_manifest(
 ) -> dict[str, Any] | bytes:
     if study_plan is not None:
         direct_manifest = {
-            "schema_version": MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION,
+            "schema_version": MEASUREMENT_STUDY_DIRECT_MANIFEST_SCHEMA_VERSION,
             "study_plan": dict(study_plan),
             "tasks": dict(tasks) if isinstance(tasks, Mapping) else tasks,
             "variants": dict(variants) if isinstance(variants, Mapping) else variants,
@@ -8683,6 +8688,7 @@ def build_measurement_study_manifest(
             "runner_sha256": runner_sha256,
             "mirror_sha256": mirror_sha256,
         }
+        validate_measurement_study_manifest(direct_manifest)
         if canonical_bytes:
             return json.dumps(
                 direct_manifest,
@@ -8887,15 +8893,81 @@ def validate_measurement_study_manifest(
         "runner_sha256", "mirror_sha256",
     }
     if set(manifest) == direct_required:
-        if manifest["schema_version"] != MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION:
+        if (
+            manifest["schema_version"]
+            != MEASUREMENT_STUDY_DIRECT_MANIFEST_SCHEMA_VERSION
+        ):
             raise ValueError("measurement study manifest version mismatch")
-        for key in ("study_plan", "tasks", "variants", "cli_probe"):
-            if not isinstance(manifest[key], Mapping):
-                raise ValueError(f"measurement study manifest {key} must be an object")
+        study_plan = manifest["study_plan"]
+        if not isinstance(study_plan, Mapping) or set(study_plan) != set(
+            MEASUREMENT_STUDY_PLAN_KEYS
+        ):
+            raise ValueError("measurement study direct manifest study_plan schema mismatch")
+        if (
+            study_plan.get("schema_version")
+            != MEASUREMENT_STUDY_PLAN_SCHEMA_VERSION
+            or not isinstance(study_plan.get("namespace"), str)
+            or MEASUREMENT_ID_NAMESPACE_RE.fullmatch(
+                str(study_plan.get("namespace"))
+            )
+            is None
+            or not isinstance(study_plan.get("schedule_seed"), str)
+            or re.fullmatch(
+                r"0x[0-9A-F]{16}", str(study_plan.get("schedule_seed"))
+            )
+            is None
+        ):
+            raise ValueError("measurement study direct manifest study_plan is invalid")
+        direct_plan_exact = {
+            "inference_seed": "0x434F4E5445585447",
+            "correction_shuffle_seed": "0x434F525245435433",
+            "repetitions": 3,
+            "max_attempts_per_arm_unit": 2,
+            "retry_policy": MEASUREMENT_STUDY_RETRY_POLICY,
+        }
+        if any(
+            study_plan.get(key) != value
+            or (
+                isinstance(value, int)
+                and isinstance(study_plan.get(key), bool)
+            )
+            for key, value in direct_plan_exact.items()
+        ):
+            raise ValueError("measurement study direct manifest study_plan is invalid")
+        tasks_direct = manifest["tasks"]
+        task_ids = (
+            tasks_direct.get("task_ids")
+            if isinstance(tasks_direct, Mapping)
+            and set(tasks_direct) == {"task_ids"}
+            else None
+        )
+        if (
+            not isinstance(task_ids, list)
+            or len(task_ids) != 12
+            or len(task_ids) != len(set(task_ids))
+            or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+        ):
+            raise ValueError("measurement study direct manifest tasks schema mismatch")
+        variants_direct = manifest["variants"]
+        if (
+            not isinstance(variants_direct, Mapping)
+            or set(variants_direct) != {"arms"}
+            or variants_direct.get("arms") != list(MEASUREMENT_STUDY_ARMS)
+        ):
+            raise ValueError("measurement study direct manifest variants schema mismatch")
+        cli_probe_direct = manifest["cli_probe"]
+        if (
+            not isinstance(cli_probe_direct, Mapping)
+            or cli_probe_direct.get("schema_version")
+            != MEASUREMENT_CLI_PROBE_SCHEMA_VERSION
+        ):
+            raise ValueError("measurement study direct manifest cli_probe schema mismatch")
         for key in ("runner_sha256", "mirror_sha256"):
             value = manifest[key]
             if not isinstance(value, str) or SHA256_HEX_PATTERN.fullmatch(value) is None:
                 raise ValueError(f"measurement study manifest {key} is invalid")
+        if manifest["runner_sha256"] != manifest["mirror_sha256"]:
+            raise ValueError("measurement study direct manifest runner parity mismatch")
         return None
     required = {
         "schema_version", "inputs", "plan", "schedule", "schedule_sha256", "slots",
@@ -9063,6 +9135,15 @@ def _run_measurement_study_slot(
             os.fchmod(root_fd, 0o700)
             if fcntl is not None:
                 fcntl.flock(root_fd, fcntl.LOCK_EX)
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(
+                    slot,
+                    manifest_sha256,
+                    "launch_reserved",
+                    consumed=False,
+                ),
+            )
             result = _run_measurement_fixture_locked(
                 task,
                 study_variant,
@@ -9406,7 +9487,7 @@ def _study_fold_interrupted_launches(
     if events is not None:
         recovered = fold_study_attempt_events(events)
         for key, row in recovered.items():
-            if row.get("state") == "launched" and (
+            if row.get("state") in {"launch_reserved", "launched"} and (
                 raw_run_ids is None or str(row.get("run_id")) in raw_run_ids
             ):
                 row.update({
@@ -9424,8 +9505,19 @@ def _study_fold_interrupted_launches(
     variants_by_arm = {"baseline": variants[0], "treatment": variants[1]}
     recovered_any = False
     for slot in manifest["slots"]:
-        if folded[slot["run_id"]]["state"] != "launched":
+        folded_state = folded[slot["run_id"]]["state"]
+        if folded_state not in {"launch_reserved", "launched"}:
             continue
+        if folded_state == "launch_reserved":
+            append_study_attempt_event(
+                attempts_path,
+                _study_event(
+                    slot,
+                    manifest_sha256,
+                    "launched",
+                    consumed=True,
+                ),
+            )
         variant = _study_variant_for_slot(variants_by_arm[slot["arm"]], slot)
         spec = variant.measurement
         assert spec is not None

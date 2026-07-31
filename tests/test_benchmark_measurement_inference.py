@@ -209,6 +209,7 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
     def test_resume_exact_attempt_identity(self):
         events = [
             _event("run-initial", 0, "planned"),
+            _event("run-initial", 0, "launch_reserved"),
             _event("run-initial", 0, "launched", consumed=True),
             _event("run-initial", 0, "terminal", consumed=True, terminal_status="valid_task_failure_v1"),
             _event("run-retry", 1, "conditional"),
@@ -226,9 +227,12 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
 
     def test_retry_history_is_append_only(self):
         events = [
-            _event("run-0", 0, "planned"), _event("run-0", 0, "launched", consumed=True),
+            _event("run-0", 0, "planned"),
+            _event("run-0", 0, "launch_reserved"),
+            _event("run-0", 0, "launched", consumed=True),
             _event("run-0", 0, "terminal", consumed=True, terminal_status="valid_task_failure_v1"),
             _event("run-1", 1, "conditional"), _event("run-1", 1, "eligible"),
+            _event("run-1", 1, "launch_reserved"),
             _event("run-1", 1, "launched", consumed=True),
             _event("run-1", 1, "terminal", consumed=True, terminal_status="valid_task_failure_v1"),
         ]
@@ -339,7 +343,7 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             self.assertEqual(outcome, "post_launch_infra_invalid")
             self.assertEqual(
                 [event["state"] for event in production_events],
-                ["launched", "terminal"],
+                ["launch_reserved", "launched", "terminal"],
             )
             terminal = production_events[-1]
             self.assertEqual(
@@ -351,6 +355,117 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                 [slot], production_events, manifest_sha256="a" * 64,
             )
             self.assertEqual(folded["run-1"]["state"], "terminal")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            slot = {
+                "pair_id": "pair-reserved", "run_id": "run-reserved",
+                "task_id": FIXTURE["task_ids"][0], "repetition": 0,
+                "arm": "baseline", "attempt": 0, "state": "planned",
+            }
+            fake_variant = SimpleNamespace(
+                measurement=SimpleNamespace(artifact_root=root)
+            )
+            durable_events = []
+            attempted_states = []
+
+            def persist_until_launch(_path, event):
+                attempted_states.append(event["state"])
+                if event["state"] != "launch_reserved":
+                    raise OSError("persistent attempt-index failure")
+                durable_events.append(dict(event))
+
+            def open_root(*_args, **_kwargs):
+                return self.runner.os.open(root, self.runner.os.O_RDONLY)
+
+            with (
+                mock.patch.object(
+                    self.runner, "_study_variant_for_slot",
+                    return_value=fake_variant,
+                ),
+                mock.patch.object(
+                    self.runner, "_ensure_directory_no_symlink",
+                    side_effect=open_root,
+                ),
+                mock.patch.object(
+                    self.runner, "_run_measurement_fixture_locked",
+                    side_effect=lambda *args, **kwargs: kwargs[
+                        "on_process_started"
+                    ](),
+                ),
+                mock.patch.object(
+                    self.runner, "append_study_attempt_event",
+                    side_effect=persist_until_launch,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "persistent attempt-index failure"
+                ):
+                    self.runner._run_measurement_study_slot(
+                        slot=slot, task=object(), variant=object(),
+                        claude_bin="claude", project_root=root,
+                        attempts_path=root / "attempts.jsonl",
+                        manifest_sha256="b" * 64,
+                    )
+            self.assertEqual(
+                attempted_states,
+                ["launch_reserved", "launched", "launched"],
+            )
+            self.assertEqual(
+                [event["state"] for event in durable_events],
+                ["launch_reserved"],
+            )
+            folded = self.runner.fold_study_attempt_events(
+                [slot], durable_events, manifest_sha256="b" * 64,
+            )
+            recovered_events = []
+            with (
+                mock.patch.object(
+                    self.runner, "_study_variant_for_slot",
+                    return_value=fake_variant,
+                ),
+                mock.patch.object(
+                    self.runner, "_ensure_directory_no_symlink",
+                    side_effect=open_root,
+                ),
+                mock.patch.object(
+                    self.runner, "_measurement_recover_raw_only_run",
+                    side_effect=ValueError("no raw process evidence"),
+                ),
+                mock.patch.object(
+                    self.runner, "_measurement_existing_context",
+                    return_value=SimpleNamespace(
+                        receipt_path=root / "missing-receipt.json"
+                    ),
+                ),
+                mock.patch.object(
+                    self.runner, "append_study_attempt_event",
+                    side_effect=lambda _path, event: recovered_events.append(
+                        dict(event)
+                    ),
+                ),
+            ):
+                recovered = self.runner._study_fold_interrupted_launches(
+                    manifest={"slots": [slot]}, folded=folded,
+                    tasks=[SimpleNamespace(id=slot["task_id"])],
+                    variants=[object(), object()],
+                    attempts_path=root / "attempts.jsonl",
+                    manifest_sha256="b" * 64,
+                )
+            self.assertTrue(recovered)
+            self.assertEqual(
+                [event["state"] for event in recovered_events],
+                ["launched", "terminal"],
+            )
+            recovered_fold = self.runner.fold_study_attempt_events(
+                [slot], durable_events + recovered_events,
+                manifest_sha256="b" * 64,
+            )
+            self.assertEqual(recovered_fold["run-reserved"]["state"], "terminal")
+            self.assertTrue(recovered_fold["run-reserved"]["consumed"])
+            self.assertEqual(
+                recovered_fold["run-reserved"]["terminal_classification"],
+                "recovered_process_status_unknown",
+            )
 
     def test_retry_eligibility_is_exact(self):
         eligible = self.runner.classify_success_checker(
@@ -390,7 +505,10 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         self.assertFalse(blocked["study_valid"])
 
     def test_recovered_unknown_never_relaunches(self):
-        events = [_event("interrupted", 0, "planned"), _event("interrupted", 0, "launched", consumed=True)]
+        events = [
+            _event("interrupted", 0, "planned"),
+            _event("interrupted", 0, "launch_reserved"),
+        ]
         recovered = self.runner._study_fold_interrupted_launches(events, raw_run_ids={"interrupted"})
         self.assertEqual(recovered[("interrupted", 0)]["terminal_status"], "recovered_process_status_unknown")
         self.assertTrue(recovered[("interrupted", 0)]["consumed"])
@@ -410,8 +528,11 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             for index in (1, 2)
         ]
         folded = {
-            slot["run_id"]: {**slot, "state": "launched"}
-            for slot in slots
+            slot["run_id"]: {
+                **slot,
+                "state": "launch_reserved" if index == 0 else "launched",
+            }
+            for index, slot in enumerate(slots)
         }
         recovered_events = []
         with tempfile.TemporaryDirectory() as raw:
@@ -460,8 +581,15 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                 )
         self.assertTrue(recovered_any)
         self.assertEqual(
-            [event["run_id"] for event in recovered_events],
-            ["run-1", "run-2"],
+            [
+                (event["run_id"], event["state"])
+                for event in recovered_events
+            ],
+            [
+                ("run-1", "launched"),
+                ("run-1", "terminal"),
+                ("run-2", "terminal"),
+            ],
         )
 
     def test_real_slot_set_and_manifest_join(self):
@@ -897,6 +1025,14 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             "runner_sha256": "5" * 64, "mirror_sha256": "5" * 64,
         }
         manifest = self.runner.build_measurement_study_manifest(**inputs)
+        self.assertEqual(
+            manifest["schema_version"],
+            self.runner.MEASUREMENT_STUDY_DIRECT_MANIFEST_SCHEMA_VERSION,
+        )
+        self.assertNotEqual(
+            manifest["schema_version"],
+            self.runner.MEASUREMENT_STUDY_MANIFEST_SCHEMA_VERSION,
+        )
         raw = canonical_json_bytes(manifest)
         self.assertEqual(raw, self.runner.build_measurement_study_manifest(**inputs, canonical_bytes=True))
         self.assertEqual(self.runner.validate_measurement_study_manifest(raw, expected=manifest), manifest)
@@ -905,6 +1041,21 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema mismatch"):
             self.runner.validate_measurement_study_manifest(
                 canonical_json_bytes(malformed)
+            )
+        for key in ("study_plan", "tasks", "variants", "cli_probe"):
+            malformed = dict(manifest)
+            malformed[key] = {}
+            with self.subTest(empty_nested=key), self.assertRaisesRegex(
+                ValueError, "schema|invalid"
+            ):
+                self.runner.validate_measurement_study_manifest(
+                    canonical_json_bytes(malformed)
+                )
+        unequal_hashes = dict(manifest)
+        unequal_hashes["mirror_sha256"] = "6" * 64
+        with self.assertRaisesRegex(ValueError, "parity mismatch"):
+            self.runner.validate_measurement_study_manifest(
+                canonical_json_bytes(unequal_hashes)
             )
         for key in inputs:
             altered = dict(manifest)
