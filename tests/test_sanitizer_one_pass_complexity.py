@@ -82,13 +82,25 @@ class ScannerStructureTest(unittest.TestCase):
                 self.assertEqual(
                     compiled.pattern.count(MODULE.LOCATION_PREFIX_FRAGMENT), 1,
                 )
-                twin_name = name.replace("_RE", "_NO_LOCATION_RE")
-                twin = getattr(MODULE, twin_name)
+                if name in MODULE.ANCHORED_LOCATION_CONSUMERS:
+                    # ^ 고정 consumer 는 fragment 를 한 위치에서만 시도하므로 이차 원인이
+                    # 아니고, 쌍둥이 없이 원본을 그대로 쓴다.
+                    self.assertFalse(
+                        hasattr(MODULE, name.replace("_RE", "_NO_LOCATION_RE")),
+                        "anchored consumers must not carry a dead twin",
+                    )
+                    continue
+                twin = getattr(MODULE, name.replace("_RE", "_NO_LOCATION_RE"))
                 self.assertNotIn(MODULE.LOCATION_PREFIX_FRAGMENT, twin.pattern)
 
     def test_twins_preserve_the_original_compile_flags(self) -> None:
         """Rebuilding from the pattern text drops argument flags unless passed on."""
-        for name in MODULE.NINE_LOCATION_CONSUMERS:
+        self.assertEqual(
+            len(MODULE.UNANCHORED_LOCATION_CONSUMERS)
+            + len(MODULE.ANCHORED_LOCATION_CONSUMERS),
+            9,
+        )
+        for name in MODULE.UNANCHORED_LOCATION_CONSUMERS:
             with self.subTest(consumer=name):
                 original = getattr(MODULE, name)
                 twin = getattr(MODULE, name.replace("_RE", "_NO_LOCATION_RE"))
@@ -99,9 +111,10 @@ class ScannerStructureTest(unittest.TestCase):
         )
 
     def test_declined_scan_reports_itself_so_callers_use_original_patterns(self) -> None:
+        # 스캐너는 사실만 보고한다: 분리는 항상 하고 신호 유무만 표시한다.
         declined = MODULE.scan_location_prefix("src/it's.py:5:Cookie: a=b\n")
         self.assertTrue(declined.declined)
-        self.assertEqual(declined.prefix, "")
+        self.assertEqual(declined.prefix, "src/it's.py:5:")
         accepted = MODULE.scan_location_prefix("src/app.py:5: Cookie: a=b\n")
         self.assertFalse(accepted.declined)
         self.assertEqual(accepted.prefix, "src/app.py:5:")
@@ -226,9 +239,9 @@ class MutationControlTest(unittest.TestCase):
         # 각 입력은 그 consumer 만이 결정한다는 것을 실측으로 확인한 것이다. 겹치는
         # 입력을 쓰면 다른 consumer 가 덮어써서 뮤테이션이 관측되지 않는다.
         cases = {
-            "AUTH_HEADER_NO_LOCATION_RE":
+            "AUTH_HEADER_RE":
                 "proxy-authorization: custom-scheme opaque-value-here\n",
-            "COOKIE_HEADER_NO_LOCATION_RE": "Cookie: a=1; b=2\n",
+            "COOKIE_HEADER_RE": "Cookie: a=1; b=2\n",
             "INLINE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE":
                 "api_key = 'abcdefghijklmnopqrstuvwx'\n",
             "INLINE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE":

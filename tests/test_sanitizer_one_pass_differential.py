@@ -47,11 +47,29 @@ BASELINE = _load(BASELINE_SOURCE, "s004_sanitizer_baseline")
 CANDIDATE_MODULE = _load(CANDIDATE, "s004_sanitizer_candidate")
 
 
-def project(module, lines: list[str], *, show_paths: bool) -> dict:
-    """Run one sanitizer over a corpus and record every observable it owns."""
-    sanitizer = module.LineSanitizer(show_paths=show_paths)
+def project(
+    module,
+    lines: list[str],
+    *,
+    show_paths: bool,
+    context: str = "command_search_diff",
+    isolate: bool = False,
+) -> dict:
+    """Run one sanitizer over a corpus and record every observable it owns.
+
+    ``context`` must be a real sanitization context: under the default
+    ``unknown_text`` the path anonymizer short-circuits, which would leave every
+    path pattern and both path counters dead across the whole comparison.
+
+    ``isolate`` gives each line a fresh sanitizer. Reusing one sanitizer lets an
+    unterminated block on an early line mask every later line in that corpus, so
+    both modes are compared.
+    """
+    sanitizer = module.LineSanitizer(show_paths=show_paths, context=context)
     rows = []
     for line in lines:
+        if isolate:
+            sanitizer = module.LineSanitizer(show_paths=show_paths, context=context)
         text, redacted = sanitizer.sanitize(line)
         rows.append({
             "text": text,
@@ -161,6 +179,16 @@ DECLINE_PATH_CORPUS = [
     "src/it's.py:5:-----BEGIN RSA PRIVATE KEY-----\n",
 ]
 
+# URL 치환 이후 낡은 split 오프셋을 적용해 줄 뒷부분이 유실된 회귀를 고정한다.
+URL_PARAM_CORPUS = [
+    "callback https://example.invalid/cb?access_token=abcdefghijklmnop;"
+    "refresh_token=abcdefghijklmnop&password=hunter2hunter2&api_key=abcdefghijklmnop"
+    "&state=visible\n",
+    "https://x.com/a?api_key=abcdefghijklmnop&z=1 file.py:3: tail\n",
+    "src/app.py:9: https://x.com/a?token=abcdefghijklmnop&keep=me\n",
+    "plain https://x.com/a?keep=me&also=here\n",
+]
+
 EDGE_CORPUS = [
     "\n",
     "   \n",
@@ -205,6 +233,7 @@ CORPORA = {
     "edge": EDGE_CORPUS,
     "prefix_absorption": PREFIX_ABSORPTION_CORPUS,
     "decline_path": DECLINE_PATH_CORPUS,
+    "url_params": URL_PARAM_CORPUS,
     "generated": generated_corpus(),
 }
 
@@ -237,9 +266,27 @@ class DifferentialOracleTest(unittest.TestCase):
     def test_every_corpus_is_byte_identical(self) -> None:
         for name, corpus in sorted(CORPORA.items()):
             for show_paths in (False, True):
-                with self.subTest(corpus=name, show_paths=show_paths):
-                    expected = project(BASELINE, corpus, show_paths=show_paths)
-                    actual = project(CANDIDATE_MODULE, corpus, show_paths=show_paths)
+                for isolate in (False, True):
+                    with self.subTest(
+                        corpus=name, show_paths=show_paths, isolate=isolate,
+                    ):
+                        self.assert_corpus_matches(
+                            name, corpus, show_paths=show_paths, isolate=isolate,
+                        )
+
+    def assert_corpus_matches(
+        self, name: str, corpus: list[str], *, show_paths: bool, isolate: bool,
+    ) -> None:
+        for context in ("command_search_diff", "filesystem_listing", "unknown_text"):
+            with self.subTest(context=context):
+                    expected = project(
+                        BASELINE, corpus, show_paths=show_paths,
+                        context=context, isolate=isolate,
+                    )
+                    actual = project(
+                        CANDIDATE_MODULE, corpus, show_paths=show_paths,
+                        context=context, isolate=isolate,
+                    )
                     self.assertEqual(
                         len(expected["rows"]), len(actual["rows"]),
                         "row count diverged",
@@ -263,11 +310,33 @@ class DifferentialOracleTest(unittest.TestCase):
         lines = GREP_CORPUS.read_text(encoding="utf-8").splitlines(keepends=True)
         self.assertGreaterEqual(len(lines), 1000)
         for show_paths in (False, True):
-            with self.subTest(show_paths=show_paths):
-                self.assertEqual(
-                    project(BASELINE, lines, show_paths=show_paths),
-                    project(CANDIDATE_MODULE, lines, show_paths=show_paths),
-                )
+            for isolate in (False, True):
+                with self.subTest(show_paths=show_paths, isolate=isolate):
+                    self.assertEqual(
+                        project(
+                            BASELINE, lines, show_paths=show_paths, isolate=isolate,
+                        ),
+                        project(
+                            CANDIDATE_MODULE, lines, show_paths=show_paths,
+                            isolate=isolate,
+                        ),
+                    )
+
+    def test_path_anonymization_is_actually_exercised(self) -> None:
+        """Guards the guard: a dead path pipeline would make the comparison vacuous."""
+        result = project(
+            CANDIDATE_MODULE, PATH_CORPUS, show_paths=False,
+            context="command_search_diff",
+        )
+        self.assertGreater(
+            result["path_redactions"], 0,
+            "path anonymization never ran, so path patterns are untested",
+        )
+        shown = project(
+            CANDIDATE_MODULE, PATH_CORPUS, show_paths=True,
+            context="command_search_diff",
+        )
+        self.assertEqual(shown["path_redactions"], 0)
 
     def test_packaged_mirror_matches_the_canonical_source(self) -> None:
         self.assertEqual(CANDIDATE.read_bytes(), PACKAGED.read_bytes())
