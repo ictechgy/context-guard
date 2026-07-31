@@ -2003,7 +2003,15 @@ def reset_task_fixture_tree(
             mode,
         )
         try:
-            os.write(fd, entry.data)
+            # os.write 는 short write 가 허용되므로 남은 바이트를 반복 기록한다.
+            # 한 번만 호출하면 fixture 파일이 조용히 잘려 결정적 reset 이 깨질 수 있다.
+            view = memoryview(entry.data)
+            written = 0
+            while written < len(view):
+                chunk = os.write(fd, view[written:])
+                if chunk <= 0:
+                    raise SystemExit("fixture tree write made no progress")
+                written += chunk
             os.fchmod(fd, mode)
         finally:
             os.close(fd)

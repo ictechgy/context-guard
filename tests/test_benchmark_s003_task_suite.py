@@ -386,6 +386,36 @@ class DeterministicResetTest(unittest.TestCase):
             )
             self.assertEqual(after, ["check.py", "src/app.py"])
 
+    def test_reset_survives_short_writes(self) -> None:
+        """A kernel short write must not silently truncate a materialized file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entries = self.entries(root)
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            real_write = os.write
+            state = {"calls": 0}
+
+            def short_write(fd, data):
+                state["calls"] += 1
+                view = memoryview(data)
+                if len(view) > 1:
+                    return real_write(fd, view[:1])
+                return real_write(fd, view)
+
+            os.write = short_write
+            try:
+                RUNNER_MODULE.reset_task_fixture_tree(entries, workspace)
+            finally:
+                os.write = real_write
+            self.assertGreater(state["calls"], len(entries))
+            self.assertEqual(
+                (workspace / "src" / "app.py").read_text(encoding="utf-8"), "value = 1\n",
+            )
+            self.assertEqual(
+                (workspace / "check.py").read_text(encoding="utf-8"), "raise SystemExit(0)\n",
+            )
+
     def test_reset_refuses_a_symlinked_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
