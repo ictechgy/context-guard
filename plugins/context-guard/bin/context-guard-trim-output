@@ -1512,6 +1512,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--digest-always",
+        action="store_true",
+        help=(
+            "keep the digest even when the command output is smaller than the digest; "
+            "by default a smaller output is passed through so the digest cannot inflate "
+            "context"
+        ),
+    )
+    parser.add_argument(
         "--artifact-receipt",
         action="store_true",
         help=(
@@ -1729,10 +1738,41 @@ def main() -> int:
                     )
                     if guidance not in next_queries:
                         next_queries.insert(0, guidance)
-        if args.digest == "json":
-            sys.stdout.write(render_digest_json(payload, args.max_chars))
+        rendered = (
+            render_digest_json(payload, args.max_chars)
+            if args.digest == "json"
+            else render_digest_markdown(payload, args.max_chars)
+        )
+        # digest 는 큰 출력을 줄이려는 기능이다. 출력이 작으면 digest 가 오히려 커져서
+        # 컨텍스트를 늘리므로, 그럴 때는 원래 출력을 그대로 통과시킨다. artifact receipt 를
+        # 저장한 경우에는 handle/재확장 명령이 digest 의 존재 이유이므로 폴백하지 않는다.
+        passthrough = "".join(all_lines)
+        marker = (
+            "[context-guard-kit] digest skipped: it was larger than the command output\n"
+        )
+        digest_bytes = len(rendered.encode("utf-8"))
+        passthrough_bytes = len(passthrough.encode("utf-8")) + len(marker.encode("utf-8"))
+        # 폴백 조건은 보수적으로 둔다.
+        # - 전체 출력이 예산 안에 들어와 all_lines 가 완전한 출력일 때만 통과시킨다.
+        #   그렇지 않으면 잘린 출력을 원본처럼 내보내 정보를 잃는다.
+        # - 실패한 명령에서는 digest 가 종료 코드/실패 signature 를 담으므로 유지한다.
+        # - artifact receipt 를 요청했다면 handle/재확장 명령이 digest 의 존재 이유다.
+        complete_output_available = (
+            total <= args.max_lines
+            and visible_chars <= args.max_chars
+            and not any_line_capped
+        )
+        if (
+            not args.digest_always
+            and not args.artifact_receipt
+            and rc == 0
+            and complete_output_available
+            and passthrough_bytes < digest_bytes
+        ):
+            sys.stdout.write(marker)
+            sys.stdout.write(passthrough)
         else:
-            sys.stdout.write(render_digest_markdown(payload, args.max_chars))
+            sys.stdout.write(rendered)
         artifact_capture.close()
         return rc
 

@@ -97,6 +97,32 @@ Brief mode is a set of agent-neutral, advisory rule snippets that ask a coding a
 
 Three deterministic levels ship under [`plugins/context-guard/brief/`](plugins/context-guard/brief/): `lite`, `standard`, and `ultra`. Each level is a single marker-delimited block for an agent's rule/instruction file (for example `AGENTS.md`, `CLAUDE.md`, a Cursor rules file, or Copilot instructions). Manage it through setup with `context-guard setup --agent codex --scope project --brief-mode standard --plan`, rerun with `--yes` to apply, and use `--brief-mode off` to remove the managed block. See [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md).
 
+### Standing cost and break-even
+
+Advisory rule blocks are not free. They live in an agent's rule file, so they are
+re-sent with every request for as long as they are installed:
+
+| Managed block | Installed size |
+| --- | --- |
+| `brief-mode.lite` | 1,487 bytes |
+| `brief-mode.standard` | 1,568 bytes |
+| `brief-mode.ultra` | 1,523 bytes |
+| `narration-mode.quiet` | 866 bytes |
+
+That is a fixed per-request cost paid up front, while the benefit is a
+probabilistic reduction in reply length that ContextGuard cannot enforce. On a
+session with few turns, or with an agent that already answers tersely, the block
+can cost more than it saves. The hook-based guardrails behave differently: they
+charge only when they act, and the measured worst cases stay small — a
+sub-threshold `Read` adds 3 bytes, and repeated large-read attempts shrink after
+the first warning instead of accumulating.
+
+Before installing a rule block for its token effect, measure it. Use
+`context-guard-bench` on matched tasks with and without the block, and treat the
+block's installed size as the break-even threshold your reply-length reduction has
+to clear. Byte counts here are observed; token effects are not, and no fixed
+saving is claimed.
+
 ## Quiet narration for Claude (advisory)
 
 Quiet narration is a separate, default-off Claude-only rule for reducing discretionary preambles, per-tool narration, filler, and repeated interim summaries. It still requires approvals and decisions, blockers, failures, destructive or security warnings, higher-priority progress updates, the final result, changed files, and verification. It is best-effort guidance, independent of final-answer brevity or reasoning depth, and does **not** guarantee token or cost savings.
@@ -379,7 +405,7 @@ Add `--mode readable` only for sanitized prose previews. It uses a deterministic
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-Use `--digest markdown` or `--digest json` for a compact semantic digest instead of head/tail logs. Digest mode keeps status, exit code, truncation counts, runner failure facts, a sanitized failure signature, duplicate-line groups, representative lines, redaction counts, and suggested next queries while preserving the wrapped command exit code. Add `--artifact-receipt` with digest mode when you want the exact sanitized full output stored locally as a `context-guard-artifact` receipt; keep the emitted `contextguard-artifact:<id>` handle in agent context and re-expand with the emitted `context-guard-artifact receipt/get/search ...` commands before relying on omitted details. Wrapped commands time out after 600 seconds by default; tune this with `--timeout-seconds`.
+Use `--digest markdown` or `--digest json` for a compact semantic digest instead of head/tail logs. When a command succeeds and its output is already smaller than the digest would be, the output is passed through with a one-line marker instead, so enabling digest mode on quiet commands cannot inflate context. A failing command always keeps the digest, because that is where the exit code and failure signature live; pass `--digest-always` to keep the structured digest in every case. Digest mode keeps status, exit code, truncation counts, runner failure facts, a sanitized failure signature, duplicate-line groups, representative lines, redaction counts, and suggested next queries while preserving the wrapped command exit code. Add `--artifact-receipt` with digest mode when you want the exact sanitized full output stored locally as a `context-guard-artifact` receipt; keep the emitted `contextguard-artifact:<id>` handle in agent context and re-expand with the emitted `context-guard-artifact receipt/get/search ...` commands before relying on omitted details. Wrapped commands time out after 600 seconds by default; tune this with `--timeout-seconds`.
 
 ### Sanitize search and diff output
 

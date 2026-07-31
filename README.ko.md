@@ -95,6 +95,21 @@ brief 모드는 코딩 에이전트가 군더더기를 줄이도록 요청하되
 
 사전 정의된 세 레벨이 [`plugins/context-guard/brief/`](plugins/context-guard/brief/)에 포함됩니다: `lite`, `standard`, `ultra`. 각 레벨은 에이전트 규칙·지시 파일(`AGENTS.md`, `CLAUDE.md`, Cursor 규칙 파일, Copilot 지시 등)에 들어가는 마커 구분 블록입니다. `context-guard setup --agent codex --scope project --brief-mode standard --plan`으로 미리 보고, 적용은 `--yes`로 다시 실행하며, 제거는 `--brief-mode off`를 사용하세요. 자세한 내용은 [`plugins/context-guard/brief/README.md`](plugins/context-guard/brief/README.md)를 참고하세요.
 
+### 상시 비용과 손익분기
+
+안내용 규칙 블록은 공짜가 아닙니다. 에이전트의 규칙 파일에 상주하므로 설치해 둔 동안 모든 요청에 다시 실려 갑니다.
+
+| 관리 블록 | 설치 크기 |
+| --- | --- |
+| `brief-mode.lite` | 1,487 바이트 |
+| `brief-mode.standard` | 1,568 바이트 |
+| `brief-mode.ultra` | 1,523 바이트 |
+| `narration-mode.quiet` | 866 바이트 |
+
+이 비용은 요청마다 선불로 확정되는 반면, 이득은 ContextGuard가 강제할 수 없는 확률적인 응답 길이 감소입니다. 턴 수가 적은 세션이나 이미 간결하게 답하는 에이전트에서는 블록이 절감분보다 더 들 수 있습니다. 훅 기반 가드레일은 성질이 다릅니다. 실제로 개입할 때만 비용이 들고, 측정된 최악의 경우도 작습니다. 임계값 이하 `Read`는 3바이트를 더하고, 대용량 읽기를 반복 시도해도 첫 경고 이후에는 누적되지 않고 오히려 줄어듭니다.
+
+토큰 효과를 노려 규칙 블록을 설치하기 전에 직접 측정하십시오. `context-guard-bench`로 블록이 있는 경우와 없는 경우를 동일 과제에서 비교하고, 블록의 설치 크기를 응답 길이 감소가 넘어야 하는 손익분기점으로 취급하십시오. 여기 적힌 바이트 수는 관측값이지만 토큰 효과는 관측값이 아니며, 고정된 절감률을 보장하지 않습니다.
+
 ## Claude 조용한 진행 설명 (안내용)
 
 조용한 진행 설명은 기본적으로 꺼져 있는 별도의 Claude 전용 규칙입니다. 선택적 사전 설명, 도구별 진행 중계, 군더더기, 반복 중간 요약은 줄이지만 승인·결정 요청, 차단 요인, 실패, 파괴적 작업·보안 경고, 상위 우선순위가 요구하는 진행 보고, 최종 결과, 변경 파일, 검증 결과는 유지합니다. 최종 답변의 간결성이나 추론 깊이와는 별개인 최선 노력 규칙이며, 토큰·비용 절감을 **보장하지 않습니다.**
@@ -357,7 +372,7 @@ cat sanitized-prose.txt | ./plugins/context-guard/bin/context-guard-compress --j
 ./plugins/context-guard/bin/context-guard-trim-output --max-lines 120 -- npm test
 ```
 
-head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 요약 모드에서 가림 처리된 전체 출력을 로컬 `context-guard-artifact` 보관본에 저장하려면 `--artifact-receipt`를 함께 사용하세요. 출력된 `contextguard-artifact:<id>` 핸들을 agent context에 남기고, 생략된 세부 내용에 의존하기 전에 `context-guard-artifact receipt/get/search ...` 명령으로 필요한 부분을 정확히 다시 가져오세요. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
+head/tail 로그 대신 의미 요약이 필요하면 `--digest markdown` 또는 `--digest json`을 사용하세요. 명령이 성공하고 출력이 이미 요약보다 작으면 요약 대신 원래 출력을 한 줄 표식과 함께 그대로 통과시키므로, 출력이 적은 명령에 요약 모드를 켜도 컨텍스트가 늘어나지 않습니다. 실패한 명령은 종료 코드와 실패 signature가 요약에 담기므로 항상 요약을 유지합니다. 모든 경우에 구조화된 요약을 유지하려면 `--digest-always`를 전달하세요. 요약 모드는 원래 종료 코드를 보존하면서 상태, 종료 코드, 잘린 줄 수, 실행기 실패 정보, 가림 처리된 실패 signature, 중복 라인 그룹, 대표 라인, 가림 처리 횟수, 다음 조회 제안을 남깁니다. 요약 모드에서 가림 처리된 전체 출력을 로컬 `context-guard-artifact` 보관본에 저장하려면 `--artifact-receipt`를 함께 사용하세요. 출력된 `contextguard-artifact:<id>` 핸들을 agent context에 남기고, 생략된 세부 내용에 의존하기 전에 `context-guard-artifact receipt/get/search ...` 명령으로 필요한 부분을 정확히 다시 가져오세요. 래핑된 명령은 기본 600초 뒤 종료되며, `--timeout-seconds`로 조정할 수 있습니다.
 
 ### 검색·diff 출력 민감정보 가림
 
