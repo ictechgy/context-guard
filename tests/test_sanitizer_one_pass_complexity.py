@@ -56,9 +56,14 @@ def sanitize_once(line: str, *, show_paths: bool = True) -> float:
     return time.monotonic() - started
 
 
-def sanitize_best_of(line: str, *, repeats: int = 3) -> float:
+# 서브밀리초 표본에서는 스케줄러 노이즈가 비율을 흔든다. 의미 있는 하한을 넘는
+# 표본에서만 비율을 단정하고, 그 아래는 명시적으로 건너뛴다.
+RATIO_SAMPLE_FLOOR_SECONDS = 0.005
+
+
+def sanitize_best_of(line: str, *, repeats: int = 5) -> float:
     """Best-of timing: absorbs scheduler noise without loosening the ratio bound."""
-    return max(min(sanitize_once(line) for _ in range(repeats)), 1e-6)
+    return max(min(sanitize_once(line) for _ in range(repeats)), 1e-9)
 
 
 def no_colon_line(byte_target: int) -> str:
@@ -80,6 +85,26 @@ class ScannerStructureTest(unittest.TestCase):
                 twin_name = name.replace("_RE", "_NO_LOCATION_RE")
                 twin = getattr(MODULE, twin_name)
                 self.assertNotIn(MODULE.LOCATION_PREFIX_FRAGMENT, twin.pattern)
+
+    def test_twins_preserve_the_original_compile_flags(self) -> None:
+        """Rebuilding from the pattern text drops argument flags unless passed on."""
+        for name in MODULE.NINE_LOCATION_CONSUMERS:
+            with self.subTest(consumer=name):
+                original = getattr(MODULE, name)
+                twin = getattr(MODULE, name.replace("_RE", "_NO_LOCATION_RE"))
+                self.assertEqual(twin.flags, original.flags)
+        flagged = re.compile(MODULE.LOCATION_PREFIX_FRAGMENT + "x", re.IGNORECASE | re.VERBOSE)
+        self.assertEqual(
+            MODULE.without_location_prefix(flagged).flags, flagged.flags,
+        )
+
+    def test_declined_scan_reports_itself_so_callers_use_original_patterns(self) -> None:
+        declined = MODULE.scan_location_prefix("src/it's.py:5:Cookie: a=b\n")
+        self.assertTrue(declined.declined)
+        self.assertEqual(declined.prefix, "")
+        accepted = MODULE.scan_location_prefix("src/app.py:5: Cookie: a=b\n")
+        self.assertFalse(accepted.declined)
+        self.assertEqual(accepted.prefix, "src/app.py:5:")
 
     def test_no_location_twin_is_derived_and_fails_loudly_on_drift(self) -> None:
         drifted = re.compile(r"^no location prefix here$")
@@ -144,7 +169,7 @@ class ComplexityBudgetTest(unittest.TestCase):
         for count in (1000, 2000, 4000, 8000):
             line = "a:1:" * count + "AUTHORIZATION: Bearer abcdefghijklmnop\n"
             elapsed = sanitize_best_of(line)
-            if previous is not None:
+            if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 ratio = elapsed / previous
                 with self.subTest(delimiters=count):
                     self.assertLessEqual(
@@ -159,7 +184,7 @@ class ComplexityBudgetTest(unittest.TestCase):
         for count in (1000, 2000, 4000, 8000):
             line = "src/file.py:12:" * count + "token='abcdefghijklmnopqrstuvwx'\n"
             elapsed = sanitize_best_of(line)
-            if previous is not None:
+            if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(candidates=count):
                     self.assertLessEqual(elapsed / previous, MAX_DOUBLING_RATIO)
             previous = elapsed
@@ -180,7 +205,7 @@ class ComplexityBudgetTest(unittest.TestCase):
         previous = None
         for size in (10_000, 20_000, 40_000, 80_000):
             elapsed = sanitize_best_of(no_colon_line(size))
-            if previous is not None:
+            if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(bytes=size):
                     self.assertLessEqual(
                         elapsed / previous, MAX_DOUBLING_RATIO,

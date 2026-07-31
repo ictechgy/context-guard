@@ -148,6 +148,19 @@ PREFIX_ABSORPTION_CORPUS = [
     "src/app.py:12: api_key='abcdefghijklmnopqrstuvwx'\n",
 ]
 
+# decline 경로 회귀: location 후보가 consumer 신호(따옴표 등)를 품어 분리를 포기했을 때,
+# ^ 고정 헤더 패턴이 앞머리 prefix 를 스스로 건너뛸 수 있어야 한다.
+DECLINE_PATH_CORPUS = [
+    "src/it's.py:5:Set-Cookie: session=abcdefghijklmnop\n",
+    "src/don't.py:3:Authorization: Bearer abcdefghijklmnopqrst\n",
+    'src/say"hi".py:7:Cookie: a=abcdefghijklmnop\n',
+    "src/it's.py:5:api_key='abcdefghijklmnopqrstuvwx'\n",
+    'src/it\'s.py:5:api_key = "unterminated\n',
+    "src/it's.py:5:password=hunter2hunter2hunter2\n",
+    "src/it's.py:5:secret = (\n",
+    "src/it's.py:5:-----BEGIN RSA PRIVATE KEY-----\n",
+]
+
 EDGE_CORPUS = [
     "\n",
     "   \n",
@@ -191,6 +204,7 @@ CORPORA = {
     "path": PATH_CORPUS,
     "edge": EDGE_CORPUS,
     "prefix_absorption": PREFIX_ABSORPTION_CORPUS,
+    "decline_path": DECLINE_PATH_CORPUS,
     "generated": generated_corpus(),
 }
 
