@@ -1,0 +1,13 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ]
+  }
+}

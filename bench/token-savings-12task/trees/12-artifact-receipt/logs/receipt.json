@@ -1,0 +1,5 @@
+{
+  "artifact_id": "0123456789abcdef0123",
+  "handle": "contextguard-artifact:0123456789abcdef0123",
+  "retrieval_command": "context-guard-artifact get 0123456789abcdef0123 --lines 1:40"
+}

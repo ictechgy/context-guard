@@ -725,6 +725,15 @@ def csv_parent_directory_lock(csv_path: Path, *, create_parent: bool) -> Any:
             os.close(fd)
 
 
+# S003 real task suite: one sanitized regular file inside a hermetic fixture tree.
+# 경로는 POSIX 상대 경로로 정규화하고, mode 는 실행 비트만 구분하는 두 값으로 좁힌다.
+@dataclass(frozen=True)
+class FixtureTreeEntry:
+    path: str
+    data: bytes
+    executable: bool
+
+
 # 재현성 우선: fixture 에 명시되지 않은 필드는 argv 로 전달하지 않는다.
 # 사용자가 baseline 으로 의도한 변형이 implicit default(예: effort="medium")로 인해
 # 왜곡되지 않도록, 파싱 단계에서 명시 여부를 그대로 보존한다.
@@ -745,6 +754,11 @@ class TaskFixture:
     evaluation_profile: str | None = None
     # 끝에 추가해 기존 positional TaskFixture 생성자의 필드 순서를 보존한다.
     output_format: str = "json"
+    # S003 real task suite: sanitized hermetic fixture tree + bounded success checker.
+    # None 이면 S001/S002 의 기존 동작(빈 workspace, project_root 체커)을 그대로 유지한다.
+    fixture_tree: str | None = None
+    success_checker: str | None = None
+    fixture_tree_entries: tuple["FixtureTreeEntry", ...] | None = None
 
 
 @dataclass
@@ -1788,6 +1802,213 @@ def validate_variant_prompt_file_references(
                 raise
 
 
+MAX_FIXTURE_TREE_FILES = 64
+MAX_FIXTURE_TREE_FILE_BYTES = 262_144
+MAX_FIXTURE_TREE_TOTAL_BYTES = 1_048_576
+FIXTURE_TREE_PATH_COMPONENT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def validate_fixture_tree_relpath(raw_path: str, *, owner: str, field: str) -> Path:
+    """Return a safe relative fixture-tree path, or fail before any file read.
+
+    Rules are intentionally narrower than variant_prompt_files: only bounded
+    ASCII components are allowed so a suite path can never be an absolute path,
+    a traversal, a hidden dotfile, or a shell/argv-ambiguous value.
+    """
+    if not isinstance(raw_path, str):
+        raise SystemExit(f"{owner} {field} must be a string")
+    if "\x00" in raw_path:
+        raise SystemExit(f"{owner} {field} must not contain embedded NUL")
+    if raw_path != raw_path.strip() or not raw_path:
+        raise SystemExit(f"{owner} {field} must not be empty or padded")
+    if "\\" in raw_path:
+        raise SystemExit(f"{owner} {field} must use '/' separators: {raw_path}")
+    rel_path = Path(raw_path)
+    if rel_path.is_absolute():
+        raise SystemExit(f"{owner} {field} must be relative: {raw_path}")
+    if not rel_path.parts or rel_path == Path("."):
+        raise SystemExit(f"{owner} {field} must name a path")
+    for part in rel_path.parts:
+        if FIXTURE_TREE_PATH_COMPONENT_RE.fullmatch(part) is None:
+            raise SystemExit(
+                f"{owner} {field} component is not a bounded safe name: {raw_path}"
+            )
+    if len(rel_path.parts) > 6:
+        raise SystemExit(f"{owner} {field} is nested deeper than 6 components: {raw_path}")
+    return rel_path
+
+
+def load_task_fixture_tree(
+    task: TaskFixture, task_file_dir: Path,
+) -> tuple[FixtureTreeEntry, ...]:
+    """Read one task's sanitized fixture tree with bounded no-follow IO.
+
+    Ordering is by POSIX path so the materialized workspace, the manifest, and
+    the tree hash are byte-deterministic regardless of directory iteration
+    order. Symlinks, non-regular files, and empty trees are refused.
+    """
+    if task.fixture_tree is None:
+        return ()
+    owner = f"task {task.id}"
+    rel_root = validate_fixture_tree_relpath(
+        task.fixture_tree, owner=owner, field="fixture_tree",
+    )
+    root = task_file_dir / rel_root
+    entries: list[FixtureTreeEntry] = []
+    total_bytes = 0
+    pending: list[tuple[Path, str]] = [(root, "")]
+    while pending:
+        current, prefix = pending.pop()
+        try:
+            dir_fd = _ensure_directory_no_symlink(current)
+        except (OSError, ValueError):
+            raise SystemExit(f"{owner} fixture_tree is not a readable directory") from None
+        try:
+            names = sorted(os.listdir(dir_fd))
+        except OSError:
+            raise SystemExit(f"{owner} fixture_tree could not be listed") from None
+        finally:
+            os.close(dir_fd)
+        for name in names:
+            if FIXTURE_TREE_PATH_COMPONENT_RE.fullmatch(name) is None:
+                raise SystemExit(
+                    f"{owner} fixture_tree contains an unsafe entry name"
+                )
+            child = current / name
+            rel = f"{prefix}{name}"
+            if child.is_symlink():
+                raise SystemExit(f"{owner} fixture_tree must not contain symlinks")
+            if child.is_dir():
+                pending.append((child, f"{rel}/"))
+                continue
+            if not child.is_file():
+                raise SystemExit(f"{owner} fixture_tree must contain regular files only")
+            try:
+                fd = _open_regular_no_symlink(child)
+            except OSError:
+                raise SystemExit(f"{owner} fixture_tree file could not be opened") from None
+            try:
+                stat_result = os.fstat(fd)
+                if stat_result.st_size > MAX_FIXTURE_TREE_FILE_BYTES:
+                    raise SystemExit(
+                        f"{owner} fixture_tree file exceeds "
+                        f"{MAX_FIXTURE_TREE_FILE_BYTES} bytes"
+                    )
+                data = os.read(fd, MAX_FIXTURE_TREE_FILE_BYTES + 1)
+            finally:
+                os.close(fd)
+            if len(data) > MAX_FIXTURE_TREE_FILE_BYTES:
+                raise SystemExit(
+                    f"{owner} fixture_tree file exceeds "
+                    f"{MAX_FIXTURE_TREE_FILE_BYTES} bytes"
+                )
+            total_bytes += len(data)
+            if total_bytes > MAX_FIXTURE_TREE_TOTAL_BYTES:
+                raise SystemExit(
+                    f"{owner} fixture_tree exceeds "
+                    f"{MAX_FIXTURE_TREE_TOTAL_BYTES} total bytes"
+                )
+            entries.append(FixtureTreeEntry(
+                path=rel,
+                data=data,
+                executable=bool(stat_result.st_mode & 0o111),
+            ))
+            if len(entries) > MAX_FIXTURE_TREE_FILES:
+                raise SystemExit(
+                    f"{owner} fixture_tree exceeds {MAX_FIXTURE_TREE_FILES} files"
+                )
+    if not entries:
+        raise SystemExit(f"{owner} fixture_tree must contain at least one file")
+    ordered = tuple(sorted(entries, key=lambda entry: entry.path))
+    if task.success_checker is not None:
+        checker = str(validate_fixture_tree_relpath(
+            task.success_checker, owner=owner, field="success_checker",
+        ).as_posix())
+        match = next((entry for entry in ordered if entry.path == checker), None)
+        if match is None:
+            raise SystemExit(f"{owner} success_checker is not part of fixture_tree")
+        if not match.executable:
+            raise SystemExit(f"{owner} success_checker must be executable in fixture_tree")
+    return ordered
+
+
+def load_task_fixture_trees(
+    tasks: Sequence[TaskFixture], *, task_file_dir: Path,
+) -> None:
+    """Bind each declaring task's fixture-tree bytes before any provider launch."""
+    for task in tasks:
+        if task.fixture_tree is None:
+            continue
+        task.fixture_tree_entries = load_task_fixture_tree(task, task_file_dir)
+
+
+def fixture_tree_manifest_files(
+    entries: Sequence[FixtureTreeEntry],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "path": entry.path,
+            "sha256": hashlib.sha256(entry.data).hexdigest(),
+            "bytes": len(entry.data),
+            "executable": entry.executable,
+        }
+        for entry in entries
+    ]
+
+
+def fixture_tree_sha256(entries: Sequence[FixtureTreeEntry]) -> str:
+    """Domain-separated hash over the ordered fixture-tree file bindings."""
+    return hashlib.sha256(
+        b"contextguard.bench.fixture-tree.v1\0"
+        + json.dumps(
+            fixture_tree_manifest_files(entries),
+            ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def reset_task_fixture_tree(
+    entries: Sequence[FixtureTreeEntry], workspace: Path,
+) -> None:
+    """Materialize the fixture tree into a per-attempt workspace deterministically.
+
+    The workspace is emptied first so a resumed or retried attempt starts from
+    the exact same bytes as a cold attempt. Directories are 0700, data files
+    0600, and declared executables 0700; no symlink is ever created or followed.
+    """
+    if not entries:
+        return
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise SystemExit("fixture tree workspace must be a real directory")
+    for child in sorted(workspace.iterdir(), key=lambda path: path.name):
+        if child.is_symlink() or child.is_file():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            raise SystemExit("fixture tree workspace contains an unsupported entry")
+    for entry in entries:
+        rel = Path(entry.path)
+        target_dir = workspace
+        for part in rel.parts[:-1]:
+            target_dir = target_dir / part
+            if target_dir.is_symlink():
+                raise SystemExit("fixture tree workspace path must not be a symlink")
+            if not target_dir.exists():
+                target_dir.mkdir(mode=0o700)
+        target = target_dir / rel.parts[-1]
+        mode = 0o700 if entry.executable else 0o600
+        fd = os.open(
+            target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+        )
+        try:
+            os.write(fd, entry.data)
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+
+
 def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None = None) -> str:
     """Read one selected prompt file with no-follow IO and an argv-safe size cap."""
     label = display_path or path.name
@@ -1949,6 +2170,32 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                 owner=owner,
             )
             prompt = str(item["prompt"])
+            fixture_tree_raw = item.get("fixture_tree")
+            success_checker_raw = item.get("success_checker")
+            if fixture_tree_raw is None and success_checker_raw is not None:
+                raise SystemExit(f"{owner} success_checker requires fixture_tree")
+            if fixture_tree_raw is not None:
+                validate_fixture_tree_relpath(
+                    fixture_tree_raw, owner=owner, field="fixture_tree",
+                )
+                if success_checker_raw is not None:
+                    validate_fixture_tree_relpath(
+                        success_checker_raw, owner=owner, field="success_checker",
+                    )
+                success_command = item.get("success_command")
+                if not isinstance(success_command, str) or not success_command.strip():
+                    raise SystemExit(
+                        f"{owner} fixture_tree requires a real success_command"
+                    )
+                if is_placeholder_success_command(success_command):
+                    raise SystemExit(
+                        f"{owner} fixture_tree forbids a placeholder success_command"
+                    )
+                if str(item.get("success_cwd", ".")) != ".":
+                    raise SystemExit(
+                        f"{owner} fixture_tree requires success_cwd '.' "
+                        "so the checker runs in the materialized workspace"
+                    )
         except (SystemExit, KeyError):
             if profiled:
                 profile_reject(
@@ -1970,6 +2217,10 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
             success_command=item.get("success_command"),
             success_cwd=str(item.get("success_cwd", ".")),
             variant_prompt_files=variant_prompt_files,
+            fixture_tree=str(fixture_tree_raw) if fixture_tree_raw is not None else None,
+            success_checker=(
+                str(success_checker_raw) if success_checker_raw is not None else None
+            ),
         ))
     if variants is not None:
         validate_variant_prompt_file_references(fixtures, variants)
@@ -3131,6 +3382,9 @@ def _run_measurement_fixture_locked(
         spec, task, run_id, artifact_root_locked=True,
     )
     context = _measurement_create_run_context(spec, task.id, locked_root_fd=locked_root_fd)
+    # S003: 각 attempt 는 cold isolated workspace 에서 시작하므로, 선언된 fixture tree 를
+    # 정확히 같은 바이트로 재구성하는 것이 결정적 reset 이다. 선언이 없으면 기존 동작 유지.
+    reset_task_fixture_tree(task.fixture_tree_entries or (), context.workspace)
     settings_snapshot = context.session / spec.settings_file.name
     _measurement_write_exclusive(settings_snapshot, spec.settings_source_bytes)
     try:
@@ -3258,7 +3512,12 @@ def _run_measurement_fixture_locked(
     shift_metrics = collect_shift_metrics(parsed.payload)
     self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
     if measurement_study:
-        checker_classification = run_success_command_study(task, project_root, env=env)
+        # fixture tree 를 선언한 S003 task 는 에이전트가 실제로 작업한 workspace 를 검사한다.
+        # 선언이 없는 S001/S002 task 는 기존 project_root 계약을 그대로 유지한다.
+        checker_root = (
+            context.workspace if task.fixture_tree_entries else project_root
+        )
+        checker_classification = run_success_command_study(task, checker_root, env=env)
         success = checker_classification == "task_success"
         success_note = checker_classification
     else:
@@ -8645,6 +8904,32 @@ def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
             "sha256": _study_sha256_bytes(raw),
             "bytes": len(raw),
         })
+    if task.fixture_tree is None:
+        fixture_tree: dict[str, Any] | None = None
+        success_checker: dict[str, Any] | None = None
+    else:
+        entries = task.fixture_tree_entries
+        if entries is None:
+            entries = load_task_fixture_tree(task, task_dir)
+        fixture_tree = {
+            "root": task.fixture_tree,
+            "files": fixture_tree_manifest_files(entries),
+            "file_count": len(entries),
+            "total_bytes": sum(len(entry.data) for entry in entries),
+            "tree_sha256": fixture_tree_sha256(entries),
+            "reset": "deterministic_cold_workspace_materialization_v1",
+        }
+        if task.success_checker is None:
+            success_checker = None
+        else:
+            checker = next(
+                entry for entry in entries if entry.path == task.success_checker
+            )
+            success_checker = {
+                "path": checker.path,
+                "sha256": hashlib.sha256(checker.data).hexdigest(),
+                "bytes": len(checker.data),
+            }
     return {
         "id": task.id,
         "prompt_sha256": _study_sha256_bytes(task.prompt.encode("utf-8")),
@@ -8658,6 +8943,8 @@ def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
         "success_command": task.success_command,
         "success_cwd": task.success_cwd,
         "variant_prompts": variant_prompts,
+        "fixture_tree": fixture_tree,
+        "success_checker": success_checker,
     }
 
 
@@ -9966,6 +10253,7 @@ def run_measurement_study_action(
             [(task, variant) for task in tasks for variant in variants],
             task_file_dir=args.tasks.parent,
         )
+        load_task_fixture_trees(tasks, task_file_dir=args.tasks.parent)
         existing_events = _study_read_attempt_events(attempts_path)
         folded = fold_study_attempt_events(
             existing["slots"], existing_events, manifest_sha256=manifest_sha256,

@@ -1,0 +1,76 @@
+[
+  {
+    "name": "baseline",
+    "extra_args": [],
+    "measurement": {
+      "schema_version": "contextguard.bench.measurement-substrate.v2",
+      "settings_file": "baseline.settings.json",
+      "setting_sources": ["project"],
+      "environment": {
+        "allow": ["PATH", "LANG"],
+        "overrides": {}
+      },
+      "workspace": {"mode": "isolated"},
+      "session": {"mode": "isolated", "persistence": "disabled"},
+      "hook_events": {
+        "enabled": true,
+        "registered_bindings": [],
+        "required_event_classes": []
+      },
+      "cli_capabilities": [
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "stream-json"
+      ],
+      "identity": {
+        "candidate_hash": "{{CANDIDATE_HASH}}",
+        "repetition": 0,
+        "arm": "baseline",
+        "attempt": 0,
+        "namespace": "{{NAMESPACE}}"
+      },
+      "artifact_root": "{{ARTIFACT_ROOT}}"
+    }
+  },
+  {
+    "name": "treatment",
+    "extra_args": [],
+    "measurement": {
+      "schema_version": "contextguard.bench.measurement-substrate.v2",
+      "settings_file": "treatment.settings.json",
+      "setting_sources": ["project"],
+      "environment": {
+        "allow": ["PATH", "LANG"],
+        "overrides": {}
+      },
+      "workspace": {"mode": "isolated"},
+      "session": {"mode": "isolated", "persistence": "disabled"},
+      "hook_events": {
+        "enabled": true,
+        "registered_bindings": [
+          {"hook_event": "PreToolUse", "configured_command": "context-guard-guard-read"},
+          {"hook_event": "PostToolUse", "configured_command": "context-guard-trim-output"},
+          {"hook_event": "PostToolUseFailure", "configured_command": "context-guard-failed-nudge"}
+        ],
+        "required_event_classes": ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
+      },
+      "cli_capabilities": [
+        "--settings",
+        "--setting-sources",
+        "--include-hook-events",
+        "--no-session-persistence",
+        "stream-json"
+      ],
+      "identity": {
+        "candidate_hash": "{{CANDIDATE_HASH}}",
+        "repetition": 0,
+        "arm": "treatment",
+        "attempt": 0,
+        "namespace": "{{NAMESPACE}}"
+      },
+      "artifact_root": "{{ARTIFACT_ROOT}}"
+    }
+  }
+]

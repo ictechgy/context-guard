@@ -33,6 +33,9 @@ venv/
 
 # Logs and temporary outputs
 *.log
+# The real 12-task benchmark fixture trees ship committed log fixtures; they are
+# task evidence, not local runtime noise.
+!bench/token-savings-12task/trees/**/*.log
 tmp/
 *.tmp
 

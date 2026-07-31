@@ -1,0 +1,8 @@
+{
+  "segments": [
+    {"id": "request_timestamp", "stability": "volatile", "text": "request at 00:00:00"},
+    {"id": "system_rules", "stability": "stable", "text": "follow the project rules"},
+    {"id": "tool_catalog", "stability": "stable", "text": "tools: read, write"},
+    {"id": "user_turn", "stability": "volatile", "text": "current user question"}
+  ]
+}

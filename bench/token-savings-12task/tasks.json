@@ -1,0 +1,254 @@
+[
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/01-small-fix",
+    "id": "ts12_01_small_fix",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/limits.py sets MAX_ITEMS, but docs/limits.md states the supported maximum is 10. Change only the constant so code matches the documented maximum. Keep the module's public names and comments otherwise unchanged.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/02-bugfix",
+    "id": "ts12_02_bugfix",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/parser.py raises TypeError when parse_fields is given None instead of returning an empty result. Fix the null-check regression so parse_fields(None) returns an empty dict while valid input keeps its current behaviour.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/03-exploration",
+    "id": "ts12_03_exploration",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "Find which file defines resolve_token_budget in this workspace. Write only that workspace-relative path, with no extra text, into answer.txt.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/04-review",
+    "id": "ts12_04_review",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "Review change.diff. Write review.md with exactly two sections, '## risk' and '## test gap', each holding at least one concrete sentence about this diff.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/05-long-log",
+    "id": "ts12_05_long_log",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "build.log is long. Write finding.txt containing only the exact failing command line recorded in that log, with no surrounding commentary.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/06-migration",
+    "id": "ts12_06_migration",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/cli.py only accepts --old-flag. Add --new-flag with the same meaning and keep --old-flag working as a deprecated alias that records a deprecation note.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/07-docs",
+    "id": "ts12_07_docs",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "docs/usage.md documents --old-flag but not its replacement --new-flag. Document --new-flag under the Options section and mark --old-flag as deprecated. Keep the existing Overview and Options headings.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/08-refactor",
+    "id": "ts12_08_refactor",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/alpha.py and src/beta.py contain the same normalize_key helper. Extract it into src/shared.py and have both modules import it from there without changing behaviour.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/09-performance",
+    "id": "ts12_09_performance",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/dedupe.py removes duplicates with a nested scan. Rewrite first_unique so it makes a single pass over the input while returning the exact same ordered result.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/10-telemetry",
+    "id": "ts12_10_telemetry",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "src/telemetry.py currently returns the raw payload. Return a bounded record with only the event name and an integer count, and never include raw payload text.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/11-cache-layout",
+    "id": "ts12_11_cache_layout",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "prompt-layout.json places a volatile request timestamp before the stable instruction prefix, which breaks prefix reuse. Reorder the segments so every stable segment precedes every volatile segment, keeping all segment texts unchanged.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  },
+  {
+    "allowed_tools": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "Write"
+    ],
+    "effort": "medium",
+    "fixture_tree": "trees/12-artifact-receipt",
+    "id": "ts12_12_artifact_receipt",
+    "max_budget_usd": 0.75,
+    "max_turns": 12,
+    "model": "sonnet",
+    "output_format": "stream-json",
+    "prompt": "report.md inlines the whole logs/full.log body. Replace the inlined log with the receipt handle recorded in logs/receipt.json plus the exact retrieval command from that receipt, keep the Summary section, and leave logs/full.log untouched.",
+    "success_checker": "check.py",
+    "success_command": "python3 check.py",
+    "success_cwd": "."
+  }
+]
