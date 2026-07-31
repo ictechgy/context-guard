@@ -138,8 +138,9 @@ def probe(child_code):
     script = "NONCE = " + repr(nonce) + chr(10) + CHILD_PREAMBLE + child_code
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script], cwd=".",
+            [sys.executable, "-I", "-c", script], cwd=".",
             capture_output=True, timeout=PROBE_TIMEOUT_SECONDS,
+            env={"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"},
         )
     except subprocess.TimeoutExpired:
         fail("candidate probe timed out")

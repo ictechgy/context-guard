@@ -138,8 +138,9 @@ def probe(child_code):
     script = "NONCE = " + repr(nonce) + chr(10) + CHILD_PREAMBLE + child_code
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script], cwd=".",
+            [sys.executable, "-I", "-c", script], cwd=".",
             capture_output=True, timeout=PROBE_TIMEOUT_SECONDS,
+            env={"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"},
         )
     except subprocess.TimeoutExpired:
         fail("candidate probe timed out")
@@ -183,8 +184,13 @@ else:
 """)
 if report.get("missing"):
     fail("parse_args is missing")
-new = report.get("new") or {}
-old = report.get("old") or {}
+new = report.get("new")
+old = report.get("old")
+for label, item in (("new", new), ("old", old)):
+    if not isinstance(item, dict):
+        fail("candidate probe reported no object for the " + label + " call")
+    if item.get("error") is None and not isinstance(item.get("value"), dict):
+        fail("parse_args must return a dict for the " + label + " call")
 if new.get("error"):
     fail("--new-flag is still rejected: " + str(new["error"]))
 if (new.get("value") or {}).get("value") != "x":

@@ -392,7 +392,7 @@ class CheckerIsolationTest(unittest.TestCase):
             )
 
     def test_unbound_fixture_tree_fails_closed_instead_of_running_legacy(self) -> None:
-        """Dispatch keys off the declared tree, so a missing binding cannot fail open."""
+        """An unbound declared tree must raise, not silently use the legacy path."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample_tree(root)
@@ -401,6 +401,12 @@ class CheckerIsolationTest(unittest.TestCase):
             self.assertIsNotNone(task.fixture_tree)
             self.assertIsNone(task.fixture_tree_entries)
             self.assertIsNone(task.success_checker_bytes)
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE._study_task_manifest(task, root)
+            RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+            task.success_checker_bytes = None
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE._study_task_manifest(task, root)
 
     def test_treatment_hook_bindings_are_documented_events(self) -> None:
         """PostToolUseFailure is a real event; pin it so the finding stops recurring."""
@@ -723,12 +729,32 @@ class CheckerAdversarialControlTest(unittest.TestCase):
                 self.assertIn("subprocess.run", source)
 
     def test_checkers_fail_closed_without_no_follow_support(self) -> None:
-        for entry in SUITE_TASKS:
-            source = (SUITE / entry["success_checker"]).read_text(encoding="utf-8")
-            with self.subTest(task=entry["id"]):
-                self.assertIn("platform lacks no-follow directory open support", source)
-                self.assertNotIn('getattr(os, "O_NOFOLLOW", 0)', source)
-                self.assertNotIn('getattr(os, "O_DIRECTORY", 0)', source)
+        """Behavioural control: remove O_NOFOLLOW and the checker must refuse to run."""
+        entry = SUITE_TASKS[0]
+        source = (SUITE / entry["success_checker"]).read_text(encoding="utf-8")
+        for token in ('getattr(os, "O_NOFOLLOW", 0)', 'getattr(os, "O_DIRECTORY", 0)'):
+            self.assertNotIn(token, source)
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            shutil.copytree(SUITE / entry["fixture_tree"], workspace)
+            checker = Path(tmp) / "checker.py"
+            checker.write_text(source, encoding="utf-8")
+            shim = Path(tmp) / "sitecustomize.py"
+            shim.write_text(
+                "import os\n"
+                "for name in ('O_NOFOLLOW', 'O_DIRECTORY'):\n"
+                "    if hasattr(os, name):\n"
+                "        delattr(os, name)\n",
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(tmp)
+            result = subprocess.run(
+                [sys.executable, str(checker)], cwd=workspace, env=env,
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("platform lacks no-follow", result.stdout)
 
     def test_refactor_accepts_module_attribute_style(self) -> None:
         """`import shared` plus `shared.normalize_key(...)` is a valid refactor."""
@@ -1008,41 +1034,37 @@ class RehearsalExecutionTest(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(completeness[key], 76)
 
-    def test_same_path_rerun_reproduces_recorded_outputs_byte_for_byte(self) -> None:
-        root = Path(self.tmp.name) / "same-path"
+    def test_reproduces_across_roots_and_byte_for_byte_on_the_same_root(self) -> None:
+        """One extra pair of runs covers both determinism claims; three runs total."""
+        second_root = Path(self.tmp.name) / "rehearsal-2"
         digests = []
+        reports = []
         for _ in range(2):
-            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(second_root, ignore_errors=True)
             proc = subprocess.run(
-                [sys.executable, str(HARNESS), "--output-root", str(root)],
+                [sys.executable, str(HARNESS), "--output-root", str(second_root)],
                 capture_output=True, text=True, timeout=1800,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
             digests.append({
-                name: hashlib.sha256((root / "study" / name).read_bytes()).hexdigest()
+                name: hashlib.sha256((second_root / "study" / name).read_bytes()).hexdigest()
                 for name in ("study-manifest.json", "study-report.json", "attempts.jsonl")
             })
+            reports.append(json.loads(
+                (second_root / "rehearsal-report.json").read_text(encoding="utf-8")
+            ))
         for name in digests[0]:
-            with self.subTest(artifact=name):
+            with self.subTest(artifact=name, claim="same-root byte identity"):
                 self.assertEqual(digests[0][name], digests[1][name])
-
-    def test_deterministic_block_reproduces_byte_for_byte(self) -> None:
-        second_root = Path(self.tmp.name) / "rehearsal-2"
-        proc = subprocess.run(
-            [sys.executable, str(HARNESS), "--output-root", str(second_root)],
-            capture_output=True, text=True, timeout=1800,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
-        second = json.loads(
-            (second_root / "rehearsal-report.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            self.report["deterministic_sha256"], second["deterministic_sha256"],
-        )
-        self.assertEqual(self.report["deterministic"], second["deterministic"])
-        self.assertNotEqual(
-            self.report["declared_timestamps"], second["declared_timestamps"],
-        )
+        for index, second in enumerate(reports):
+            with self.subTest(run=index, claim="cross-root determinism"):
+                self.assertEqual(
+                    self.report["deterministic_sha256"], second["deterministic_sha256"],
+                )
+                self.assertEqual(self.report["deterministic"], second["deterministic"])
+                self.assertNotEqual(
+                    self.report["declared_timestamps"], second["declared_timestamps"],
+                )
 
 
 if __name__ == "__main__":

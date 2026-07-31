@@ -578,7 +578,9 @@ def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> di
             "schedule": {
                 "schedule_sha256": manifest["schedule_sha256"],
                 "planned_units": len(manifest["slots"]),
-                "expected_initial_attempts": 72,
+                "expected_initial_attempts": sum(
+                    1 for slot in manifest["slots"] if int(slot["attempt"]) == 0
+                ),
             },
             "attempts": summary,
             "attempt_order_sha256": hashlib.sha256(json.dumps(
@@ -691,10 +693,12 @@ def main(argv: list[str] | None = None) -> int:
     os.chmod(ledger_path, 0o600)
 
     attempts = report["deterministic"]["attempts"]
+    expected_initial = report["deterministic"]["schedule"]["expected_initial_attempts"]
     problems = []
-    if attempts["terminal_initial_attempts"] != 72:
+    if attempts["terminal_initial_attempts"] != expected_initial:
         problems.append(
-            f"expected 72 terminal initial attempts, got {attempts['terminal_initial_attempts']}"
+            f"expected {expected_initial} terminal initial attempts, got "
+            f"{attempts['terminal_initial_attempts']}"
         )
     if attempts["terminal_retry_attempts"] != len(SCRIPTED_RETRY_UNITS):
         problems.append(
@@ -704,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if report["deterministic"]["zero_cost_evidence"]["credential_env_names_observed"]:
         problems.append("credential-shaped environment names reached the fake provider")
-    expected_terminal = 72 + len(SCRIPTED_RETRY_UNITS)
+    expected_terminal = expected_initial + len(SCRIPTED_RETRY_UNITS)
     kinds = report["deterministic"]["runtime_audit"]["fake_provider_invocation_kinds"]
     if kinds.get("audit_violation"):
         problems.append("fake provider recorded a blocked non-local operation")

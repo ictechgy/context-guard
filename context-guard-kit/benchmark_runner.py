@@ -1806,6 +1806,8 @@ def validate_variant_prompt_file_references(
 MAX_FIXTURE_TREE_FILES = 64
 MAX_FIXTURE_TREE_FILE_BYTES = 262_144
 MAX_FIXTURE_TREE_TOTAL_BYTES = 1_048_576
+MAX_FIXTURE_TREE_DIRECTORIES = 64
+MAX_FIXTURE_TREE_DEPTH = 6
 FIXTURE_TREE_PATH_COMPONENT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
@@ -1857,9 +1859,19 @@ def load_task_fixture_tree(
     root = task_file_dir / rel_root
     entries: list[FixtureTreeEntry] = []
     total_bytes = 0
+    directories = 0
     pending: list[tuple[Path, str]] = [(root, "")]
     while pending:
         current, prefix = pending.pop()
+        directories += 1
+        if directories > MAX_FIXTURE_TREE_DIRECTORIES:
+            raise SystemExit(
+                f"{owner} fixture_tree exceeds {MAX_FIXTURE_TREE_DIRECTORIES} directories"
+            )
+        if prefix.count("/") > MAX_FIXTURE_TREE_DEPTH:
+            raise SystemExit(
+                f"{owner} fixture_tree is nested deeper than {MAX_FIXTURE_TREE_DEPTH}"
+            )
         try:
             dir_fd = _ensure_directory_no_symlink(current)
         except (OSError, ValueError):
@@ -9036,7 +9048,12 @@ def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
     else:
         entries = task.fixture_tree_entries
         if entries is None:
-            entries = load_task_fixture_tree(task, task_dir)
+            # 매니페스트 해시와 workspace 실체화가 서로 다른 read 에서 나오지 않도록,
+            # 바인딩된 바이트만 신뢰하고 누락은 fail-closed 로 처리한다.
+            raise SystemExit(
+                f"task {task.id} fixture tree must be bound before manifest binding; "
+                "call load_task_fixture_trees first"
+            )
         fixture_tree = {
             "root": task.fixture_tree,
             "files": fixture_tree_manifest_files(entries),
@@ -9050,7 +9067,10 @@ def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
         else:
             payload = task.success_checker_bytes
             if payload is None:
-                payload = load_task_success_checker(task, task_dir)
+                raise SystemExit(
+                    f"task {task.id} success checker must be bound before manifest "
+                    "binding; call load_task_fixture_trees first"
+                )
             success_checker = {
                 "path": task.success_checker,
                 "sha256": hashlib.sha256(payload).hexdigest(),
@@ -10340,6 +10360,9 @@ def run_measurement_study_action(
     plan = load_measurement_study_plan(args.measurement_study_plan)
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
+    # 모든 action 이 같은 바인딩된 바이트를 쓰도록 여기서 한 번만 읽는다. 매니페스트 해시와
+    # workspace 실체화가 서로 다른 read 에서 갈라지지 않게 하는 단일 진실 소스.
+    load_task_fixture_trees(tasks, task_file_dir=args.tasks.parent)
     output_root = args.measurement_study_output_root
     manifest_path = output_root / "study-manifest.json"
     attempts_path = output_root / "attempts.jsonl"
@@ -10382,7 +10405,6 @@ def run_measurement_study_action(
             [(task, variant) for task in tasks for variant in variants],
             task_file_dir=args.tasks.parent,
         )
-        load_task_fixture_trees(tasks, task_file_dir=args.tasks.parent)
         existing_events = _study_read_attempt_events(attempts_path)
         folded = fold_study_attempt_events(
             existing["slots"], existing_events, manifest_sha256=manifest_sha256,

@@ -100,6 +100,9 @@ def load_json(rel):
         fail("file is not valid JSON: " + str(rel))
 
 
+import hashlib as _hashlib
+if _hashlib.sha256(read_bytes("logs/receipt.json")).hexdigest() != "86cad69c84dc2a500f1c0f811998bb13d1344c6d3479a037a18262cac9a1e3ad":
+    fail("logs/receipt.json must remain byte-identical evidence")
 receipt = load_json("logs/receipt.json")
 if not isinstance(receipt, dict):
     fail("logs/receipt.json must be a JSON object")
