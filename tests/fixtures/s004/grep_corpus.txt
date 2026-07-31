@@ -1,0 +1,1200 @@
+context-guard-kit/benchmark_runner.py:5:호출로 실행하고, `tokens_per_successful_task` 측정에 필요한 컬럼을 CSV 에 적재한다.
+context-guard-kit/benchmark_runner.py:54:from __future__ import annotations
+context-guard-kit/benchmark_runner.py:56:import argparse
+context-guard-kit/benchmark_runner.py:57:import collections
+context-guard-kit/benchmark_runner.py:58:from contextlib import contextmanager, nullcontext
+context-guard-kit/benchmark_runner.py:59:import csv
+context-guard-kit/benchmark_runner.py:60:import datetime as _dt
+context-guard-kit/benchmark_runner.py:61:import hashlib
+context-guard-kit/benchmark_runner.py:62:import json
+context-guard-kit/benchmark_runner.py:63:import math
+context-guard-kit/benchmark_runner.py:64:import os
+context-guard-kit/benchmark_runner.py:65:import re
+context-guard-kit/benchmark_runner.py:66:import selectors
+context-guard-kit/benchmark_runner.py:67:import shlex
+context-guard-kit/benchmark_runner.py:68:import shutil
+context-guard-kit/benchmark_runner.py:69:import signal
+context-guard-kit/benchmark_runner.py:70:import stat
+context-guard-kit/benchmark_runner.py:71:import struct
+context-guard-kit/benchmark_runner.py:72:import subprocess
+context-guard-kit/benchmark_runner.py:73:import sys
+context-guard-kit/benchmark_runner.py:74:import tempfile
+context-guard-kit/benchmark_runner.py:75:import time
+context-guard-kit/benchmark_runner.py:76:import unicodedata
+context-guard-kit/benchmark_runner.py:77:from collections.abc import Iterable
+context-guard-kit/benchmark_runner.py:78:from dataclasses import dataclass, field, replace
+context-guard-kit/benchmark_runner.py:79:from fractions import Fraction
+context-guard-kit/benchmark_runner.py:80:from pathlib import Path
+context-guard-kit/benchmark_runner.py:81:from typing import Any, Callable, Mapping, Sequence
+context-guard-kit/benchmark_runner.py:84:    import fcntl
+context-guard-kit/benchmark_runner.py:86:    fcntl = None  # type: ignore[assignment]
+context-guard-kit/benchmark_runner.py:88:CSV_COLUMNS = [
+context-guard-kit/benchmark_runner.py:95:    "total_tokens",
+context-guard-kit/benchmark_runner.py:96:    "input_tokens",
+context-guard-kit/benchmark_runner.py:97:    "output_tokens",
+context-guard-kit/benchmark_runner.py:100:    "provider_cached_tokens",
+context-guard-kit/benchmark_runner.py:101:    "provider_cached_tokens_measured",
+context-guard-kit/benchmark_runner.py:111:    "external_tokens",
+context-guard-kit/benchmark_runner.py:112:    "external_tokens_measured",
+context-guard-kit/benchmark_runner.py:119:    "primary_tokens_measured",
+context-guard-kit/benchmark_runner.py:121:MAX_CSV_NOTE_CHARS = 500
+context-guard-kit/benchmark_runner.py:122:MAX_CSV_ROWS = 100_000
+context-guard-kit/benchmark_runner.py:123:CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+context-guard-kit/benchmark_runner.py:124:PLACEHOLDER_SUCCESS_COMMAND_MARKER = "fixture-only placeholder: replace success_command before real benchmark runs"
+context-guard-kit/benchmark_runner.py:125:PROTECTED_VARIANT_FLAGS = frozenset({
+context-guard-kit/benchmark_runner.py:138:MEASUREMENT_PROTECTED_VARIANT_FLAGS = frozenset({
+context-guard-kit/benchmark_runner.py:146:SECRET_NOTE_KEY_RE = r"[A-Za-z0-9_.-]*(?:api[-_]?key|token|secret|password|client[-_]?secret)[A-Za-z0-9_.-]*"
+context-guard-kit/benchmark_runner.py:147:SECRET_NOTE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s,}&#;]+)"
+context-guard-kit/benchmark_runner.py:148:SECRET_NOTE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+context-guard-kit/benchmark_runner.py:149:    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+context-guard-kit/benchmark_runner.py:150:    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9._~+/=-]+"), "[REDACTED]"),
+context-guard-kit/benchmark_runner.py:151:    (re.compile(rf"(?i)([?&#;]({SECRET_NOTE_KEY_RE})=)[^\s?&#;]+"), r"\1[REDACTED]"),
+context-guard-kit/benchmark_runner.py:152:    (re.compile(rf"(?i)(^|[\s{{,?&#;])([\"']?(?:{SECRET_NOTE_KEY_RE})[\"']?\s*[:=]\s*){SECRET_NOTE_VALUE_RE}"), r"\1\2[REDACTED]"),
+context-guard-kit/benchmark_runner.py:153:    (re.compile(rf"(?i)(^|[\s\"'])(--(?:{SECRET_NOTE_KEY_RE})(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+context-guard-kit/benchmark_runner.py:154:    (re.compile(r"(?i)(^|[\s\"'])((?:-u|--user)(?:\s+|=))(?:'[^']*'|\"[^\"]*\"|[^\s\"']+)"), r"\1\2[REDACTED]"),
+context-guard-kit/benchmark_runner.py:172:USAGE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+context-guard-kit/benchmark_runner.py:173:    ("input_tokens", ("input_tokens", "inputTokens", "prompt_tokens", "promptTokens")),
+context-guard-kit/benchmark_runner.py:174:    ("output_tokens", ("output_tokens", "outputTokens", "completion_tokens", "completionTokens")),
+context-guard-kit/benchmark_runner.py:175:    ("cache_read", ("cache_read_input_tokens", "cacheRead")),
+context-guard-kit/benchmark_runner.py:176:    ("cache_creation", ("cache_creation_input_tokens", "cacheCreation")),
+context-guard-kit/benchmark_runner.py:178:PROVIDER_CACHE_DETAIL_KEYS = (
+context-guard-kit/benchmark_runner.py:179:    "prompt_tokens_details",
+context-guard-kit/benchmark_runner.py:180:    "promptTokensDetails",
+context-guard-kit/benchmark_runner.py:181:    "input_tokens_details",
+context-guard-kit/benchmark_runner.py:182:    "inputTokensDetails",
+context-guard-kit/benchmark_runner.py:184:PROVIDER_CACHED_TOKEN_KEYS = ("cached_tokens", "cachedTokens")
+context-guard-kit/benchmark_runner.py:185:COST_KEYS = ("total_cost_usd", "cost_usd", "costUSD")
+context-guard-kit/benchmark_runner.py:186:PRIMARY_COST_PROVENANCE_CLIENT_ESTIMATE = "client_estimate"
+context-guard-kit/benchmark_runner.py:187:PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT = "provider_export"
+context-guard-kit/benchmark_runner.py:188:PRIMARY_COST_PROVENANCE_UNAVAILABLE = "unavailable"
+context-guard-kit/benchmark_runner.py:189:SHIFT_METRIC_KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+context-guard-kit/benchmark_runner.py:196:EXTERNAL_TOKEN_AGGREGATE_KEYS = ("external_tokens",)
+context-guard-kit/benchmark_runner.py:197:EXTERNAL_COST_AGGREGATE_KEYS = ("external_cost_usd",)
+context-guard-kit/benchmark_runner.py:198:EXTERNAL_SOURCE_KEY_GROUPS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+context-guard-kit/benchmark_runner.py:199:    ("auxiliary", ("auxiliary_tokens",), ("auxiliary_cost_usd",)),
+context-guard-kit/benchmark_runner.py:200:    ("subagent", ("subagent_tokens",), ("subagent_cost_usd",)),
+context-guard-kit/benchmark_runner.py:201:    ("provider", ("provider_tokens",), ("provider_cost_usd",)),
+context-guard-kit/benchmark_runner.py:203:MAX_USAGE_TOKEN_COUNT = 10**12
+context-guard-kit/benchmark_runner.py:204:MAX_USAGE_COST_USD = 10**9
+context-guard-kit/benchmark_runner.py:205:MAX_EVIDENCE_JSONL_BYTES = 5_000_000
+context-guard-kit/benchmark_runner.py:206:MAX_EVIDENCE_JSONL_LINES = 100_000
+context-guard-kit/benchmark_runner.py:207:# Byte -> token proxy 환산 계수. 측정된 모델 토큰이 아니라 byte delta 기반 보수적
+context-guard-kit/benchmark_runner.py:208:# 추정치이며, report에서 evidence="inferred"로 분명히 라벨링한다. 영어 텍스트 기준
+context-guard-kit/benchmark_runner.py:209:# ~4 bytes/token의 통용 근사값을 사용한다.
+context-guard-kit/benchmark_runner.py:210:TOKEN_PROXY_BYTES_PER_TOKEN = 4
+context-guard-kit/benchmark_runner.py:211:BENCH_RUN_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.run-evidence.v1"
+context-guard-kit/benchmark_runner.py:212:MATCHED_PAIR_EVIDENCE_SCHEMA_VERSION = "contextguard.bench.matched-pair.v1"
+context-guard-kit/benchmark_runner.py:213:MEASUREMENT_BASELINE_SCHEMA_VERSION = "contextguard.bench.measurement-baseline.v2"
+context-guard-kit/benchmark_runner.py:214:DEFAULT_MATRIX_SCHEMA_VERSION = "contextguard.bench.default-matrix.v1"
+context-guard-kit/benchmark_runner.py:215:PUBLIC_CLAIM_READINESS_SCHEMA_VERSION = "contextguard.bench.public-claim-readiness.v1"
+context-guard-kit/benchmark_runner.py:216:SELF_HOSTED_METRICS_SCHEMA_VERSION = "contextguard.bench.self-hosted-metrics.v1"
+context-guard-kit/benchmark_runner.py:217:SELF_HOSTED_METRICS_KEY = "self_hosted_metrics"
+context-guard-kit/benchmark_runner.py:218:SELF_HOSTED_METRICS_CLAIM_BOUNDARY = "self_hosted_metrics_only_not_hosted_api_token_or_cost_savings"
+context-guard-kit/benchmark_runner.py:219:EVIDENCE_REPLAY_SOURCE_TYPES = frozenset({"synthetic_fixture", "provider_export", "manual_audit"})
+context-guard-kit/benchmark_runner.py:220:PROVIDER_EXPORT_PUBLIC_CLAIM_SCOPES = frozenset({
+context-guard-kit/benchmark_runner.py:225:REPLAY_PUBLIC_CLAIM_CANDIDATE_STATUS = "provider_export_public_claim_candidate"
+context-guard-kit/benchmark_runner.py:226:REPLAY_PROVIDER_CLAIM_GATES_NOT_MET_STATUS = "provider_export_claim_gates_not_met"
+context-guard-kit/benchmark_runner.py:227:REPLAY_NOT_PUBLIC_CLAIM_STATUS = "replay_only_not_public_claim"
+context-guard-kit/benchmark_runner.py:228:REPLAY_UNKNOWN_MIXED_CSV_STATUS = "unknown_mixed_csv"
+context-guard-kit/benchmark_runner.py:229:REPLAY_PUBLIC_CLAIM_ELIGIBLE_RAW_STATUSES = frozenset({
+context-guard-kit/benchmark_runner.py:230:    "token_and_shifted_cost_savings_observed",
+context-guard-kit/benchmark_runner.py:232:REPLAY_CLAIM_BOUNDARY = (
+context-guard-kit/benchmark_runner.py:234:    "hosted API token/cost savings evidence; public claims require complete provider_export "
+context-guard-kit/benchmark_runner.py:235:    "provenance for every report row plus the normal matched-task quality, token, cost, and "
+context-guard-kit/benchmark_runner.py:238:DEFAULT_MATRIX_CLASSIFICATIONS = ("default-on", "advisory", "experimental", "reject/rework")
+context-guard-kit/benchmark_runner.py:239:DEFAULT_MATRIX_CLASSIFICATION_STRENGTH = {
+context-guard-kit/benchmark_runner.py:244:DEFAULT_MATRIX_LANES: tuple[dict[str, Any], ...] = (
+context-guard-kit/benchmark_runner.py:249:        "task_keywords": ("long_log_analysis", "output_transform", "trim", "trimming", "sanitize_output", "digest"),
+context-guard-kit/benchmark_runner.py:250:        "variant_keywords": ("trim", "trimming", "sanitize", "digest", "brief"),
+context-guard-kit/benchmark_runner.py:256:        "task_keywords": ("artifact_receipt", "artifact", "receipt", "escrow", "output_sandbox", "response_sandbox"),
+context-guard-kit/benchmark_runner.py:257:        "variant_keywords": ("artifact", "receipt", "escrow", "output_sandbox", "response_sandbox"),
+context-guard-kit/benchmark_runner.py:263:        "task_keywords": ("tool_schema", "tool_prune", "tool_pruning", "mcp_schema", "defer_report"),
+context-guard-kit/benchmark_runner.py:264:        "variant_keywords": ("tool_prune", "tool_pruning", "tool_schema", "mcp", "defer"),
+context-guard-kit/benchmark_runner.py:270:        "task_keywords": ("cache_layout", "cache_advice", "cache_score", "provider_cache"),
+context-guard-kit/benchmark_runner.py:271:        "variant_keywords": ("cache_layout", "cache_advice", "cache_score", "provider_cache", "cache"),
+context-guard-kit/benchmark_runner.py:277:        "task_keywords": ("adaptive_k", "adaptive", "top_k", "context_pack"),
+context-guard-kit/benchmark_runner.py:278:        "variant_keywords": ("adaptive_k", "adaptive", "top_k", "pack_adaptive"),
+context-guard-kit/benchmark_runner.py:284:        "task_keywords": ("learned_compression", "compression", "compress", "context_diff"),
+context-guard-kit/benchmark_runner.py:285:        "variant_keywords": ("learned_compression", "compression", "compress", "context_diff"),
+context-guard-kit/benchmark_runner.py:288:DEFAULT_MATRIX_LANE_IDS = tuple(str(item["id"]) for item in DEFAULT_MATRIX_LANES)
+context-guard-kit/benchmark_runner.py:289:DEFAULT_MATRIX_LANE_BY_ID = {str(item["id"]): item for item in DEFAULT_MATRIX_LANES}
+context-guard-kit/benchmark_runner.py:290:MAX_DEFAULT_MATRIX_EVIDENCE_ITEMS = 20
+context-guard-kit/benchmark_runner.py:291:DEFAULT_MATRIX_CLAIM_BOUNDARY = {
+context-guard-kit/benchmark_runner.py:295:    "hosted_api_token_savings_claim_allowed": False,
+context-guard-kit/benchmark_runner.py:303:PUBLIC_CLAIM_READINESS_GATE_IDS = (
+context-guard-kit/benchmark_runner.py:305:    "provider_measured_token_cost",
+context-guard-kit/benchmark_runner.py:311:PUBLIC_CLAIM_READINESS_CLAIM_BOUNDARY = {
+context-guard-kit/benchmark_runner.py:316:    "hosted_api_token_savings_claim_without_claim_allowed_forbidden": True,
+context-guard-kit/benchmark_runner.py:320:    "requires_provider_measured_tokens_and_cost": True,
+context-guard-kit/benchmark_runner.py:326:        "Public hosted token/cost savings claims are forbidden unless every readiness gate passes "
+context-guard-kit/benchmark_runner.py:330:MAX_SELF_HOSTED_LABEL_CHARS = 120
+context-guard-kit/benchmark_runner.py:331:MAX_SELF_HOSTED_LATENCY_MS = 7 * 24 * 60 * 60 * 1000
+context-guard-kit/benchmark_runner.py:332:MAX_SELF_HOSTED_MEMORY_MB = 10_000_000
+context-guard-kit/benchmark_runner.py:333:MAX_VARIANT_PROMPT_FILE_BYTES = 128_000
+context-guard-kit/benchmark_runner.py:334:MAX_FIXTURE_FILE_BYTES = 1_000_000
+context-guard-kit/benchmark_runner.py:335:MAX_CLAUDE_PROMPT_ARG_BYTES = MAX_VARIANT_PROMPT_FILE_BYTES
+context-guard-kit/benchmark_runner.py:336:CLAUDE_OUTPUT_MAX_BYTES = 1_000_000
+context-guard-kit/benchmark_runner.py:337:CLAUDE_STREAM_MAX_LINES = 10_000
+context-guard-kit/benchmark_runner.py:338:CLAUDE_STREAM_MAX_LINE_BYTES = 1_000_000
+context-guard-kit/benchmark_runner.py:339:CLAUDE_OUTPUT_FORMATS = frozenset({"json", "stream-json"})
+context-guard-kit/benchmark_runner.py:340:MEASUREMENT_SUBSTRATE_SCHEMA_VERSION = "contextguard.bench.measurement-substrate.v2"
+context-guard-kit/benchmark_runner.py:341:MEASUREMENT_RAW_RECEIPT_SCHEMA_VERSION = "contextguard.bench.raw-receipt.v2"
+context-guard-kit/benchmark_runner.py:342:MEASUREMENT_ARTIFACT_INDEX_SCHEMA_VERSION = "contextguard.bench.artifact-index.v2"
+context-guard-kit/benchmark_runner.py:343:MEASUREMENT_ID_NAMESPACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+context-guard-kit/benchmark_runner.py:344:MEASUREMENT_ENV_NAME_RE = re.compile(r"\A[A-Z][A-Z0-9_]{0,127}\Z")
+context-guard-kit/benchmark_runner.py:345:MEASUREMENT_SECRET_ENV_NAME_RE = re.compile(
+context-guard-kit/benchmark_runner.py:346:    r"(?:^|_)(?:API_?KEY|AUTH|AUTHORIZATION|BEARER|CREDENTIALS?|OAUTH|PASSWORD|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)",
+context-guard-kit/benchmark_runner.py:349:MEASUREMENT_CREDENTIAL_ENV_NAMES = frozenset({
+context-guard-kit/benchmark_runner.py:350:    "ANTHROPIC_API_KEY",
+context-guard-kit/benchmark_runner.py:351:    "CLAUDE_CODE_OAUTH_TOKEN",
+context-guard-kit/benchmark_runner.py:352:    "AWS_ACCESS_KEY_ID",
+context-guard-kit/benchmark_runner.py:353:    "AWS_SECRET_ACCESS_KEY",
+context-guard-kit/benchmark_runner.py:359:MEASUREMENT_RUNNER_ENV_NAMES = frozenset({
+context-guard-kit/benchmark_runner.py:368:MEASUREMENT_VARIANT_KEYS = frozenset({
+context-guard-kit/benchmark_runner.py:380:MEASUREMENT_RAW_MAX_BYTES = CLAUDE_OUTPUT_MAX_BYTES
+context-guard-kit/benchmark_runner.py:381:MEASUREMENT_RAW_MAX_LINES = CLAUDE_STREAM_MAX_LINES
+context-guard-kit/benchmark_runner.py:382:MEASUREMENT_RAW_MAX_LINE_BYTES = 256_000
+context-guard-kit/benchmark_runner.py:383:MEASUREMENT_HOOK_MAX_EVENTS = 1_000
+context-guard-kit/benchmark_runner.py:384:MEASUREMENT_HOOK_TEXT_MAX_CHARS = 256
+context-guard-kit/benchmark_runner.py:385:MEASUREMENT_HOOK_FIELD_MAX_BYTES = 4_096
+context-guard-kit/benchmark_runner.py:386:MEASUREMENT_HOOK_OUTPUT_MAX_BYTES = 64_000
+context-guard-kit/benchmark_runner.py:387:MEASUREMENT_DOCUMENTED_HOOK_EVENTS = (
+context-guard-kit/benchmark_runner.py:401:SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
+context-guard-kit/benchmark_runner.py:402:VERSION_OUTPUT_MAX_BYTES = 16_000
+context-guard-kit/benchmark_runner.py:403:PROCESS_TERMINATE_GRACE_SECONDS = 2.0
+context-guard-kit/benchmark_runner.py:404:ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
+context-guard-kit/benchmark_runner.py:413:IMAGE_CONTEXT_EVALUATION_PROFILE_ID = "contextguard.bench.image-context-pack-evaluation.v1"
+context-guard-kit/benchmark_runner.py:414:SUPPORTED_EVALUATION_PROFILE_IDS = frozenset({IMAGE_CONTEXT_EVALUATION_PROFILE_ID})
+context-guard-kit/benchmark_runner.py:415:IMAGE_CONTEXT_READINESS_SCHEMA_VERSION = "contextguard.bench.image-context-pack-readiness.v1"
+context-guard-kit/benchmark_runner.py:416:IMAGE_CONTEXT_PROFILE_REPORT_KEY = "image_context_pack"
+context-guard-kit/benchmark_runner.py:417:EVALUATION_PROFILES_REPORT_KEY = "evaluation_profiles"
+context-guard-kit/benchmark_runner.py:418:IMAGE_CONTEXT_EVALUATION_ONLY_CLAIM_STATUS = "image_context_pack_evaluation_only_not_public_claim"
+context-guard-kit/benchmark_runner.py:419:PROFILE_STATUS_BLOCKED = "blocked"
+context-guard-kit/benchmark_runner.py:420:PROFILE_STATUS_READY_FOR_BOUNDED_PILOT_REVIEW = "ready_for_bounded_pilot_review"
+context-guard-kit/benchmark_runner.py:423:IMPORTED_LOCAL_VERIFIER_ATTESTATION_LABEL = "imported_local_verifier_attestation"
+context-guard-kit/benchmark_runner.py:424:PROOF_VERIFICATION_SCHEMA_VERSION = "contextguard.experiments.proof-carrying-context-verification.v1"
+context-guard-kit/benchmark_runner.py:425:PROOF_VERIFICATION_VERIFIED_STATUS = "verified"
+context-guard-kit/benchmark_runner.py:428:PROOF_VERIFICATION_CLAIM_BOUNDARY = (
+context-guard-kit/benchmark_runner.py:434:PROOF_VERIFICATION_REHYDRATION_EXECUTED = False
+context-guard-kit/benchmark_runner.py:436:PROFILE_FALLBACK_PLACEHOLDER_VALUES = frozenset({"", "none", "null", "n/a", "-"})
+context-guard-kit/benchmark_runner.py:439:PROFILE_REJECT_CONTROLS_MISSING = "profile_controls_missing"
+context-guard-kit/benchmark_runner.py:440:PROFILE_REJECT_SCHEMA_INVALID = "profile_schema_invalid"
+context-guard-kit/benchmark_runner.py:441:PROFILE_REJECT_BINDING_MISMATCH = "profile_binding_mismatch"
+context-guard-kit/benchmark_runner.py:442:PROFILE_REJECT_BATCH_INCOMPLETE = "profile_batch_incomplete"
+context-guard-kit/benchmark_runner.py:443:PROFILE_REJECT_FRESH_OUTPUT_REQUIRED = "profile_fresh_output_required"
+context-guard-kit/benchmark_runner.py:444:PROFILE_REJECT_PROMPT_BINDING_INVALID = "profile_prompt_binding_invalid"
+context-guard-kit/benchmark_runner.py:445:PROFILE_REJECT_CORRECTION_INCONSISTENT = "profile_correction_inconsistent"
+context-guard-kit/benchmark_runner.py:446:PROFILE_REJECT_MEASUREMENT_INCONSISTENT = "profile_measurement_inconsistent"
+context-guard-kit/benchmark_runner.py:447:PROFILE_REJECT_FALLBACK_CLAIM_INCONSISTENT = "profile_fallback_claim_inconsistent"
+context-guard-kit/benchmark_runner.py:450:PROFILE_REJECT_REPLAY_REQUIRED = "profile_replay_required"
+context-guard-kit/benchmark_runner.py:451:PROFILE_REJECT_ERROR_IDS = (
+context-guard-kit/benchmark_runner.py:465:IMAGE_CONTEXT_GATE_PROFILE_AND_PROMPT_BINDING = "profile_and_prompt_binding"
+context-guard-kit/benchmark_runner.py:466:IMAGE_CONTEXT_GATE_PROTECTED_ZONE_DENY_REVIEW = "protected_zone_deny_review"
+context-guard-kit/benchmark_runner.py:467:IMAGE_CONTEXT_GATE_EXACT_TEXT_FALLBACK_BINDING = "exact_text_fallback_binding"
+context-guard-kit/benchmark_runner.py:468:IMAGE_CONTEXT_GATE_MISSED_CONTEXT_REVIEW = "missed_context_review"
+context-guard-kit/benchmark_runner.py:469:IMAGE_CONTEXT_GATE_HUMAN_CORRECTION_CONSISTENCY = "human_correction_consistency"
+context-guard-kit/benchmark_runner.py:472:IMAGE_CONTEXT_GATE_CORRECTIONS_REGRESSION = "corrections_regression"
+context-guard-kit/benchmark_runner.py:473:IMAGE_CONTEXT_GATE_FAILURE_RATE_REGRESSION = "failure_rate_regression"
+context-guard-kit/benchmark_runner.py:474:IMAGE_CONTEXT_GATE_GENERIC_MATCHED_SUCCESS_AND_MEASUREMENT = "generic_matched_success_and_measurement"
+context-guard-kit/benchmark_runner.py:475:IMAGE_CONTEXT_GATE_EVALUATION_ONLY_PROMOTION_BOUNDARY = "evaluation_only_promotion_boundary"
+context-guard-kit/benchmark_runner.py:476:IMAGE_CONTEXT_GATE_IDS = (
+context-guard-kit/benchmark_runner.py:488:GENERIC_QUALITY_GATE_PASS = "pass"
+context-guard-kit/benchmark_runner.py:489:GENERIC_QUALITY_GATE_CORRECTIONS_REGRESSION = "corrections_regression"
+context-guard-kit/benchmark_runner.py:490:GENERIC_QUALITY_GATE_FAILURE_RATE_REGRESSION = "failure_rate_regression"
+context-guard-kit/benchmark_runner.py:491:IMAGE_CONTEXT_PROFILE_BLOCKER_GATE_ID = "image_context_pack_evaluation_only"
+context-guard-kit/benchmark_runner.py:492:IMAGE_CONTEXT_CLAIM_BOUNDARY = {
+context-guard-kit/benchmark_runner.py:509:PROFILE_SAMPLE_ADEQUACY_POLICY_STATUS = "not_defined_for_promotion"
+context-guard-kit/benchmark_runner.py:513:MAX_PROFILE_LABEL_CHARS = 120
+context-guard-kit/benchmark_runner.py:514:MAX_PROFILE_POLICY_CHARS = 120
+context-guard-kit/benchmark_runner.py:515:MAX_PROFILE_NOTE_CHARS = 500
+context-guard-kit/benchmark_runner.py:516:MAX_PROFILE_SUMMARY_CHARS = 500
+context-guard-kit/benchmark_runner.py:517:MAX_PROFILE_COMMAND_CHARS = 500
+context-guard-kit/benchmark_runner.py:518:MAX_PROFILE_RECEIPT_ID_CHARS = 200
+context-guard-kit/benchmark_runner.py:519:MAX_PROFILE_BLOCKER_ITEMS = 20
+context-guard-kit/benchmark_runner.py:520:MAX_PROFILE_PROTECTED_REGION_COUNT = 10_000
+context-guard-kit/benchmark_runner.py:521:MAX_PROFILE_CORRECTION_COUNT = 10_000
+context-guard-kit/benchmark_runner.py:522:SHA256_HEX_PATTERN = re.compile(r"\A[0-9a-f]{64}\Z")
+context-guard-kit/benchmark_runner.py:523:PROTECTED_ZONE_DENY_POLICY = "deny"
+context-guard-kit/benchmark_runner.py:526:PROFILE_REDACTED_PLACEHOLDER = "[REDACTED]"
+context-guard-kit/benchmark_runner.py:527:MAX_PROFILE_ERROR_LABELS = 5
+context-guard-kit/benchmark_runner.py:530:def _base_open_flags() -> int:
+context-guard-kit/benchmark_runner.py:531:    flags = os.O_RDONLY
+context-guard-kit/benchmark_runner.py:533:        flags |= os.O_CLOEXEC
+context-guard-kit/benchmark_runner.py:534:    return flags
+context-guard-kit/benchmark_runner.py:537:def _no_follow_flag() -> int:
+context-guard-kit/benchmark_runner.py:539:        return os.O_NOFOLLOW
+context-guard-kit/benchmark_runner.py:543:def no_follow_file_ops_supported() -> bool:
+context-guard-kit/benchmark_runner.py:544:    return hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd
+context-guard-kit/benchmark_runner.py:547:def require_no_follow_file_ops_supported() -> None:
+context-guard-kit/benchmark_runner.py:555:def _directory_flag() -> int:
+context-guard-kit/benchmark_runner.py:556:    return getattr(os, "O_DIRECTORY", 0)
+context-guard-kit/benchmark_runner.py:559:def _normalized_link_target(parent: Path, raw_target: str) -> Path:
+context-guard-kit/benchmark_runner.py:560:    target = Path(raw_target)
+context-guard-kit/benchmark_runner.py:562:        target = parent / target
+context-guard-kit/benchmark_runner.py:563:    return Path(os.path.normpath(str(target)))
+context-guard-kit/benchmark_runner.py:566:def _normalize_allowed_first_absolute_symlink(path: Path) -> Path:
+context-guard-kit/benchmark_runner.py:568:        return path
+context-guard-kit/benchmark_runner.py:569:    first = path.parts[1]
+context-guard-kit/benchmark_runner.py:570:    expected = ALLOWED_FIRST_ABSOLUTE_SYMLINKS.get(first)
+context-guard-kit/benchmark_runner.py:572:        return path
+context-guard-kit/benchmark_runner.py:573:    link = Path(path.anchor) / first
+context-guard-kit/benchmark_runner.py:576:            return path
+context-guard-kit/benchmark_runner.py:577:        if _normalized_link_target(Path(path.anchor), os.readlink(link)) != expected:
+context-guard-kit/benchmark_runner.py:578:            return path
+context-guard-kit/benchmark_runner.py:580:        return path
+context-guard-kit/benchmark_runner.py:581:    return expected.joinpath(*path.parts[2:])
+context-guard-kit/benchmark_runner.py:584:def _open_directory_at(dir_fd: int, component: str, path: Path) -> int:
+context-guard-kit/benchmark_runner.py:585:    fd = os.open(component, _base_open_flags() | _directory_flag() | _no_follow_flag(), dir_fd=dir_fd)
+context-guard-kit/benchmark_runner.py:589:        return fd
+context-guard-kit/benchmark_runner.py:595:def _ensure_directory_no_symlink(path: Path, *, create: bool = False) -> int:
+context-guard-kit/benchmark_runner.py:598:    path = _normalize_allowed_first_absolute_symlink(path)
+context-guard-kit/benchmark_runner.py:599:    components = list(path.parts)
+context-guard-kit/benchmark_runner.py:601:        components = components[1:]
+context-guard-kit/benchmark_runner.py:602:    root = path.anchor if path.is_absolute() else "."
+context-guard-kit/benchmark_runner.py:603:    dir_fd = os.open(root or ".", _base_open_flags() | _directory_flag())
+context-guard-kit/benchmark_runner.py:607:                next_fd = _open_directory_at(dir_fd, component, path)
+context-guard-kit/benchmark_runner.py:611:                os.mkdir(component, 0o777, dir_fd=dir_fd)
+context-guard-kit/benchmark_runner.py:612:                next_fd = _open_directory_at(dir_fd, component, path)
+context-guard-kit/benchmark_runner.py:614:            dir_fd = next_fd
+context-guard-kit/benchmark_runner.py:615:        return dir_fd
+context-guard-kit/benchmark_runner.py:621:def _open_regular_no_symlink(
+context-guard-kit/benchmark_runner.py:623:    flags: int | None = None,
+context-guard-kit/benchmark_runner.py:624:    mode: int = 0o666,
+context-guard-kit/benchmark_runner.py:626:    create_parent: bool = False,
+context-guard-kit/benchmark_runner.py:630:    path = _normalize_allowed_first_absolute_symlink(path)
+context-guard-kit/benchmark_runner.py:631:    parent_fd = _ensure_directory_no_symlink(path.parent, create=create_parent)
+context-guard-kit/benchmark_runner.py:632:    open_flags = (flags if flags is not None else _base_open_flags()) | _no_follow_flag()
+context-guard-kit/benchmark_runner.py:634:        fd = os.open(path.name, open_flags, mode, dir_fd=parent_fd)
+context-guard-kit/benchmark_runner.py:638:            return fd
+context-guard-kit/benchmark_runner.py:646:def _read_text_no_follow(path: Path, *, max_bytes: int = MAX_FIXTURE_FILE_BYTES) -> str:
+context-guard-kit/benchmark_runner.py:647:    fd = _open_regular_no_symlink(path)
+context-guard-kit/benchmark_runner.py:650:            fd = -1
+context-guard-kit/benchmark_runner.py:651:            raw = handle.read(max_bytes + 1)
+context-guard-kit/benchmark_runner.py:655:                return raw.decode("utf-8")
+context-guard-kit/benchmark_runner.py:659:        if fd != -1:
+context-guard-kit/benchmark_runner.py:663:def _read_bytes_no_follow(path: Path, *, max_bytes: int = MAX_FIXTURE_FILE_BYTES) -> bytes:
+context-guard-kit/benchmark_runner.py:664:    fd = _open_regular_no_symlink(path)
+context-guard-kit/benchmark_runner.py:666:        chunks: list[bytes] = []
+context-guard-kit/benchmark_runner.py:667:        total = 0
+context-guard-kit/benchmark_runner.py:669:            chunk = os.read(fd, min(65_536, max_bytes + 1 - total))
+context-guard-kit/benchmark_runner.py:671:                return b"".join(chunks)
+context-guard-kit/benchmark_runner.py:673:            total += len(chunk)
+context-guard-kit/benchmark_runner.py:681:def csv_file_lock(csv_path: Path, *, create_parent: bool) -> Any:
+context-guard-kit/benchmark_runner.py:685:    lock_path = csv_path.with_name(f"{csv_path.name}.lock")
+context-guard-kit/benchmark_runner.py:686:    fd = _open_regular_no_symlink(lock_path, os.O_CREAT | os.O_RDWR, 0o600, create_parent=create_parent)
+context-guard-kit/benchmark_runner.py:687:    locked = False
+context-guard-kit/benchmark_runner.py:690:        locked = True
+context-guard-kit/benchmark_runner.py:701:def csv_parent_directory_lock(csv_path: Path, *, create_parent: bool) -> Any:
+context-guard-kit/benchmark_runner.py:711:    parent = csv_path.parent
+context-guard-kit/benchmark_runner.py:713:        parent.mkdir(parents=True, exist_ok=True)
+context-guard-kit/benchmark_runner.py:714:    fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+context-guard-kit/benchmark_runner.py:715:    locked = False
+context-guard-kit/benchmark_runner.py:718:        locked = True
+context-guard-kit/benchmark_runner.py:730:@dataclass(frozen=True)
+context-guard-kit/benchmark_runner.py:731:class FixtureTreeEntry:
+context-guard-kit/benchmark_runner.py:738:# 사용자가 baseline 으로 의도한 변형이 implicit default(예: effort="medium")로 인해
+context-guard-kit/benchmark_runner.py:741:class TaskFixture:
+context-guard-kit/benchmark_runner.py:744:    model: str = "sonnet"
+context-guard-kit/benchmark_runner.py:745:    effort: str | None = None
+context-guard-kit/benchmark_runner.py:746:    max_turns: int = 3
+context-guard-kit/benchmark_runner.py:747:    max_budget_usd: float | None = None
+context-guard-kit/benchmark_runner.py:748:    allowed_tools: list[str] = field(default_factory=list)
+context-guard-kit/benchmark_runner.py:749:    success_command: str | None = None
+context-guard-kit/benchmark_runner.py:750:    success_cwd: str = "."
+context-guard-kit/benchmark_runner.py:751:    variant_prompt_files: dict[str, str] = field(default_factory=dict)
+context-guard-kit/benchmark_runner.py:752:    variant_prompt_texts: dict[str, str] = field(default_factory=dict)
+context-guard-kit/benchmark_runner.py:754:    evaluation_profile: str | None = None
+context-guard-kit/benchmark_runner.py:756:    output_format: str = "json"
+context-guard-kit/benchmark_runner.py:759:    fixture_tree: str | None = None
+context-guard-kit/benchmark_runner.py:760:    success_checker: str | None = None
+context-guard-kit/benchmark_runner.py:761:    fixture_tree_entries: tuple["FixtureTreeEntry", ...] | None = None
+context-guard-kit/benchmark_runner.py:762:    success_checker_bytes: bytes | None = None
+context-guard-kit/benchmark_runner.py:766:class Variant:
+context-guard-kit/benchmark_runner.py:768:    extra_args: list[str] = field(default_factory=list)
+context-guard-kit/benchmark_runner.py:770:    measurement: "MeasurementVariant | None" = None
+context-guard-kit/benchmark_runner.py:773:@dataclass(frozen=True)
+context-guard-kit/benchmark_runner.py:774:class MeasurementIdentity:
+context-guard-kit/benchmark_runner.py:781:    def components(self, task_id: str) -> tuple[str, str, int, str, int, str]:
+context-guard-kit/benchmark_runner.py:782:        return (
+context-guard-kit/benchmark_runner.py:791:    def run_id(self, task_id: str) -> str:
+context-guard-kit/benchmark_runner.py:792:        values = (MEASUREMENT_SUBSTRATE_SCHEMA_VERSION,) + self.components(task_id)
+context-guard-kit/benchmark_runner.py:793:        canonical = json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+context-guard-kit/benchmark_runner.py:794:        payload = b"contextguard.bench.run-id.v2\0" + struct.pack(">Q", len(canonical)) + canonical
+context-guard-kit/benchmark_runner.py:795:        return hashlib.sha256(payload).hexdigest()
+context-guard-kit/benchmark_runner.py:797:    def legacy_v1_run_id(self, task_id: str) -> str:
+context-guard-kit/benchmark_runner.py:798:        canonical = json.dumps(
+context-guard-kit/benchmark_runner.py:799:            self.components(task_id), ensure_ascii=False, separators=(",", ":"),
+context-guard-kit/benchmark_runner.py:801:        return hashlib.sha256(canonical).hexdigest()
+context-guard-kit/benchmark_runner.py:804:@dataclass(frozen=True)
+context-guard-kit/benchmark_runner.py:805:class MeasurementVariant:
+context-guard-kit/benchmark_runner.py:820:    settings_payload: dict[str, Any] = field(compare=False, repr=False)
+context-guard-kit/benchmark_runner.py:821:    settings_source_bytes: bytes = field(compare=False, repr=False)
+context-guard-kit/benchmark_runner.py:824:@dataclass(frozen=True)
+context-guard-kit/benchmark_runner.py:825:class MeasurementRunContext:
+context-guard-kit/benchmark_runner.py:842:class RunResult:
+context-guard-kit/benchmark_runner.py:847:    tokens: dict[str, int]
+context-guard-kit/benchmark_runner.py:851:    corrections: int = 0
+context-guard-kit/benchmark_runner.py:852:    cost_measured: bool = False
+context-guard-kit/benchmark_runner.py:853:    primary_cost_provenance: str = PRIMARY_COST_PROVENANCE_UNAVAILABLE
+context-guard-kit/benchmark_runner.py:854:    wall_time_seconds: float = 0.0
+context-guard-kit/benchmark_runner.py:855:    turns: int = 0
+context-guard-kit/benchmark_runner.py:856:    hook_triggers: int = 0
+context-guard-kit/benchmark_runner.py:857:    bytes_before: int = 0
+context-guard-kit/benchmark_runner.py:858:    bytes_after: int = 0
+context-guard-kit/benchmark_runner.py:859:    artifacts_used: int = 0
+context-guard-kit/benchmark_runner.py:860:    external_tokens: int = 0
+context-guard-kit/benchmark_runner.py:861:    external_tokens_measured: bool = False
+context-guard-kit/benchmark_runner.py:862:    external_cost_usd: float = 0.0
+context-guard-kit/benchmark_runner.py:863:    external_cost_measured: bool = False
+context-guard-kit/benchmark_runner.py:864:    provider_cached_tokens: int = 0
+context-guard-kit/benchmark_runner.py:865:    provider_cached_tokens_measured: bool = False
+context-guard-kit/benchmark_runner.py:866:    primary_tokens_measured: bool = False
+context-guard-kit/benchmark_runner.py:867:    self_hosted_metrics: dict[str, Any] | None = None
+context-guard-kit/benchmark_runner.py:869:    def __post_init__(self) -> None:
+context-guard-kit/benchmark_runner.py:872:    def validate_primary_cost_contract(self) -> None:
+context-guard-kit/benchmark_runner.py:873:        allowed = {
+context-guard-kit/benchmark_runner.py:880:        provenance_is_measured = self.primary_cost_provenance == PRIMARY_COST_PROVENANCE_PROVIDER_EXPORT
+context-guard-kit/benchmark_runner.py:883:                "primary_cost_provenance must be provider_export exactly when cost_measured=true"
+context-guard-kit/benchmark_runner.py:888:class EvidenceReplayRow:
+context-guard-kit/benchmark_runner.py:899:    evaluation_profile: str | None = None
+context-guard-kit/benchmark_runner.py:900:    evaluation_controls: dict[str, Any] | None = None
+context-guard-kit/benchmark_runner.py:903:    evaluation_lane: dict[str, Any] | None = None
+context-guard-kit/benchmark_runner.py:906:    def key(self) -> tuple[str, str]:
+context-guard-kit/benchmark_runner.py:907:        return (self.result.task_id, self.result.variant)
+context-guard-kit/benchmark_runner.py:909:    def provenance_payload(self) -> dict[str, Any]:
+context-guard-kit/benchmark_runner.py:910:        return {
+context-guard-kit/benchmark_runner.py:926:class BoundedProcessResult:
+context-guard-kit/benchmark_runner.py:930:    timed_out: bool = False
+context-guard-kit/benchmark_runner.py:931:    output_truncated: bool = False
+context-guard-kit/benchmark_runner.py:933:    stdout_bytes: bytes = b""
+context-guard-kit/benchmark_runner.py:934:    stderr_bytes: bytes = b""
+context-guard-kit/benchmark_runner.py:935:    launch_error: bool = False
+context-guard-kit/benchmark_runner.py:938:@dataclass(frozen=True)
+context-guard-kit/benchmark_runner.py:939:class ClaudeStreamParseResult:
+context-guard-kit/benchmark_runner.py:948:class _StreamDuplicateKey(ValueError):
+context-guard-kit/benchmark_runner.py:952:class _StreamNonfiniteNumber(ValueError):
+context-guard-kit/benchmark_runner.py:956:def _stream_result(
+context-guard-kit/benchmark_runner.py:960:    error_code: str | None = None,
+context-guard-kit/benchmark_runner.py:961:    payload: dict[str, Any] | None = None,
+context-guard-kit/benchmark_runner.py:963:    return ClaudeStreamParseResult(
+context-guard-kit/benchmark_runner.py:964:        status=status,
+context-guard-kit/benchmark_runner.py:965:        result_code=result_code,
+context-guard-kit/benchmark_runner.py:966:        error_code=error_code,
+context-guard-kit/benchmark_runner.py:967:        payload=payload,
+context-guard-kit/benchmark_runner.py:971:def _stream_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+context-guard-kit/benchmark_runner.py:972:    obj: dict[str, Any] = {}
+context-guard-kit/benchmark_runner.py:973:    for key, value in pairs:
+context-guard-kit/benchmark_runner.py:974:        if key in obj:
+context-guard-kit/benchmark_runner.py:975:            raise _StreamDuplicateKey
+context-guard-kit/benchmark_runner.py:976:        obj[key] = value
+context-guard-kit/benchmark_runner.py:977:    return obj
+context-guard-kit/benchmark_runner.py:980:def _stream_reject_nonfinite(_value: str) -> Any:
+context-guard-kit/benchmark_runner.py:984:def _stream_contains_nonfinite(value: Any) -> bool:
+context-guard-kit/benchmark_runner.py:986:        return not math.isfinite(value)
+context-guard-kit/benchmark_runner.py:988:        return any(_stream_contains_nonfinite(item) for item in value.values())
+context-guard-kit/benchmark_runner.py:990:        return any(_stream_contains_nonfinite(item) for item in value)
+context-guard-kit/benchmark_runner.py:991:    return False
+context-guard-kit/benchmark_runner.py:994:def parse_claude_stream_output(
+context-guard-kit/benchmark_runner.py:997:    max_total_bytes: int = CLAUDE_OUTPUT_MAX_BYTES,
+context-guard-kit/benchmark_runner.py:998:    max_lines: int = CLAUDE_STREAM_MAX_LINES,
+context-guard-kit/benchmark_runner.py:999:    max_line_bytes: int = CLAUDE_STREAM_MAX_LINE_BYTES,
+context-guard-kit/benchmark_runner.py:1005:    failures return fixed codes rather than JSON excerpts or parse offsets.
+context-guard-kit/benchmark_runner.py:1009:            raw = stdout.encode("utf-8", "strict")
+context-guard-kit/benchmark_runner.py:1011:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1012:                "invalid_stream", result_code="invalid_stream", error_code="stream_invalid_utf8",
+context-guard-kit/benchmark_runner.py:1015:        raw = stdout
+context-guard-kit/benchmark_runner.py:1020:        return _stream_result(
+context-guard-kit/benchmark_runner.py:1022:            result_code="missing_terminal",
+context-guard-kit/benchmark_runner.py:1023:            error_code="stream_missing_terminal",
+context-guard-kit/benchmark_runner.py:1026:        return _stream_result(
+context-guard-kit/benchmark_runner.py:1027:            "invalid_stream", result_code="invalid_stream", error_code="stream_bom",
+context-guard-kit/benchmark_runner.py:1030:        return _stream_result(
+context-guard-kit/benchmark_runner.py:1032:            result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1033:            error_code="stream_total_size_limit",
+context-guard-kit/benchmark_runner.py:1036:    physical_lines = raw.split(b"\n")
+context-guard-kit/benchmark_runner.py:1037:    if physical_lines and physical_lines[-1] == b"":
+context-guard-kit/benchmark_runner.py:1040:        return _stream_result(
+context-guard-kit/benchmark_runner.py:1042:            result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1043:            error_code="stream_line_count_limit",
+context-guard-kit/benchmark_runner.py:1046:    terminal_payload: dict[str, Any] | None = None
+context-guard-kit/benchmark_runner.py:1047:    terminal_result_code: str | None = None
+context-guard-kit/benchmark_runner.py:1048:    terminal_status: str | None = None
+context-guard-kit/benchmark_runner.py:1051:        line = raw_line[:-1] if raw_line.endswith(b"\r") else raw_line
+context-guard-kit/benchmark_runner.py:1053:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1055:                result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1056:                error_code="stream_line_size_limit",
+context-guard-kit/benchmark_runner.py:1059:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1060:                "invalid_stream", result_code="invalid_stream", error_code="stream_blank_line",
+context-guard-kit/benchmark_runner.py:1063:            text = line.decode("utf-8", "strict")
+context-guard-kit/benchmark_runner.py:1065:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1066:                "invalid_stream", result_code="invalid_stream", error_code="stream_invalid_utf8",
+context-guard-kit/benchmark_runner.py:1069:            event = json.loads(
+context-guard-kit/benchmark_runner.py:1071:                object_pairs_hook=_stream_object_no_duplicates,
+context-guard-kit/benchmark_runner.py:1072:                parse_constant=_stream_reject_nonfinite,
+context-guard-kit/benchmark_runner.py:1074:        except _StreamDuplicateKey:
+context-guard-kit/benchmark_runner.py:1075:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1076:                "invalid_stream", result_code="invalid_stream", error_code="stream_duplicate_key",
+context-guard-kit/benchmark_runner.py:1079:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1081:                result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1082:                error_code="stream_nonfinite_number",
+context-guard-kit/benchmark_runner.py:1085:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1086:                "invalid_stream", result_code="invalid_stream", error_code="stream_malformed_json",
+context-guard-kit/benchmark_runner.py:1089:            contains_nonfinite = _stream_contains_nonfinite(event)
+context-guard-kit/benchmark_runner.py:1091:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1092:                "invalid_stream", result_code="invalid_stream", error_code="stream_malformed_json",
+context-guard-kit/benchmark_runner.py:1095:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1097:                result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1098:                error_code="stream_nonfinite_number",
+context-guard-kit/benchmark_runner.py:1101:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1102:                "invalid_stream", result_code="invalid_stream", error_code="stream_non_object",
+context-guard-kit/benchmark_runner.py:1105:        is_result = event.get("type") == "result"
+context-guard-kit/benchmark_runner.py:1107:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1109:                result_code="invalid_stream",
+context-guard-kit/benchmark_runner.py:1110:                error_code="stream_duplicate_result" if is_result else "stream_post_result",
+context-guard-kit/benchmark_runner.py:1115:        subtype = event.get("subtype")
+context-guard-kit/benchmark_runner.py:1116:        is_error = event.get("is_error")
+context-guard-kit/benchmark_runner.py:1118:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1119:                "invalid_stream", result_code="invalid_stream", error_code="stream_result_shape",
+context-guard-kit/benchmark_runner.py:1121:        if subtype == "success" and not is_error:
+context-guard-kit/benchmark_runner.py:1122:            terminal_status = "success"
+context-guard-kit/benchmark_runner.py:1123:            terminal_result_code = "success"
+context-guard-kit/benchmark_runner.py:1124:        elif subtype == "success" and is_error:
+context-guard-kit/benchmark_runner.py:1125:            terminal_status = "terminal_error"
+context-guard-kit/benchmark_runner.py:1126:            terminal_result_code = "success_is_error"
+context-guard-kit/benchmark_runner.py:1133:            terminal_status = "terminal_error"
+context-guard-kit/benchmark_runner.py:1134:            terminal_result_code = str(subtype)
+context-guard-kit/benchmark_runner.py:1136:            return _stream_result(
+context-guard-kit/benchmark_runner.py:1137:                "invalid_stream", result_code="invalid_stream", error_code="stream_result_shape",
+context-guard-kit/benchmark_runner.py:1139:        terminal_payload = event
+context-guard-kit/benchmark_runner.py:1142:        return _stream_result(
+context-guard-kit/benchmark_runner.py:1144:            result_code="missing_terminal",
+context-guard-kit/benchmark_runner.py:1145:            error_code="stream_missing_terminal",
+context-guard-kit/benchmark_runner.py:1147:    return _stream_result(
+context-guard-kit/benchmark_runner.py:1149:        result_code=terminal_result_code,
+context-guard-kit/benchmark_runner.py:1150:        payload=terminal_payload,
+context-guard-kit/benchmark_runner.py:1154:def is_placeholder_success_command(command: str | None) -> bool:
+context-guard-kit/benchmark_runner.py:1155:    return bool(command and PLACEHOLDER_SUCCESS_COMMAND_MARKER in command)
+context-guard-kit/benchmark_runner.py:1158:def parse_positive_int(value: Any, *, field: str, owner: str) -> int:
+context-guard-kit/benchmark_runner.py:1163:        parsed = value
+context-guard-kit/benchmark_runner.py:1165:        parsed = int(value.strip())
+context-guard-kit/benchmark_runner.py:1168:    if parsed <= 0:
+context-guard-kit/benchmark_runner.py:1170:    return parsed
+context-guard-kit/benchmark_runner.py:1173:def parse_string_list(value: Any, *, field: str, owner: str) -> list[str]:
+context-guard-kit/benchmark_runner.py:1179:    items: list[str] = []
+context-guard-kit/benchmark_runner.py:1186:    return items
+context-guard-kit/benchmark_runner.py:1189:def parse_string_map(value: Any, *, field: str, owner: str) -> dict[str, str]:
+context-guard-kit/benchmark_runner.py:1192:        return {}
+context-guard-kit/benchmark_runner.py:1195:    items: dict[str, str] = {}
+context-guard-kit/benchmark_runner.py:1196:    for raw_key, raw_value in value.items():
+context-guard-kit/benchmark_runner.py:1197:        if not isinstance(raw_key, str) or not raw_key.strip():
+context-guard-kit/benchmark_runner.py:1198:            raise SystemExit(f"{owner} {field} keys must be non-empty strings")
+context-guard-kit/benchmark_runner.py:1200:            raise SystemExit(f"{owner} {field}.{raw_key} must be a non-empty string")
+context-guard-kit/benchmark_runner.py:1201:        items[raw_key] = raw_value
+context-guard-kit/benchmark_runner.py:1202:    return items
+context-guard-kit/benchmark_runner.py:1205:class _MeasurementDuplicateKey(ValueError):
+context-guard-kit/benchmark_runner.py:1209:class _MeasurementLaunchError(OSError):
+context-guard-kit/benchmark_runner.py:1213:class _StudyLaunchAccountingError(RuntimeError):
+context-guard-kit/benchmark_runner.py:1217:def _measurement_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+context-guard-kit/benchmark_runner.py:1218:    result: dict[str, Any] = {}
+context-guard-kit/benchmark_runner.py:1219:    for key, value in pairs:
+context-guard-kit/benchmark_runner.py:1220:        if key in result:
+context-guard-kit/benchmark_runner.py:1221:            raise _MeasurementDuplicateKey(key)
+context-guard-kit/benchmark_runner.py:1222:        result[key] = value
+context-guard-kit/benchmark_runner.py:1223:    return result
+context-guard-kit/benchmark_runner.py:1226:def _parse_measurement_json_text(text: str, *, owner: str) -> Any:
+context-guard-kit/benchmark_runner.py:1228:        return json.loads(
+context-guard-kit/benchmark_runner.py:1230:            object_pairs_hook=_measurement_object_no_duplicates,
+context-guard-kit/benchmark_runner.py:1231:            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("non-finite number")),
+context-guard-kit/benchmark_runner.py:1233:    except _MeasurementDuplicateKey as exc:
+context-guard-kit/benchmark_runner.py:1234:        raise SystemExit(f"{owner} contains duplicate JSON key: {exc}") from None
+context-guard-kit/benchmark_runner.py:1241:def _load_measurement_json(path: Path, *, owner: str) -> Any:
+context-guard-kit/benchmark_runner.py:1242:    return _parse_measurement_json_text(_read_text_no_follow(path), owner=owner)
+context-guard-kit/benchmark_runner.py:1245:def _measurement_parse_canonical_json_bytes(raw: bytes, *, owner: str) -> Any:
+context-guard-kit/benchmark_runner.py:1249:        text = raw[:-1].decode("utf-8")
+context-guard-kit/benchmark_runner.py:1252:    value = _parse_measurement_json_text(text, owner=owner)
+context-guard-kit/benchmark_runner.py:1253:    canonical = json.dumps(
+context-guard-kit/benchmark_runner.py:1254:        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+context-guard-kit/benchmark_runner.py:1256:    if raw != canonical:
+context-guard-kit/benchmark_runner.py:1258:    return value
+context-guard-kit/benchmark_runner.py:1261:def _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1265:    keys: frozenset[str],
+context-guard-kit/benchmark_runner.py:1269:    actual = set(value)
+context-guard-kit/benchmark_runner.py:1270:    unknown = sorted(actual - keys)
+context-guard-kit/benchmark_runner.py:1271:    missing = sorted(keys - actual)
+context-guard-kit/benchmark_runner.py:1274:            raise SystemExit(f"unknown measurement key: {', '.join(unknown)}")
+context-guard-kit/benchmark_runner.py:1275:        raise SystemExit(f"{owner} has unknown key(s): {', '.join(unknown)}")
+context-guard-kit/benchmark_runner.py:1277:        raise SystemExit(f"{owner} is missing key(s): {', '.join(missing)}")
+context-guard-kit/benchmark_runner.py:1278:    return value
+context-guard-kit/benchmark_runner.py:1281:def _measurement_safe_path(
+context-guard-kit/benchmark_runner.py:1294:    raw = Path(value).expanduser()
+context-guard-kit/benchmark_runner.py:1300:        path = base_dir / raw
+context-guard-kit/benchmark_runner.py:1302:        path = raw
+context-guard-kit/benchmark_runner.py:1303:    path = Path(os.path.normpath(str(path)))
+context-guard-kit/benchmark_runner.py:1315:            fd = _open_regular_no_symlink(path)
+context-guard-kit/benchmark_runner.py:1318:            probe = path
+context-guard-kit/benchmark_runner.py:1319:            while not probe.exists() and probe != probe.parent:
+context-guard-kit/benchmark_runner.py:1320:                probe = probe.parent
+context-guard-kit/benchmark_runner.py:1321:            fd = _ensure_directory_no_symlink(probe)
+context-guard-kit/benchmark_runner.py:1325:            is_link = stat.S_ISLNK(os.lstat(path).st_mode)
+context-guard-kit/benchmark_runner.py:1327:            is_link = False
+context-guard-kit/benchmark_runner.py:1332:        detail = exc.strerror or exc.__class__.__name__
+context-guard-kit/benchmark_runner.py:1334:    return path
+context-guard-kit/benchmark_runner.py:1337:def _measurement_env_name(value: Any, *, owner: str) -> str:
+context-guard-kit/benchmark_runner.py:1340:    if value in MEASUREMENT_CREDENTIAL_ENV_NAMES or MEASUREMENT_SECRET_ENV_NAME_RE.search(value):
+context-guard-kit/benchmark_runner.py:1344:    return value
+context-guard-kit/benchmark_runner.py:1347:def _measurement_string_tuple(
+context-guard-kit/benchmark_runner.py:1351:    maximum: int = 64,
+context-guard-kit/benchmark_runner.py:1353:    items = parse_string_list(value, field=owner.rsplit(".", 1)[-1], owner=owner.rsplit(".", 1)[0])
+context-guard-kit/benchmark_runner.py:1356:    if len(set(items)) != len(items):
+context-guard-kit/benchmark_runner.py:1358:    return tuple(items)
+context-guard-kit/benchmark_runner.py:1361:def _measurement_parse_identity(raw: Any, *, owner: str, variant_name: str) -> MeasurementIdentity:
+context-guard-kit/benchmark_runner.py:1362:    value = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1364:        owner=owner,
+context-guard-kit/benchmark_runner.py:1365:        keys=frozenset({"candidate_hash", "repetition", "arm", "attempt", "namespace"}),
+context-guard-kit/benchmark_runner.py:1367:    candidate_hash = value["candidate_hash"]
+context-guard-kit/benchmark_runner.py:1370:    repetition = value["repetition"]
+context-guard-kit/benchmark_runner.py:1371:    attempt = value["attempt"]
+context-guard-kit/benchmark_runner.py:1372:    if isinstance(repetition, bool) or repetition != 0:
+context-guard-kit/benchmark_runner.py:1376:    arm = value["arm"]
+context-guard-kit/benchmark_runner.py:1377:    if arm not in {"baseline", "treatment"} or arm != variant_name:
+context-guard-kit/benchmark_runner.py:1379:    namespace = value["namespace"]
+context-guard-kit/benchmark_runner.py:1385:    return MeasurementIdentity(candidate_hash, repetition, arm, attempt, namespace)
+context-guard-kit/benchmark_runner.py:1388:def _measurement_parse_variant(
+context-guard-kit/benchmark_runner.py:1395:    value = _measurement_exact_object(raw, owner=owner, keys=MEASUREMENT_VARIANT_KEYS)
+context-guard-kit/benchmark_runner.py:1396:    if value["schema_version"] != MEASUREMENT_SUBSTRATE_SCHEMA_VERSION:
+context-guard-kit/benchmark_runner.py:1401:    settings_file = _measurement_safe_path(
+context-guard-kit/benchmark_runner.py:1402:        value["settings_file"], owner=f"{owner}.settings_file", base_dir=base_dir, must_exist=True,
+context-guard-kit/benchmark_runner.py:1404:    settings_source_text = _read_text_no_follow(settings_file)
+context-guard-kit/benchmark_runner.py:1405:    settings_source_bytes = settings_source_text.encode("utf-8")
+context-guard-kit/benchmark_runner.py:1406:    settings_payload = _parse_measurement_json_text(
+context-guard-kit/benchmark_runner.py:1407:        settings_source_text, owner=f"{owner}.settings_file",
+context-guard-kit/benchmark_runner.py:1412:    setting_sources = _measurement_string_tuple(
+context-guard-kit/benchmark_runner.py:1413:        value["setting_sources"], owner=f"{owner}.setting_sources", maximum=3,
+context-guard-kit/benchmark_runner.py:1415:    allowed_setting_sources = {"user", "project", "local"}
+context-guard-kit/benchmark_runner.py:1419:    environment = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1421:        owner=f"{owner}.environment",
+context-guard-kit/benchmark_runner.py:1422:        keys=frozenset({"allow", "overrides"}),
+context-guard-kit/benchmark_runner.py:1424:    allow_raw = _measurement_string_tuple(
+context-guard-kit/benchmark_runner.py:1425:        environment["allow"], owner=f"{owner}.environment.allow", maximum=64,
+context-guard-kit/benchmark_runner.py:1427:    environment_allow = tuple(
+context-guard-kit/benchmark_runner.py:1428:        _measurement_env_name(item, owner=f"{owner}.environment.allow") for item in allow_raw
+context-guard-kit/benchmark_runner.py:1430:    overrides_raw = environment["overrides"]
+context-guard-kit/benchmark_runner.py:1433:    overrides: list[tuple[str, str]] = []
+context-guard-kit/benchmark_runner.py:1435:        name = _measurement_env_name(raw_name, owner=f"{owner}.environment.overrides")
+context-guard-kit/benchmark_runner.py:1440:    workspace = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1441:        value["workspace"], owner=f"{owner}.workspace", keys=frozenset({"mode"}),
+context-guard-kit/benchmark_runner.py:1443:    if workspace["mode"] != "isolated":
+context-guard-kit/benchmark_runner.py:1445:    session = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1447:        owner=f"{owner}.session",
+context-guard-kit/benchmark_runner.py:1448:        keys=frozenset({"mode", "persistence"}),
+context-guard-kit/benchmark_runner.py:1450:    if session["mode"] != "isolated" or session["persistence"] != "disabled":
+context-guard-kit/benchmark_runner.py:1453:    hooks = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1455:        owner=f"{owner}.hook_events",
+context-guard-kit/benchmark_runner.py:1456:        keys=frozenset({"enabled", "registered_bindings", "required_event_classes"}),
+context-guard-kit/benchmark_runner.py:1460:    bindings_raw = hooks["registered_bindings"]
+context-guard-kit/benchmark_runner.py:1463:    registered_bindings: list[tuple[str, str]] = []
+context-guard-kit/benchmark_runner.py:1465:        binding = _measurement_exact_object(
+context-guard-kit/benchmark_runner.py:1467:            owner=f"{owner}.hook_events.registered_bindings[{index}]",
+context-guard-kit/benchmark_runner.py:1468:            keys=frozenset({"hook_event", "configured_command"}),
+context-guard-kit/benchmark_runner.py:1470:        hook_event = binding["hook_event"]
+context-guard-kit/benchmark_runner.py:1471:        command = binding["configured_command"]
+context-guard-kit/benchmark_runner.py:1477:    if len(set(registered_bindings)) != len(registered_bindings):
+context-guard-kit/benchmark_runner.py:1479:    required_event_classes = _measurement_string_tuple(
+context-guard-kit/benchmark_runner.py:1481:        owner=f"{owner}.hook_events.required_event_classes",
+context-guard-kit/benchmark_runner.py:1482:        maximum=32,
+context-guard-kit/benchmark_runner.py:1486:    ordered_classes = tuple(dict.fromkeys(event for event, _command in registered_bindings))
+context-guard-kit/benchmark_runner.py:1487:    if required_event_classes != ordered_classes:
+context-guard-kit/benchmark_runner.py:1489:    if variant_name == "baseline" and (registered_bindings or required_event_classes):
+context-guard-kit/benchmark_runner.py:1492:    cli_capabilities = _measurement_string_tuple(
+context-guard-kit/benchmark_runner.py:1493:        value["cli_capabilities"], owner=f"{owner}.cli_capabilities", maximum=32,
+context-guard-kit/benchmark_runner.py:1499:        if (capability != "stream-json" and not capability.startswith("--")) or len(capability) > 128:
+context-guard-kit/benchmark_runner.py:1501:    mandatory_capabilities = {
+context-guard-kit/benchmark_runner.py:1509:        missing = sorted(mandatory_capabilities - set(cli_capabilities))
+context-guard-kit/benchmark_runner.py:1512:    identity = _measurement_parse_identity(
+context-guard-kit/benchmark_runner.py:1513:        value["identity"], owner=f"{owner}.identity", variant_name=variant_name,
+context-guard-kit/benchmark_runner.py:1515:    artifact_root = _measurement_safe_path(
+context-guard-kit/benchmark_runner.py:1517:        owner=f"{owner}.artifact_root",
+context-guard-kit/benchmark_runner.py:1518:        base_dir=base_dir,
+context-guard-kit/benchmark_runner.py:1519:        must_exist=False,
+context-guard-kit/benchmark_runner.py:1521:    return MeasurementVariant(
+context-guard-kit/benchmark_runner.py:1522:        settings_file=settings_file,
+context-guard-kit/benchmark_runner.py:1523:        setting_sources=setting_sources,
+context-guard-kit/benchmark_runner.py:1524:        environment_allow=environment_allow,
+context-guard-kit/benchmark_runner.py:1525:        environment_overrides=tuple(overrides),
+context-guard-kit/benchmark_runner.py:1526:        workspace_mode=str(workspace["mode"]),
+context-guard-kit/benchmark_runner.py:1527:        session_mode=str(session["mode"]),
+context-guard-kit/benchmark_runner.py:1528:        session_persistence=str(session["persistence"]),
+context-guard-kit/benchmark_runner.py:1529:        hook_events_enabled=True,
+context-guard-kit/benchmark_runner.py:1530:        registered_bindings=tuple(registered_bindings),
+context-guard-kit/benchmark_runner.py:1531:        required_event_classes=required_event_classes,
+context-guard-kit/benchmark_runner.py:1532:        pair_registered_bindings=tuple(registered_bindings),
+context-guard-kit/benchmark_runner.py:1533:        cli_capabilities=cli_capabilities,
+context-guard-kit/benchmark_runner.py:1534:        identity=identity,
+context-guard-kit/benchmark_runner.py:1535:        artifact_root=artifact_root,
+context-guard-kit/benchmark_runner.py:1536:        settings_payload=settings_payload,
+context-guard-kit/benchmark_runner.py:1537:        settings_source_bytes=settings_source_bytes,
+context-guard-kit/benchmark_runner.py:1541:def _measurement_is_registered_hook(value: Any, command: str) -> bool:
+context-guard-kit/benchmark_runner.py:1543:        return False
+context-guard-kit/benchmark_runner.py:1544:    return value.get("type") == "command" and value.get("command") == command
+context-guard-kit/benchmark_runner.py:1547:def _measurement_non_hook_source_members(raw: bytes) -> tuple[tuple[str, bytes], ...]:
+context-guard-kit/benchmark_runner.py:1554:    stripped = raw.strip()
+context-guard-kit/benchmark_runner.py:1557:    body = stripped[1:-1]
+context-guard-kit/benchmark_runner.py:1558:    members: list[bytes] = []
+context-guard-kit/benchmark_runner.py:1559:    start = 0
+context-guard-kit/benchmark_runner.py:1560:    depth = 0
+context-guard-kit/benchmark_runner.py:1561:    in_string = False
+context-guard-kit/benchmark_runner.py:1562:    escaped = False
+context-guard-kit/benchmark_runner.py:1566:                escaped = False
+context-guard-kit/benchmark_runner.py:1567:            elif byte == 0x5C:
+context-guard-kit/benchmark_runner.py:1568:                escaped = True
+context-guard-kit/benchmark_runner.py:1569:            elif byte == 0x22:
+context-guard-kit/benchmark_runner.py:1570:                in_string = False
+context-guard-kit/benchmark_runner.py:1572:        if byte == 0x22:
+context-guard-kit/benchmark_runner.py:1573:            in_string = True
+context-guard-kit/benchmark_runner.py:1575:            depth += 1
+context-guard-kit/benchmark_runner.py:1577:            depth -= 1
+context-guard-kit/benchmark_runner.py:1578:        elif byte == 0x2C and depth == 0:
+context-guard-kit/benchmark_runner.py:1580:            start = index + 1
+context-guard-kit/benchmark_runner.py:1581:    tail = body[start:].strip()
+context-guard-kit/benchmark_runner.py:1584:    projection: list[tuple[str, bytes]] = []
+context-guard-kit/benchmark_runner.py:1587:            parsed = json.loads(b"{" + member + b"}")
+context-guard-kit/benchmark_runner.py:1590:        if isinstance(parsed, dict) and set(parsed) == {"hooks"}:
+context-guard-kit/benchmark_runner.py:1592:        if not isinstance(parsed, dict) or len(parsed) != 1:
+context-guard-kit/benchmark_runner.py:1595:    return tuple(sorted(projection, key=lambda item: item[0]))
+context-guard-kit/benchmark_runner.py:1598:def _measurement_prune_registered_hooks(
+context-guard-kit/benchmark_runner.py:1601:    projected = json.loads(json.dumps(settings, ensure_ascii=False))
+context-guard-kit/benchmark_runner.py:1602:    hooks = projected.get("hooks")
+context-guard-kit/benchmark_runner.py:1604:        return projected
+context-guard-kit/benchmark_runner.py:1605:    commands_by_event: dict[str, set[str]] = {}
+context-guard-kit/benchmark_runner.py:1609:        registrations = hooks.get(event)
+context-guard-kit/benchmark_runner.py:1612:        retained_registrations: list[Any] = []
+context-guard-kit/benchmark_runner.py:1617:            retained_hooks = [
+context-guard-kit/benchmark_runner.py:1622:                registration["hooks"] = retained_hooks
+context-guard-kit/benchmark_runner.py:1625:            hooks[event] = retained_registrations
+context-guard-kit/benchmark_runner.py:1630:    return projected
+context-guard-kit/benchmark_runner.py:1633:def _measurement_validate_treatment_bindings(spec: MeasurementVariant) -> dict[str, Any]:
+context-guard-kit/benchmark_runner.py:1635:        return json.loads(json.dumps(spec.settings_payload, ensure_ascii=False))
+context-guard-kit/benchmark_runner.py:1636:    hooks = spec.settings_payload.get("hooks")
+context-guard-kit/benchmark_runner.py:1639:    binding_set = set(spec.registered_bindings)
+context-guard-kit/benchmark_runner.py:1640:    occurrences = {binding: 0 for binding in spec.registered_bindings}
+context-guard-kit/benchmark_runner.py:1642:        registrations = hooks.get(event)
+context-guard-kit/benchmark_runner.py:1649:                if not isinstance(hook, dict) or hook.get("type") != "command" or not isinstance(hook.get("command"), str):
+context-guard-kit/benchmark_runner.py:1651:                binding = (event, hook["command"])
+context-guard-kit/benchmark_runner.py:1654:                occurrences[binding] += 1
+context-guard-kit/benchmark_runner.py:1655:    if any(count != 1 for count in occurrences.values()):
+context-guard-kit/benchmark_runner.py:1657:    return _measurement_prune_registered_hooks(spec.settings_payload, spec.registered_bindings)
+context-guard-kit/benchmark_runner.py:1660:def _validate_measurement_variant_set(variants: list[Variant]) -> None:
+context-guard-kit/benchmark_runner.py:1661:    measured = [variant for variant in variants if variant.measurement is not None]
+context-guard-kit/benchmark_runner.py:1666:    if len(measured) != 2 or {variant.name for variant in measured} != {"baseline", "treatment"}:
+context-guard-kit/benchmark_runner.py:1668:    by_name = {variant.name: variant.measurement for variant in measured}
+context-guard-kit/benchmark_runner.py:1669:    baseline = by_name["baseline"]
+context-guard-kit/benchmark_runner.py:1670:    treatment = by_name["treatment"]
+context-guard-kit/benchmark_runner.py:1672:    derived_baseline = _measurement_validate_treatment_bindings(treatment)
+context-guard-kit/benchmark_runner.py:1674:        hooks = baseline.settings_payload.get("hooks", {})
+context-guard-kit/benchmark_runner.py:1682:    if baseline.settings_payload != derived_baseline:
+context-guard-kit/benchmark_runner.py:1684:    if _measurement_non_hook_source_members(baseline.settings_source_bytes) != _measurement_non_hook_source_members(treatment.settings_source_bytes):
+context-guard-kit/benchmark_runner.py:1688:    parity_projection: list[tuple[str, tuple[Any, ...]]] = []
+context-guard-kit/benchmark_runner.py:1690:        spec = variant.measurement
+context-guard-kit/benchmark_runner.py:1710:    if len({value for _, value in parity_projection}) != 1:
+context-guard-kit/benchmark_runner.py:1714:def validate_variant_extra_args(extra_args: list[str], *, owner: str) -> list[str]:
+context-guard-kit/benchmark_runner.py:1716:        flag = arg.split("=", 1)[0]
+context-guard-kit/benchmark_runner.py:1721:    return extra_args
+context-guard-kit/benchmark_runner.py:1724:def require_argv_safe_prompt(text: str, *, owner: str) -> str:
+context-guard-kit/benchmark_runner.py:1726:    size = len(text.encode("utf-8", errors="replace"))
+context-guard-kit/benchmark_runner.py:1732:    return text
+context-guard-kit/benchmark_runner.py:1735:def validate_variant_prompt_file_path(raw_path: str, *, owner: str) -> Path:
+context-guard-kit/benchmark_runner.py:1736:    """Return a safe relative prompt-file path, or fail before any file read."""
+context-guard-kit/benchmark_runner.py:1747:    rel_path = Path(raw_path)
+context-guard-kit/benchmark_runner.py:1750:    if not rel_path.parts or rel_path == Path("."):
+context-guard-kit/benchmark_runner.py:1754:    return rel_path
+context-guard-kit/benchmark_runner.py:1757:def validate_variant_prompt_file_references(
+context-guard-kit/benchmark_runner.py:1761:    """Validate variant prompt-file keys and paths without dereferencing files.
+context-guard-kit/benchmark_runner.py:1763:    Unknown variant keys and unsafe relative paths are rejected before any file
+context-guard-kit/benchmark_runner.py:1768:    variant labels, mapping keys, or unsafe paths. Unprofiled messages stay
+context-guard-kit/benchmark_runner.py:1771:    known_variants = {variant.name for variant in variants}
+context-guard-kit/benchmark_runner.py:1773:        profiled = task.evaluation_profile is not None
+context-guard-kit/benchmark_runner.py:1774:        unknown = sorted(set(task.variant_prompt_files) - known_variants)
+context-guard-kit/benchmark_runner.py:1788:            owner = (
+context-guard-kit/benchmark_runner.py:1794:                validate_variant_prompt_file_path(raw_path, owner=owner)
+context-guard-kit/benchmark_runner.py:1806:MAX_FIXTURE_TREE_FILES = 64
+context-guard-kit/benchmark_runner.py:1807:MAX_FIXTURE_TREE_FILE_BYTES = 262_144
+context-guard-kit/benchmark_runner.py:1808:MAX_FIXTURE_TREE_TOTAL_BYTES = 1_048_576
+context-guard-kit/benchmark_runner.py:1809:MAX_FIXTURE_TREE_DIRECTORIES = 64
+context-guard-kit/benchmark_runner.py:1810:MAX_FIXTURE_TREE_DEPTH = 6
+context-guard-kit/benchmark_runner.py:1811:FIXTURE_TREE_PATH_COMPONENT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+context-guard-kit/benchmark_runner.py:1814:def validate_fixture_tree_relpath(raw_path: str, *, owner: str, field: str) -> Path:
+context-guard-kit/benchmark_runner.py:1815:    """Return a safe relative fixture-tree path, or fail before any file read.
+context-guard-kit/benchmark_runner.py:1825:    if raw_path != raw_path.strip() or not raw_path:
+context-guard-kit/benchmark_runner.py:1829:    rel_path = Path(raw_path)
+context-guard-kit/benchmark_runner.py:1832:    if not rel_path.parts or rel_path == Path("."):
+context-guard-kit/benchmark_runner.py:1841:    return rel_path
+context-guard-kit/benchmark_runner.py:1844:def load_task_fixture_tree(
+context-guard-kit/benchmark_runner.py:1854:        return ()
+context-guard-kit/benchmark_runner.py:1855:    owner = f"task {task.id}"
+context-guard-kit/benchmark_runner.py:1856:    rel_root = validate_fixture_tree_relpath(
+context-guard-kit/benchmark_runner.py:1857:        task.fixture_tree, owner=owner, field="fixture_tree",
+context-guard-kit/benchmark_runner.py:1859:    root = task_file_dir / rel_root
+context-guard-kit/benchmark_runner.py:1860:    entries: list[FixtureTreeEntry] = []
+context-guard-kit/benchmark_runner.py:1861:    total_bytes = 0
+context-guard-kit/benchmark_runner.py:1862:    directories = 0
+context-guard-kit/benchmark_runner.py:1863:    pending: list[tuple[Path, str]] = [(root, "")]
+context-guard-kit/benchmark_runner.py:1865:        current, prefix = pending.pop()
+context-guard-kit/benchmark_runner.py:1866:        directories += 1
+context-guard-kit/benchmark_runner.py:1876:            dir_fd = _ensure_directory_no_symlink(current)
+context-guard-kit/benchmark_runner.py:1880:            names = sorted(os.listdir(dir_fd))
+context-guard-kit/benchmark_runner.py:1890:            child = current / name
+context-guard-kit/benchmark_runner.py:1891:            rel = f"{prefix}{name}"
+context-guard-kit/benchmark_runner.py:1900:                fd = _open_regular_no_symlink(child)
+context-guard-kit/benchmark_runner.py:1904:                stat_result = os.fstat(fd)
+context-guard-kit/benchmark_runner.py:1912:                chunks: list[bytes] = []
+context-guard-kit/benchmark_runner.py:1913:                remaining = MAX_FIXTURE_TREE_FILE_BYTES + 1
+context-guard-kit/benchmark_runner.py:1915:                    chunk = os.read(fd, remaining)
+context-guard-kit/benchmark_runner.py:1919:                    remaining -= len(chunk)
+context-guard-kit/benchmark_runner.py:1920:                data = b"".join(chunks)
+context-guard-kit/benchmark_runner.py:1928:            total_bytes += len(data)
+context-guard-kit/benchmark_runner.py:1935:                path=rel,
+context-guard-kit/benchmark_runner.py:1936:                data=data,
+context-guard-kit/benchmark_runner.py:1937:                executable=bool(stat_result.st_mode & 0o111),
+context-guard-kit/benchmark_runner.py:1945:    ordered = tuple(sorted(entries, key=lambda entry: entry.path))
+context-guard-kit/benchmark_runner.py:1946:    if any(entry.path == "check.py" for entry in ordered):
+context-guard-kit/benchmark_runner.py:1951:    return ordered
+context-guard-kit/benchmark_runner.py:1954:def load_task_success_checker(task: TaskFixture, task_file_dir: Path) -> bytes:
+context-guard-kit/benchmark_runner.py:1962:        return b""
+context-guard-kit/benchmark_runner.py:1963:    owner = f"task {task.id}"
+context-guard-kit/benchmark_runner.py:1964:    rel = validate_fixture_tree_relpath(
+context-guard-kit/benchmark_runner.py:1965:        task.success_checker, owner=owner, field="success_checker",
+context-guard-kit/benchmark_runner.py:1968:        tree_root = validate_fixture_tree_relpath(
+context-guard-kit/benchmark_runner.py:1969:            task.fixture_tree, owner=owner, field="fixture_tree",
+context-guard-kit/benchmark_runner.py:1971:        if rel.parts[:len(tree_root.parts)] == tree_root.parts:
+context-guard-kit/benchmark_runner.py:1976:    path = task_file_dir / rel
+context-guard-kit/benchmark_runner.py:1978:        fd = _open_regular_no_symlink(path)
+context-guard-kit/benchmark_runner.py:1984:        chunks: list[bytes] = []
+context-guard-kit/benchmark_runner.py:1985:        remaining = MAX_FIXTURE_TREE_FILE_BYTES + 1
+context-guard-kit/benchmark_runner.py:1987:            chunk = os.read(fd, remaining)
+context-guard-kit/benchmark_runner.py:1991:            remaining -= len(chunk)
+context-guard-kit/benchmark_runner.py:1994:    data = b"".join(chunks)
+context-guard-kit/benchmark_runner.py:1999:    return data
+context-guard-kit/benchmark_runner.py:2002:def load_task_fixture_trees(
+context-guard-kit/benchmark_runner.py:2009:        task.fixture_tree_entries = load_task_fixture_tree(task, task_file_dir)
+context-guard-kit/benchmark_runner.py:2010:        task.success_checker_bytes = load_task_success_checker(task, task_file_dir)
+context-guard-kit/benchmark_runner.py:2013:def fixture_tree_manifest_files(
+context-guard-kit/benchmark_runner.py:2016:    return [
+context-guard-kit/benchmark_runner.py:2027:def fixture_tree_sha256(entries: Sequence[FixtureTreeEntry]) -> str:
+context-guard-kit/benchmark_runner.py:2029:    return hashlib.sha256(
+context-guard-kit/benchmark_runner.py:2033:            ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
+context-guard-kit/benchmark_runner.py:2038:def reset_task_fixture_tree(
+context-guard-kit/benchmark_runner.py:2051:    for child in sorted(workspace.iterdir(), key=lambda path: path.name):
+context-guard-kit/benchmark_runner.py:2059:        rel = Path(entry.path)
+context-guard-kit/benchmark_runner.py:2060:        target_dir = workspace
+context-guard-kit/benchmark_runner.py:2062:            target_dir = target_dir / part
+context-guard-kit/benchmark_runner.py:2066:                target_dir.mkdir(mode=0o700)
+context-guard-kit/benchmark_runner.py:2067:        target = target_dir / rel.parts[-1]
+context-guard-kit/benchmark_runner.py:2068:        mode = 0o700 if entry.executable else 0o600
+context-guard-kit/benchmark_runner.py:2069:        fd = os.open(
+context-guard-kit/benchmark_runner.py:2076:            view = memoryview(entry.data)
+context-guard-kit/benchmark_runner.py:2077:            written = 0
+context-guard-kit/benchmark_runner.py:2079:                chunk = os.write(fd, view[written:])
+context-guard-kit/benchmark_runner.py:2080:                if chunk <= 0:
+context-guard-kit/benchmark_runner.py:2082:                written += chunk
+context-guard-kit/benchmark_runner.py:2088:def read_variant_prompt_file(path: Path, *, owner: str, display_path: str | None = None) -> str:
+context-guard-kit/benchmark_runner.py:2090:    label = display_path or path.name
+context-guard-kit/benchmark_runner.py:2092:        fd = _open_regular_no_symlink(path)
+context-guard-kit/benchmark_runner.py:2094:        detail = exc.strerror or exc.__class__.__name__
+context-guard-kit/benchmark_runner.py:2097:        size = os.fstat(fd).st_size
+context-guard-kit/benchmark_runner.py:2105:                fd = -1
+context-guard-kit/benchmark_runner.py:2106:                raw = handle.read(MAX_VARIANT_PROMPT_FILE_BYTES + 1)
+context-guard-kit/benchmark_runner.py:2108:            detail = exc.strerror or exc.__class__.__name__
+context-guard-kit/benchmark_runner.py:2111:        if fd != -1:
+context-guard-kit/benchmark_runner.py:2119:        text = raw.decode("utf-8")
+context-guard-kit/benchmark_runner.py:2125:    return require_argv_safe_prompt(text, owner=f"{owner} variant_prompt_files")
+context-guard-kit/benchmark_runner.py:2128:def load_variant_prompt_files_for_targets(
+context-guard-kit/benchmark_runner.py:2135:        raw_path = task.variant_prompt_files.get(variant.name)
+context-guard-kit/benchmark_runner.py:2138:        rel_path = validate_variant_prompt_file_path(
+context-guard-kit/benchmark_runner.py:2140:            owner=f"task {task.id} variant {variant.name}",
+context-guard-kit/benchmark_runner.py:2142:        task.variant_prompt_texts[variant.name] = read_variant_prompt_file(
+context-guard-kit/benchmark_runner.py:2144:            owner=f"task {task.id} variant {variant.name}",
+context-guard-kit/benchmark_runner.py:2145:            display_path=str(rel_path),
+context-guard-kit/benchmark_runner.py:2149:def normalize_usage_token(value: Any) -> int | None:
+context-guard-kit/benchmark_runner.py:2150:    """Return a safe non-negative token count, or None for invalid metrics."""
+context-guard-kit/benchmark_runner.py:2152:        return None
+context-guard-kit/benchmark_runner.py:2154:        numeric = float(value)
+context-guard-kit/benchmark_runner.py:2156:        return None
+context-guard-kit/benchmark_runner.py:2157:    if not math.isfinite(numeric) or numeric < 0 or numeric > MAX_USAGE_TOKEN_COUNT:
+context-guard-kit/benchmark_runner.py:2158:        return None
+context-guard-kit/benchmark_runner.py:2159:    return int(numeric)
+context-guard-kit/benchmark_runner.py:2162:def normalize_usage_cost(value: Any) -> float | None:
+context-guard-kit/benchmark_runner.py:2163:    """Return a safe non-negative cost value, or None for invalid metrics."""
+context-guard-kit/benchmark_runner.py:2165:        return None
+context-guard-kit/benchmark_runner.py:2167:        numeric = float(value)
+context-guard-kit/benchmark_runner.py:2169:        return None
+context-guard-kit/benchmark_runner.py:2171:        return None
+context-guard-kit/benchmark_runner.py:2172:    return numeric
+context-guard-kit/benchmark_runner.py:2175:def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[TaskFixture]:
+context-guard-kit/benchmark_runner.py:2176:    raw = json.loads(_read_text_no_follow(path))
+context-guard-kit/benchmark_runner.py:2179:    fixtures: list[TaskFixture] = []
+context-guard-kit/benchmark_runner.py:2184:        # 지원 프로파일의 구조 오류는 raw KeyError 가 아니라 안정적인 프로파일 거부로 끝낸다.
+context-guard-kit/benchmark_runner.py:2185:        evaluation_profile = item.get("evaluation_profile")
+context-guard-kit/benchmark_runner.py:2186:        profiled = evaluation_profile is not None
+context-guard-kit/benchmark_runner.py:2194:            raise KeyError("id")
+context-guard-kit/benchmark_runner.py:2195:        task_id = str(item["id"])
+context-guard-kit/benchmark_runner.py:2196:        owner = profile_owner(task_id) if profiled else f"task {task_id}"
+context-guard-kit/benchmark_runner.py:2207:            detail = "variant_prompts is not supported; use file-backed variant_prompt_files"
+context-guard-kit/benchmark_runner.py:2211:        effort_raw = item.get("effort")
+context-guard-kit/benchmark_runner.py:2212:        budget_raw = item.get("max_budget_usd")
+context-guard-kit/benchmark_runner.py:2215:                budget = float(budget_raw)
+context-guard-kit/benchmark_runner.py:2217:                detail = "max_budget_usd must be number or null"
+context-guard-kit/benchmark_runner.py:2221:            if not math.isfinite(budget) or budget <= 0:
+context-guard-kit/benchmark_runner.py:2222:                detail = "max_budget_usd must be finite and > 0 (use null for unlimited)"
+context-guard-kit/benchmark_runner.py:2227:            budget = None
+context-guard-kit/benchmark_runner.py:2229:        # 있으므로, 구조 필드 오류(파서 SystemExit·필수 prompt 누락 KeyError)를 안정적인
+context-guard-kit/benchmark_runner.py:2232:            max_turns = parse_positive_int(
+context-guard-kit/benchmark_runner.py:2233:                item.get("max_turns", 3), field="max_turns", owner=owner,
+context-guard-kit/benchmark_runner.py:2235:            output_format = item.get("output_format", "json")
+context-guard-kit/benchmark_runner.py:2238:            allowed_tools = parse_string_list(
+context-guard-kit/benchmark_runner.py:2240:                field="allowed_tools",
+context-guard-kit/benchmark_runner.py:2241:                owner=owner,
+context-guard-kit/benchmark_runner.py:2243:            variant_prompt_files = parse_string_map(
+context-guard-kit/benchmark_runner.py:2245:                field="variant_prompt_files",
+context-guard-kit/benchmark_runner.py:2246:                owner=owner,
+context-guard-kit/benchmark_runner.py:2248:            prompt = str(item["prompt"])
+context-guard-kit/benchmark_runner.py:2249:            fixture_tree_raw = item.get("fixture_tree")
+context-guard-kit/benchmark_runner.py:2250:            success_checker_raw = item.get("success_checker")
+context-guard-kit/benchmark_runner.py:2255:                    fixture_tree_raw, owner=owner, field="fixture_tree",
+context-guard-kit/benchmark_runner.py:2260:                    success_checker_raw, owner=owner, field="success_checker",
+context-guard-kit/benchmark_runner.py:2267:                if str(item.get("success_cwd", ".")) != ".":
+context-guard-kit/benchmark_runner.py:2272:        except (SystemExit, KeyError):
+context-guard-kit/benchmark_runner.py:2281:            evaluation_profile=evaluation_profile,
+context-guard-kit/benchmark_runner.py:2282:            id=task_id,
+context-guard-kit/benchmark_runner.py:2283:            prompt=prompt,
+context-guard-kit/benchmark_runner.py:2284:            model=str(item.get("model", "sonnet")),
+context-guard-kit/benchmark_runner.py:2285:            effort=str(effort_raw) if effort_raw is not None else None,
+context-guard-kit/benchmark_runner.py:2286:            max_turns=max_turns,
+context-guard-kit/benchmark_runner.py:2287:            max_budget_usd=budget,
+context-guard-kit/benchmark_runner.py:2288:            output_format=output_format,
+context-guard-kit/benchmark_runner.py:2289:            allowed_tools=allowed_tools,
+context-guard-kit/benchmark_runner.py:2290:            success_command=item.get("success_command"),
+context-guard-kit/benchmark_runner.py:2291:            success_cwd=str(item.get("success_cwd", ".")),
+context-guard-kit/benchmark_runner.py:2292:            variant_prompt_files=variant_prompt_files,
+context-guard-kit/benchmark_runner.py:2293:            fixture_tree=str(fixture_tree_raw) if fixture_tree_raw is not None else None,
+context-guard-kit/benchmark_runner.py:2294:            success_checker=(
+context-guard-kit/benchmark_runner.py:2300:    return fixtures
+context-guard-kit/benchmark_runner.py:2303:def parse_variants(path: Path) -> list[Variant]:
+context-guard-kit/benchmark_runner.py:2304:    raw = _load_measurement_json(path, owner="variants file")
+context-guard-kit/benchmark_runner.py:2307:    variants: list[Variant] = []
+context-guard-kit/benchmark_runner.py:2312:            unknown = sorted(set(item) - {"name", "extra_args", "measurement"})
+context-guard-kit/benchmark_runner.py:2314:                raise SystemExit(f"measurement variant has unknown key(s): {', '.join(unknown)}")
+context-guard-kit/benchmark_runner.py:2315:        name = str(item["name"])
+context-guard-kit/benchmark_runner.py:2316:        extra_args = validate_variant_extra_args(
+context-guard-kit/benchmark_runner.py:2319:                field="extra_args",
+context-guard-kit/benchmark_runner.py:2320:                owner=f"variant {name}",
+context-guard-kit/benchmark_runner.py:2322:            owner=f"variant {name}",
+context-guard-kit/benchmark_runner.py:2326:                flag = arg.split("=", 1)[0]
+context-guard-kit/benchmark_runner.py:2334:            name=name,
+context-guard-kit/benchmark_runner.py:2335:            extra_args=extra_args,
+context-guard-kit/benchmark_runner.py:2336:            measurement=(
+context-guard-kit/benchmark_runner.py:2339:                    owner=f"variant {name}.measurement",
+context-guard-kit/benchmark_runner.py:2340:                    variant_name=name,
+context-guard-kit/benchmark_runner.py:2341:                    base_dir=path.parent,
+context-guard-kit/benchmark_runner.py:2347:    return variants
+context-guard-kit/benchmark_runner.py:2350:def collect_usage(payload: Any) -> tuple[dict[str, int], float, bool, bool]:
+context-guard-kit/benchmark_runner.py:2351:    """`claude -p --output-format json` 응답에서 token / cost 추출.
+context-guard-kit/benchmark_runner.py:2358:    tokens: dict[str, int] = {key: 0 for key, _ in USAGE_KEY_GROUPS}
+context-guard-kit/benchmark_runner.py:2359:    seen_token: dict[str, bool] = {key: False for key, _ in USAGE_KEY_GROUPS}
+context-guard-kit/benchmark_runner.py:2360:    cost = 0.0
+context-guard-kit/benchmark_runner.py:2361:    seen_cost = False
+context-guard-kit/benchmark_runner.py:2363:    queue: collections.deque[Any] = collections.deque([payload])
+context-guard-kit/benchmark_runner.py:2365:        cur = queue.popleft()
+context-guard-kit/benchmark_runner.py:2367:            for bucket, keys in USAGE_KEY_GROUPS:
+context-guard-kit/benchmark_runner.py:2368:                if seen_token[bucket]:
+context-guard-kit/benchmark_runner.py:2370:                for key in keys:
+context-guard-kit/benchmark_runner.py:2371:                    token_count = normalize_usage_token(cur.get(key))
+context-guard-kit/benchmark_runner.py:2372:                    if token_count is not None:
+context-guard-kit/benchmark_runner.py:2373:                        tokens[bucket] = token_count
+context-guard-kit/benchmark_runner.py:2374:                        seen_token[bucket] = True
+context-guard-kit/benchmark_runner.py:2377:                for key in COST_KEYS:
+context-guard-kit/benchmark_runner.py:2378:                    cost_value = normalize_usage_cost(cur.get(key))
+context-guard-kit/benchmark_runner.py:2380:                        cost = cost_value
+context-guard-kit/benchmark_runner.py:2381:                        seen_cost = True
+context-guard-kit/benchmark_runner.py:2386:    # Token-savings claims require a comparable primary-token total.  Cache
+context-guard-kit/benchmark_runner.py:2391:    primary_tokens_measured = seen_token["input_tokens"] and seen_token["output_tokens"]
+context-guard-kit/benchmark_runner.py:2392:    return tokens, cost, seen_cost, primary_tokens_measured
+context-guard-kit/benchmark_runner.py:2395:def collect_provider_cache_telemetry(payload: Any) -> tuple[int, bool]:
+context-guard-kit/benchmark_runner.py:2396:    """Extract provider-specific prompt-cache telemetry without changing token totals.
+context-guard-kit/benchmark_runner.py:2398:    OpenAI-style responses expose cached prompt tokens under
+context-guard-kit/benchmark_runner.py:2399:    `usage.prompt_tokens_details.cached_tokens`.  That number is useful cache
+context-guard-kit/benchmark_runner.py:2400:    telemetry, but `prompt_tokens` may already include cached tokens, so keep it
+context-guard-kit/benchmark_runner.py:2401:    separate from the primary token buckets and from ContextGuard savings claims.
+context-guard-kit/benchmark_runner.py:2402:    Anthropic-style `cache_read_input_tokens` remains in the normal `cache_read`
+context-guard-kit/benchmark_runner.py:2405:    queue: collections.deque[Any] = collections.deque([payload])
+context-guard-kit/benchmark_runner.py:2407:        cur = queue.popleft()
+context-guard-kit/benchmark_runner.py:2409:            for details_key in PROVIDER_CACHE_DETAIL_KEYS:
+context-guard-kit/benchmark_runner.py:2410:                details = cur.get(details_key)
+context-guard-kit/benchmark_runner.py:2413:                for cached_key in PROVIDER_CACHED_TOKEN_KEYS:
+context-guard-kit/benchmark_runner.py:2414:                    cached = normalize_usage_token(details.get(cached_key))
+context-guard-kit/benchmark_runner.py:2416:                        return cached, True
+context-guard-kit/benchmark_runner.py:2420:    return 0, False
+context-guard-kit/benchmark_runner.py:2423:def collect_provider_cached_tokens(payload: Any) -> int:
+context-guard-kit/benchmark_runner.py:2424:    """Return cached-token telemetry value for callers that only need the count."""
+context-guard-kit/benchmark_runner.py:2425:    cached_tokens, _measured = collect_provider_cache_telemetry(payload)
+context-guard-kit/benchmark_runner.py:2426:    return cached_tokens
+context-guard-kit/benchmark_runner.py:2429:def elapsed_seconds_since(start: float) -> float:
+context-guard-kit/benchmark_runner.py:2430:    return max(0.0, time.monotonic() - start)
+context-guard-kit/benchmark_runner.py:2433:def first_normalized_token(cur: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+context-guard-kit/benchmark_runner.py:2434:    for key in keys:
+context-guard-kit/benchmark_runner.py:2435:        value = normalize_usage_token(cur.get(key))
+context-guard-kit/benchmark_runner.py:2437:            return value
+context-guard-kit/benchmark_runner.py:2438:    return None
+context-guard-kit/benchmark_runner.py:2441:def first_normalized_cost(cur: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+context-guard-kit/benchmark_runner.py:2442:    for key in keys:
+context-guard-kit/benchmark_runner.py:2443:        value = normalize_usage_cost(cur.get(key))
+context-guard-kit/benchmark_runner.py:2445:            return value
+context-guard-kit/benchmark_runner.py:2446:    return None
+context-guard-kit/benchmark_runner.py:2449:def contains_external_source_tokens(value: Any) -> bool:
+context-guard-kit/benchmark_runner.py:2450:    queue: collections.deque[Any] = collections.deque([value])
+context-guard-kit/benchmark_runner.py:2452:        cur = queue.popleft()
+context-guard-kit/benchmark_runner.py:2454:            for _source, token_keys, _cost_keys in EXTERNAL_SOURCE_KEY_GROUPS:
+context-guard-kit/benchmark_runner.py:2455:                if first_normalized_token(cur, token_keys) is not None:
+context-guard-kit/benchmark_runner.py:2456:                    return True
+context-guard-kit/benchmark_runner.py:2460:    return False
+context-guard-kit/benchmark_runner.py:2463:def collect_shift_metrics(payload: Any) -> dict[str, int | float | bool]:
+context-guard-kit/benchmark_runner.py:2467:    aggregate (`external_tokens` + `external_cost_usd`) or as explicit source
+context-guard-kit/benchmark_runner.py:2469:    shapes: if an aggregate token count exists, it is authoritative; otherwise
+context-guard-kit/benchmark_runner.py:2470:    sum only source-token records and mark cost measured only when every
+context-guard-kit/benchmark_runner.py:2471:    positive source-token record carries its matching source cost.
+context-guard-kit/benchmark_runner.py:2473:    metrics: dict[str, int | float | bool] = {key: 0 for key, _ in SHIFT_METRIC_KEY_GROUPS}
+context-guard-kit/benchmark_runner.py:2474:    seen: dict[str, bool] = {key: False for key, _ in SHIFT_METRIC_KEY_GROUPS}
+context-guard-kit/benchmark_runner.py:2475:    aggregate_tokens: int | None = None
+context-guard-kit/benchmark_runner.py:2476:    aggregate_cost = 0.0
+context-guard-kit/benchmark_runner.py:2477:    aggregate_cost_measured = False
+context-guard-kit/benchmark_runner.py:2478:    source_tokens = 0
+context-guard-kit/benchmark_runner.py:2479:    source_tokens_measured = False
+context-guard-kit/benchmark_runner.py:2480:    source_cost = 0.0
+context-guard-kit/benchmark_runner.py:2481:    source_cost_covered = True
+context-guard-kit/benchmark_runner.py:2482:    metrics["external_cost_usd"] = 0.0
+context-guard-kit/benchmark_runner.py:2483:    metrics["external_cost_measured"] = False
+context-guard-kit/benchmark_runner.py:2484:    metrics["external_tokens"] = 0
+context-guard-kit/benchmark_runner.py:2485:    metrics["external_tokens_measured"] = False
+context-guard-kit/benchmark_runner.py:2486:    queue: collections.deque[Any] = collections.deque([payload])
+context-guard-kit/benchmark_runner.py:2488:        cur = queue.popleft()
+context-guard-kit/benchmark_runner.py:2490:            for bucket, keys in SHIFT_METRIC_KEY_GROUPS:
+context-guard-kit/benchmark_runner.py:2493:                value = first_normalized_token(cur, keys)
+context-guard-kit/benchmark_runner.py:2495:                    metrics[bucket] = value
+context-guard-kit/benchmark_runner.py:2496:                    seen[bucket] = True
+context-guard-kit/benchmark_runner.py:2498:            if aggregate_tokens is None:
+context-guard-kit/benchmark_runner.py:2499:                value = first_normalized_token(cur, EXTERNAL_TOKEN_AGGREGATE_KEYS)
+context-guard-kit/benchmark_runner.py:2501:                    aggregate_tokens = value
+context-guard-kit/benchmark_runner.py:2502:                    cost = first_normalized_cost(cur, EXTERNAL_COST_AGGREGATE_KEYS)
+context-guard-kit/benchmark_runner.py:2504:                        aggregate_cost = cost
+context-guard-kit/benchmark_runner.py:2505:                        aggregate_cost_measured = True
+context-guard-kit/benchmark_runner.py:2507:            source_values = [
+context-guard-kit/benchmark_runner.py:2508:                (value, cost_keys)
+context-guard-kit/benchmark_runner.py:2509:                for _source, token_keys, cost_keys in EXTERNAL_SOURCE_KEY_GROUPS
+context-guard-kit/benchmark_runner.py:2510:                for value in [first_normalized_token(cur, token_keys)]
+context-guard-kit/benchmark_runner.py:2513:            if source_values and not any(contains_external_source_tokens(value) for value in cur.values()):
+context-guard-kit/benchmark_runner.py:2514:                for value, cost_keys in source_values:
+context-guard-kit/benchmark_runner.py:2515:                    source_tokens += value
+context-guard-kit/benchmark_runner.py:2516:                    source_tokens_measured = True
+context-guard-kit/benchmark_runner.py:2517:                    cost = first_normalized_cost(cur, cost_keys)
+context-guard-kit/benchmark_runner.py:2519:                        source_cost += cost
+context-guard-kit/benchmark_runner.py:2521:                        source_cost_covered = False
+context-guard-kit/benchmark_runner.py:2526:    if aggregate_tokens is not None:
+context-guard-kit/benchmark_runner.py:2527:        metrics["external_tokens"] = aggregate_tokens
+context-guard-kit/benchmark_runner.py:2528:        metrics["external_tokens_measured"] = True
+context-guard-kit/benchmark_runner.py:2529:        metrics["external_cost_usd"] = aggregate_cost if aggregate_cost_measured else 0.0
+context-guard-kit/benchmark_runner.py:2530:        metrics["external_cost_measured"] = aggregate_cost_measured
+context-guard-kit/benchmark_runner.py:2531:    elif source_tokens_measured:
+context-guard-kit/benchmark_runner.py:2532:        metrics["external_tokens"] = source_tokens
+context-guard-kit/benchmark_runner.py:2533:        metrics["external_tokens_measured"] = True
+context-guard-kit/benchmark_runner.py:2534:        metrics["external_cost_usd"] = source_cost
+context-guard-kit/benchmark_runner.py:2535:        metrics["external_cost_measured"] = source_cost_covered
+context-guard-kit/benchmark_runner.py:2536:    return metrics
+context-guard-kit/benchmark_runner.py:2539:def normalize_self_hosted_metric(value: Any, *, maximum: float) -> float | None:
+context-guard-kit/benchmark_runner.py:2541:        return None
+context-guard-kit/benchmark_runner.py:2542:    number = float(value)
+context-guard-kit/benchmark_runner.py:2544:        return None
+context-guard-kit/benchmark_runner.py:2545:    return number
+context-guard-kit/benchmark_runner.py:2548:def sanitize_self_hosted_label(value: Any) -> str | None:
+context-guard-kit/benchmark_runner.py:2550:        return None
+context-guard-kit/benchmark_runner.py:2551:    text = sanitize_note_text(value)
+context-guard-kit/benchmark_runner.py:2553:        return None
+context-guard-kit/benchmark_runner.py:2555:        text = text[:MAX_SELF_HOSTED_LABEL_CHARS - 12].rstrip() + "…[truncated]"
+context-guard-kit/benchmark_runner.py:2556:    return text
+context-guard-kit/benchmark_runner.py:2559:def normalize_self_hosted_metrics(raw: Any, *, source: str) -> dict[str, Any] | None:
+context-guard-kit/benchmark_runner.py:2561:        return None
+context-guard-kit/benchmark_runner.py:2562:    metrics: dict[str, float] = {}
+context-guard-kit/benchmark_runner.py:2563:    labels: dict[str, str] = {}
+context-guard-kit/benchmark_runner.py:2564:    availability = {
+context-guard-kit/benchmark_runner.py:2569:    latency = normalize_self_hosted_metric(raw.get("latency_ms"), maximum=MAX_SELF_HOSTED_LATENCY_MS)
+context-guard-kit/benchmark_runner.py:2571:        metrics["latency_ms"] = latency
+context-guard-kit/benchmark_runner.py:2572:        availability["latency_ms"] = True
+context-guard-kit/benchmark_runner.py:2573:    peak_memory = normalize_self_hosted_metric(raw.get("peak_memory_mb"), maximum=MAX_SELF_HOSTED_MEMORY_MB)
+context-guard-kit/benchmark_runner.py:2575:        metrics["peak_memory_mb"] = peak_memory
+context-guard-kit/benchmark_runner.py:2576:        availability["peak_memory_mb"] = True
+context-guard-kit/benchmark_runner.py:2577:    quality = normalize_self_hosted_metric(raw.get("quality_score"), maximum=1.0)
+context-guard-kit/benchmark_runner.py:2579:        metrics["quality_score"] = quality
+context-guard-kit/benchmark_runner.py:2580:        availability["quality_score"] = True
+context-guard-kit/benchmark_runner.py:2581:    for key in ("model_server", "optimization", "quality_metric"):
+context-guard-kit/benchmark_runner.py:2582:        label = sanitize_self_hosted_label(raw.get(key))
+context-guard-kit/benchmark_runner.py:2584:            labels[key] = label
+context-guard-kit/benchmark_runner.py:2586:        return None
+context-guard-kit/benchmark_runner.py:2587:    return {
+context-guard-kit/benchmark_runner.py:2595:            "hosted_api_token_savings_claim_allowed": False,
+context-guard-kit/benchmark_runner.py:2600:                "are not hosted API token or cost telemetry."
+context-guard-kit/benchmark_runner.py:2606:def collect_self_hosted_metrics(payload: Any) -> dict[str, Any] | None:
+context-guard-kit/benchmark_runner.py:2607:    """Collect explicit self-hosted metric sidecars without broad key inference.
+context-guard-kit/benchmark_runner.py:2610:    from incidental keys like `self_hosted_latency_ms` or arbitrary nested model
+context-guard-kit/benchmark_runner.py:2615:        return None
+context-guard-kit/benchmark_runner.py:2616:    candidates = [
+context-guard-kit/benchmark_runner.py:2618:            payload.get(SELF_HOSTED_METRICS_KEY),
+context-guard-kit/benchmark_runner.py:2619:            f"explicit_provider_payload.{SELF_HOSTED_METRICS_KEY}",
+context-guard-kit/benchmark_runner.py:2622:    metrics_envelope = payload.get("metrics")
+context-guard-kit/benchmark_runner.py:2625:            metrics_envelope.get(SELF_HOSTED_METRICS_KEY),
+context-guard-kit/benchmark_runner.py:2626:            f"explicit_provider_payload.metrics.{SELF_HOSTED_METRICS_KEY}",
+context-guard-kit/benchmark_runner.py:2629:        normalized = normalize_self_hosted_metrics(raw, source=source)
+context-guard-kit/benchmark_runner.py:2631:            return normalized
+context-guard-kit/benchmark_runner.py:2632:    return None
+context-guard-kit/benchmark_runner.py:2635:def _measurement_child_env(spec: MeasurementVariant, context: MeasurementRunContext | None = None) -> dict[str, str]:
+context-guard-kit/benchmark_runner.py:2636:    env: dict[str, str] = {}
+context-guard-kit/benchmark_runner.py:2639:        # rejected auth/secret-shaped names.
+context-guard-kit/benchmark_runner.py:2641:            env[name] = os.environ[name]
+context-guard-kit/benchmark_runner.py:2644:        env["PATH"] = os.defpath
+context-guard-kit/benchmark_runner.py:2655:    return env
+context-guard-kit/benchmark_runner.py:2659:def _measurement_preflight_env(spec: MeasurementVariant) -> Any:
+context-guard-kit/benchmark_runner.py:2660:    with tempfile.TemporaryDirectory(prefix="contextguard-bench-preflight-") as tmp:
+context-guard-kit/benchmark_runner.py:2661:        root = Path(tmp)
+context-guard-kit/benchmark_runner.py:2662:        names = {
+context-guard-kit/benchmark_runner.py:2673:            path.mkdir(mode=0o700)
+context-guard-kit/benchmark_runner.py:2674:        context = MeasurementRunContext(
+context-guard-kit/benchmark_runner.py:2675:            run_id="preflight",
+context-guard-kit/benchmark_runner.py:2676:            run_root=root,
+context-guard-kit/benchmark_runner.py:2677:            home=names["home"],
+context-guard-kit/benchmark_runner.py:2678:            xdg_config=names["xdg-config"],
+context-guard-kit/benchmark_runner.py:2679:            xdg_cache=names["xdg-cache"],
+context-guard-kit/benchmark_runner.py:2680:            xdg_data=names["xdg-data"],
+context-guard-kit/benchmark_runner.py:2681:            xdg_state=names["xdg-state"],
+context-guard-kit/benchmark_runner.py:2682:            tmp=names["tmp"],
+context-guard-kit/benchmark_runner.py:2683:            workspace=names["workspace"],
+context-guard-kit/benchmark_runner.py:2684:            session=names["session"],
+context-guard-kit/benchmark_runner.py:2685:            raw_path=root / "raw.ndjson",
+context-guard-kit/benchmark_runner.py:2686:            receipt_path=root / "receipt.json",
+context-guard-kit/benchmark_runner.py:2687:            index_path=root / "artifact-index.ndjson",
+context-guard-kit/benchmark_runner.py:2692:def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVariant) -> None:
+context-guard-kit/benchmark_runner.py:2693:    executable = executable_argv0(claude_bin)
+context-guard-kit/benchmark_runner.py:2696:            proc = run_bounded_command(
+context-guard-kit/benchmark_runner.py:2698:                cwd=cwd,
+context-guard-kit/benchmark_runner.py:2699:                timeout_seconds=10,
+context-guard-kit/benchmark_runner.py:2700:                max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+context-guard-kit/benchmark_runner.py:2701:                env=env,
+context-guard-kit/benchmark_runner.py:2705:    if proc.returncode != 0 or proc.timed_out or proc.output_truncated:
+context-guard-kit/benchmark_runner.py:2707:    help_text = f"{proc.stdout}\n{proc.stderr}"
+context-guard-kit/benchmark_runner.py:2708:    capability_tokens = set(re.findall(r"--[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", help_text))
+context-guard-kit/benchmark_runner.py:2709:    missing = [capability for capability in spec.cli_capabilities if capability not in capability_tokens]
+context-guard-kit/benchmark_runner.py:2714:def claude_version(claude_bin: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> str:
+context-guard-kit/benchmark_runner.py:2716:        proc = run_bounded_command(
+context-guard-kit/benchmark_runner.py:2718:            cwd=cwd or Path.cwd(),
+context-guard-kit/benchmark_runner.py:2719:            timeout_seconds=5,
+context-guard-kit/benchmark_runner.py:2720:            max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+context-guard-kit/benchmark_runner.py:2721:            env=env,
+context-guard-kit/benchmark_runner.py:2723:        return proc.stdout.strip().splitlines()[0] if proc.stdout else "unknown"
+context-guard-kit/benchmark_runner.py:2725:        return "unknown"
+context-guard-kit/benchmark_runner.py:2728:def build_claude_argv(
+context-guard-kit/benchmark_runner.py:2733:    measurement_settings_file: Path | None = None,
+context-guard-kit/benchmark_runner.py:2738:    이렇게 해야 baseline variant 의 실제 의미(=defaults 그대로)가 implicit
+context-guard-kit/benchmark_runner.py:2741:    output_format = "stream-json" if variant.measurement is not None else task.output_format
+context-guard-kit/benchmark_runner.py:2742:    argv = [claude_bin, "-p", "--model", task.model,
+context-guard-kit/benchmark_runner.py:2744:    if output_format == "stream-json":
+context-guard-kit/benchmark_runner.py:2753:        spec = variant.measurement
+context-guard-kit/benchmark_runner.py:2762:    prompt = require_argv_safe_prompt(
+context-guard-kit/benchmark_runner.py:2764:        owner=f"task {task.id} variant {variant.name}",
+context-guard-kit/benchmark_runner.py:2767:    return argv
+context-guard-kit/benchmark_runner.py:2770:def executable_argv0(command: str) -> str:
+context-guard-kit/benchmark_runner.py:2771:    resolved = shutil.which(command)
+context-guard-kit/benchmark_runner.py:2773:        return str(Path(resolved).expanduser().resolve())
+context-guard-kit/benchmark_runner.py:2774:    path = Path(command).expanduser()
+context-guard-kit/benchmark_runner.py:2776:        return str(path)
+context-guard-kit/benchmark_runner.py:2777:    return str(path.resolve())
+context-guard-kit/benchmark_runner.py:2780:def _signal_process_group(proc: subprocess.Popen[bytes], sig: int, pgid: int | None) -> None:
+context-guard-kit/benchmark_runner.py:2790:        if sig == signal.SIGKILL:
+context-guard-kit/benchmark_runner.py:2798:def run_bounded_command(
+context-guard-kit/benchmark_runner.py:2804:    env: dict[str, str] | None = None,
+context-guard-kit/benchmark_runner.py:2805:    stdout_sink_fd: int | None = None,
+context-guard-kit/benchmark_runner.py:2806:    on_process_started: Callable[[], None] | None = None,
+context-guard-kit/benchmark_runner.py:2809:        proc = subprocess.Popen(
+context-guard-kit/benchmark_runner.py:2811:            cwd=cwd,
+context-guard-kit/benchmark_runner.py:2812:            env=env,
+context-guard-kit/benchmark_runner.py:2813:            stdout=subprocess.PIPE,
+context-guard-kit/benchmark_runner.py:2814:            stderr=subprocess.PIPE,
+context-guard-kit/benchmark_runner.py:2815:            start_new_session=True,
+context-guard-kit/benchmark_runner.py:2824:                pgid = os.getpgid(proc.pid)
+context-guard-kit/benchmark_runner.py:2826:                pgid = proc.pid
+context-guard-kit/benchmark_runner.py:2829:                proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+context-guard-kit/benchmark_runner.py:2841:        pgid = os.getpgid(proc.pid)
+context-guard-kit/benchmark_runner.py:2843:        pgid = proc.pid
+context-guard-kit/benchmark_runner.py:2844:    selector = selectors.DefaultSelector()
+context-guard-kit/benchmark_runner.py:2845:    buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
+context-guard-kit/benchmark_runner.py:2846:    streams = {"stdout": proc.stdout, "stderr": proc.stderr}
+context-guard-kit/benchmark_runner.py:2856:    timed_out = False
+context-guard-kit/benchmark_runner.py:2857:    output_truncated = False
+context-guard-kit/benchmark_runner.py:2858:    terminated_at: float | None = None
+context-guard-kit/benchmark_runner.py:2859:    sent_kill = False
+context-guard-kit/benchmark_runner.py:2860:    deadline = time.monotonic() + timeout_seconds
+context-guard-kit/benchmark_runner.py:2861:    pending_error: BaseException | None = None
+context-guard-kit/benchmark_runner.py:2864:            now = time.monotonic()
+context-guard-kit/benchmark_runner.py:2865:            if now >= deadline:
+context-guard-kit/benchmark_runner.py:2866:                timed_out = True
+context-guard-kit/benchmark_runner.py:2869:                    terminated_at = now
+context-guard-kit/benchmark_runner.py:2871:                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS:
+context-guard-kit/benchmark_runner.py:2873:                    sent_kill = True
+context-guard-kit/benchmark_runner.py:2875:                if now - terminated_at >= PROCESS_TERMINATE_GRACE_SECONDS * 2:
+context-guard-kit/benchmark_runner.py:2876:                    timed_out = True
+context-guard-kit/benchmark_runner.py:2878:            events = selector.select(timeout=0.05)
+context-guard-kit/benchmark_runner.py:2879:            for key, _ in events:
+context-guard-kit/benchmark_runner.py:2880:                name = key.data
+context-guard-kit/benchmark_runner.py:2881:                stream = key.fileobj
+context-guard-kit/benchmark_runner.py:2883:                    chunk = os.read(stream.fileno(), 65536)
+context-guard-kit/benchmark_runner.py:2893:                buffer = buffers[name]
+context-guard-kit/benchmark_runner.py:2894:                remaining = max_output_bytes - len(buffer)
+context-guard-kit/benchmark_runner.py:2895:                accepted = chunk[:max(remaining, 0)]
+context-guard-kit/benchmark_runner.py:2898:                    if name == "stdout" and stdout_sink_fd is not None:
+context-guard-kit/benchmark_runner.py:2901:                    output_truncated = True
+context-guard-kit/benchmark_runner.py:2904:                        terminated_at = time.monotonic()
+context-guard-kit/benchmark_runner.py:2906:        pending_error = exc
+context-guard-kit/benchmark_runner.py:2912:        returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+context-guard-kit/benchmark_runner.py:2916:            returncode = proc.wait(timeout=PROCESS_TERMINATE_GRACE_SECONDS)
+context-guard-kit/benchmark_runner.py:2918:            returncode = 124
+context-guard-kit/benchmark_runner.py:2919:            timed_out = True
+context-guard-kit/benchmark_runner.py:2923:        returncode = 124
+context-guard-kit/benchmark_runner.py:2925:        returncode = 125
+context-guard-kit/benchmark_runner.py:2926:    stdout_bytes = bytes(buffers["stdout"])
+context-guard-kit/benchmark_runner.py:2927:    stderr_bytes = bytes(buffers["stderr"])
+context-guard-kit/benchmark_runner.py:2928:    return BoundedProcessResult(
+context-guard-kit/benchmark_runner.py:2929:        returncode=returncode,
+context-guard-kit/benchmark_runner.py:2930:        stdout=stdout_bytes.decode("utf-8", "replace"),
+context-guard-kit/benchmark_runner.py:2931:        stderr=stderr_bytes.decode("utf-8", "replace"),
+context-guard-kit/benchmark_runner.py:2932:        stdout_bytes=stdout_bytes,
+context-guard-kit/benchmark_runner.py:2933:        stderr_bytes=stderr_bytes,
+context-guard-kit/benchmark_runner.py:2934:        timed_out=timed_out,
+context-guard-kit/benchmark_runner.py:2935:        output_truncated=output_truncated,
+context-guard-kit/benchmark_runner.py:2936:        launch_error=False,
+context-guard-kit/benchmark_runner.py:2942:# 그냥 인자로 무시하고 success=true 로 끝나는 false-positive 를 만들 수 있다.
+context-guard-kit/benchmark_runner.py:2944:_SHELL_META_TOKENS = frozenset({";", "&&", "||", "|", "&", "<", ">", ">>", "<<", "<<<"})
+context-guard-kit/benchmark_runner.py:2947:def _has_shell_meta(argv: list[str]) -> bool:
+context-guard-kit/benchmark_runner.py:2949:        if tok in _SHELL_META_TOKENS:
+context-guard-kit/benchmark_runner.py:2950:            return True
+context-guard-kit/benchmark_runner.py:2953:            return True
+context-guard-kit/benchmark_runner.py:2954:    return False
+context-guard-kit/benchmark_runner.py:2957:def run_success_command(
+context-guard-kit/benchmark_runner.py:2961:    env: dict[str, str] | None = None,
+context-guard-kit/benchmark_runner.py:2965:    - `shlex.split + shell=False` 로 단일 argv 만 실행한다.
+context-guard-kit/benchmark_runner.py:2971:        return True, "no success_command configured"
+context-guard-kit/benchmark_runner.py:2973:        argv = shlex.split(task.success_command)
+context-guard-kit/benchmark_runner.py:2975:        return False, f"success_command parse error: {exc}"
+context-guard-kit/benchmark_runner.py:2977:        return False, "success_command parsed to empty argv"
+context-guard-kit/benchmark_runner.py:2979:        return False, "success_command contains shell-composition tokens (use a helper script)"
+context-guard-kit/benchmark_runner.py:2980:    project_root_resolved = project_root.resolve()
+context-guard-kit/benchmark_runner.py:2981:    cwd = (project_root / task.success_cwd).resolve()
+context-guard-kit/benchmark_runner.py:2985:        return False, f"success_cwd escapes project_root: {cwd}"
+context-guard-kit/benchmark_runner.py:2987:        proc = run_bounded_command(
+context-guard-kit/benchmark_runner.py:2989:            cwd=cwd,
+context-guard-kit/benchmark_runner.py:2990:            timeout_seconds=600,
+context-guard-kit/benchmark_runner.py:2991:            max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,

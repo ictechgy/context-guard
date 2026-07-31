@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from types import ModuleType
-from typing import BinaryIO, Iterable, Iterator, NamedTuple, TextIO
+from typing import BinaryIO, Iterable, Iterator, TextIO
 
 
 def load_credential_policy() -> ModuleType:
@@ -156,66 +156,6 @@ UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<value>(?![\"']).*)$"
 )
-# F-14 one-pass scanner.
-#
-# 아홉 개 consumer 는 모두 아래 fragment 를 각자 품고 있었다. unanchored 패턴에서는
-# offset 마다 `[^:\n]+` 가 다음 콜론까지 삼키고 되돌아오므로, 콜론이 드문 긴 줄에서
-# offset 당 O(n) 작업이 발생해 전체가 이차가 된다(측정: 82KB 한 줄 2.62초,
-# 배가 비율 3.6~3.96). 대신 줄마다 앞머리 location prefix 를 단조 좌→우로 한 번만
-# 확정하고, consumer 에는 fragment 를 제거한 쌍둥이 패턴을 먹인다.
-LOCATION_PREFIX_FRAGMENT = r"(?:(?:[^:\n]+):\d+(?::\d+)?:)?"
-LOCATION_PREFIX_SCAN_RE = re.compile(
-    r"\A(?P<lead>[ \t]*(?:[+-][ \t]*)?)(?P<location>[^:\n]+:\d+(?::\d+)?:)"
-)
-NINE_LOCATION_CONSUMERS = (
-    "AUTH_HEADER_RE",
-    "COOKIE_HEADER_RE",
-    "INLINE_QUOTED_SECRET_ASSIGNMENT_RE",
-    "INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE",
-    "INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE",
-    "INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE",
-    "INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE",
-    "UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE",
-    "MULTILINE_SECRET_ASSIGNMENT_RE",
-)
-
-
-def without_location_prefix(compiled: re.Pattern[str]) -> re.Pattern[str]:
-    """Return the same consumer with its embedded location prefix removed.
-
-    Deriving the twin from the compiled source keeps the two spellings from
-    drifting: if the fragment ever moves or changes, this fails loudly instead of
-    silently leaving a per-offset location scan in place.
-    """
-    source = compiled.pattern
-    if source.count(LOCATION_PREFIX_FRAGMENT) != 1:
-        raise RuntimeError(
-            "consumer no longer embeds exactly one location prefix fragment"
-        )
-    return re.compile(source.replace(LOCATION_PREFIX_FRAGMENT, "", 1))
-
-
-class ScannedLine(NamedTuple):
-    """One monotonic left-to-right split of a line into prefix and remainder."""
-
-    prefix: str
-    remainder: str
-    scan_index: int
-
-
-def scan_location_prefix(line: str) -> ScannedLine:
-    """Identify a leading grep/diff location prefix in exactly one anchored scan.
-
-    The scan index only ever moves forward: it is the end of the anchored match,
-    or zero when there is no prefix. Nothing else in the line is examined here.
-    """
-    match = LOCATION_PREFIX_SCAN_RE.match(line)
-    if match is None:
-        return ScannedLine("", line, 0)
-    end = match.end()
-    return ScannedLine(line[:end], line[end:], end)
-
-
 CONTINUATION_OPERATOR_RE = re.compile(
     r"(?i)(?:\\|\|\||&&|\?\?|[+*/%&|^?,]|\?|:|\bor\b|\band\b|\belse\b)\s*(?://.*|#.*)?$"
 )
@@ -541,16 +481,7 @@ def redact_secret_assignments(
     line: str,
     *,
     context: SanitizationContext,
-    scanned: "ScannedLine | None" = None,
 ) -> tuple[str, bool]:
-    """Redact inline secret assignments using the no-location consumer twins.
-
-    The leading grep/diff location prefix is identified once by the scanner and
-    reattached untouched, so no consumer re-parses it at every offset.
-    """
-    scan = scanned if scanned is not None else scan_location_prefix(line)
-    location_prefix = scan.prefix
-    line = scan.remainder
     line, redacted = redact_url_like_secret_params(line)
 
     def quoted_repl(match: re.Match[str]) -> str:
@@ -571,44 +502,17 @@ def redact_secret_assignments(
         redacted = True
         return f"{match.group('lead')}{match.group('prefix')}[REDACTED]"
 
-    line = INLINE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(quoted_repl, line)
-    line = INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, line)
-    line = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, line)
-    line = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, line)
-    line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, line)
-    return location_prefix + line, redacted
+    line = INLINE_QUOTED_SECRET_ASSIGNMENT_RE.sub(quoted_repl, line)
+    line = INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    line = INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE.sub(unquoted_repl, line)
+    return line, redacted
 
 
 MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?:^|[\s;{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
     rf"[\"']?(?P<key>{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
-)
-
-
-# fragment 를 제거한 아홉 쌍둥이. 스캐너가 앞머리 prefix 를 이미 떼어냈으므로
-# consumer 는 location 을 다시 파싱하지 않는다.
-AUTH_HEADER_NO_LOCATION_RE = without_location_prefix(AUTH_HEADER_RE)
-COOKIE_HEADER_NO_LOCATION_RE = without_location_prefix(COOKIE_HEADER_RE)
-INLINE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    INLINE_QUOTED_SECRET_ASSIGNMENT_RE
-)
-INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE
-)
-INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE
-)
-INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE
-)
-INLINE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE
-)
-UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE
-)
-MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE = without_location_prefix(
-    MULTILINE_SECRET_ASSIGNMENT_RE
 )
 
 
@@ -633,14 +537,8 @@ def has_unescaped_quote(text: str, quote: str, start: int = 0) -> bool:
 
 
 def detect_multiline_secret_assignment(line: str) -> str | None:
-    """Return the quote delimiter when any secret assignment starts a multiline value.
-
-    The leading location prefix is removed by the one-pass scanner first, so the
-    detector never re-parses it. Quote balancing still runs against the same
-    remainder the detector matched in, which keeps offsets consistent.
-    """
-    line = scan_location_prefix(line).remainder
-    for marker in MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE.finditer(line):
+    """Return the quote delimiter when any secret assignment starts a multiline value."""
+    for marker in MULTILINE_SECRET_ASSIGNMENT_RE.finditer(line):
         if not is_sensitive_key(marker.group("key")):
             continue
         quote = marker.group("quote")
@@ -676,10 +574,7 @@ def ends_with_continuation_operator(text: str) -> bool:
 
 
 def detect_multiline_secret_expression(line: str) -> int | None:
-    # 스캐너가 앞머리 location prefix 를 먼저 떼어내므로 detector 는 그것을 재파싱하지 않는다.
-    # prefix 슬라이싱과 offset 이 어긋나지 않도록 이후 계산도 같은 remainder 위에서 한다.
-    line = scan_location_prefix(line).remainder
-    marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE.search(line)
+    marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE.search(line)
     if marker is None:
         return None
     prefix = line[: marker.start("value")]
@@ -793,29 +688,19 @@ class LineSanitizer:
             self.multiline_secret_expression_depth = expression_depth
             return self._finish(diff_prefix + "[REDACTED MULTILINE SECRET]\n", True)
 
-        # 헤더 두 consumer 는 ^ 로 고정되어 있으므로 스캐너가 떼어낸 remainder 에 적용하고
-        # 앞머리 prefix 를 손대지 않은 채 다시 붙인다. 바이트 재구성은 정확해야 한다.
-        scan = scan_location_prefix(line)
-        header_body = scan.remainder
-        new_body, count = AUTH_HEADER_NO_LOCATION_RE.subn(
-            r"\g<prefix>[REDACTED]", header_body
-        )
+        new_line, count = AUTH_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:
             redacted = True
-            header_body = new_body
+            line = new_line
 
-        new_body, count = COOKIE_HEADER_NO_LOCATION_RE.subn(
-            r"\g<prefix>[REDACTED]", header_body
-        )
+        new_line, count = COOKIE_HEADER_RE.subn(r"\g<prefix>[REDACTED]", line)
         if count:
             redacted = True
-            header_body = new_body
-        line = scan.prefix + header_body
+            line = new_line
 
         line, assignment_redacted = redact_secret_assignments(
             line,
             context=self.context,
-            scanned=scan_location_prefix(line),
         )
         if assignment_redacted:
             redacted = True

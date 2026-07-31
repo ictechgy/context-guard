@@ -539,12 +539,15 @@ class SurvivingMutantClosureTests(unittest.TestCase):
 
         shipped_out = so.redact_secret_assignments(line, context=self.context)
 
-        saved = so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE
-        so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = variant
+        # F-14 이후 파이프라인은 location fragment 를 제거한 쌍둥이를 쓴다. 주입 지점도
+        # 그쪽으로 옮겨야 이 테스트가 계속 실제 동작을 고정한다.
+        twin_name = "INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_NO_LOCATION_RE"
+        saved = getattr(so, twin_name)
+        setattr(so, twin_name, so.without_location_prefix(variant))
         try:
             variant_out = so.redact_secret_assignments(line, context=self.context)
         finally:
-            so.INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = saved
+            setattr(so, twin_name, saved)
 
         self.assertEqual(shipped_out, ("token = [REDACTED]", True))
         self.assertEqual(
