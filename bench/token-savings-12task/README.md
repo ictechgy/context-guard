@@ -16,6 +16,7 @@ are not used here.
 | `settings/treatment.settings.json` | Treatment arm settings with the registered ContextGuard hook bindings. |
 | `variants.template.json` | Arm template. `{{CANDIDATE_HASH}}`, `{{NAMESPACE}}`, and `{{ARTIFACT_ROOT}}` are substituted per run so the concrete variants file always binds the exact candidate under measurement. |
 | `study-plan.json` | Canonical `contextguard.bench.study-plan.v1` plan: 12 tasks x 2 arms x 3 repetitions = 72 initial attempts, with `one_retry_after_valid_task_failure_v1`. |
+| `hook-event-evidence.json` | External evidence that every registered hook event exists in the provider CLI, with its collection method and boundary. |
 | `rehearsal/solutions.json` | Rehearsal-only scripted workspace writes for the fake provider. Never part of any fixture tree and never used by a real provider run. |
 
 ## Task coverage
@@ -110,13 +111,20 @@ receipt bytes. Only the `declared_timestamps` block changes between runs.
 
 ## Verified hook-event note
 
-`PostToolUseFailure` is a real Claude Code hook event, not a guess: it appears in
-the installed Claude Code CLI (2.1.220) and in the runner's frozen
-`MEASUREMENT_DOCUMENTED_HOOK_EVENTS` list, and a test pins every treatment binding
-and required event class to that list. Whether the provider actually emits it for
-a given attempt is still checked at runtime: a treatment attempt that does not
-complete every required event class aborts as a missing-required-event-class
-failure rather than being counted.
+`PostToolUseFailure` is a real Claude Code hook event, and the evidence is
+external rather than circular. `hook-event-evidence.json` records the resolved
+`claude --version` output and literal occurrence counts for every event the
+treatment arm requires, measured against the installed CLI bundle: `PreToolUse`
+133, `PostToolUse` 185, `PostToolUseFailure` 54 in Claude Code 2.1.220. A test
+re-checks the installed CLI directly when one is present and falls back to the
+recorded evidence with an explicit skip when it is not, so pinning to this
+project's own frozen list is no longer the only argument.
+
+Occurrence counts prove the event name ships in the CLI. They do not prove the
+provider emits it for a given attempt, which is checked at runtime instead: a
+treatment attempt that does not complete every required event class aborts as a
+missing-required-event-class failure rather than being counted. Re-collect this
+evidence against the exact CLI version before freezing a measurement manifest.
 
 ## Claim boundary
 

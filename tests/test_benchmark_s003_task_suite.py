@@ -430,6 +430,34 @@ class CheckerIsolationTest(unittest.TestCase):
         )
         self.assertEqual(sorted(settings["hooks"]), sorted(set(events)))
 
+    def test_hook_events_are_verified_against_the_installed_provider_cli(self) -> None:
+        """Non-circular control: check the shipped CLI, not only our own frozen list."""
+        evidence = json.loads(
+            (SUITE / "hook-event-evidence.json").read_text(encoding="utf-8")
+        )
+        template = json.loads(
+            (SUITE / "variants.template.json").read_text(encoding="utf-8")
+        )
+        treatment = next(item for item in template if item["name"] == "treatment")
+        required = treatment["measurement"]["hook_events"]["required_event_classes"]
+        self.assertEqual(evidence["events_required_by_treatment"], required)
+        for event in required:
+            with self.subTest(event=event, source="recorded evidence"):
+                self.assertGreater(evidence["event_occurrences"][event], 0)
+        which = shutil.which("claude")
+        if which is None:
+            self.skipTest("claude CLI is unavailable; recorded evidence is used instead")
+        resolved = Path(os.path.realpath(which))
+        if not resolved.is_file():
+            self.skipTest("claude CLI does not resolve to a single readable bundle")
+        raw = resolved.read_bytes()
+        for event in required:
+            with self.subTest(event=event, source="installed CLI"):
+                self.assertGreater(
+                    raw.count(event.encode("ascii")), 0,
+                    f"{event} is not present in the installed provider CLI",
+                )
+
     def test_checker_runtime_reports_infra_invalid_without_bound_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

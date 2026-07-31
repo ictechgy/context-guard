@@ -1,0 +1,20 @@
+{
+  "boundary": "Occurrence counts prove the event name ships in the CLI. They do not prove the provider emits the event for a given attempt; a treatment attempt missing any required event class aborts as missing_required_hook_event_class rather than being counted. Re-collect this evidence against the exact CLI version before freezing a measurement manifest.",
+  "bundle_bytes": 256908272,
+  "bundle_kind": "single_bundle_file",
+  "cli_version_stdout": "2.1.220 (Claude Code)",
+  "collected_at": "2026-07-31T22:50:00+09:00",
+  "event_occurrences": {
+    "PostToolUse": 185,
+    "PostToolUseFailure": 54,
+    "PreToolUse": 133
+  },
+  "events_required_by_treatment": [
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure"
+  ],
+  "method": "Resolve the claude executable, read `claude --version`, then count literal ASCII occurrences of each event name in the resolved bundle bytes.",
+  "purpose": "Direct external evidence that every hook event this suite registers exists in the provider CLI, so the claim does not rest only on this project's own frozen list.",
+  "schema_version": "contextguard.bench.hook-event-evidence.v1"
+}
