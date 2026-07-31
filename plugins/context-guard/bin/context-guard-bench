@@ -3495,6 +3495,13 @@ def _run_measurement_fixture_locked(
     context = _measurement_create_run_context(spec, task.id, locked_root_fd=locked_root_fd)
     # S003: 각 attempt 는 cold isolated workspace 에서 시작하므로, 선언된 fixture tree 를
     # 정확히 같은 바이트로 재구성하는 것이 결정적 reset 이다. 선언이 없으면 기존 동작 유지.
+    # 분기는 선언 상태(fixture_tree)로 하고 바인딩 누락은 fail-closed 로 처리한다.
+    # 바인딩 상태로 분기하면 다른 진입점이 조용히 빈 workspace 와 legacy 체커로 떨어진다.
+    if task.fixture_tree is not None and not task.fixture_tree_entries:
+        raise SystemExit(
+            "measurement fixture tree was not bound before launch; call "
+            "load_task_fixture_trees for every task declaring fixture_tree"
+        )
     reset_task_fixture_tree(task.fixture_tree_entries or (), context.workspace)
     settings_snapshot = context.session / spec.settings_file.name
     _measurement_write_exclusive(settings_snapshot, spec.settings_source_bytes)
@@ -3626,7 +3633,12 @@ def _run_measurement_fixture_locked(
         # fixture tree 를 선언한 S003 task 는 매니페스트에 바인딩된 checker 바이트를
         # workspace 밖 비공개 디렉터리에서 실행한다. 그래야 측정 대상 에이전트가
         # 판정기를 덮어써서 거짓 성공을 만들 수 없다.
-        if task.fixture_tree_entries:
+        if task.fixture_tree is not None:
+            if not task.success_checker_bytes:
+                raise SystemExit(
+                    "measurement success checker was not bound before launch; call "
+                    "load_task_fixture_trees for every task declaring fixture_tree"
+                )
             checker_classification = run_task_checker_study(
                 task, context.workspace, env=env,
             )

@@ -108,6 +108,16 @@ Reproducibility is reported two ways:
 runs, and terminal attempts whose recorded receipt hash matches the stored
 receipt bytes. Only the `declared_timestamps` block changes between runs.
 
+## Verified hook-event note
+
+`PostToolUseFailure` is a real Claude Code hook event, not a guess: it appears in
+the installed Claude Code CLI (2.1.220) and in the runner's frozen
+`MEASUREMENT_DOCUMENTED_HOOK_EVENTS` list, and a test pins every treatment binding
+and required event class to that list. Whether the provider actually emits it for
+a given attempt is still checked at runtime: a treatment attempt that does not
+complete every required event class aborts as a missing-required-event-class
+failure rather than being counted.
+
 ## Claim boundary
 
 - The rehearsal makes no provider call, opens no network socket, reads no

@@ -391,6 +391,39 @@ class CheckerIsolationTest(unittest.TestCase):
                 "task_success",
             )
 
+    def test_unbound_fixture_tree_fails_closed_instead_of_running_legacy(self) -> None:
+        """Dispatch keys off the declared tree, so a missing binding cannot fail open."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_tree(root)
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            task = tasks[0]
+            self.assertIsNotNone(task.fixture_tree)
+            self.assertIsNone(task.fixture_tree_entries)
+            self.assertIsNone(task.success_checker_bytes)
+
+    def test_treatment_hook_bindings_are_documented_events(self) -> None:
+        """PostToolUseFailure is a real event; pin it so the finding stops recurring."""
+        documented = set(RUNNER_MODULE.MEASUREMENT_DOCUMENTED_HOOK_EVENTS)
+        template = json.loads(
+            (SUITE / "variants.template.json").read_text(encoding="utf-8")
+        )
+        treatment = next(item for item in template if item["name"] == "treatment")
+        hooks = treatment["measurement"]["hook_events"]
+        events = [binding["hook_event"] for binding in hooks["registered_bindings"]]
+        self.assertIn("PostToolUseFailure", events)
+        for event in events:
+            with self.subTest(event=event):
+                self.assertIn(event, documented)
+        for event in hooks["required_event_classes"]:
+            with self.subTest(required=event):
+                self.assertIn(event, documented)
+                self.assertIn(event, events)
+        settings = json.loads(
+            (SUITE / "settings" / "treatment.settings.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(sorted(settings["hooks"]), sorted(set(events)))
+
     def test_checker_runtime_reports_infra_invalid_without_bound_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
