@@ -7769,6 +7769,36 @@ def bootstrap_task_cluster(
     return result
 
 
+def _valid_measurement_attempt_sequence(
+    consumed: Sequence[Mapping[str, Any]],
+    *,
+    status_key: str,
+    successful_key: str | None = None,
+) -> bool:
+    attempt_numbers = [row.get("attempt") for row in consumed]
+    if not all(
+        isinstance(attempt, int) and not isinstance(attempt, bool)
+        for attempt in attempt_numbers
+    ):
+        return False
+    statuses = [row.get(status_key) for row in consumed]
+    if attempt_numbers == [0]:
+        expected_statuses = ["success"]
+        expected_success = [True]
+    elif attempt_numbers == [0, 1]:
+        expected_statuses = ["valid_task_failure_v1", "success"]
+        expected_success = [False, True]
+    else:
+        return False
+    if statuses != expected_statuses:
+        return False
+    if successful_key is None:
+        return True
+    return [
+        row.get(successful_key) is True for row in consumed
+    ] == expected_success
+
+
 def compute_measurement_study_estimators(
     attempts: Sequence[Mapping[str, Any]],
     *,
@@ -7806,7 +7836,9 @@ def compute_measurement_study_estimators(
                         if row.get("terminal_status") == "success"
                     ]
                     valid = (
-                        len(consumed) in (1, 2)
+                        _valid_measurement_attempt_sequence(
+                            consumed, status_key="terminal_status",
+                        )
                         and len(successful) == 1
                         and successful[0] is consumed[-1]
                     )
@@ -7909,17 +7941,10 @@ def compute_measurement_study_estimators(
             for arm in MEASUREMENT_STUDY_ARMS:
                 rows = sorted(grouped.get((task_id, repetition, arm), []), key=lambda row: int(row["attempt"]))
                 consumed = [row for row in rows if row.get("consumed") is True]
-                if any(
-                    row.get("terminal_classification")
-                    not in {"success", "valid_task_failure_v1"}
-                    for row in consumed
-                ):
-                    return invalid
-                successful = [row for row in consumed if row.get("successful") is True]
-                if (
-                    len(successful) != 1
-                    or successful[0] is not consumed[-1]
-                    or len(consumed) not in (1, 2)
+                if not _valid_measurement_attempt_sequence(
+                    consumed,
+                    status_key="terminal_classification",
+                    successful_key="successful",
                 ):
                     return invalid
                 tokens: list[int] = []
@@ -8135,6 +8160,12 @@ def compute_correction_non_regression(
             for task in range(12)
         ]
         incidence = bootstrap_task_cluster(incidence_differences)
+        baseline_severity_2 = sum(
+            by_packet[f"A{1 + index * 2:03d}"] == 2 for index in range(36)
+        )
+        treatment_severity_2 = sum(
+            by_packet[f"A{2 + index * 2:03d}"] == 2 for index in range(36)
+        )
         return {
             "measured": True,
             "valid": True,
@@ -8142,9 +8173,12 @@ def compute_correction_non_regression(
             "severity_q975": bootstrap["q975"],
             "incidence_point": incidence["point"],
             "incidence_q975": incidence["q975"],
+            "treatment_severity_2": treatment_severity_2,
+            "baseline_severity_2": baseline_severity_2,
             "non_regression": (
                 bootstrap["point"] <= 0 and bootstrap["q975"] <= 0
                 and incidence["point"] <= 0 and incidence["q975"] <= 0
+                and treatment_severity_2 <= baseline_severity_2
             ),
         }
     if len(records) != 72:

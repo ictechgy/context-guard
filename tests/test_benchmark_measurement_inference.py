@@ -689,6 +689,32 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             noncanonical
         )
         self.assertFalse(schema_invalid["complete_pairs"])
+        lone_retry = [
+            dict(item)
+            for item in attempts
+            if not (
+                item["task"] == "task-01"
+                and item["repetition"] == 0
+                and item["arm"] == "treatment"
+                and item["attempt"] == 0
+            )
+        ]
+        self.assertFalse(
+            self.runner.compute_measurement_study_estimators(lone_retry)[
+                "complete_pairs"
+            ]
+        )
+        wrong_retry_predecessor = [dict(item) for item in attempts]
+        next(
+            item
+            for item in wrong_retry_predecessor
+            if item["terminal_status"] == "valid_task_failure_v1"
+        )["terminal_status"] = "terminal_timeout"
+        self.assertFalse(
+            self.runner.compute_measurement_study_estimators(
+                wrong_retry_predecessor
+            )["complete_pairs"]
+        )
         production_attempts = [
             {
                 "task_id": item["task"], "repetition": item["repetition"],
@@ -700,6 +726,39 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             }
             for item in attempts
         ]
+        self.assertTrue(
+            self.runner.compute_measurement_study_estimators(
+                production_attempts, task_order=FIXTURE["task_ids"],
+            )["valid"]
+        )
+        production_lone_retry = [
+            dict(item)
+            for item in production_attempts
+            if not (
+                item["task_id"] == "task-01"
+                and item["repetition"] == 0
+                and item["arm"] == "treatment"
+                and item["attempt"] == 0
+            )
+        ]
+        self.assertFalse(
+            self.runner.compute_measurement_study_estimators(
+                production_lone_retry, task_order=FIXTURE["task_ids"],
+            )["valid"]
+        )
+        production_wrong_predecessor = [
+            dict(item) for item in production_attempts
+        ]
+        next(
+            item
+            for item in production_wrong_predecessor
+            if item["terminal_classification"] == "valid_task_failure_v1"
+        )["terminal_classification"] = "success"
+        self.assertFalse(
+            self.runner.compute_measurement_study_estimators(
+                production_wrong_predecessor, task_order=FIXTURE["task_ids"],
+            )["valid"]
+        )
         recovered_unknown = next(
             item for item in production_attempts
             if item["terminal_classification"] == "valid_task_failure_v1"
@@ -828,6 +887,27 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         self.assertEqual(correction["severity_q975"], Fraction(0))
         self.assertEqual(correction["incidence_point"], Fraction(0))
         self.assertEqual(correction["incidence_q975"], Fraction(0))
+        self.assertEqual(correction["baseline_severity_2"], 0)
+        self.assertEqual(correction["treatment_severity_2"], 0)
+        severity_2_counterexample = []
+        for task in range(12):
+            for repetition in range(3):
+                baseline_packet = 1 + (task * 3 + repetition) * 2
+                severity_2_counterexample.extend([
+                    {"packet_id": f"A{baseline_packet:03d}", "score": 1},
+                    {
+                        "packet_id": f"A{baseline_packet + 1:03d}",
+                        "score": (0, 0, 2)[repetition],
+                    },
+                ])
+        severity_2_result = self.runner.compute_correction_non_regression(
+            severity_2_counterexample
+        )
+        self.assertLessEqual(severity_2_result["severity_q975"], 0)
+        self.assertLessEqual(severity_2_result["incidence_q975"], 0)
+        self.assertEqual(severity_2_result["baseline_severity_2"], 0)
+        self.assertEqual(severity_2_result["treatment_severity_2"], 12)
+        self.assertFalse(severity_2_result["non_regression"])
         report = self.runner._analyze_measurement_study(
             manifest={"sha256": "b" * 64}, folded_attempts={},
             estimator={"complete_pairs": True, "delta_q975": Fraction(-1), "gamma": Fraction(0), "gamma_q975": Fraction(0)},
