@@ -205,6 +205,22 @@ VALUE_SPLIT_CORPUS = [
     "export TOKEN=a:2:bcdefghijklmnopqrst\n",
 ]
 
+# 라운드 6 반박 근거를 회귀로 고정한다.
+# 1) location 처럼 보이는 꼬리를 가진 원시 자격증명은 여전히 가려진다. 고신뢰 자격증명
+#    치환이 재조립된 전체 줄에서 돌기 때문에 prefix 가 면제되지 않는다.
+# 2) 윈도우 절대 경로는 기준선과 동일하게 동작한다. 옛 구현도 드라이브 문자 콜론에서
+#    멈췄으므로 fast path 미적용은 동작 변화가 아니라 최적화 누락이다.
+RAW_CREDENTIAL_AND_WINDOWS_CORPUS = [
+    # 실제 벤더 토큰 서명은 push protection 에 걸리므로 합성 문자열을 쓴다. 목적은
+    # location 처럼 보이는 꼬리가 붙어도 값이 계속 가려지는지 확인하는 것이다.
+    "apikey=" + "Z" * 40 + ":443: log message\n",
+    "authtoken=" + "Q" * 36 + ":80: hit\n",
+    "client_secret=" + "M" * 32 + ":443: note\n",
+    "session_token=" + "N" * 30 + ":8080: msg\n",
+    "C:\\Users\\me\\file.py:123: Authorization: Bearer abcdefghijklmnop\n",
+    "C:\\Users\\me\\file.py:123: api_key='abcdefghijklmnopqrstuvwx'\n",
+]
+
 EDGE_CORPUS = [
     "\n",
     "   \n",
@@ -251,6 +267,7 @@ CORPORA = {
     "decline_path": DECLINE_PATH_CORPUS,
     "url_params": URL_PARAM_CORPUS,
     "value_split": VALUE_SPLIT_CORPUS,
+    "raw_credential_and_windows": RAW_CREDENTIAL_AND_WINDOWS_CORPUS,
     "generated": generated_corpus(),
 }
 
