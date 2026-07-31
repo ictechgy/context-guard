@@ -171,12 +171,19 @@ LOCATION_PREFIX_FRAGMENT = r"(?:(?:[^:\n]+):\d+(?::\d+)?:)?"
 LOCATION_PREFIX_SCAN_RE = re.compile(
     r"\A(?P<lead>[ \t]*(?:[+-][ \t]*)?)(?P<location>[^:\n=]+:\d+(?::\d+)?:)"
 )
-# 스캔 후보 안에 consumer 가 판정해야 할 신호가 있으면 그것은 location prefix 가 아니다.
-# 헤더 이름, 비밀 키 대입, 따옴표, private key 시작 표지를 모두 본다.
-LOCATION_PREFIX_CONSUMER_SIGNAL_RE = re.compile(
-    rf"(?i)(?:[\"']|-----BEGIN|(?:Proxy-)?Authorization\s*:|(?:Set-)?Cookie\s*:"
+# 후보 스팬의 신호는 두 종류이고 처리도 달라야 한다.
+#
+# ASSIGNMENT: 비밀 키나 헤더 이름 뒤에 ':' 또는 '=' 가 오면 그 스팬은 경로가 아니라
+# 값의 일부다. 예: 'token:123456789:AAH-...' 는 앞부분만 가리면 뒷부분이 남는다.
+# 이 경우 분리 자체를 하지 않고 전체 줄을 consumer 에 넘긴다.
+#
+# PATH_ONLY: 따옴표나 private key 표지처럼 경로 자체에 들어갈 수 있는 문자는 후보를
+# 경로로 인정하되, 그 스팬도 함께 검사한다. 예: "src/it's.py:5:api_key='x'".
+LOCATION_PREFIX_ASSIGNMENT_SIGNAL_RE = re.compile(
+    rf"(?i)(?:-----BEGIN|(?:Proxy-)?Authorization\s*:|(?:Set-)?Cookie\s*:"
     rf"|[\"']?(?:{SECRET_KEY})[\"']?\s*[:=])"
 )
+LOCATION_PREFIX_PATH_ONLY_SIGNAL_RE = re.compile(r"[\"']")
 NINE_LOCATION_CONSUMERS = (
     "AUTH_HEADER_RE",
     "COOKIE_HEADER_RE",
@@ -208,11 +215,11 @@ def without_location_prefix(compiled: re.Pattern[str]) -> re.Pattern[str]:
 class ScannedLine(NamedTuple):
     """One monotonic left-to-right split of a line into prefix and remainder.
 
-    ``declined`` marks the case where an anchored location candidate existed but
-    carried consumer signal, which means the candidate span may itself hold a
-    secret. The split is still reported; the caller decides policy. Unanchored
-    consumers then run over the candidate span as well as the remainder, both of
-    which are bounded, so the scan stays linear.
+    An assignment signal inside the candidate means the span is part of a value
+    rather than a path, so no split is reported at all; splitting there would
+    redact only the leading part and leave the tail behind. A path-only signal
+    such as a quote in a filename keeps the split but sets ``declined``, and
+    unanchored consumers then also scan the bounded candidate span.
     """
 
     prefix: str
@@ -239,7 +246,10 @@ def scan_location_prefix(line: str) -> ScannedLine:
         return ScannedLine("", line, 0)
     end = match.end()
     candidate = line[:end]
-    declined = bool(LOCATION_PREFIX_CONSUMER_SIGNAL_RE.search(candidate))
+    if LOCATION_PREFIX_ASSIGNMENT_SIGNAL_RE.search(candidate):
+        # 값의 일부를 경로로 오인한 경우다. 분리하면 앞부분만 가려져 뒤가 남는다.
+        return ScannedLine("", line, 0, False)
+    declined = bool(LOCATION_PREFIX_PATH_ONLY_SIGNAL_RE.search(candidate))
     return ScannedLine(candidate, line[end:], end, declined)
 
 

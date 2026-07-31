@@ -192,6 +192,10 @@ URL_PARAM_CORPUS = [
 # 비밀 값 안에 :digits: 가 있어 스캔이 값 중간을 쪼개 절단 누출이 났던 회귀를 고정한다.
 VALUE_SPLIT_CORPUS = [
     "api_key=abc:123:456def\n",
+    "token:123456789:AAH-abcdefghijklmnop\n",
+    "api_key:12:abcdefghijklmnopqrst\n",
+    "secret:9:zzzzzzzzzzzzzzzz\n",
+    "Authorization:1:Bearer abcdefghijklmnop\n",
     "password=a:1:bcdefghijklmnop\n",
     "api_key = 'abc:123:456'\n",
     "secret_key: abc:123:456\n",

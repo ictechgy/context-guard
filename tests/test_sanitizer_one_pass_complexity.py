@@ -66,6 +66,21 @@ def sanitize_best_of(line: str, *, repeats: int = 5) -> float:
     return max(min(sanitize_once(line) for _ in range(repeats)), 1e-9)
 
 
+def calibrate_base_size(build, *, start: int, doublings: int = 12) -> int:
+    """Find the smallest size whose timing clears the noise floor on this host.
+
+    Fixed sizes plus a floor gate make the ratio assertions vanish on fast
+    hardware, which is exactly where the fix is supposed to hold. Calibrating
+    keeps the bound meaningful regardless of host speed.
+    """
+    size = start
+    for _ in range(doublings):
+        if sanitize_best_of(build(size)) >= RATIO_SAMPLE_FLOOR_SECONDS:
+            return size
+        size *= 2
+    return size
+
+
 def no_colon_line(byte_target: int) -> str:
     return ("x" * 40 + " ") * (byte_target // 41) + "Authorization:\n"
 
@@ -180,10 +195,10 @@ class ComplexityBudgetTest(unittest.TestCase):
         sanitize_once("warmup a:1: line\n")
         compared = 0
         previous = None
-        # 표본이 5 ms 노이즈 하한을 확실히 넘도록 크기를 잡는다. 작은 크기에서는
-        # 모든 비교가 스킵되어 단정이 0 회 실행됐다.
-        for count in (16_000, 32_000, 64_000):
-            line = "a:1:" * count + "AUTHORIZATION: Bearer abcdefghijklmnop\n"
+        build = lambda n: "a:1:" * n + "AUTHORIZATION: Bearer abcdefghijklmnop\n"
+        base = calibrate_base_size(build, start=4_000)
+        for count in (base, base * 2, base * 4):
+            line = build(count)
             elapsed = sanitize_best_of(line)
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 ratio = elapsed / previous
@@ -201,8 +216,10 @@ class ComplexityBudgetTest(unittest.TestCase):
         sanitize_once("warmup src/a.py:1: line\n")
         compared = 0
         previous = None
-        for count in (8_000, 16_000, 32_000):
-            line = "src/file.py:12:" * count + "token='abcdefghijklmnopqrstuvwx'\n"
+        build = lambda n: "src/file.py:12:" * n + "token='abcdefghijklmnopqrstuvwx'\n"
+        base = calibrate_base_size(build, start=2_000)
+        for count in (base, base * 2, base * 4):
+            line = build(count)
             elapsed = sanitize_best_of(line)
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(candidates=count):
@@ -226,7 +243,8 @@ class ComplexityBudgetTest(unittest.TestCase):
         sanitize_once(no_colon_line(4_000))
         compared = 0
         previous = None
-        for size in (10_000, 20_000, 40_000, 80_000, 160_000):
+        base = calibrate_base_size(no_colon_line, start=10_000)
+        for size in (base, base * 2, base * 4, base * 8):
             elapsed = sanitize_best_of(no_colon_line(size))
             if previous is not None and min(previous, elapsed) >= RATIO_SAMPLE_FLOOR_SECONDS:
                 with self.subTest(bytes=size):
