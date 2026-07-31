@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = ROOT / "context-guard-kit" / "sanitize_output.py"
 CREDENTIAL_POLICY = ROOT / "context-guard-kit" / "credential_policy.py"
 
-# 동결된 수락 예산. 플랫폼 편차를 위해 계약이 허용하는 2배 천장을 함께 둔다.
+# 동결된 수락 예산. 2배 플랫폼 천장은 절대 예산에만 적용한다. 배가 비율에 곱하면
+# 상한이 5.5 가 되어 이차 증가(약 4.0)마저 통과하므로, 비율은 2.75 를 그대로 쓴다.
 SINGLE_LINE_BUDGETS = ((100_000, 1.0), (1_000_000, 8.0))
 PLATFORM_CEILING = 2.0
 MAX_DOUBLING_RATIO = 2.75
@@ -53,6 +54,11 @@ def sanitize_once(line: str, *, show_paths: bool = True) -> float:
     started = time.monotonic()
     sanitizer.sanitize(line)
     return time.monotonic() - started
+
+
+def sanitize_best_of(line: str, *, repeats: int = 3) -> float:
+    """Best-of timing: absorbs scheduler noise without loosening the ratio bound."""
+    return max(min(sanitize_once(line) for _ in range(repeats)), 1e-6)
 
 
 def no_colon_line(byte_target: int) -> str:
@@ -137,12 +143,12 @@ class ComplexityBudgetTest(unittest.TestCase):
         previous = None
         for count in (1000, 2000, 4000, 8000):
             line = "a:1:" * count + "AUTHORIZATION: Bearer abcdefghijklmnop\n"
-            elapsed = max(sanitize_once(line), 1e-6)
+            elapsed = sanitize_best_of(line)
             if previous is not None:
                 ratio = elapsed / previous
                 with self.subTest(delimiters=count):
                     self.assertLessEqual(
-                        ratio, MAX_DOUBLING_RATIO * PLATFORM_CEILING,
+                        ratio, MAX_DOUBLING_RATIO,
                         f"doubling ratio {ratio:.2f} exceeds the contract",
                     )
             previous = elapsed
@@ -152,12 +158,10 @@ class ComplexityBudgetTest(unittest.TestCase):
         previous = None
         for count in (1000, 2000, 4000, 8000):
             line = "src/file.py:12:" * count + "token='abcdefghijklmnopqrstuvwx'\n"
-            elapsed = max(sanitize_once(line), 1e-6)
+            elapsed = sanitize_best_of(line)
             if previous is not None:
                 with self.subTest(candidates=count):
-                    self.assertLessEqual(
-                        elapsed / previous, MAX_DOUBLING_RATIO * PLATFORM_CEILING,
-                    )
+                    self.assertLessEqual(elapsed / previous, MAX_DOUBLING_RATIO)
             previous = elapsed
 
     def test_single_line_budgets(self) -> None:
@@ -175,11 +179,13 @@ class ComplexityBudgetTest(unittest.TestCase):
         sanitize_once(no_colon_line(4_000))
         previous = None
         for size in (10_000, 20_000, 40_000, 80_000):
-            elapsed = max(sanitize_once(no_colon_line(size)), 1e-6)
+            elapsed = sanitize_best_of(no_colon_line(size))
             if previous is not None:
                 with self.subTest(bytes=size):
                     self.assertLessEqual(
-                        elapsed / previous, MAX_DOUBLING_RATIO * PLATFORM_CEILING,
+                        elapsed / previous, MAX_DOUBLING_RATIO,
+                        "quadratic growth yields about 4.0, so the bound must stay "
+                        "below that to fail on the regression it names",
                     )
             previous = elapsed
 

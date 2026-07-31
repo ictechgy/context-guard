@@ -11,6 +11,7 @@ difference here is a regression, never an intended improvement.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 import shutil
@@ -134,6 +135,19 @@ PATH_CORPUS = [
     "Binary files a/x.bin and b/x.bin differ\n",
 ]
 
+# 스캐너가 :digits: 앞의 임의 텍스트를 삼켜 비밀을 통째로 건너뛴 회귀를 고정한다.
+PREFIX_ABSORPTION_CORPUS = [
+    "Setting api_key = 'abcdefghijklmnopqrstuvwx' note:12: tail\n",
+    "context api_key='abcdefghijklmnopqrstuvwx' src/x.py:3: hit\n",
+    "Authorization: Bearer abcdefghijklmnop other:9: end\n",
+    "Cookie: s=abcdefghijklmnop later:1: end\n",
+    "password=hunter2hunter2hunter2 file.py:4: hit\n",
+    "text before -----BEGIN RSA PRIVATE KEY----- mark:7: after\n",
+    "quoted 'value with spaces' path/file.py:2: hit\n",
+    "no secret here at all path/file.py:2: hit\n",
+    "src/app.py:12: api_key='abcdefghijklmnopqrstuvwx'\n",
+]
+
 EDGE_CORPUS = [
     "\n",
     "   \n",
@@ -176,16 +190,35 @@ CORPORA = {
     "multiline": MULTILINE_CORPUS,
     "path": PATH_CORPUS,
     "edge": EDGE_CORPUS,
+    "prefix_absorption": PREFIX_ABSORPTION_CORPUS,
     "generated": generated_corpus(),
 }
 
 
 class DifferentialOracleTest(unittest.TestCase):
     def test_baseline_fixture_is_the_pre_refactor_implementation(self) -> None:
-        source = BASELINE_SOURCE.read_text(encoding="utf-8")
+        """Pin the fixture by hash and by the absence of post-refactor symbols.
+
+        A weaker guard would still pass if the fixture were regenerated from the
+        refactored source, which would silently turn this differential suite into
+        a comparison of the candidate against itself.
+        """
+        raw = BASELINE_SOURCE.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(),
+            "8fb20932aea9219e39fe169e3e58c8ed2e31870f88b9c64c9eae87276a736ef1",
+            "frozen baseline fixture changed; it must remain the pre-refactor source",
+        )
+        source = raw.decode("utf-8")
         self.assertIn("class LineSanitizer", source)
-        # 아홉 consumer 가 각자 location prefix 를 품고 있던 원래 형태여야 한다.
-        self.assertGreaterEqual(source.count(r"(?:(?:[^:\n]+):\d+(?::\d+)?:)?"), 7)
+        for post_refactor in (
+            "scan_location_prefix",
+            "without_location_prefix",
+            "LOCATION_PREFIX_FRAGMENT",
+            "NO_LOCATION_RE",
+        ):
+            with self.subTest(symbol=post_refactor):
+                self.assertNotIn(post_refactor, source)
 
     def test_every_corpus_is_byte_identical(self) -> None:
         for name, corpus in sorted(CORPORA.items()):

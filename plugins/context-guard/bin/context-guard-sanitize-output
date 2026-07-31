@@ -167,6 +167,12 @@ LOCATION_PREFIX_FRAGMENT = r"(?:(?:[^:\n]+):\d+(?::\d+)?:)?"
 LOCATION_PREFIX_SCAN_RE = re.compile(
     r"\A(?P<lead>[ \t]*(?:[+-][ \t]*)?)(?P<location>[^:\n]+:\d+(?::\d+)?:)"
 )
+# 스캔 후보 안에 consumer 가 판정해야 할 신호가 있으면 그것은 location prefix 가 아니다.
+# 헤더 이름, 비밀 키 대입, 따옴표, private key 시작 표지를 모두 본다.
+LOCATION_PREFIX_CONSUMER_SIGNAL_RE = re.compile(
+    rf"(?i)(?:[\"']|-----BEGIN|(?:Proxy-)?Authorization\s*:|(?:Set-)?Cookie\s*:"
+    rf"|[\"']?(?:{SECRET_KEY})[\"']?\s*[:=])"
+)
 NINE_LOCATION_CONSUMERS = (
     "AUTH_HEADER_RE",
     "COOKIE_HEADER_RE",
@@ -207,13 +213,25 @@ def scan_location_prefix(line: str) -> ScannedLine:
     """Identify a leading grep/diff location prefix in exactly one anchored scan.
 
     The scan index only ever moves forward: it is the end of the anchored match,
-    or zero when there is no prefix. Nothing else in the line is examined here.
+    or zero when there is no prefix.
+
+    The path component must keep accepting spaces and Unicode, because real grep
+    and diff output carries such filenames. That permissiveness means the
+    anchored run can reach past a secret that happens to sit before a later
+    ``:<digits>:`` sequence, and a prefix is reattached untouched, so the
+    candidate span is checked once for consumer signal first. When any signal is
+    present the line is reported as having no prefix, which routes the whole line
+    back through the consumers exactly as before. The check is a single bounded
+    pass over the candidate, so the scan stays linear.
     """
     match = LOCATION_PREFIX_SCAN_RE.match(line)
     if match is None:
         return ScannedLine("", line, 0)
     end = match.end()
-    return ScannedLine(line[:end], line[end:], end)
+    candidate = line[:end]
+    if LOCATION_PREFIX_CONSUMER_SIGNAL_RE.search(candidate):
+        return ScannedLine("", line, 0)
+    return ScannedLine(candidate, line[end:], end)
 
 
 CONTINUATION_OPERATOR_RE = re.compile(
