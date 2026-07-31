@@ -1046,6 +1046,24 @@ class RehearsalExecutionTest(unittest.TestCase):
                     {"success": 36, "valid_task_failure_v1": 2},
                 )
 
+    def test_report_records_its_own_validation_verdict(self) -> None:
+        """A failed rehearsal must not leave an artifact that looks like a pass."""
+        validation = self.report["deterministic"]["validation"]
+        self.assertTrue(validation["passed"])
+        self.assertEqual(validation["problems"], [])
+        # 검증 결과가 deterministic 해시에 포함되어야 위조/혼동이 불가능하다.
+        digest = hashlib.sha256(json.dumps(
+            self.report["deterministic"], ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        self.assertEqual(digest, self.report["deterministic_sha256"])
+        mutated = json.loads(json.dumps(self.report["deterministic"]))
+        mutated["validation"]["problems"] = ["injected"]
+        mutated_digest = hashlib.sha256(json.dumps(
+            mutated, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        self.assertNotEqual(digest, mutated_digest)
+
     def test_report_records_zero_cost_evidence_and_claim_boundary(self) -> None:
         evidence = self.report["deterministic"]["zero_cost_evidence"]
         self.assertEqual(evidence["provider_calls"], 0)

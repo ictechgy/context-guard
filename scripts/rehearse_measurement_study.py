@@ -617,6 +617,43 @@ def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> di
     }
 
 
+def collect_validation_problems(report: dict) -> list[str]:
+    """Deterministic verdict for the rehearsal, recorded inside the report itself."""
+    deterministic = report["deterministic"]
+    attempts = deterministic["attempts"]
+    expected_initial = deterministic["schedule"]["expected_initial_attempts"]
+    problems: list[str] = []
+    if attempts["terminal_initial_attempts"] != expected_initial:
+        problems.append(
+            f"expected {expected_initial} terminal initial attempts, got "
+            f"{attempts['terminal_initial_attempts']}"
+        )
+    if attempts["terminal_retry_attempts"] != len(SCRIPTED_RETRY_UNITS):
+        problems.append(
+            f"expected {len(SCRIPTED_RETRY_UNITS)} scripted retry attempts, got "
+            f"{attempts['terminal_retry_attempts']}"
+        )
+    if deterministic["zero_cost_evidence"]["credential_env_names_observed"]:
+        problems.append("credential-shaped environment names reached the fake provider")
+    expected_terminal = expected_initial + len(SCRIPTED_RETRY_UNITS)
+    kinds = deterministic["runtime_audit"]["fake_provider_invocation_kinds"]
+    if kinds.get("audit_violation"):
+        problems.append("fake provider recorded a blocked non-local operation")
+    if kinds.get("audit_clean") != expected_terminal:
+        problems.append(
+            f"expected {expected_terminal} clean fake-provider audits, got "
+            f"{kinds.get('audit_clean')}"
+        )
+    completeness = deterministic["artifact_completeness"]
+    for key in (
+        "receipt_files", "artifact_index_rows", "terminal_runs",
+        "terminal_attempts_with_verified_receipt",
+    ):
+        if completeness[key] != expected_terminal:
+            problems.append(f"expected {expected_terminal} {key}, got {completeness[key]}")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output-root", required=True, type=Path,
@@ -665,6 +702,11 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(
         suite=suite, prepared=prepared, study_root=study_root, runner=runner,
     )
+    problems = collect_validation_problems(report)
+    report["deterministic"]["validation"] = {
+        "passed": not problems,
+        "problems": list(problems),
+    }
     report["declared_timestamps"].update({
         "started_at_unix": round(started_at, 3),
         "completed_at_unix": round(time.time(), 3),
@@ -693,52 +735,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     os.chmod(ledger_path, 0o600)
 
-    attempts = report["deterministic"]["attempts"]
-    expected_initial = report["deterministic"]["schedule"]["expected_initial_attempts"]
-    problems = []
-    if attempts["terminal_initial_attempts"] != expected_initial:
-        problems.append(
-            f"expected {expected_initial} terminal initial attempts, got "
-            f"{attempts['terminal_initial_attempts']}"
-        )
-    if attempts["terminal_retry_attempts"] != len(SCRIPTED_RETRY_UNITS):
-        problems.append(
-            "expected "
-            f"{len(SCRIPTED_RETRY_UNITS)} scripted retry attempts, got "
-            f"{attempts['terminal_retry_attempts']}"
-        )
-    if report["deterministic"]["zero_cost_evidence"]["credential_env_names_observed"]:
-        problems.append("credential-shaped environment names reached the fake provider")
-    expected_terminal = expected_initial + len(SCRIPTED_RETRY_UNITS)
-    kinds = report["deterministic"]["runtime_audit"]["fake_provider_invocation_kinds"]
-    if kinds.get("audit_violation"):
-        problems.append("fake provider recorded a blocked non-local operation")
-    if kinds.get("audit_clean") != expected_terminal:
-        problems.append(
-            f"expected {expected_terminal} clean fake-provider audits, got "
-            f"{kinds.get('audit_clean')}"
-        )
-    completeness = report["deterministic"]["artifact_completeness"]
-    if completeness["terminal_runs"] != expected_terminal:
-        problems.append(
-            f"expected {expected_terminal} terminal runs, got {completeness['terminal_runs']}"
-        )
-    for key in ("receipt_files", "artifact_index_rows", "terminal_attempts_with_verified_receipt"):
-        if completeness[key] != expected_terminal:
-            problems.append(
-                f"expected {expected_terminal} {key}, got {completeness[key]}"
-            )
     if args.json:
         print(json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2))
     else:
         print(f"rehearsal report: {report_path}")
         print(f"overhead ledger: {ledger_path}")
         print(f"deterministic_sha256: {report['deterministic_sha256']}")
+        attempts = report["deterministic"]["attempts"]
         print(
             "initial attempts: "
             f"{attempts['terminal_initial_attempts']}, retries: "
             f"{attempts['terminal_retry_attempts']}"
         )
+        print(f"validation passed: {report['deterministic']['validation']['passed']}")
     for problem in problems:
         sys.stderr.write(f"rehearsal problem: {problem}\n")
     return 1 if problems else 0
