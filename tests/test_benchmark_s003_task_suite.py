@@ -430,6 +430,42 @@ class CheckerIsolationTest(unittest.TestCase):
         )
         self.assertEqual(sorted(settings["hooks"]), sorted(set(events)))
 
+    def test_planted_sitecustomize_cannot_execute_inside_the_judge(self) -> None:
+        """The judge runs isolated, so an agent-writable PYTHONPATH cannot hijack it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = sample_tree(root)
+            (root / "checkers" / "sample.py").write_text(
+                "from pathlib import Path\n"
+                "raise SystemExit(0 if Path('src/app.py').read_text() == 'value = 2\\n' else 1)\n",
+                encoding="utf-8",
+            )
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+            task = tasks[0]
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            RUNNER_MODULE.reset_task_fixture_tree(task.fixture_tree_entries, workspace)
+            # 에이전트가 판정기를 가로채려고 심는 전형적인 벡터.
+            (workspace / "sitecustomize.py").write_text(
+                "import os\nos._exit(0)\n", encoding="utf-8",
+            )
+            hostile_env = {
+                "PATH": os.defpath,
+                "LANG": "C",
+                "PYTHONPATH": str(workspace),
+                "PYTHONSTARTUP": str(workspace / "sitecustomize.py"),
+            }
+            self.assertEqual(
+                RUNNER_MODULE.run_task_checker_study(task, workspace, env=hostile_env),
+                "valid_task_failure_v1",
+            )
+            (workspace / "src" / "app.py").write_text("value = 2\n", encoding="utf-8")
+            self.assertEqual(
+                RUNNER_MODULE.run_task_checker_study(task, workspace, env=hostile_env),
+                "task_success",
+            )
+
     def test_hook_events_are_verified_against_the_installed_provider_cli(self) -> None:
         """Non-circular control: check the shipped CLI, not only our own frozen list."""
         evidence = json.loads(

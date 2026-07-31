@@ -3068,7 +3068,11 @@ def run_task_checker_study(
     never from the workspace, so overwriting or deleting the workspace copy
     cannot fake a success. The argv is derived here rather than taken from a
     free-form `success_command`, so a fixture cannot smuggle another command in.
+    The judge runs isolated with a minimal environment: the measured agent's
+    environment is deliberately not inherited, so a planted `sitecustomize.py`
+    reachable through `PYTHONPATH` cannot execute inside the judge.
     """
+    del env  # 측정 대상 환경은 판정기에 전달하지 않는다.
     payload = task.success_checker_bytes
     if not payload:
         return "success_checker_infra_invalid"
@@ -3083,12 +3087,15 @@ def run_task_checker_study(
         finally:
             os.close(fd)
         os.chmod(checker_path, 0o500)
+        # 판정기는 -I 로 격리 실행한다. 에이전트가 쓰기 가능한 workspace 가 PYTHONPATH/
+        # PYTHONHOME/PYTHONSTARTUP 또는 sys.path[0] 로 들어오면 심어둔 sitecustomize.py 가
+        # 판정기 안에서 실행되어 위협 모델이 무너진다. 환경도 물려받지 않고 최소로 만든다.
         result = run_bounded_command(
-            [sys.executable, str(checker_path)],
+            [sys.executable, "-I", str(checker_path)],
             cwd=workspace,
             timeout_seconds=600,
             max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
-            env=env,
+            env={"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"},
         )
     except (OSError, subprocess.TimeoutExpired, ValueError, SystemExit):
         return "success_checker_infra_invalid"
