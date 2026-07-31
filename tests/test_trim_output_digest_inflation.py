@@ -8,6 +8,7 @@ outputs digest mode exists for.
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 import subprocess
 import sys
@@ -19,8 +20,9 @@ TRIM = ROOT / "context-guard-kit" / "trim_command_output.py"
 PACKAGED_TRIM = ROOT / "plugins" / "context-guard" / "bin" / "context-guard-trim-output"
 
 SMALL_SCRIPT = "print('ok: 3 tests passed')\n"
+# 큰 출력은 digest 보다 훨씬 크기만 하면 되므로, CI 스텝 예산을 아끼기 위해 최소 크기로 둔다.
 LARGE_SCRIPT = (
-    "for index in range(4000):\n"
+    "for index in range(1200):\n"
     "    print('build step %04d ok bundle=chunk-%04d' % (index, index))\n"
 )
 
@@ -35,6 +37,7 @@ def run_trim(script_source: str, *extra: str) -> subprocess.CompletedProcess:
         )
 
 
+@functools.lru_cache(maxsize=8)
 def raw_bytes(script_source: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "producer.py"
@@ -72,7 +75,7 @@ class DigestInflationTest(unittest.TestCase):
 
     def test_large_output_still_uses_the_digest(self) -> None:
         baseline = raw_bytes(LARGE_SCRIPT)
-        self.assertGreater(baseline, 100_000)
+        self.assertGreater(baseline, 40_000)
         for fmt in ("markdown", "json"):
             with self.subTest(digest=fmt):
                 result = run_trim(LARGE_SCRIPT, "--digest", fmt)
