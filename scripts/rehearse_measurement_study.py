@@ -204,8 +204,28 @@ if arm == "treatment":
 
 if not should_fail:
     for rel, content in sorted(solutions[task_id].items()):
-        target = Path.cwd() / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # 리허설 전용 페이로드지만 봉쇄를 확인한다: 절대/상위 이동/심링크 경로는 거부한다.
+        parts = Path(rel).parts
+        if Path(rel).is_absolute() or any(part in ("", ".", "..") for part in parts):
+            print(json.dumps({
+                "type": "result", "subtype": "error_during_execution", "is_error": True,
+            }))
+            raise SystemExit(23)
+        target = Path.cwd()
+        for part in parts[:-1]:
+            target = target / part
+            if target.is_symlink():
+                print(json.dumps({
+                    "type": "result", "subtype": "error_during_execution", "is_error": True,
+                }))
+                raise SystemExit(23)
+            target.mkdir(exist_ok=True)
+        target = target / parts[-1]
+        if target.is_symlink():
+            print(json.dumps({
+                "type": "result", "subtype": "error_during_execution", "is_error": True,
+            }))
+            raise SystemExit(23)
         target.write_text(content, encoding="utf-8")
 
 # 스크립트된 fake usage. provider 측정값이 아니며 절감 근거로 쓰일 수 없다.
@@ -505,19 +525,20 @@ def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> di
     task_bindings = []
     for task in prepared["tasks"]:
         entries = task.fixture_tree_entries or ()
-        checker = next(
-            (entry for entry in entries if entry.path == task.success_checker), None,
-        )
+        checker_bytes = task.success_checker_bytes or b""
         task_bindings.append({
             "task_id": task.id,
             "prompt_sha256": hashlib.sha256(task.prompt.encode("utf-8")).hexdigest(),
             "fixture_tree_root": task.fixture_tree,
             "fixture_tree_sha256": runner.fixture_tree_sha256(entries),
             "fixture_tree_file_count": len(entries),
-            "success_command": task.success_command,
             "success_checker_path": task.success_checker,
             "success_checker_sha256": (
-                hashlib.sha256(checker.data).hexdigest() if checker is not None else None
+                hashlib.sha256(checker_bytes).hexdigest() if checker_bytes else None
+            ),
+            "success_checker_inside_fixture_tree": False,
+            "success_checker_execution": (
+                "private_per_attempt_directory_outside_workspace_v1"
             ),
         })
     summary = summarize_attempts(study_root / "attempts.jsonl")

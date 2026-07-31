@@ -9,8 +9,9 @@ are not used here.
 
 | Path | Purpose |
 | --- | --- |
-| `tasks.json` | The 12 hermetic tasks. Each one declares a `fixture_tree`, a real `success_command`, and a `success_checker` inside that tree. |
-| `trees/<nn>-<slug>/` | One sanitized fixture tree per task, including the executable bounded `check.py`. |
+| `tasks.json` | The 12 hermetic tasks. Each declares a `fixture_tree` and a `success_checker` that lives **outside** that tree. A free-form `success_command` is forbidden. |
+| `trees/<nn>-<slug>/` | One sanitized fixture tree per task. It never contains the checker. |
+| `checkers/<nn>-<slug>.py` | The bounded success checker for that task, kept out of the measured workspace. |
 | `settings/baseline.settings.json` | Baseline arm settings. Exactly the treatment settings with the registered ContextGuard hooks pruned. |
 | `settings/treatment.settings.json` | Treatment arm settings with the registered ContextGuard hook bindings. |
 | `variants.template.json` | Arm template. `{{CANDIDATE_HASH}}`, `{{NAMESPACE}}`, and `{{ARTIFACT_ROOT}}` are substituted per run so the concrete variants file always binds the exact candidate under measurement. |
@@ -28,13 +29,34 @@ artifact receipt.
 - Every attempt runs in its own isolated run root. The workspace is emptied and
   the declared fixture tree is re-materialized from the exact same bytes before
   each launch, so a retried or resumed attempt starts from a cold tree.
-- Directories are created `0700`, data files `0600`, and declared executables
-  `0700`. Symlinks are never created or followed.
-- The success checker runs inside that materialized workspace, reads only
-  workspace files, and uses no network or shell composition.
+- Directories are created `0700` and data files `0600`. Symlinks are never
+  created or followed.
 - The study manifest binds the prompt hash, the ordered fixture-tree file hashes,
   the domain-separated `tree_sha256`, and the checker hash. Any byte change in a
   tree or checker changes the manifest and therefore invalidates prior evidence.
+
+## Checker integrity
+
+The measured agent holds `Write`, `Edit`, and `Bash` in its workspace, so the
+checker must be unreachable from there:
+
+- The checker is **not** part of the fixture tree, and loading refuses a tree that
+  contains one or a checker path under the tree root.
+- Its bytes are bound before the run and recorded in the manifest by hash. Each
+  attempt materializes that bound copy into a private `0700` directory outside
+  the workspace, as a `0500` file, and runs it with the workspace as the current
+  directory. Planting `check.py` or `checker.py` in the workspace has no effect.
+- The argv is derived from the bound checker, so a fixture cannot substitute
+  another command. Declaring `success_command` next to a `fixture_tree` is
+  refused outright.
+- Checkers read workspace files through bounded no-follow IO that rejects a
+  symlinked leaf or any symlinked parent component, and they treat a candidate
+  module's premature `SystemExit` during import as a failure rather than letting
+  it terminate the checker successfully.
+- Behavioural properties are verified behaviourally. The performance task counts
+  real element comparisons instead of pattern-matching source text, so the
+  idiomatic single-pass answer passes and a single-loop quadratic implementation
+  still fails.
 
 ## Zero-cost rehearsal
 

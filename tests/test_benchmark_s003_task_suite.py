@@ -41,10 +41,12 @@ S003_BOUNDARIES = (
     "FixtureTreeEntry",
     "validate_fixture_tree_relpath",
     "load_task_fixture_tree",
+    "load_task_success_checker",
     "load_task_fixture_trees",
     "fixture_tree_manifest_files",
     "fixture_tree_sha256",
     "reset_task_fixture_tree",
+    "run_task_checker_study",
     "_study_task_manifest",
 )
 
@@ -82,13 +84,14 @@ def write_task_file(root: Path, entries: list[dict]) -> Path:
     return path
 
 
-def sample_tree(root: Path, *, executable_checker: bool = True) -> Path:
+def sample_tree(root: Path) -> Path:
+    """Create a fixture tree plus a checker that lives outside that tree."""
     tree = root / "trees" / "sample"
     (tree / "src").mkdir(parents=True)
     (tree / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
-    checker = tree / "check.py"
-    checker.write_text("raise SystemExit(0)\n", encoding="utf-8")
-    os.chmod(checker, 0o700 if executable_checker else 0o600)
+    checkers = root / "checkers"
+    checkers.mkdir(exist_ok=True)
+    (checkers / "sample.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
     return tree
 
 
@@ -96,13 +99,31 @@ def sample_task(**overrides) -> dict:
     entry = {
         "id": "sample_task",
         "prompt": "sample prompt",
-        "success_command": "python3 check.py",
         "success_cwd": ".",
         "fixture_tree": "trees/sample",
-        "success_checker": "check.py",
+        "success_checker": "checkers/sample.py",
     }
     entry.update(overrides)
     return entry
+
+
+def run_bound_checker(tree: Path, checker_source: str, solution: dict | None) -> subprocess.CompletedProcess:
+    """Run a checker exactly as the runner does: private copy, workspace cwd."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp) / "workspace"
+        shutil.copytree(tree, workspace)
+        for rel, content in sorted((solution or {}).items()):
+            target = workspace / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        private = Path(tmp) / "private"
+        private.mkdir()
+        checker = private / "checker.py"
+        checker.write_text(checker_source, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(checker)], cwd=workspace,
+            capture_output=True, text=True, timeout=180,
+        )
 
 
 class S003BoundaryPresenceTest(unittest.TestCase):
@@ -132,15 +153,27 @@ class SuiteShapeTest(unittest.TestCase):
             with self.subTest(task=entry["id"]):
                 self.assertEqual(entry["id"], f"ts12_{index:02d}_{category}")
 
-    def test_no_task_keeps_a_placeholder_success_command(self) -> None:
+    def test_every_task_binds_a_checker_outside_its_fixture_tree(self) -> None:
         for entry in SUITE_TASKS:
             with self.subTest(task=entry["id"]):
-                self.assertFalse(
-                    RUNNER_MODULE.is_placeholder_success_command(entry["success_command"])
-                )
+                self.assertNotIn("success_command", entry)
                 self.assertEqual(entry["success_cwd"], ".")
-                self.assertEqual(entry["success_checker"], "check.py")
                 self.assertTrue(entry["fixture_tree"].startswith("trees/"))
+                self.assertTrue(entry["success_checker"].startswith("checkers/"))
+                self.assertFalse(
+                    entry["success_checker"].startswith(entry["fixture_tree"])
+                )
+                self.assertTrue((SUITE / entry["success_checker"]).is_file())
+
+    def test_no_fixture_tree_ships_a_checker_the_agent_could_rewrite(self) -> None:
+        """The measured agent must never see or be able to replace the checker."""
+        for entry in SUITE_TASKS:
+            tree = SUITE / entry["fixture_tree"]
+            with self.subTest(task=entry["id"]):
+                names = {path.name for path in tree.rglob("*") if path.is_file()}
+                self.assertNotIn("check.py", names)
+                self.assertNotIn("checker.py", names)
+        self.assertEqual(list((SUITE / "trees").rglob("check.py")), [])
 
     def test_shipped_examples_remain_placeholders(self) -> None:
         example = json.loads(
@@ -165,12 +198,12 @@ class SuiteShapeTest(unittest.TestCase):
                 entries = task.fixture_tree_entries
                 self.assertIsNotNone(entries)
                 assert entries is not None
-                self.assertGreaterEqual(len(entries), 2)
+                self.assertGreaterEqual(len(entries), 1)
                 paths = [entry.path for entry in entries]
                 self.assertEqual(paths, sorted(paths))
-                self.assertIn("check.py", paths)
-                checker = next(entry for entry in entries if entry.path == "check.py")
-                self.assertTrue(checker.executable)
+                self.assertNotIn("check.py", paths)
+                self.assertIsNone(task.success_command)
+                self.assertTrue(task.success_checker_bytes)
 
     def test_rehearsal_solutions_never_live_inside_a_fixture_tree(self) -> None:
         self.assertEqual(sorted(SOLUTIONS), sorted(entry["id"] for entry in SUITE_TASKS))
@@ -178,6 +211,13 @@ class SuiteShapeTest(unittest.TestCase):
             with self.subTest(tree=tree.name):
                 names = {path.name for path in tree.rglob("*")}
                 self.assertNotIn("solutions.json", names)
+
+    def test_solution_paths_stay_inside_the_workspace(self) -> None:
+        for task_id, files in sorted(SOLUTIONS.items()):
+            for rel in sorted(files):
+                with self.subTest(task=task_id, path=rel):
+                    self.assertFalse(Path(rel).is_absolute())
+                    self.assertNotIn("..", Path(rel).parts)
 
 
 class FixtureTreePathValidationTest(unittest.TestCase):
@@ -210,26 +250,22 @@ class FixtureTreePathValidationTest(unittest.TestCase):
 
 
 class TaskFixtureParsingTest(unittest.TestCase):
-    def test_placeholder_success_command_is_refused_with_a_fixture_tree(self) -> None:
+    def test_free_form_success_command_is_refused_with_a_fixture_tree(self) -> None:
+        """The checker argv is derived, so no fixture may smuggle another command."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample_tree(root)
-            path = write_task_file(root, [sample_task(
-                success_command=(
-                    "python3 -c \"raise SystemExit('"
-                    + RUNNER_MODULE.PLACEHOLDER_SUCCESS_COMMAND_MARKER
-                    + "')\""
-                ),
-            )])
             with self.assertRaises(SystemExit):
-                RUNNER_MODULE.parse_tasks(path)
+                RUNNER_MODULE.parse_tasks(
+                    write_task_file(root, [sample_task(success_command="python3 -c pass")])
+                )
 
-    def test_missing_success_command_is_refused_with_a_fixture_tree(self) -> None:
+    def test_fixture_tree_requires_a_success_checker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample_tree(root)
             entry = sample_task()
-            entry.pop("success_command")
+            entry.pop("success_checker")
             with self.assertRaises(SystemExit):
                 RUNNER_MODULE.parse_tasks(write_task_file(root, [entry]))
 
@@ -259,6 +295,93 @@ class TaskFixtureParsingTest(unittest.TestCase):
             self.assertIsNone(tasks[0].fixture_tree)
             self.assertIsNone(tasks[0].success_checker)
             self.assertIsNone(tasks[0].fixture_tree_entries)
+            self.assertEqual(tasks[0].success_command, "true")
+
+
+class CheckerIsolationTest(unittest.TestCase):
+    """The success checker must be unreachable from the measured workspace."""
+
+    def bind(self, root: Path):
+        tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+        RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+        return tasks[0]
+
+    def test_checker_inside_the_fixture_tree_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = sample_tree(root)
+            (tree / "check.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+
+    def test_checker_path_under_the_fixture_tree_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = sample_tree(root)
+            (tree / "verify.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            tasks = RUNNER_MODULE.parse_tasks(
+                write_task_file(root, [sample_task(success_checker="trees/sample/verify.py")])
+            )
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+
+    def test_missing_or_empty_checker_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_tree(root)
+            (root / "checkers" / "sample.py").write_text("", encoding="utf-8")
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_tree(root)
+            (root / "checkers" / "sample.py").unlink()
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            with self.assertRaises(SystemExit):
+                RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
+
+    def test_bound_checker_bytes_are_used_even_if_the_workspace_copy_is_hostile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = sample_tree(root)
+            (root / "checkers" / "sample.py").write_text(
+                "from pathlib import Path\n"
+                "raise SystemExit(0 if Path('src/app.py').read_text() == 'value = 2\\n' else 1)\n",
+                encoding="utf-8",
+            )
+            task = self.bind(root)
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            RUNNER_MODULE.reset_task_fixture_tree(task.fixture_tree_entries, workspace)
+            # 에이전트가 판정기 이름으로 자명 통과 파일을 심어도 무시되어야 한다.
+            (workspace / "checker.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            (workspace / "check.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            env = {"PATH": os.defpath, "LANG": "C"}
+            self.assertEqual(
+                RUNNER_MODULE.run_task_checker_study(task, workspace, env=env),
+                "valid_task_failure_v1",
+            )
+            (workspace / "src" / "app.py").write_text("value = 2\n", encoding="utf-8")
+            self.assertEqual(
+                RUNNER_MODULE.run_task_checker_study(task, workspace, env=env),
+                "task_success",
+            )
+
+    def test_checker_runtime_reports_infra_invalid_without_bound_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_tree(root)
+            tasks = RUNNER_MODULE.parse_tasks(write_task_file(root, [sample_task()]))
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            self.assertEqual(
+                RUNNER_MODULE.run_task_checker_study(
+                    tasks[0], workspace, env={"PATH": os.defpath},
+                ),
+                "success_checker_infra_invalid",
+            )
 
 
 class FixtureTreeLoadingTest(unittest.TestCase):
@@ -274,23 +397,6 @@ class FixtureTreeLoadingTest(unittest.TestCase):
             os.symlink(tree / "src" / "app.py", tree / "linked.py")
             with self.assertRaises(SystemExit):
                 self.load_single(root)
-
-    def test_non_executable_checker_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            sample_tree(root, executable_checker=False)
-            with self.assertRaises(SystemExit):
-                self.load_single(root)
-
-    def test_checker_outside_the_tree_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            sample_tree(root)
-            tasks = RUNNER_MODULE.parse_tasks(
-                write_task_file(root, [sample_task(success_checker="absent.py")])
-            )
-            with self.assertRaises(SystemExit):
-                RUNNER_MODULE.load_task_fixture_trees(tasks, task_file_dir=root)
 
     def test_oversize_file_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,17 +437,40 @@ class FixtureTreeLoadingTest(unittest.TestCase):
                 ),
             )
 
-    def test_checker_mode_change_is_hash_visible(self) -> None:
+    def test_file_mode_change_is_hash_visible(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tree = sample_tree(root)
-            entries = self.load_single(root).fixture_tree_entries
-            baseline = RUNNER_MODULE.fixture_tree_sha256(entries)
+            baseline = RUNNER_MODULE.fixture_tree_sha256(
+                self.load_single(root).fixture_tree_entries
+            )
             os.chmod(tree / "src" / "app.py", 0o755)
             mutated = RUNNER_MODULE.fixture_tree_sha256(
                 self.load_single(root).fixture_tree_entries
             )
             self.assertNotEqual(baseline, mutated)
+
+    def test_short_read_still_binds_complete_fixture_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = sample_tree(root)
+            (tree / "src" / "app.py").write_text("value = 1\n" * 500, encoding="utf-8")
+            expected = RUNNER_MODULE.fixture_tree_sha256(
+                self.load_single(root).fixture_tree_entries
+            )
+            real_read = os.read
+
+            def short_read(fd, size):
+                return real_read(fd, 1 if size > 1 else size)
+
+            os.read = short_read
+            try:
+                entries = self.load_single(root).fixture_tree_entries
+            finally:
+                os.read = real_read
+            self.assertEqual(RUNNER_MODULE.fixture_tree_sha256(entries), expected)
+            body = next(e for e in entries if e.path == "src/app.py")
+            self.assertEqual(body.data.decode("utf-8"), "value = 1\n" * 500)
 
 
 class DeterministicResetTest(unittest.TestCase):
@@ -361,10 +490,10 @@ class DeterministicResetTest(unittest.TestCase):
             self.assertEqual(
                 (workspace / "src" / "app.py").read_text(encoding="utf-8"), "value = 1\n",
             )
-            self.assertEqual((workspace / "check.py").stat().st_mode & 0o777, 0o700)
             self.assertEqual(
                 (workspace / "src" / "app.py").stat().st_mode & 0o777, 0o600,
             )
+            self.assertFalse((workspace / "check.py").exists())
 
     def test_reset_removes_stale_state_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,7 +513,7 @@ class DeterministicResetTest(unittest.TestCase):
                 str(path.relative_to(workspace))
                 for path in workspace.rglob("*") if path.is_file()
             )
-            self.assertEqual(after, ["check.py", "src/app.py"])
+            self.assertEqual(after, ["src/app.py"])
 
     def test_reset_survives_short_writes(self) -> None:
         """A kernel short write must not silently truncate a materialized file."""
@@ -412,9 +541,7 @@ class DeterministicResetTest(unittest.TestCase):
             self.assertEqual(
                 (workspace / "src" / "app.py").read_text(encoding="utf-8"), "value = 1\n",
             )
-            self.assertEqual(
-                (workspace / "check.py").read_text(encoding="utf-8"), "raise SystemExit(0)\n",
-            )
+            self.assertEqual(len(entries), 1)
 
     def test_reset_refuses_a_symlinked_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,13 +579,15 @@ class StudyManifestBindingTest(unittest.TestCase):
                     RUNNER_MODULE.fixture_tree_sha256(task.fixture_tree_entries or ()),
                 )
                 checker = manifest["success_checker"]
-                self.assertEqual(checker["path"], "check.py")
-                expected = next(
-                    entry for entry in (task.fixture_tree_entries or ())
-                    if entry.path == "check.py"
+                self.assertEqual(checker["path"], task.success_checker)
+                self.assertFalse(checker["inside_fixture_tree"])
+                self.assertEqual(
+                    checker["execution"],
+                    "private_per_attempt_directory_outside_workspace_v1",
                 )
                 self.assertEqual(
-                    checker["sha256"], hashlib.sha256(expected.data).hexdigest(),
+                    checker["sha256"],
+                    hashlib.sha256(task.success_checker_bytes or b"").hexdigest(),
                 )
                 self.assertEqual(
                     manifest["prompt_sha256"],
@@ -477,30 +606,133 @@ class StudyManifestBindingTest(unittest.TestCase):
 
 
 class ExecutableSuccessCheckTest(unittest.TestCase):
-    """Every task's bounded checker must fail pristine and pass when solved."""
-
-    def run_checker(self, tree: Path, solution: dict | None) -> subprocess.CompletedProcess:
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
-            shutil.copytree(tree, workspace)
-            for rel, content in sorted((solution or {}).items()):
-                target = workspace / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
-            return subprocess.run(
-                [sys.executable, "check.py"], cwd=workspace,
-                capture_output=True, text=True, timeout=120,
-            )
+    """Every checker must fail on the pristine tree and pass on the scripted end state."""
 
     def test_pristine_tree_fails_and_solution_passes(self) -> None:
         for entry in SUITE_TASKS:
             tree = SUITE / entry["fixture_tree"]
+            source = (SUITE / entry["success_checker"]).read_text(encoding="utf-8")
             with self.subTest(task=entry["id"], state="pristine"):
-                self.assertEqual(self.run_checker(tree, None).returncode, 1)
+                self.assertEqual(run_bound_checker(tree, source, None).returncode, 1)
             with self.subTest(task=entry["id"], state="solved"):
                 self.assertEqual(
-                    self.run_checker(tree, SOLUTIONS[entry["id"]]).returncode, 0,
+                    run_bound_checker(tree, source, SOLUTIONS[entry["id"]]).returncode, 0,
                 )
+
+
+class CheckerAdversarialControlTest(unittest.TestCase):
+    """Negative controls for the failure modes the RA-S003 review round 2 found."""
+
+    def checker_for(self, suffix: str) -> tuple[Path, str]:
+        entry = next(
+            item for item in SUITE_TASKS if item["fixture_tree"].endswith(suffix)
+        )
+        return (
+            SUITE / entry["fixture_tree"],
+            (SUITE / entry["success_checker"]).read_text(encoding="utf-8"),
+        )
+
+    def test_module_level_system_exit_cannot_fake_success(self) -> None:
+        tree, source = self.checker_for("09-performance")
+        result = run_bound_checker(
+            tree, source, {"src/dedupe.py": "raise SystemExit(0)\n"},
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("module exited during import", result.stdout)
+
+    def test_idiomatic_single_pass_solution_is_accepted(self) -> None:
+        tree, source = self.checker_for("09-performance")
+        result = run_bound_checker(tree, source, {
+            "src/dedupe.py": "def first_unique(rows):\n    return list(dict.fromkeys(rows))\n",
+        })
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_single_loop_quadratic_solution_is_rejected(self) -> None:
+        tree, source = self.checker_for("09-performance")
+        result = run_bound_checker(tree, source, {
+            "src/dedupe.py": (
+                "def first_unique(rows):\n"
+                "    result = []\n"
+                "    for row in rows:\n"
+                "        if result.count(row) == 0:\n"
+                "            result.append(row)\n"
+                "    return result\n"
+            ),
+        })
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("quadratically", result.stdout)
+
+    def test_symlinked_workspace_file_is_rejected(self) -> None:
+        tree, source = self.checker_for("01-small-fix")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            shutil.copytree(tree, workspace)
+            outside = Path(tmp) / "outside.py"
+            outside.write_text("MAX_ITEMS = 10\nMIN_ITEMS = 1\n", encoding="utf-8")
+            victim = workspace / "src" / "limits.py"
+            victim.unlink()
+            os.symlink(outside, victim)
+            checker = Path(tmp) / "checker.py"
+            checker.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(checker)], cwd=workspace,
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("FAIL", result.stdout)
+
+    def test_symlinked_workspace_directory_is_rejected(self) -> None:
+        tree, source = self.checker_for("01-small-fix")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            shutil.copytree(tree, workspace)
+            outside = Path(tmp) / "outsrc"
+            outside.mkdir()
+            (outside / "limits.py").write_text(
+                "MAX_ITEMS = 10\nMIN_ITEMS = 1\n", encoding="utf-8",
+            )
+            shutil.rmtree(workspace / "src")
+            os.symlink(outside, workspace / "src")
+            checker = Path(tmp) / "checker.py"
+            checker.write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(checker)], cwd=workspace,
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("symlinked directory component", result.stdout)
+
+    def test_refactor_task_accepts_the_idiomatic_import(self) -> None:
+        """The 08 checker must not force a non-idiomatic sys.path hack."""
+        tree, source = self.checker_for("08-refactor")
+        result = run_bound_checker(tree, source, {
+            "src/shared.py": (
+                '"""Shared helpers."""\n\n\n'
+                "def normalize_key(raw):\n"
+                "    return raw.strip().lower().replace(' ', '_')\n"
+            ),
+            "src/alpha.py": (
+                '"""Alpha report."""\n'
+                "from shared import normalize_key\n\n\n"
+                "def alpha_keys(rows):\n"
+                "    return [normalize_key(row) for row in rows]\n"
+            ),
+            "src/beta.py": (
+                '"""Beta report."""\n'
+                "from shared import normalize_key\n\n\n"
+                "def beta_keys(rows):\n"
+                "    return sorted(normalize_key(row) for row in rows)\n"
+            ),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_artifact_receipt_task_pins_the_full_log_bytes(self) -> None:
+        tree, source = self.checker_for("12-artifact-receipt")
+        solution = dict(SOLUTIONS["ts12_12_artifact_receipt"])
+        solution["logs/full.log"] = "tampered\n" * 800
+        result = run_bound_checker(tree, source, solution)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("byte-identical", result.stdout)
 
 
 class RehearsalHarnessContractTest(unittest.TestCase):

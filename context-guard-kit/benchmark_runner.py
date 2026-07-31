@@ -759,6 +759,7 @@ class TaskFixture:
     fixture_tree: str | None = None
     success_checker: str | None = None
     fixture_tree_entries: tuple["FixtureTreeEntry", ...] | None = None
+    success_checker_bytes: bytes | None = None
 
 
 @dataclass
@@ -1894,7 +1895,17 @@ def load_task_fixture_tree(
                         f"{owner} fixture_tree file exceeds "
                         f"{MAX_FIXTURE_TREE_FILE_BYTES} bytes"
                     )
-                data = os.read(fd, MAX_FIXTURE_TREE_FILE_BYTES + 1)
+                # os.read 는 short read 가 허용되므로 EOF 까지 반복 읽는다. 한 번만 읽으면
+                # 잘린 바이트가 온전한 fixture 로 해시/실체화될 수 있다.
+                chunks: list[bytes] = []
+                remaining = MAX_FIXTURE_TREE_FILE_BYTES + 1
+                while remaining > 0:
+                    chunk = os.read(fd, remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
             finally:
                 os.close(fd)
             if len(data) > MAX_FIXTURE_TREE_FILE_BYTES:
@@ -1920,16 +1931,60 @@ def load_task_fixture_tree(
     if not entries:
         raise SystemExit(f"{owner} fixture_tree must contain at least one file")
     ordered = tuple(sorted(entries, key=lambda entry: entry.path))
-    if task.success_checker is not None:
-        checker = str(validate_fixture_tree_relpath(
-            task.success_checker, owner=owner, field="success_checker",
-        ).as_posix())
-        match = next((entry for entry in ordered if entry.path == checker), None)
-        if match is None:
-            raise SystemExit(f"{owner} success_checker is not part of fixture_tree")
-        if not match.executable:
-            raise SystemExit(f"{owner} success_checker must be executable in fixture_tree")
+    if any(entry.path == "check.py" for entry in ordered):
+        raise SystemExit(
+            f"{owner} fixture_tree must not contain the success checker; "
+            "the checker is executed from a private directory outside the workspace"
+        )
     return ordered
+
+
+def load_task_success_checker(task: TaskFixture, task_file_dir: Path) -> bytes:
+    """Read the task's success checker from outside its fixture tree.
+
+    The checker never enters the agent-writable workspace: it is bound here by
+    content, recorded in the study manifest by hash, and materialized into a
+    private per-attempt directory immediately before it runs.
+    """
+    if task.success_checker is None:
+        return b""
+    owner = f"task {task.id}"
+    rel = validate_fixture_tree_relpath(
+        task.success_checker, owner=owner, field="success_checker",
+    )
+    if task.fixture_tree is not None:
+        tree_root = validate_fixture_tree_relpath(
+            task.fixture_tree, owner=owner, field="fixture_tree",
+        )
+        if rel.parts[:len(tree_root.parts)] == tree_root.parts:
+            raise SystemExit(
+                f"{owner} success_checker must live outside fixture_tree so the "
+                "measured agent cannot rewrite it"
+            )
+    path = task_file_dir / rel
+    try:
+        fd = _open_regular_no_symlink(path)
+    except OSError:
+        raise SystemExit(f"{owner} success_checker could not be opened") from None
+    try:
+        if os.fstat(fd).st_size > MAX_FIXTURE_TREE_FILE_BYTES:
+            raise SystemExit(f"{owner} success_checker is too large")
+        chunks: list[bytes] = []
+        remaining = MAX_FIXTURE_TREE_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if not data:
+        raise SystemExit(f"{owner} success_checker is empty")
+    if len(data) > MAX_FIXTURE_TREE_FILE_BYTES:
+        raise SystemExit(f"{owner} success_checker is too large")
+    return data
 
 
 def load_task_fixture_trees(
@@ -1940,6 +1995,7 @@ def load_task_fixture_trees(
         if task.fixture_tree is None:
             continue
         task.fixture_tree_entries = load_task_fixture_tree(task, task_file_dir)
+        task.success_checker_bytes = load_task_success_checker(task, task_file_dir)
 
 
 def fixture_tree_manifest_files(
@@ -2186,23 +2242,20 @@ def parse_tasks(path: Path, variants: list["Variant"] | None = None) -> list[Tas
                 validate_fixture_tree_relpath(
                     fixture_tree_raw, owner=owner, field="fixture_tree",
                 )
-                if success_checker_raw is not None:
-                    validate_fixture_tree_relpath(
-                        success_checker_raw, owner=owner, field="success_checker",
-                    )
-                success_command = item.get("success_command")
-                if not isinstance(success_command, str) or not success_command.strip():
+                if success_checker_raw is None:
+                    raise SystemExit(f"{owner} fixture_tree requires success_checker")
+                validate_fixture_tree_relpath(
+                    success_checker_raw, owner=owner, field="success_checker",
+                )
+                if item.get("success_command") is not None:
                     raise SystemExit(
-                        f"{owner} fixture_tree requires a real success_command"
-                    )
-                if is_placeholder_success_command(success_command):
-                    raise SystemExit(
-                        f"{owner} fixture_tree forbids a placeholder success_command"
+                        f"{owner} fixture_tree forbids success_command; the checker "
+                        "argv is derived from the bound success_checker"
                     )
                 if str(item.get("success_cwd", ".")) != ".":
                     raise SystemExit(
                         f"{owner} fixture_tree requires success_cwd '.' "
-                        "so the checker runs in the materialized workspace"
+                        "so the checker runs against the materialized workspace"
                     )
         except (SystemExit, KeyError):
             if profiled:
@@ -2991,6 +3044,56 @@ def run_success_command_study(
     return classify_success_checker(result)
 
 
+def run_task_checker_study(
+    task: TaskFixture,
+    workspace: Path,
+    *,
+    env: dict[str, str],
+) -> str:
+    """Run the content-bound success checker outside the measured workspace.
+
+    The checker bytes come from the manifest-bound copy loaded before the run,
+    never from the workspace, so overwriting or deleting the workspace copy
+    cannot fake a success. The argv is derived here rather than taken from a
+    free-form `success_command`, so a fixture cannot smuggle another command in.
+    """
+    payload = task.success_checker_bytes
+    if not payload:
+        return "success_checker_infra_invalid"
+    private_root: str | None = None
+    try:
+        private_root = tempfile.mkdtemp(prefix="contextguard-bench-checker-")
+        os.chmod(private_root, 0o700)
+        checker_path = Path(private_root) / "checker.py"
+        fd = _measurement_create_exclusive(checker_path)
+        try:
+            _measurement_write_fd(fd, payload)
+        finally:
+            os.close(fd)
+        os.chmod(checker_path, 0o500)
+        result = run_bounded_command(
+            [sys.executable, str(checker_path)],
+            cwd=workspace,
+            timeout_seconds=600,
+            max_output_bytes=SUCCESS_COMMAND_OUTPUT_MAX_BYTES,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, SystemExit):
+        return "success_checker_infra_invalid"
+    finally:
+        if private_root is not None:
+            shutil.rmtree(private_root, ignore_errors=True)
+    if len(result.stdout_bytes.splitlines()) > 4096 or len(result.stderr_bytes.splitlines()) > 4096:
+        return "success_checker_infra_invalid"
+    if any(
+        len(line) > 16_384
+        for raw in (result.stdout_bytes, result.stderr_bytes)
+        for line in raw.splitlines()
+    ):
+        return "success_checker_infra_invalid"
+    return classify_success_checker(result)
+
+
 def _measurement_create_exclusive(path: Path) -> int:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_CLOEXEC"):
@@ -3520,12 +3623,15 @@ def _run_measurement_fixture_locked(
     shift_metrics = collect_shift_metrics(parsed.payload)
     self_hosted_metrics = collect_self_hosted_metrics(parsed.payload)
     if measurement_study:
-        # fixture tree 를 선언한 S003 task 는 에이전트가 실제로 작업한 workspace 를 검사한다.
-        # 선언이 없는 S001/S002 task 는 기존 project_root 계약을 그대로 유지한다.
-        checker_root = (
-            context.workspace if task.fixture_tree_entries else project_root
-        )
-        checker_classification = run_success_command_study(task, checker_root, env=env)
+        # fixture tree 를 선언한 S003 task 는 매니페스트에 바인딩된 checker 바이트를
+        # workspace 밖 비공개 디렉터리에서 실행한다. 그래야 측정 대상 에이전트가
+        # 판정기를 덮어써서 거짓 성공을 만들 수 없다.
+        if task.fixture_tree_entries:
+            checker_classification = run_task_checker_study(
+                task, context.workspace, env=env,
+            )
+        else:
+            checker_classification = run_success_command_study(task, project_root, env=env)
         success = checker_classification == "task_success"
         success_note = checker_classification
     else:
@@ -8930,13 +9036,16 @@ def _study_task_manifest(task: TaskFixture, task_dir: Path) -> dict[str, Any]:
         if task.success_checker is None:
             success_checker = None
         else:
-            checker = next(
-                entry for entry in entries if entry.path == task.success_checker
-            )
+            payload = task.success_checker_bytes
+            if payload is None:
+                payload = load_task_success_checker(task, task_dir)
             success_checker = {
-                "path": checker.path,
-                "sha256": hashlib.sha256(checker.data).hexdigest(),
-                "bytes": len(checker.data),
+                "path": task.success_checker,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+                "inside_fixture_tree": False,
+                "execution": "private_per_attempt_directory_outside_workspace_v1",
+                "argv": "interpreter_plus_bound_checker_copy",
             }
     return {
         "id": task.id,

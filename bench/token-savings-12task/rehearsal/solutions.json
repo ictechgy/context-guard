@@ -1,5 +1,5 @@
 {
-  "purpose": "Rehearsal-only scripted fake-provider workspace writes. These are never used by a real provider run and are not part of any task fixture tree.",
+  "purpose": "Rehearsal-only scripted fake-provider workspace writes. These are never used by a real provider run, are never part of a task fixture tree, and are never part of a success checker.",
   "schema_version": "contextguard.bench.rehearsal-solutions.v1",
   "solutions": {
     "ts12_01_small_fix": {
@@ -24,8 +24,8 @@
       "docs/usage.md": "# Usage\n\n## Overview\n\nThe tool reads one input file and writes one report.\n\n## Options\n\n- `--new-flag VALUE`: select the report value.\n- `--old-flag VALUE`: deprecated alias of `--new-flag`; still accepted.\n"
     },
     "ts12_08_refactor": {
-      "src/alpha.py": "\"\"\"Alpha report.\"\"\"\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nfrom shared import normalize_key\n\n\ndef alpha_keys(rows):\n    return [normalize_key(row) for row in rows]\n",
-      "src/beta.py": "\"\"\"Beta report.\"\"\"\nimport os\nimport sys\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n\nfrom shared import normalize_key\n\n\ndef beta_keys(rows):\n    return sorted(normalize_key(row) for row in rows)\n",
+      "src/alpha.py": "\"\"\"Alpha report.\"\"\"\nfrom shared import normalize_key\n\n\ndef alpha_keys(rows):\n    return [normalize_key(row) for row in rows]\n",
+      "src/beta.py": "\"\"\"Beta report.\"\"\"\nfrom shared import normalize_key\n\n\ndef beta_keys(rows):\n    return sorted(normalize_key(row) for row in rows)\n",
       "src/shared.py": "\"\"\"Shared helpers.\"\"\"\n\n\ndef normalize_key(raw):\n    return raw.strip().lower().replace(' ', '_')\n"
     },
     "ts12_09_performance": {
