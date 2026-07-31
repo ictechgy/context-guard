@@ -75,6 +75,24 @@ import os
 import sys
 from pathlib import Path
 
+# 실행 시점 fail-closed 증거: 네트워크/외부 실행/브라우저 계열 audit 이벤트가 발생하면
+# 즉시 중단한다. 정적 소스 검사와 달리 이 훅은 우회된 호출도 실제로 막는다.
+BLOCKED_AUDIT_PREFIXES = (
+    "socket.", "urllib.", "http.", "ssl.", "ftplib.", "smtplib.", "imaplib.",
+    "poplib.", "telnetlib.", "webbrowser.", "subprocess.", "os.exec", "os.fork",
+    "os.posix_spawn", "os.system", "os.spawn", "pty.spawn",
+)
+AUDIT_VIOLATIONS = []
+
+
+def _audit(event, args):
+    if event.startswith(BLOCKED_AUDIT_PREFIXES):
+        AUDIT_VIOLATIONS.append(event)
+        raise RuntimeError("fake provider blocked a non-local operation: " + event)
+
+
+sys.addaudithook(_audit)
+
 CAPABILITIES = (
     "--settings --setting-sources --include-hook-events "
     "--no-session-persistence stream-json"
@@ -209,7 +227,8 @@ print(json.dumps({
     "usage": usage,
     "total_cost_usd": 0.0,
 }, separators=(",", ":")), flush=True)
-raise SystemExit(0)
+log_env("audit_clean" if not AUDIT_VIOLATIONS else "audit_violation")
+raise SystemExit(0 if not AUDIT_VIOLATIONS else 24)
 '''
 
 
@@ -371,16 +390,113 @@ def summarize_attempts(attempts_path: Path) -> dict:
     }
 
 
-def audit_env_log(env_log: Path) -> list[str]:
+def audit_fake_provider_log(env_log: Path) -> dict:
+    """Summarize the fake provider's own runtime evidence."""
     observed: set[str] = set()
-    if not env_log.exists():
-        return []
-    for line in env_log.read_text(encoding="utf-8").splitlines():
+    kinds: dict[str, int] = {}
+    if env_log.exists():
+        for line in env_log.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            observed.update(record.get("env", {}))
+            kind = str(record.get("kind", "unknown"))
+            kinds[kind] = kinds.get(kind, 0) + 1
+    return {
+        "credential_env_names_observed": sorted(observed & set(FORBIDDEN_ENV_NAMES)),
+        "invocation_kinds": dict(sorted(kinds.items())),
+    }
+
+
+def attempt_order_projection(attempts_path: Path) -> list[list]:
+    """Path-free ordered projection of the recorded schedule and outcomes."""
+    projection: list[list] = []
+    for line in attempts_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        record = json.loads(line)
-        observed.update(record.get("env", {}))
-    return sorted(observed & set(FORBIDDEN_ENV_NAMES))
+        event = json.loads(line)
+        projection.append([
+            str(event["state"]),
+            str(event["task_id"]),
+            str(event["arm"]),
+            int(event["repetition"]),
+            int(event["attempt"]),
+            str(event.get("terminal_classification", "")),
+            bool(event.get("successful", False)),
+            event.get("token_buckets"),
+            event.get("reason"),
+        ])
+    return projection
+
+
+# 아래 필드들은 run-local 절대 경로에서 유도되므로 서로 다른 output root 사이에서
+# 같을 수 없다. 교차 비교에서는 자리표시자로 바꾸고, 동일 경로 재실행의 byte 동일성으로
+# 따로 증명한다.
+PATH_DERIVED_ANALYSIS_FIELDS = (
+    "manifest_sha256",
+    "observability.artifact_index_sha256",
+    "observability.attempt_index_sha256",
+    "observability.manifest_input_hashes.variants",
+)
+
+
+def normalized_analysis(study_report: dict, *, output_root: Path) -> dict:
+    """Analysis output with run-local path-derived identity replaced.
+
+    Everything else is determined by the frozen suite, plan, and scripted
+    outcomes, so this projection is comparable across output roots.
+    """
+    placeholder = "<path-derived>"
+
+    def scrub(value, path: str):
+        if path in PATH_DERIVED_ANALYSIS_FIELDS:
+            if isinstance(value, list):
+                return [placeholder for _ in value]
+            return placeholder
+        if isinstance(value, dict):
+            return {
+                key: scrub(item, f"{path}.{key}" if path else key)
+                for key, item in sorted(value.items())
+            }
+        if isinstance(value, list):
+            return [scrub(item, path) for item in value]
+        if isinstance(value, str):
+            return value.replace(str(output_root), "<output-root>")
+        return value
+
+    return scrub(study_report, "")
+
+
+def artifact_completeness(*, artifacts_root: Path, attempts_path: Path) -> dict:
+    """Receipt/index completeness for every terminal attempt."""
+    receipts = sorted(artifacts_root.glob("runs/*/receipt.json"))
+    index_path = artifacts_root / "artifact-index.ndjson"
+    index_rows = 0
+    if index_path.exists():
+        index_rows = len([
+            line for line in index_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ])
+    terminal_runs = set()
+    receipt_bound = 0
+    for line in attempts_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event["state"] != "terminal":
+            continue
+        terminal_runs.add(str(event["run_id"]))
+        receipt = artifacts_root / "runs" / str(event["run_id"]) / "receipt.json"
+        if event.get("receipt_sha256") and receipt.is_file():
+            digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
+            if digest == event["receipt_sha256"]:
+                receipt_bound += 1
+    return {
+        "receipt_files": len(receipts),
+        "artifact_index_rows": index_rows,
+        "terminal_runs": len(terminal_runs),
+        "terminal_attempts_with_verified_receipt": receipt_bound,
+    }
 
 
 def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> dict:
@@ -406,9 +522,17 @@ def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> di
         })
     summary = summarize_attempts(study_root / "attempts.jsonl")
     study_report = json.loads((study_root / "study-report.json").read_text(encoding="utf-8"))
-    forbidden = audit_env_log(Path(json.loads(
-        (prepared["inputs"] / "variants.json").read_text(encoding="utf-8")
-    )[0]["measurement"]["environment"]["overrides"]["CG_S003_ENV_LOG"]))
+    provider_log = audit_fake_provider_log(
+        Path(json.loads(
+            (prepared["inputs"] / "variants.json").read_text(encoding="utf-8")
+        )[0]["measurement"]["environment"]["overrides"]["CG_S003_ENV_LOG"])
+    )
+    output_root = prepared["inputs"].parent
+    order = attempt_order_projection(study_root / "attempts.jsonl")
+    analysis = normalized_analysis(study_report, output_root=output_root)
+    completeness = artifact_completeness(
+        artifacts_root=prepared["artifacts"], attempts_path=study_root / "attempts.jsonl",
+    )
     return {
         "schema_version": REHEARSAL_REPORT_SCHEMA,
         "claim_boundary": CLAIM_BOUNDARY,
@@ -436,13 +560,25 @@ def build_report(*, suite: Path, prepared: dict, study_root: Path, runner) -> di
                 "expected_initial_attempts": 72,
             },
             "attempts": summary,
+            "attempt_order_sha256": hashlib.sha256(json.dumps(
+                order, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+            "analysis_sha256": hashlib.sha256(json.dumps(
+                analysis, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+            "analysis_normalized_fields": list(PATH_DERIVED_ANALYSIS_FIELDS),
+            "artifact_completeness": completeness,
+            "runtime_audit": {
+                "fake_provider_invocation_kinds": provider_log["invocation_kinds"],
+                "audit_hook": "fail_closed_blocked_network_and_process_events_v1",
+            },
             "scripted_retry_units": [list(unit) for unit in SCRIPTED_RETRY_UNITS],
             "study_report_verdict": study_report.get("verdict"),
             "zero_cost_evidence": {
                 "provider_calls": 0,
                 "network_calls": 0,
                 "usd_spent": 0.0,
-                "credential_env_names_observed": forbidden,
+                "credential_env_names_observed": provider_log["credential_env_names_observed"],
                 "fake_provider": True,
             },
             "not_evidence_of": [
@@ -547,6 +683,25 @@ def main(argv: list[str] | None = None) -> int:
         )
     if report["deterministic"]["zero_cost_evidence"]["credential_env_names_observed"]:
         problems.append("credential-shaped environment names reached the fake provider")
+    expected_terminal = 72 + len(SCRIPTED_RETRY_UNITS)
+    kinds = report["deterministic"]["runtime_audit"]["fake_provider_invocation_kinds"]
+    if kinds.get("audit_violation"):
+        problems.append("fake provider recorded a blocked non-local operation")
+    if kinds.get("audit_clean") != expected_terminal:
+        problems.append(
+            f"expected {expected_terminal} clean fake-provider audits, got "
+            f"{kinds.get('audit_clean')}"
+        )
+    completeness = report["deterministic"]["artifact_completeness"]
+    if completeness["terminal_runs"] != expected_terminal:
+        problems.append(
+            f"expected {expected_terminal} terminal runs, got {completeness['terminal_runs']}"
+        )
+    for key in ("receipt_files", "artifact_index_rows", "terminal_attempts_with_verified_receipt"):
+        if completeness[key] != expected_terminal:
+            problems.append(
+                f"expected {expected_terminal} {key}, got {completeness[key]}"
+            )
     if args.json:
         print(json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2))
     else:

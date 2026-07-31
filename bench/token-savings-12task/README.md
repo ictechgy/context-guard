@@ -44,9 +44,29 @@ python3 scripts/rehearse_measurement_study.py --output-root /tmp/s003-rehearsal
 
 The harness generates an official-shaped fake Claude CLI, materializes cold
 local/session roots, executes all 72 scheduled initial attempts plus the scripted
-retry cases, and writes `rehearsal-report.json` plus `overhead-ledger.jsonl`. The
-report's `deterministic` block reproduces byte for byte across runs; only the
-`declared_timestamps` block changes.
+retry cases, and writes `rehearsal-report.json` plus `overhead-ledger.jsonl`.
+
+Offline behaviour is proved at runtime, not only by reading the source: the fake
+CLI installs a fail-closed audit hook that aborts on any socket, urllib, http,
+ssl, mail/ftp, browser, subprocess, or process-spawn audit event, and every
+invocation records a clean-audit receipt. The harness fails if the clean-audit
+count does not match the executed attempts, if any violation is recorded, or if
+a credential-shaped environment name reached the child.
+
+Reproducibility is reported two ways:
+
+- Across different output roots, the report's `deterministic` block — including
+  `attempt_order_sha256` and `analysis_sha256` — is identical. The fields that
+  are genuinely derived from run-local absolute paths are listed in
+  `analysis_normalized_fields` and replaced with a placeholder instead of being
+  silently dropped.
+- Re-running into the same output root reproduces `study-manifest.json`,
+  `study-report.json`, and `attempts.jsonl` byte for byte, which covers those
+  path-derived fields too.
+
+`artifact_completeness` records the receipt files, artifact-index rows, terminal
+runs, and terminal attempts whose recorded receipt hash matches the stored
+receipt bytes. Only the `declared_timestamps` block changes between runs.
 
 ## Claim boundary
 

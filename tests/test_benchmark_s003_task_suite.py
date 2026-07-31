@@ -499,10 +499,25 @@ class RehearsalHarnessContractTest(unittest.TestCase):
         fake = self.harness.FAKE_CLI
         for banned in (
             "import socket", "import http", "import urllib", "import ssl",
-            "requests", "keychain", "security find-generic-password", "subprocess",
+            "import subprocess", "requests", "keychain",
+            "security find-generic-password",
         ):
             with self.subTest(token=banned):
                 self.assertNotIn(banned, fake)
+
+    def test_fake_cli_installs_a_fail_closed_runtime_audit_hook(self) -> None:
+        fake = self.harness.FAKE_CLI
+        self.assertIn("sys.addaudithook(_audit)", fake)
+        self.assertIn("raise RuntimeError", fake)
+        for prefix in ("socket.", "urllib.", "subprocess.", "os.exec", "ssl."):
+            with self.subTest(prefix=prefix):
+                self.assertIn(f'"{prefix}"', fake)
+
+    def test_path_derived_analysis_fields_are_disclosed(self) -> None:
+        fields = self.harness.PATH_DERIVED_ANALYSIS_FIELDS
+        self.assertIn("manifest_sha256", fields)
+        self.assertIn("observability.artifact_index_sha256", fields)
+        self.assertIn("observability.attempt_index_sha256", fields)
 
     def test_forbidden_env_names_cover_provider_and_cloud_credentials(self) -> None:
         forbidden = set(self.harness.FORBIDDEN_ENV_NAMES)
@@ -600,6 +615,43 @@ class RehearsalExecutionTest(unittest.TestCase):
                 self.assertEqual(row["provider_calls"], 0)
                 self.assertEqual(row["usd_spent"], 0.0)
                 self.assertEqual(row["cost_class"], "local_engineering_overhead")
+
+    def test_runtime_audit_proves_every_invocation_stayed_local(self) -> None:
+        audit = self.report["deterministic"]["runtime_audit"]
+        kinds = audit["fake_provider_invocation_kinds"]
+        self.assertEqual(
+            audit["audit_hook"], "fail_closed_blocked_network_and_process_events_v1",
+        )
+        self.assertEqual(kinds.get("provider"), 76)
+        self.assertEqual(kinds.get("audit_clean"), 76)
+        self.assertNotIn("audit_violation", kinds)
+
+    def test_receipts_manifest_and_index_are_complete(self) -> None:
+        completeness = self.report["deterministic"]["artifact_completeness"]
+        for key in (
+            "receipt_files", "artifact_index_rows", "terminal_runs",
+            "terminal_attempts_with_verified_receipt",
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(completeness[key], 76)
+
+    def test_same_path_rerun_reproduces_recorded_outputs_byte_for_byte(self) -> None:
+        root = Path(self.tmp.name) / "same-path"
+        digests = []
+        for _ in range(2):
+            shutil.rmtree(root, ignore_errors=True)
+            proc = subprocess.run(
+                [sys.executable, str(HARNESS), "--output-root", str(root)],
+                capture_output=True, text=True, timeout=1800,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            digests.append({
+                name: hashlib.sha256((root / "study" / name).read_bytes()).hexdigest()
+                for name in ("study-manifest.json", "study-report.json", "attempts.jsonl")
+            })
+        for name in digests[0]:
+            with self.subTest(artifact=name):
+                self.assertEqual(digests[0][name], digests[1][name])
 
     def test_deterministic_block_reproduces_byte_for_byte(self) -> None:
         second_root = Path(self.tmp.name) / "rehearsal-2"
