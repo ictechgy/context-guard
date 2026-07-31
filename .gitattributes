@@ -1,0 +1,3 @@
+# The real 12-task benchmark suite is hashed evidence. Never let checkout-time
+# text or EOL normalization change its bytes.
+bench/token-savings-12task/** -text

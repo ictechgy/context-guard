@@ -212,6 +212,28 @@ class SuiteShapeTest(unittest.TestCase):
                 names = {path.name for path in tree.rglob("*")}
                 self.assertNotIn("solutions.json", names)
 
+    def test_allowed_tools_agree_across_tasks_and_both_arm_settings(self) -> None:
+        """Arm comparability depends on one tool list; drift must be caught."""
+        expected = SUITE_TASKS[0]["allowed_tools"]
+        self.assertEqual(sorted(expected), expected)
+        for entry in SUITE_TASKS:
+            with self.subTest(task=entry["id"]):
+                self.assertEqual(entry["allowed_tools"], expected)
+        for arm in ("baseline", "treatment"):
+            settings = json.loads(
+                (SUITE / "settings" / f"{arm}.settings.json").read_text(encoding="utf-8")
+            )
+            with self.subTest(arm=arm):
+                self.assertEqual(settings["permissions"]["allow"], expected)
+
+    def test_study_plan_namespace_is_not_rehearsal_specific(self) -> None:
+        plan = json.loads((SUITE / "study-plan.json").read_text(encoding="utf-8"))
+        self.assertNotIn("rehearsal", plan["namespace"])
+
+    def test_fixture_bytes_are_protected_from_eol_normalization(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("bench/token-savings-12task/** -text", attributes)
+
     def test_solution_paths_stay_inside_the_workspace(self) -> None:
         for task_id, files in sorted(SOLUTIONS.items()):
             for rel in sorted(files):
@@ -632,13 +654,69 @@ class CheckerAdversarialControlTest(unittest.TestCase):
             (SUITE / entry["success_checker"]).read_text(encoding="utf-8"),
         )
 
-    def test_module_level_system_exit_cannot_fake_success(self) -> None:
+    def test_candidate_cannot_fake_success_by_exiting_or_forging(self) -> None:
+        """Candidate code runs in a child process whose report the parent verifies."""
         tree, source = self.checker_for("09-performance")
-        result = run_bound_checker(
-            tree, source, {"src/dedupe.py": "raise SystemExit(0)\n"},
-        )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("module exited during import", result.stdout)
+        hostile = {
+            "system_exit_at_import": "raise SystemExit(0)\n",
+            "os_exit_at_import": "import os\nos._exit(0)\n",
+            "rebind_parent_helpers": (
+                "import __main__\n__main__.fail = __main__.ok\n"
+                "def first_unique(rows):\n    return []\n"
+            ),
+            "forged_probe_line": (
+                'print("PROBE {\\"missing\\": false, \\"cases\\": [[], [\\"a\\"], '
+                '[\\"b\\",\\"a\\",\\"c\\"]], \\"order\\": [], \\"eq\\": 0}")\n'
+                "import sys, os\nsys.stdout.flush()\nos._exit(0)\n"
+            ),
+            "system_exit_at_call_time": (
+                "def first_unique(rows):\n    raise SystemExit(0)\n"
+            ),
+        }
+        for label, payload in sorted(hostile.items()):
+            with self.subTest(vector=label):
+                result = run_bound_checker(tree, source, {"src/dedupe.py": payload})
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("FAIL", result.stdout)
+
+    def test_probe_line_must_carry_the_parent_nonce(self) -> None:
+        for entry in SUITE_TASKS:
+            source = (SUITE / entry["success_checker"]).read_text(encoding="utf-8")
+            if "def probe(" not in source:
+                continue
+            with self.subTest(task=entry["id"]):
+                self.assertIn("secrets.token_hex", source)
+                self.assertIn("nonce-tagged PROBE line", source)
+                self.assertIn("subprocess.run", source)
+
+    def test_checkers_fail_closed_without_no_follow_support(self) -> None:
+        for entry in SUITE_TASKS:
+            source = (SUITE / entry["success_checker"]).read_text(encoding="utf-8")
+            with self.subTest(task=entry["id"]):
+                self.assertIn("platform lacks no-follow directory open support", source)
+                self.assertNotIn('getattr(os, "O_NOFOLLOW", 0)', source)
+                self.assertNotIn('getattr(os, "O_DIRECTORY", 0)', source)
+
+    def test_refactor_accepts_module_attribute_style(self) -> None:
+        """`import shared` plus `shared.normalize_key(...)` is a valid refactor."""
+        tree, source = self.checker_for("08-refactor")
+        result = run_bound_checker(tree, source, {
+            "src/shared.py": (
+                "def normalize_key(raw):\n"
+                "    return raw.strip().lower().replace(' ', '_')\n"
+            ),
+            "src/alpha.py": (
+                "import shared\n\n\n"
+                "def alpha_keys(rows):\n"
+                "    return [shared.normalize_key(row) for row in rows]\n"
+            ),
+            "src/beta.py": (
+                "import shared\n\n\n"
+                "def beta_keys(rows):\n"
+                "    return sorted(shared.normalize_key(row) for row in rows)\n"
+            ),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_idiomatic_single_pass_solution_is_accepted(self) -> None:
         tree, source = self.checker_for("09-performance")

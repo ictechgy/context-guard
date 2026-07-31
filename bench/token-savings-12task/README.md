@@ -49,14 +49,32 @@ checker must be unreachable from there:
 - The argv is derived from the bound checker, so a fixture cannot substitute
   another command. Declaring `success_command` next to a `fixture_tree` is
   refused outright.
-- Checkers read workspace files through bounded no-follow IO that rejects a
-  symlinked leaf or any symlinked parent component, and they treat a candidate
-  module's premature `SystemExit` during import as a failure rather than letting
-  it terminate the checker successfully.
+- Checkers read workspace files through bounded no-follow IO. Missing
+  `O_NOFOLLOW`/`O_DIRECTORY` support fails closed instead of silently degrading,
+  and a symlinked leaf or any symlinked parent component is rejected.
+- **Candidate code never runs in the checker's own process.** Anything that
+  imports or calls candidate modules runs in a child process that only reports
+  observed values on a nonce-tagged `PROBE` line; the parent re-verifies those
+  values. A child that exits early (`SystemExit`, `os._exit`), crashes, times
+  out, or emits no correctly tagged line fails closed. Rebinding the parent's
+  helpers from candidate code is not reachable.
+- The parent additionally validates every candidate file with its own no-follow
+  read before probing, so a symlinked module cannot be smuggled past the child's
+  ordinary import.
 - Behavioural properties are verified behaviourally. The performance task counts
   real element comparisons instead of pattern-matching source text, so the
   idiomatic single-pass answer passes and a single-loop quadratic implementation
   still fails.
+
+### Residual limitation
+
+Isolation makes accidental and casual false-success paths fail closed, and it
+makes forging a verdict require emitting exactly the values the parent expects
+under a per-run nonce. It is not an OS-level sandbox: a deliberately adversarial
+candidate that reconstructs the expected report could still fake a pass. The
+measured agents in this study are not adversarial, and any real run should treat
+an implausible all-success result as a reason to inspect receipts rather than as
+proof.
 
 ## Zero-cost rehearsal
 

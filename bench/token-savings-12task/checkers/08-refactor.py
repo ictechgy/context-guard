@@ -2,19 +2,26 @@
 """Bounded S003 success check.
 
 Executed from a private directory outside the measured workspace, with the
-workspace as the current directory. Reads only workspace files, uses bounded
-no-follow IO, and treats a candidate module's premature exit as a failure.
+workspace as the current directory. It reads workspace files through bounded
+no-follow IO and never executes candidate code in its own process: anything that
+touches candidate modules runs in a child process whose reported values this
+parent re-verifies. A child that exits early, exits nonzero, or fails to emit
+exactly one well-formed PROBE line is a failure.
 """
 import json
 import os
+import secrets
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
 MAX_READ_BYTES = 262_144
+PROBE_TIMEOUT_SECONDS = 120
 
 
 def fail(reason):
-    print("FAIL " + reason)
+    print("FAIL " + str(reason))
     raise SystemExit(1)
 
 
@@ -23,38 +30,43 @@ def ok():
     raise SystemExit(0)
 
 
+if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+    # 무결성 속성이 플랫폼에 따라 조용히 사라지는 것을 허용하지 않는다.
+    fail("platform lacks no-follow directory open support")
+
+NOFOLLOW = os.O_NOFOLLOW
+DIRFLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
 def _open_no_follow(rel):
-    """Open one workspace-relative regular file without following any symlink."""
+    """Open one workspace-relative regular file, following no symlink component."""
     path = Path(rel)
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
         fail("unsafe path: " + str(rel))
-    flags = getattr(os, "O_NOFOLLOW", 0)
-    dir_fd = os.open(".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    dir_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in path.parts[:-1]:
             try:
-                next_fd = os.open(
-                    part, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | flags,
-                    dir_fd=dir_fd,
-                )
+                next_fd = os.open(part, DIRFLAGS, dir_fd=dir_fd)
             except OSError:
                 fail("missing or symlinked directory component: " + str(rel))
             os.close(dir_fd)
             dir_fd = next_fd
         try:
-            return os.open(path.parts[-1], os.O_RDONLY | flags, dir_fd=dir_fd)
+            return os.open(
+                path.parts[-1], os.O_RDONLY | NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd,
+            )
         except OSError:
             fail("missing regular file: " + str(rel))
     finally:
         os.close(dir_fd)
 
 
-def read(rel):
+def read_bytes(rel):
     fd = _open_no_follow(rel)
     try:
-        import stat as _stat
         info = os.fstat(fd)
-        if not _stat.S_ISREG(info.st_mode):
+        if not stat.S_ISREG(info.st_mode):
             fail("not a regular file: " + str(rel))
         if info.st_size > MAX_READ_BYTES:
             fail("file too large: " + str(rel))
@@ -71,76 +83,116 @@ def read(rel):
     data = b"".join(chunks)
     if len(data) > MAX_READ_BYTES:
         fail("file too large: " + str(rel))
+    return data
+
+
+def read(rel):
     try:
-        return data.decode("utf-8")
+        return read_bytes(rel).decode("utf-8")
     except UnicodeDecodeError:
         fail("file is not valid UTF-8: " + str(rel))
 
 
-def read_bytes(rel):
-    fd = _open_no_follow(rel)
+def load_json(rel):
     try:
-        chunks = []
-        remaining = MAX_READ_BYTES + 1
-        while remaining > 0:
-            chunk = os.read(fd, remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-    finally:
-        os.close(fd)
-    data = b"".join(chunks)
-    if len(data) > MAX_READ_BYTES:
-        fail("file too large: " + str(rel))
-    return data
+        return json.loads(read(rel))
+    except ValueError:
+        fail("file is not valid JSON: " + str(rel))
 
 
-def load_module(rel, name, extra_sys_path=()):
-    """Import a candidate module, treating any premature exit as a failure.
+CHILD_PREAMBLE = """
+import importlib.util
+import json
+import sys
+from pathlib import Path
 
-    BaseException is caught on purpose: a candidate module that raises
-    SystemExit(0) at import time would otherwise terminate this checker with a
-    success status without any assertion running.
-    """
-    import importlib.util
-    read(rel)  # bounded no-follow existence and size check before import
-    for entry in extra_sys_path:
+
+def load(rel, name, extra=()):
+    for entry in extra:
         resolved = str(Path(entry).resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
     spec = importlib.util.spec_from_file_location(name, rel)
     if spec is None or spec.loader is None:
-        fail("module not importable: " + str(rel))
+        raise RuntimeError("not importable: " + rel)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except SystemExit:
-        fail("module exited during import: " + str(rel))
-    except BaseException as exc:
-        fail("module raised on import: " + str(rel) + ": " + type(exc).__name__)
+    spec.loader.exec_module(module)
     return module
-SRC = ("src",)
-shared = load_module("src/shared.py", "shared", SRC)
-if not callable(getattr(shared, "normalize_key", None)):
-    fail("src/shared.py does not define normalize_key")
-if shared.normalize_key("  Some Key ") != "some_key":
-    fail("shared normalize_key behaviour changed")
+
+
+def emit(value):
+    sys.stdout.write("PROBE " + NONCE + " " + json.dumps(value, sort_keys=True, default=str) + chr(10))
+    sys.stdout.flush()
+"""
+
+
+def probe(child_code):
+    """Run candidate-touching code in a child process and return its raw report.
+
+    The child never decides pass or fail. It reports observed values, and this
+    parent compares them. An os._exit, a rebound helper, or a crash inside the
+    child can only remove or corrupt the PROBE line, which fails closed here.
+    """
+    nonce = secrets.token_hex(8)
+    script = "NONCE = " + repr(nonce) + chr(10) + CHILD_PREAMBLE + child_code
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=".",
+            capture_output=True, timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail("candidate probe timed out")
+    except OSError as exc:
+        fail("candidate probe could not start: " + type(exc).__name__)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        fail(
+            "candidate probe exited " + str(result.returncode) + ": "
+            + (detail[-1][:200] if detail else "no stderr")
+        )
+    marker = "PROBE " + nonce + " "
+    lines = [
+        line for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+        if line.startswith(marker)
+    ]
+    if len(lines) != 1:
+        fail("candidate probe did not emit exactly one nonce-tagged PROBE line")
+    try:
+        report = json.loads(lines[0][len(marker):])
+    except ValueError:
+        fail("candidate probe emitted malformed JSON")
+    if not isinstance(report, dict):
+        fail("candidate probe report is not an object")
+    return report
+
+
 for rel in ("src/alpha.py", "src/beta.py"):
     text = read(rel)
     if "def normalize_key" in text:
         fail(rel + " still defines its own normalize_key")
     if "normalize_key" not in text:
         fail(rel + " no longer uses normalize_key")
-alpha = load_module("src/alpha.py", "s003_alpha", SRC)
-beta = load_module("src/beta.py", "s003_beta", SRC)
-if getattr(alpha, "normalize_key", None) is not shared.normalize_key:
-    fail("src/alpha.py does not reuse the shared normalize_key object")
-if getattr(beta, "normalize_key", None) is not shared.normalize_key:
-    fail("src/beta.py does not reuse the shared normalize_key object")
-if alpha.alpha_keys([" A b "]) != ["a_b"]:
+read("src/shared.py")
+report = probe("""
+SRC = ("src",)
+shared = load("src/shared.py", "shared", SRC)
+alpha = load("src/alpha.py", "s003_alpha", SRC)
+beta = load("src/beta.py", "s003_beta", SRC)
+normalize = getattr(shared, "normalize_key", None)
+emit({
+    "shared_callable": callable(normalize),
+    "shared_result": normalize("  Some Key ") if callable(normalize) else None,
+    "alpha_keys": alpha.alpha_keys([" A b "]),
+    "beta_keys": beta.beta_keys([" B a ", " A b "]),
+})
+""")
+if not report.get("shared_callable"):
+    fail("src/shared.py does not define a callable normalize_key")
+if report.get("shared_result") != "some_key":
+    fail("shared normalize_key behaviour changed")
+if report.get("alpha_keys") != ["a_b"]:
     fail("alpha_keys behaviour changed")
-if beta.beta_keys([" B a ", " A b "]) != ["a_b", "b_a"]:
+if report.get("beta_keys") != ["a_b", "b_a"]:
     fail("beta_keys behaviour changed")
 ok()
