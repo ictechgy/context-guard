@@ -49,11 +49,10 @@ class GateBRollbackProofTests(unittest.TestCase):
         return repo
 
     def make_gate_b_history_repo(self, root: Path) -> tuple[Path, dict[str, str]]:
-        """실제 Gate-B 4-커밋 이력과 경로·subject가 동형인 합성 저장소를 만든다.
+        """활성 Gate-B 4-커밋 이력과 경로·subject가 동형인 합성 저장소를 만든다.
 
-        운영 코드의 ``B1_PATHS``/``B2_PATHS``/``SHARED_INTEGRATION_PATHS``와
-        활성 세대의 ``GENERATIONS[-1].residual_markers``를 그대로 읽어 파일을
-        배치하므로, 프로덕션 상수가 바뀌면 이 헬퍼도 자동으로 따라간다
+        활성 세대의 경로 집합·subject·``residual_markers``를 그대로 읽어 파일을
+        배치하므로, 새 세대가 append되면 이 헬퍼도 자동으로 따라간다
         (``RESIDUAL_MARKERS``는 세대 레코드로 옮겨지며 사라진 이름이다). 반환값은
         ``{"base"/"bless"/"b1"/"b2"/"shared-integration": <sha>}``.
         """
@@ -61,40 +60,56 @@ class GateBRollbackProofTests(unittest.TestCase):
         repo.mkdir()
         rollback_proof.run_git(repo, "init", "--quiet")
         base = commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+        active_commits: dict[str, str] | None = None
+        for generation in rollback_proof.GENERATIONS:
+            bless_contents = {
+                path: (
+                    f"# residual edit[{generation.name}]: {path}\n"
+                    if path in generation.residual_edits
+                    else f"# gate-b residual placeholder: {path}\n"
+                )
+                for path in generation.all_component_paths
+            }
+            for path, needles in generation.residual_markers.items():
+                bless_contents[path] = "".join(
+                    f"# {needle}\n" for needle in needles
+                ) + bless_contents[path]
+            bless = commit_paths_for_test(repo, bless_contents, generation.bless_subject)
 
-        bless_contents = {
-            path: f"# gate-b residual placeholder: {path}\n"
-            for path in rollback_proof.ALL_COMPONENT_PATHS
-        }
-        for path, needles in rollback_proof.GENERATIONS[-1].residual_markers.items():
-            bless_contents[path] = "".join(
-                f"# {needle}\n" for needle in needles
-            ) + f"# gate-b residual placeholder: {path}\n"
-        bless = commit_paths_for_test(repo, bless_contents, rollback_proof.BLESS_SUBJECT)
+            b1 = commit_paths_for_test(
+                repo,
+                {
+                    path: f"# gate-b b1 component: {path}\n"
+                    for path in generation.b1_paths
+                },
+                generation.b1_subject,
+            )
+            b2 = commit_paths_for_test(
+                repo,
+                {
+                    path: f"# gate-b b2 component: {path}\n"
+                    for path in generation.b2_paths
+                },
+                generation.b2_subject,
+            )
+            shared = commit_paths_for_test(
+                repo,
+                {
+                    path: f"# gate-b shared integration: {path}\n"
+                    for path in generation.shared_paths
+                },
+                generation.shared_subject,
+            )
+            active_commits = {
+                "bless": bless,
+                "b1": b1,
+                "b2": b2,
+                "shared-integration": shared,
+            }
 
-        b1_contents = {
-            path: f"# gate-b b1 component: {path}\n" for path in rollback_proof.B1_PATHS
-        }
-        b1 = commit_paths_for_test(repo, b1_contents, rollback_proof.B1_SUBJECT)
-
-        b2_contents = {
-            path: f"# gate-b b2 component: {path}\n" for path in rollback_proof.B2_PATHS
-        }
-        b2 = commit_paths_for_test(repo, b2_contents, rollback_proof.B2_SUBJECT)
-
-        shared_contents = {
-            path: f"# gate-b shared integration: {path}\n"
-            for path in rollback_proof.SHARED_INTEGRATION_PATHS
-        }
-        shared = commit_paths_for_test(repo, shared_contents, rollback_proof.SHARED_SUBJECT)
-
-        return repo, {
-            "base": base,
-            "bless": bless,
-            "b1": b1,
-            "b2": b2,
-            "shared-integration": shared,
-        }
+        if active_commits is None:
+            raise RuntimeError("rollback proof must declare at least one generation")
+        return repo, {"base": base, **active_commits}
 
     def test_b1_b2_apply_and_revert_independently_before_shared_integration(self) -> None:
         try:
@@ -1074,6 +1089,47 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     헬퍼는 ``SyntheticGenerationHelpers`` 믹스인에서 가져온다 — 다른 TestCase를
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
+
+    def test_shipped_generations_pin_s006_gen2(self) -> None:
+        """운영 레코드는 S006 재축복을 gen2로 append하고 gen1을 보존한다."""
+        self.assertEqual(
+            tuple(generation.name for generation in rollback_proof.GENERATIONS),
+            ("gen1", "gen2"),
+        )
+        gen1, gen2 = rollback_proof.GENERATIONS
+        self.assertEqual(gen2.b1_paths, gen1.b1_paths)
+        self.assertEqual(gen2.b2_paths, gen1.b2_paths)
+        self.assertEqual(gen2.shared_paths, gen1.shared_paths)
+        self.assertEqual(gen2.residual_markers, gen1.residual_markers)
+        self.assertEqual(gen2.gate_b_markers, gen1.gate_b_markers)
+        self.assertEqual(
+            gen2.residual_edits,
+            frozenset({"tests/test_context_guard_kit.py"}),
+        )
+        subjects = (
+            rollback_proof.GEN2_BLESS_SUBJECT,
+            rollback_proof.GEN2_B1_SUBJECT,
+            rollback_proof.GEN2_B2_SUBJECT,
+            rollback_proof.GEN2_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            subjects,
+            (
+                "proof: establish Gate-B-free residual gen2 command identity",
+                "proof: reapply Gate-B nudge component gen2 command identity",
+                "proof: reapply Gate-B usage component gen2 command identity",
+                "proof: reapply Gate-B integration component gen2 command identity",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen2.bless_subject,
+                gen2.b1_subject,
+                gen2.b2_subject,
+                gen2.shared_subject,
+            ),
+            subjects,
+        )
 
     def make_pair(self, *, residual_edits=frozenset()):
         """컴포넌트 경로가 *겹치는* 두 세대를 만든다.
