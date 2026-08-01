@@ -139,6 +139,7 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
             "core.sshCommand ssh -i fixture-key-path fixture-host\n"
             "smtppass fixture-mail-password\n"
             "pass\tfixture-bare-password\n"
+            "pass_prod fixture-qualified-password\n"
             "sshCommand   ssh -i fixture-key-path fixture-host\n"
             "src/config.txt:12: core.sshCommand ssh -F fixture-config fixture-host\n"
         )
@@ -147,6 +148,7 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
             "core.sshCommand [REDACTED]\n"
             "smtppass [REDACTED]\n"
             "pass\t[REDACTED]\n"
+            "pass_prod [REDACTED]\n"
             "sshCommand   [REDACTED]\n"
             "src/config.txt:12: core.sshCommand [REDACTED]\n"
         )
@@ -205,8 +207,28 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
                 self.assertEqual(sanitize_lines(module, raw), raw)
 
     def test_pass_candidates_require_an_exact_or_delimited_key_boundary(self) -> None:
-        sensitive = ("pass", "smtppass", "smtp_pass", "db.pass", "db-pass")
-        benign = ("compass", "bypass", "encompass", "passenger", "passport")
+        sensitive = (
+            "pass",
+            "pass_prod",
+            "pass_backup",
+            "pass_v2",
+            "smtppass",
+            "smtp_pass",
+            "smtp_pass_prod",
+            "db.pass",
+            "db-pass",
+            "db.pass.prod",
+        )
+        benign = (
+            "compass",
+            "compass_prod",
+            "bypass",
+            "bypass_backup",
+            "encompass",
+            "passenger",
+            "passenger_v2",
+            "passport",
+        )
         for source, module in SANITIZERS:
             for key in sensitive:
                 with self.subTest(source=source, key=key, expected="sensitive"):
