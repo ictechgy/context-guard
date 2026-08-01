@@ -1090,13 +1090,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2(self) -> None:
-        """운영 레코드는 S006 재축복을 gen2로 append하고 gen1을 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_and_s007_gen3(self) -> None:
+        """운영 레코드는 S006 gen2와 S007 gen3를 순서대로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
-            ("gen1", "gen2"),
+            ("gen1", "gen2", "gen3"),
         )
-        gen1, gen2 = rollback_proof.GENERATIONS
+        gen1, gen2, gen3 = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
         self.assertEqual(gen2.shared_paths, gen1.shared_paths)
@@ -1129,6 +1129,40 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen2.shared_subject,
             ),
             subjects,
+        )
+
+        self.assertEqual(gen3.b1_paths, gen2.b1_paths)
+        self.assertEqual(gen3.b2_paths, gen2.b2_paths)
+        self.assertEqual(gen3.shared_paths, gen2.shared_paths)
+        self.assertEqual(gen3.residual_markers, gen2.residual_markers)
+        self.assertEqual(gen3.gate_b_markers, gen2.gate_b_markers)
+        self.assertEqual(
+            gen3.residual_edits,
+            frozenset({"tests/test_context_guard_kit.py"}),
+        )
+        gen3_subjects = (
+            rollback_proof.GEN3_BLESS_SUBJECT,
+            rollback_proof.GEN3_B1_SUBJECT,
+            rollback_proof.GEN3_B2_SUBJECT,
+            rollback_proof.GEN3_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen3_subjects,
+            (
+                "proof: establish Gate-B-free residual gen3 login shell",
+                "proof: reapply Gate-B nudge component gen3 login shell",
+                "proof: reapply Gate-B usage component gen3 login shell",
+                "proof: reapply Gate-B integration component gen3 login shell",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen3.bless_subject,
+                gen3.b1_subject,
+                gen3.b2_subject,
+                gen3.shared_subject,
+            ),
+            gen3_subjects,
         )
 
     def make_pair(self, *, residual_edits=frozenset()):

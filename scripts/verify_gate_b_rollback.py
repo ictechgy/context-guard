@@ -41,6 +41,11 @@ GEN2_B1_SUBJECT = "proof: reapply Gate-B nudge component gen2 command identity"
 GEN2_B2_SUBJECT = "proof: reapply Gate-B usage component gen2 command identity"
 GEN2_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen2 command identity"
 
+GEN3_BLESS_SUBJECT = "proof: establish Gate-B-free residual gen3 login shell"
+GEN3_B1_SUBJECT = "proof: reapply Gate-B nudge component gen3 login shell"
+GEN3_B2_SUBJECT = "proof: reapply Gate-B usage component gen3 login shell"
+GEN3_SHARED_SUBJECT = "proof: reapply Gate-B integration component gen3 login shell"
+
 B1_PATHS = frozenset(
     {
         "context-guard-kit/failed_attempt_nudge.py",
@@ -159,6 +164,19 @@ GENERATIONS: tuple[Generation, ...] = (
         b1_subject=GEN2_B1_SUBJECT,
         b2_subject=GEN2_B2_SUBJECT,
         shared_subject=GEN2_SHARED_SUBJECT,
+        b1_paths=B1_PATHS,
+        b2_paths=B2_PATHS,
+        shared_paths=SHARED_INTEGRATION_PATHS,
+        residual_markers=GEN1_RESIDUAL_MARKERS,
+        gate_b_markers=GEN1_GATE_B_MARKERS,
+        residual_edits=frozenset({"tests/test_context_guard_kit.py"}),
+    ),
+    Generation(
+        name="gen3",
+        bless_subject=GEN3_BLESS_SUBJECT,
+        b1_subject=GEN3_B1_SUBJECT,
+        b2_subject=GEN3_B2_SUBJECT,
+        shared_subject=GEN3_SHARED_SUBJECT,
         b1_paths=B1_PATHS,
         b2_paths=B2_PATHS,
         shared_paths=SHARED_INTEGRATION_PATHS,
