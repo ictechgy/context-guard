@@ -641,6 +641,85 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         self.assertEqual(decision.action, "deny")
             self.assertEqual(called, [])
 
+    def test_f11_command_basename_trusts_only_bare_ascii_tokens(self) -> None:
+        accepted = ("rg", "mvnw", "context-guard-tool", "tool.name")
+        rejected = (
+            "./rg",
+            "../bin/rg",
+            "/tmp/evil/rg",
+            r"bin\rg",
+            "bin／rg",
+            "bin⁄rg",
+            "bin∕rg",
+            "bin＼rg",
+            "rg\x00suffix",
+        )
+
+        for index, script in enumerate(REWRITE_SCRIPTS):
+            namespace = self.load_namespace(script, f"f11_basename_{index}")
+            command_basename = namespace["command_basename"]
+            for command in accepted:
+                with self.subTest(script=script, command=command):
+                    self.assertEqual(command_basename(command), command)
+            for command in rejected:
+                with self.subTest(script=script, command=command):
+                    self.assertEqual(command_basename(command), "")
+
+    def test_f11_path_spelled_command_identity_is_denied_before_routing(self) -> None:
+        commands = (
+            "./rg token .",
+            "../bin/cat README.md",
+            "/tmp/evil/grep token README.md",
+            "/usr/bin/env rg token .",
+            "env ./rg token .",
+            "./node_modules/.bin/jest --runInBand",
+            "/tmp/venv/bin/pytest -q",
+            r"'bin\rg' token .",
+            "bin／rg token .",
+            "bin⁄rg token .",
+            "bin∕rg token .",
+            "bin＼rg token .",
+            "cat README.md | /tmp/evil/head -n 1",
+            "printf '%s\\n' ok | ./cat",
+        )
+
+        for index, script in enumerate(REWRITE_SCRIPTS):
+            namespace = self.load_namespace(script, f"f11_identity_{index}")
+            classify_command = namespace["classify_command"]
+            for command in commands:
+                with self.subTest(script=script, command=command):
+                    decision = classify_command(command)
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(
+                        decision.reason_code,
+                        "command_identity_denied",
+                    )
+
+    def test_f11_bare_commands_and_wrapper_detection_remain_unchanged(self) -> None:
+        controls = {
+            "rg token .": "sanitize",
+            "cat README.md": "trim",
+            "ls -la": "noop",
+            "env rg token .": "sanitize",
+            "'rg' token .": "sanitize",
+            r"r\g token .": "sanitize",
+            "npx jest": "trim",
+        }
+
+        for index, script in enumerate(REWRITE_SCRIPTS):
+            namespace = self.load_namespace(script, f"f11_controls_{index}")
+            classify_command = namespace["classify_command"]
+            for command, expected_action in controls.items():
+                with self.subTest(script=script, command=command):
+                    self.assertEqual(
+                        classify_command(command).action,
+                        expected_action,
+                    )
+            with self.subTest(script=script, command="delegated-npx-path"):
+                decision = classify_command("npx ./node_modules/.bin/jest")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "route_policy_denied")
+
     def test_incoming_wrappers_deny_while_direct_cli_remains_ordinary(self) -> None:
         direct_cli_commands = (
             "context-guard-trim-output --max-lines 10 -- pytest",

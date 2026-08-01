@@ -623,7 +623,7 @@ def _route_examples() -> list[dict[str, str]]:
     add(
         "jvm-noisy",
         ("standalone", "first"),
-        ("mvn -q test", "./mvnw test", "gradle --quiet test", "./gradlew test"),
+        ("mvn -q test", "mvnw test", "gradle --quiet test", "gradlew test"),
         "rewrite_trim",
         ("mvn package test", "gradle tasks test"),
         negative_outcome={"standalone": "noop", "first": "deny"},

@@ -23280,8 +23280,6 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         for command in [
             "CI=1 pytest tests -q",
             "env CI=1 pytest tests -q",
-            "./node_modules/.bin/jest --runInBand",
-            "/tmp/venv/bin/pytest -q",
         ]:
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)

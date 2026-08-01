@@ -705,7 +705,23 @@ def split_single_safe_command(command: str) -> list[str] | None:
 
 
 def command_basename(command: str) -> str:
-    return os.path.basename(command)
+    """Return a trusted routing identity only for a bare ASCII command token.
+
+    Route predicates describe standard command identities, not arbitrary files
+    that happen to share a basename.  Normalizing ``./rg`` or
+    ``/tmp/evil/grep`` to a trusted name would let a caller-selected executable
+    inherit that route.  Non-ASCII tokens are also rejected here so Unicode
+    separator lookalikes cannot create a visually ambiguous identity.
+    """
+    if (
+        not command
+        or not command.isascii()
+        or not command.isprintable()
+        or "/" in command
+        or "\\" in command
+    ):
+        return ""
+    return command
 
 
 def strip_env_prefix(argv: list[str]) -> list[str]:
@@ -782,9 +798,9 @@ def is_noisy_command(argv: list[str]) -> bool:
         return True
     if first == "cargo" and "test" in rest:
         return True
-    if first in {"mvn", "mvnw", "./mvnw"} and "test" in rest:
+    if first in {"mvn", "mvnw"} and "test" in rest:
         return True
-    if first in {"gradle", "gradlew", "./gradlew"} and "test" in rest:
+    if first in {"gradle", "gradlew"} and "test" in rest:
         return True
     if first == "make" and any(arg in {"test", "build", "lint"} for arg in rest):
         return True
@@ -1041,15 +1057,18 @@ def _routing_argv(parsed: MiniShellParse) -> tuple[str, ...]:
 def _wrapper_invocation(argv: tuple[str, ...]) -> tuple[str, int] | None:
     if not argv:
         return None
-    head_basename = command_basename(argv[0])
+    # Incoming wrappers are recognized before the general command-identity
+    # gate.  Their generated envelopes intentionally contain absolute helper
+    # paths, so this narrow recursion guard must inspect the real basename.
+    head_basename = os.path.basename(argv[0])
     if head_basename in WRAPPER_BASENAMES:
         return head_basename, 0
     if (
         re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", head_basename)
         and len(argv) > 1
-        and command_basename(argv[1]) in WRAPPER_BASENAMES
+        and os.path.basename(argv[1]) in WRAPPER_BASENAMES
     ):
-        return command_basename(argv[1]), 1
+        return os.path.basename(argv[1]), 1
     return None
 
 
@@ -1068,6 +1087,21 @@ def _expected_cgw1_prefix(kind: str) -> tuple[str, ...]:
         else "context-guard-trim-output"
     )
     return (os.path.join(script_dir, helper),)
+
+
+def _is_expected_direct_wrapper_path(argv: tuple[str, ...]) -> bool:
+    """Whether argv starts with this package's exact generated helper path.
+
+    Direct helper CLI use predates F-11 and remains ordinary.  The exception
+    is deliberately limited to the helper beside this entrypoint; an
+    attacker-chosen path that merely shares its basename is not trusted.
+    """
+    invocation = _wrapper_invocation(argv)
+    if invocation is None or invocation[1] != 0:
+        return False
+    basename, _wrapper_index = invocation
+    expected = _expected_cgw1_prefix(_wrapper_kind(basename))
+    return len(expected) == 1 and argv[0] == expected[0]
 
 
 def classify_incoming_wrapper(
@@ -2176,7 +2210,13 @@ def _npx_route(argv: tuple[str, ...]) -> str:
             index += 1
             continue
         return "deny"
-    if index < len(argv) and command_basename(argv[index]) in {"jest", "vitest"}:
+    if index >= len(argv):
+        return "noop"
+    delegated_command = argv[index]
+    delegated_basename = command_basename(delegated_command)
+    if delegated_basename != delegated_command:
+        return "deny"
+    if delegated_basename in {"jest", "vitest"}:
         return "trim"
     return "noop"
 
@@ -2358,7 +2398,10 @@ def _prefix_overrides_path(
 def _forbidden_command_basename(argv: tuple[str, ...]) -> bool:
     if not argv:
         return False
-    basename = command_basename(argv[0])
+    # Forbidden identities may be recognized through a path because this gate
+    # can only narrow behavior.  Unlike positive route predicates, a basename
+    # match here never grants a wrapper or noop route.
+    basename = os.path.basename(argv[0])
     if basename in MINISHELL_DENIED_COMMAND_BASENAMES:
         return True
     if basename not in MINISHELL_DENIED_SHELL_BASENAMES:
@@ -2442,6 +2485,19 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
                 parsed=parsed,
                 reason="Forbidden command denied (forbidden_command_denied).",
                 reason_code="forbidden_command_denied",
+            )
+        if (
+            command_basename(route_argv[0]) != route_argv[0]
+            and not (
+                len(parsed.segments) == 1
+                and _is_expected_direct_wrapper_path(route_argv)
+            )
+        ):
+            return CommandDecision(
+                action="deny",
+                parsed=parsed,
+                reason="Non-bare command identity denied (command_identity_denied).",
+                reason_code="command_identity_denied",
             )
         if parsed.heredoc_delimiter is not None and (
             len(parsed.segments) != 1
