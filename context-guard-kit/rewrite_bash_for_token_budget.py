@@ -111,7 +111,7 @@ MINISHELL_ALLOWED_ENV_PREFIX_NAMES = frozenset({
     "NODE_ENV",
 })
 CGW1_MAX_LINES = "220"
-CGW1_SHELL_ARGV = ("bash", "-lc")
+CGW1_SHELL_ARGV = ("bash", "-c")
 CGW1_SENTINEL = "--context-guard-wrapper-v1"
 CGW1_COMMAND_SEARCH_DIFF = "command_search_diff"
 FAIL_OPEN_ENV = "CONTEXT_GUARD_SANITIZER_FAIL_OPEN"
@@ -1539,7 +1539,7 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
     `-n`/`--lines`(및 `-N`/`-nN`/`--lines=N` 축약형)는 최대 1회만 허용하며 유효한
     양의 정수여야 한다. **`-n` 미지정도 허용한다** — bare `head`/`tail`은 기본
     10줄 상한이 이미 적용되므로 무제한 출력 위험이 없다. `tail -f`/`-F`는 무제한
-    스트림이므로 allow_files 여부와 무관하게 항상 거부한다(`bash -lc` 내부에서
+    스트림이므로 allow_files 여부와 무관하게 항상 거부한다(`bash -c` 내부에서
     프로세스가 종결되지 않는 것을 방지). `-c`(바이트 단위)는 지원하지 않는다 —
     trim 예산 단위는 줄(line)이라 바이트 상한과 섞일 수 없다.
     """

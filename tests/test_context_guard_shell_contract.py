@@ -513,7 +513,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
             commands = (
                 f"env -i /bin/sh -c 'touch {marker}'",
                 (
-                    "context-guard-trim-output --max-lines 220 -- bash -lc "
+                    "context-guard-trim-output --max-lines 220 -- bash -c "
                     f"'touch {marker}'"
                 ),
                 f"sort <<DATA\n$(touch {marker})\nDATA",
@@ -752,7 +752,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         "command_search_diff",
                         "--",
                         "bash",
-                        "-lc",
+                        "-c",
                     ),
                 )
                 self.assertEqual(wrapped_argv[-1], "rg token .")
@@ -1142,7 +1142,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 self.assertEqual(decision.reason_code, "restricted_env_denied")
 
     def test_fix5_hook_envelope_denies_env_prefix_rce_end_to_end(self) -> None:
-        """AC-5.4 — 거부된 접두사는 wrapped `bash -lc` 출력으로 도달하지 않는다."""
+        """AC-5.4 — 거부된 접두사는 wrapped `bash -c` 출력으로 도달하지 않는다."""
         for script in REWRITE_SCRIPTS:
             with self.subTest(script=script):
                 proc = self.assert_command_decision(
@@ -1232,7 +1232,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         )
 
     def test_inv_c_newly_rewrapped_head_tail_commands_roundtrip(self) -> None:
-        """INV-C(재래핑 왕복, plan §5.2) — 이번 완화로 `bash -lc` trim 경로에 새로
+        """INV-C(재래핑 왕복, plan §5.2) — 이번 완화로 `bash -c` trim 경로에 새로
         진입하는 명령(head/tail bare, `-n` 없음)을 전수 열거하고, 래핑된 명령을
         되찢어 원본 명령 문자열이 손실 없이 보존되는지 확인한다. `wc` 완화는
         noop(무변형 통과) 경로라 재래핑 대상이 아니므로 제외한다. 개조 전 코드에서는
@@ -1396,13 +1396,13 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertEqual(decision.reason_code, case["expected_reason_code"])
 
     def test_inv_c_fix2_cat_relaxation_commands_roundtrip(self) -> None:
-        """INV-C(재래핑 왕복, plan §5.2) — FIX-2로 `bash -lc` trim 경로에 새로
+        """INV-C(재래핑 왕복, plan §5.2) — FIX-2로 `bash -c` trim 경로에 새로
         진입하는 cat standalone 명령(`FIX2_ROUTE_PREDICATE_CASES`의
         `noop -> trim` 전환 대상, `fix2_route_predicate_relaxations()`)을 전수
         열거하고, 래핑된 명령을 되찢어 원본 명령 문자열이 손실 없이 보존되는지
         확인한다. `fix1a`의 동명 테스트(:1035)와 동일한 패턴이다. 파일명 자체의
-        적대적 인코딩(공백/따옴표/유니코드)을 실제 `bash -lc` 실행까지 수행하는
-        검증은 `test_ac2_3_cat_adversarial_filenames_survive_bash_lc_roundtrip`
+        적대적 인코딩(공백/따옴표/유니코드)을 실제 `bash -c` 실행까지 수행하는
+        검증은 `test_ac2_3_cat_adversarial_filenames_survive_non_login_bash_roundtrip`
         이 별도로 담당한다."""
         newly_rewrapped_candidates = tuple(
             case["command"] for case in fix2_route_predicate_relaxations()
@@ -1416,16 +1416,16 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
                     self.assertEqual(shlex.split(wrapped)[-1], command)
 
-    def test_ac2_3_cat_adversarial_filenames_survive_bash_lc_roundtrip(self) -> None:
-        """AC-2.3(INV-C 대상, plan §6.2) — FIX-2로 `cat`이 처음 `bash -lc`
+    def test_ac2_3_cat_adversarial_filenames_survive_non_login_bash_roundtrip(self) -> None:
+        """AC-2.3(INV-C 대상, plan §6.2) — FIX-2로 `cat`이 처음 `bash -c`
         재래핑 경로에 진입한다. 파일명은 공백/따옴표/유니코드를 다른 피연산자보다
         훨씬 자주 담는 페이로드이므로, 실제 훅 페이로드를 stdin으로 주입하고
-        (`run_rewrite`) 되돌아온 `updatedInput.command`를 실제 `bash -lc`로
+        (`run_rewrite`) 되돌아온 `updatedInput.command`를 실제 `bash -c`로
         한 번 더 실행해(문자열 비교가 아니라 진짜 실행) 원본 파일명이 손상 없이
         살아남는지 확인한다.
 
         `shell_quote`(:2172)는 이 프로젝트에서 이미 독립적으로 검증됐다 — 실제
-        `bash -lc` 17개 적대 케이스(공백/따옴표/백슬래시/탭/개행/한글/leading
+        `bash -c` 17개 적대 케이스(공백/따옴표/백슬래시/탭/개행/한글/leading
         dash/`$HOME`/백틱/세미콜론/별표/괄호/빈 문자열/파이프/`'''`/혼합)에서
         0/17 실패, `shlex.quote`와 바이트 동일이 확인되었다. 그래서 이 테스트는
         결함을 찾으려는 탐색이 아니라 — `cat`이 그 경로에 새로 들어오는 시점을
@@ -1453,7 +1453,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         response = json.loads(proc.stdout)
                         wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
                         exec_proc = subprocess.run(
-                            ["bash", "-lc", wrapped],
+                            ["bash", "-c", wrapped],
                             cwd=tmp,
                             capture_output=True,
                             text=True,
@@ -1462,7 +1462,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         self.assertIn(
                             marker,
                             exec_proc.stdout,
-                            "재래핑된 명령을 실제 bash -lc 로 실행한 결과에서 "
+                            "재래핑된 명령을 실제 bash -c 로 실행한 결과에서 "
                             "파일 내용을 찾지 못했다 — 파일명이 왕복 중 손상됐을 수 있다.",
                         )
 
@@ -1511,7 +1511,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertEqual(decision.reason_code, "route_policy_denied")
 
     def test_inv_c_newly_rewrapped_ls_producer_commands_roundtrip(self) -> None:
-        """INV-C(재래핑 왕복) — FIX-LS로 `bash -lc` trim 경로에 새로 진입하는
+        """INV-C(재래핑 왕복) — FIX-LS로 `bash -c` trim 경로에 새로 진입하는
         `ls` producer 명령(role=first)을 전수 열거하고, 래핑된 명령을 되찢어
         원본 명령 문자열이 손실 없이 보존되는지 확인한다. FIX-2 cat 롤아웃
         (:1306)과 동일한 패턴."""
@@ -1658,7 +1658,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
         """INV-C(재래핑 왕복) — FIX-GREP 완화 대상(`fix_grep_route_predicate_relaxations()`)을
         전수 열거하고, `sanitize_output.py`로 재래핑된 명령을 되찢어 원본 명령
         문자열이 손실 없이 보존되는지 확인한다. grep 은 FIX-2/FIX-LS 의 trim
-        경로가 아니라 이미 배선된 `bash -lc` sanitize 경로로 들어간다(§4.2
+        경로가 아니라 이미 배선된 `bash -c` sanitize 경로로 들어간다(§4.2
         INV-C — "새 wrapper 경로가 생기는 게 아니다") — `a1_route_decision`이
         `rewrite_sanitize`를 반환하는지까지 함께 고정해 trim 경로로 잘못
         새기 않는지 확인한다."""
@@ -1780,9 +1780,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
 
     def test_inv_c_newly_rewrapped_sed_range_read_commands_roundtrip(self) -> None:
         """INV-C(재래핑 왕복) — FIX-SED 완화 대상(`sed_route_predicate_relaxations()`)을
-        전수 열거하고, `bash -lc` trim 경로로 재래핑된 명령을 되찢어 원본 명령
+        전수 열거하고, `bash -c` trim 경로로 재래핑된 명령을 되찢어 원본 명령
         문자열이 손실 없이 보존되는지 확인한다. FIX-LS(:1430)와 동일한 패턴 —
-        sed 는 grep 과 달리 새 `bash -lc` trim 경로에 처음 진입한다(§2.3
+        sed 는 grep 과 달리 새 `bash -c` trim 경로에 처음 진입한다(§2.3
         route_wiring, `sanitize` 가 아니라 `trim`)."""
         newly_rewrapped_candidates = tuple(
             case["command"] for case in sed_route_predicate_relaxations()

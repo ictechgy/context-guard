@@ -1456,7 +1456,7 @@ def main() -> int:
     if command and command[0] == "--":
         command = command[1:]
     if args.wrapper_context is not None:
-        if len(command) != 3 or command[0:2] != ["bash", "-lc"] or not command[2]:
+        if len(command) != 3 or command[0:2] != ["bash", "-c"] or not command[2]:
             print(
                 "context-guard-sanitize-output: invalid context-guard wrapper v1 shape",
                 file=sys.stderr,

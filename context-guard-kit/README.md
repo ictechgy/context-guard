@@ -25,7 +25,7 @@ Claude Code CLI에서 생기는 컨텍스트 낭비를 줄이기 위한 도구 �
 ## 빠른 실험
 
 ```bash
-python3 context-guard-kit/trim_command_output.py --max-lines 80 -- bash -lc 'seq 1 1000; echo FAIL test_x >&2; exit 1'
+python3 context-guard-kit/trim_command_output.py --max-lines 80 -- bash -c 'seq 1 1000; echo FAIL test_x >&2; exit 1'
 python3 context-guard-kit/trim_command_output.py --max-lines 80 -- pytest tests -q
 python3 context-guard-kit/claude_transcript_cost_audit.py ~/.claude/projects --top 10 --recommend
 python3 context-guard-kit/setup_wizard.py
