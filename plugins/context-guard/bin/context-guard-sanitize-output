@@ -110,10 +110,11 @@ COOKIE_HEADER_RE = re.compile(
 # 복원한다. 이 형태가 예전 형태와 언어·스팬·그룹 모두에서 동치임은
 # tests/test_sanitize_output_redos.py의 차분 배터리로 고정한다.
 QUOTED_VALUE_BODY = r"(?:\\.|(?!(?P=quote))[^\\])*\\?"
+SECRET_ASSIGNMENT_SEPARATOR = r"[ \t]*[:=][ \t]*"
 INLINE_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
     rf"(?P<quote>[\"'])(?P<value>{QUOTED_VALUE_BODY})(?P=quote)(?P<tail>[^\s,;}}\]]*)"
 )
 CODE_IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
@@ -121,7 +122,7 @@ CALL_ARGUMENT_CHUNK = r"(?:[^()\"'\n;]|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\(
 INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
     rf"(?P<value>(?![\"']){CODE_IDENTIFIER}\({CALL_ARGUMENT_CHUNK}\))"
 )
 SECRET_IDENTIFIER_PART = (
@@ -133,7 +134,7 @@ FALLBACK_SECRET_OPERAND = rf"(?:[A-Za-z_$][A-Za-z0-9_$]*\.)*{SECRET_IDENTIFIER_P
 INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
     rf"(?P<value>(?![\"']|\[REDACTED\])"
     rf"[^;\n]*?(?:\bor\b|\|\||\?\?|\belse\b|\?[^:\n;]*:)\s*"
     rf"(?:[\"'](?:\\.|[^\"'\\])*[\"']|{FALLBACK_SECRET_OPERAND})[^;\n]*)"
@@ -141,20 +142,32 @@ INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_RE = re.compile(
 INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
     rf"(?P<value>(?![\"']|\[REDACTED\])"
     rf"[^\s,;}}\]]*(?:\([^;\n]*?\)|\{{[^;\n]*?\}}|\[[^;\n]*?\])[^\s,;}}\]]*)"
 )
 INLINE_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?P<lead>^|[\s;{{\[,])"
     rf"(?P<prefix>(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*)"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
     rf"(?P<value>(?![\"']|\[REDACTED\])[^\s,;}}\]]+)"
+)
+WHITESPACE_SECRET_ASSIGNMENT_PREFIX = (
+    rf"(?P<lead>\A)(?P<prefix>[ \t]*(?:[+-][ \t]*)?(?:export[ \t]+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?(?![ \t]*[:=])[ \t]+)"
+)
+WHITESPACE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE = re.compile(
+    rf"(?i){WHITESPACE_SECRET_ASSIGNMENT_PREFIX}"
+    rf"(?P<quote>[\"'])(?P<value>{QUOTED_VALUE_BODY})(?P=quote)(?P<tail>[^\s,;}}\]]*)"
+)
+WHITESPACE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE = re.compile(
+    rf"(?i){WHITESPACE_SECRET_ASSIGNMENT_PREFIX}"
+    rf"(?P<value>(?![\"']|\[REDACTED\])\S[^\n]*)"
 )
 UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?:^|[\s;{{\[,])"
     rf"(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?:{SECRET_KEY})[\"']?\s*[:=]\s*(?P<value>(?![\"']).*)$"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR}(?P<value>(?![\"']).*)$"
 )
 # F-14 one-pass scanner.
 #
@@ -181,7 +194,11 @@ LOCATION_PREFIX_SCAN_RE = re.compile(
 # 경로로 인정하되, 그 스팬도 함께 검사한다. 예: "src/it's.py:5:api_key='x'".
 LOCATION_PREFIX_ASSIGNMENT_SIGNAL_RE = re.compile(
     rf"(?i)(?:-----BEGIN|(?:Proxy-)?Authorization\s*:|(?:Set-)?Cookie\s*:"
-    rf"|[\"']?(?:{SECRET_KEY})[\"']?\s*[:=])"
+    rf"|[\"']?(?:{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR})"
+)
+LOCATION_PREFIX_WHITESPACE_ASSIGNMENT_SIGNAL_RE = re.compile(
+    rf"(?i)\A[ \t]*(?:[+-][ \t]*)?(?:export[ \t]+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?(?![ \t]*[:=])[ \t]+"
 )
 LOCATION_PREFIX_PATH_ONLY_SIGNAL_RE = re.compile(r"[\"']")
 NINE_LOCATION_CONSUMERS = (
@@ -246,7 +263,10 @@ def scan_location_prefix(line: str) -> ScannedLine:
         return ScannedLine("", line, 0)
     end = match.end()
     candidate = line[:end]
-    if LOCATION_PREFIX_ASSIGNMENT_SIGNAL_RE.search(candidate):
+    if (
+        LOCATION_PREFIX_ASSIGNMENT_SIGNAL_RE.search(candidate)
+        or LOCATION_PREFIX_WHITESPACE_ASSIGNMENT_SIGNAL_RE.match(candidate)
+    ):
         # 값의 일부를 경로로 오인한 경우다. 분리하면 앞부분만 가려져 뒤가 남는다.
         return ScannedLine("", line, 0, False)
     declined = bool(LOCATION_PREFIX_PATH_ONLY_SIGNAL_RE.search(candidate))
@@ -312,8 +332,33 @@ SAFE_GETTER_KEY_NAMES = {
     "sid",
     "token",
 }
+AMBIGUOUS_BARE_WHITESPACE_KEYS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "csrf",
+        "jwt",
+        "pass",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "session",
+        "sid",
+        "sig",
+        "signature",
+        "token",
+        "xsrf",
+    }
+)
 ASSIGNMENT_KEY_RE = re.compile(
-    r"(?P<key>[A-Za-z_$][A-Za-z0-9_$.-]*)[\"']?\s*[:=]\s*$"
+    rf"(?P<key>[A-Za-z_$][A-Za-z0-9_$.-]*)[\"']?{SECRET_ASSIGNMENT_SEPARATOR}$"
+)
+WHITESPACE_ASSIGNMENT_KEY_RE = re.compile(
+    r"(?P<key>[A-Za-z_$][A-Za-z0-9_$.-]*)[\"']?[ \t]+$"
 )
 SOURCE_SAFE_VALUE_RE = re.compile(
     r"^(?:"
@@ -534,12 +579,30 @@ def normalize_getter_key(key: str) -> str:
 
 
 def assignment_key(prefix: str) -> str | None:
-    match = ASSIGNMENT_KEY_RE.search(prefix)
-    return match.group("key") if match is not None else None
+    for pattern in (ASSIGNMENT_KEY_RE, WHITESPACE_ASSIGNMENT_KEY_RE):
+        match = pattern.search(prefix)
+        if match is not None:
+            return match.group("key")
+    return None
 
 
 def is_safe_getter_key(key: str) -> bool:
     return normalize_getter_key(key) in SAFE_GETTER_KEY_NAMES
+
+
+def is_ambiguous_bare_whitespace_key(key: str) -> bool:
+    return normalize_sensitive_key(key.strip().strip("\"'")) in AMBIGUOUS_BARE_WHITESPACE_KEYS
+
+
+def should_redact_whitespace_secret_value(key: str, value: str) -> bool:
+    stripped_key = key.strip().strip("\"'")
+    normalized_key = normalize_sensitive_key(stripped_key)
+    if normalized_key == "pass" and stripped_key != "pass":
+        return False
+    return not (
+        normalized_key in AMBIGUOUS_BARE_WHITESPACE_KEYS
+        and re.search(r"[ \t]", value.strip()) is not None
+    )
 
 
 def should_redact_unquoted_secret_value(
@@ -601,10 +664,19 @@ def redact_secret_assignments(
         redacted = True
         return f"{match.group('lead')}{match.group('prefix')}{match.group('quote')}[REDACTED]{match.group('quote')}"
 
-    def unquoted_repl(match: re.Match[str]) -> str:
+    def unquoted_repl(
+        match: re.Match[str],
+        *,
+        whitespace_separator: bool = False,
+    ) -> str:
         nonlocal redacted
         key = assignment_key(match.group("prefix"))
         if key is None or not is_sensitive_key(key):
+            return match.group(0)
+        if whitespace_separator and not should_redact_whitespace_secret_value(
+            key,
+            match.group("value"),
+        ):
             return match.group(0)
         if not should_redact_unquoted_secret_value(line, match, context=context):
             return match.group(0)
@@ -618,6 +690,11 @@ def redact_secret_assignments(
         span = INLINE_UNQUOTED_FALLBACK_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         span = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         span = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
+        span = WHITESPACE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(quoted_repl, span)
+        span = WHITESPACE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(
+            lambda match: unquoted_repl(match, whitespace_separator=True),
+            span,
+        )
         span = INLINE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         return span
 
@@ -630,7 +707,15 @@ def redact_secret_assignments(
 
 MULTILINE_SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)(?:^|[\s;{{\[,])(?:(?:[^:\n]+):\d+(?::\d+)?:)?\s*(?:[+-]\s*)?(?:export\s+)?"
-    rf"[\"']?(?P<key>{SECRET_KEY})[\"']?\s*[:=]\s*(?P<quote>[\"'])"
+    rf"[\"']?(?P<key>{SECRET_KEY})[\"']?{SECRET_ASSIGNMENT_SEPARATOR}(?P<quote>[\"'])"
+)
+WHITESPACE_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE = re.compile(
+    rf"(?i)\A[ \t]*(?:[+-][ \t]*)?(?:export[ \t]+)?"
+    rf"[\"']?(?P<key>{SECRET_KEY})[\"']?(?![ \t]*[:=])[ \t]+(?P<quote>[\"'])"
+)
+WHITESPACE_UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE = re.compile(
+    rf"(?i)\A[ \t]*(?:[+-][ \t]*)?(?:export[ \t]+)?"
+    rf"[\"']?(?:{SECRET_KEY})[\"']?(?![ \t]*[:=])[ \t]+(?P<value>(?![\"']).*)$"
 )
 
 
@@ -702,12 +787,19 @@ def detect_multiline_secret_assignment(line: str) -> str | None:
     # 보아 location prefix 바로 뒤에 붙은 키(콜론 직후)까지 잡는다. 둘 다 한 번씩이라 선형.
     spans = (line, scan.remainder) if scan.prefix else (line,)
     for span in spans:
-        for marker in MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE.finditer(span):
-            if not is_sensitive_key(marker.group("key")):
-                continue
-            quote = marker.group("quote")
-            if not has_unescaped_quote(span, quote, marker.end("quote")):
-                return quote
+        for pattern, whitespace_separator in (
+            (MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, False),
+            (WHITESPACE_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, True),
+        ):
+            for marker in pattern.finditer(span):
+                key = marker.group("key")
+                if not is_sensitive_key(key):
+                    continue
+                if whitespace_separator and is_ambiguous_bare_whitespace_key(key):
+                    continue
+                quote = marker.group("quote")
+                if not has_unescaped_quote(span, quote, marker.end("quote")):
+                    return quote
     return None
 
 
@@ -744,15 +836,23 @@ def detect_multiline_secret_expression(line: str) -> int | None:
     spans = (line, scan.remainder) if scan.prefix else (line,)
     marker = None
     for span in spans:
-        marker = UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE.search(span)
+        for pattern, whitespace_separator in (
+            (UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, False),
+            (WHITESPACE_UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, True),
+        ):
+            marker = pattern.search(span)
+            if marker is not None:
+                line = span
+                break
         if marker is not None:
-            line = span
             break
     if marker is None:
         return None
     prefix = line[: marker.start("value")]
     key = assignment_key(prefix)
     if key is None or not is_sensitive_key(key):
+        return None
+    if whitespace_separator and is_ambiguous_bare_whitespace_key(key):
         return None
     value = marker.group("value").strip()
     if not value:
