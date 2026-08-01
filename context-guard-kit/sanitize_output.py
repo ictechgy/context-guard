@@ -332,6 +332,28 @@ SAFE_GETTER_KEY_NAMES = {
     "sid",
     "token",
 }
+AMBIGUOUS_BARE_WHITESPACE_KEYS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "cookie",
+        "credential",
+        "credentials",
+        "csrf",
+        "jwt",
+        "pass",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "session",
+        "sid",
+        "sig",
+        "signature",
+        "token",
+        "xsrf",
+    }
+)
 ASSIGNMENT_KEY_RE = re.compile(
     rf"(?P<key>[A-Za-z_$][A-Za-z0-9_$.-]*)[\"']?{SECRET_ASSIGNMENT_SEPARATOR}$"
 )
@@ -568,6 +590,21 @@ def is_safe_getter_key(key: str) -> bool:
     return normalize_getter_key(key) in SAFE_GETTER_KEY_NAMES
 
 
+def is_ambiguous_bare_whitespace_key(key: str) -> bool:
+    return normalize_sensitive_key(key.strip().strip("\"'")) in AMBIGUOUS_BARE_WHITESPACE_KEYS
+
+
+def should_redact_whitespace_secret_value(key: str, value: str) -> bool:
+    stripped_key = key.strip().strip("\"'")
+    normalized_key = normalize_sensitive_key(stripped_key)
+    if normalized_key == "pass" and stripped_key != "pass":
+        return False
+    return not (
+        normalized_key in AMBIGUOUS_BARE_WHITESPACE_KEYS
+        and re.search(r"[ \t]", value.strip()) is not None
+    )
+
+
 def should_redact_unquoted_secret_value(
     line: str,
     match: re.Match[str],
@@ -627,10 +664,19 @@ def redact_secret_assignments(
         redacted = True
         return f"{match.group('lead')}{match.group('prefix')}{match.group('quote')}[REDACTED]{match.group('quote')}"
 
-    def unquoted_repl(match: re.Match[str]) -> str:
+    def unquoted_repl(
+        match: re.Match[str],
+        *,
+        whitespace_separator: bool = False,
+    ) -> str:
         nonlocal redacted
         key = assignment_key(match.group("prefix"))
         if key is None or not is_sensitive_key(key):
+            return match.group(0)
+        if whitespace_separator and not should_redact_whitespace_secret_value(
+            key,
+            match.group("value"),
+        ):
             return match.group(0)
         if not should_redact_unquoted_secret_value(line, match, context=context):
             return match.group(0)
@@ -645,7 +691,10 @@ def redact_secret_assignments(
         span = INLINE_UNQUOTED_CALL_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         span = INLINE_UNQUOTED_BRACKETED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         span = WHITESPACE_QUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(quoted_repl, span)
-        span = WHITESPACE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
+        span = WHITESPACE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(
+            lambda match: unquoted_repl(match, whitespace_separator=True),
+            span,
+        )
         span = INLINE_UNQUOTED_SECRET_ASSIGNMENT_NO_LOCATION_RE.sub(unquoted_repl, span)
         return span
 
@@ -738,12 +787,15 @@ def detect_multiline_secret_assignment(line: str) -> str | None:
     # 보아 location prefix 바로 뒤에 붙은 키(콜론 직후)까지 잡는다. 둘 다 한 번씩이라 선형.
     spans = (line, scan.remainder) if scan.prefix else (line,)
     for span in spans:
-        for pattern in (
-            MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE,
-            WHITESPACE_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE,
+        for pattern, whitespace_separator in (
+            (MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, False),
+            (WHITESPACE_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, True),
         ):
             for marker in pattern.finditer(span):
-                if not is_sensitive_key(marker.group("key")):
+                key = marker.group("key")
+                if not is_sensitive_key(key):
+                    continue
+                if whitespace_separator and is_ambiguous_bare_whitespace_key(key):
                     continue
                 quote = marker.group("quote")
                 if not has_unescaped_quote(span, quote, marker.end("quote")):
@@ -784,9 +836,9 @@ def detect_multiline_secret_expression(line: str) -> int | None:
     spans = (line, scan.remainder) if scan.prefix else (line,)
     marker = None
     for span in spans:
-        for pattern in (
-            UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE,
-            WHITESPACE_UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE,
+        for pattern, whitespace_separator in (
+            (UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, False),
+            (WHITESPACE_UNQUOTED_MULTILINE_SECRET_ASSIGNMENT_NO_LOCATION_RE, True),
         ):
             marker = pattern.search(span)
             if marker is not None:
@@ -799,6 +851,8 @@ def detect_multiline_secret_expression(line: str) -> int | None:
     prefix = line[: marker.start("value")]
     key = assignment_key(prefix)
     if key is None or not is_sensitive_key(key):
+        return None
+    if whitespace_separator and is_ambiguous_bare_whitespace_key(key):
         return None
     value = marker.group("value").strip()
     if not value:

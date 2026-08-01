@@ -5,9 +5,10 @@ import re
 
 
 SECRET_KEY = (
-    r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pass|pwd|"
+    r"[A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|"
     r"private[_-]?key|access[_-]?key|client[_-]?secret|credential|signature|sig|"
     r"ssh[_-]?key|ssh[_-]?command|pgp[_-]?private[_-]?key)[A-Za-z0-9_.-]*"
+    r"|(?:pass|smtp[_-]?pass|[A-Za-z0-9_.-]+[._-]pass)"
     r"|(?:session(?:[_-]?(?:id|token))?|sessionid|sid|jsessionid|"
     r"csrf(?:[_-]?token)?|xsrf(?:[_-]?token)?)"
     r"|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
@@ -59,6 +60,8 @@ EXACT_SENSITIVE_KEYS = frozenset(
         "sid",
         "sig",
         "signature",
+        "smtp_pass",
+        "smtppass",
         "ssh_command",
         "ssh_key",
         "sshkey",
@@ -85,10 +88,9 @@ SENSITIVE_KEY_SUFFIXES = (
     "_session_token",
     "_ssh_command",
     "_token",
-    "pass",
 )
 SENSITIVE_KEY_QUALIFIER_RE = re.compile(
-    r"(?:^|_)(?:api_?key|apikey|token|secret|password|passwd|pwd|"
+    r"(?:^|_)(?:api_?key|apikey|token|secret|password|passwd|pass|pwd|"
     r"private_key|access_key|client_secret|credential|signature|sig|"
     r"session_id|session_token)(?:_(?:v\d+|prod|production|dev|test|backup))?$"
 )

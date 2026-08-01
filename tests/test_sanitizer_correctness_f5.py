@@ -90,6 +90,8 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
                 "api_key [REDACTED]\n",
             ),
             ("api_key fixture-value\n", "api_key [REDACTED]\n"),
+            ("api_key\tfixture-tab-value\n", "api_key\t[REDACTED]\n"),
+            ("api_key \t fixture-mixed-value\n", "api_key \t [REDACTED]\n"),
         )
         for source, module in SANITIZERS:
             for raw, expected in cases:
@@ -136,12 +138,16 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
             "credential.helper fixture-helper\n"
             "core.sshCommand ssh -i fixture-key-path fixture-host\n"
             "smtppass fixture-mail-password\n"
+            "pass\tfixture-bare-password\n"
+            "sshCommand   ssh -i fixture-key-path fixture-host\n"
             "src/config.txt:12: core.sshCommand ssh -F fixture-config fixture-host\n"
         )
         expected = (
             "credential.helper [REDACTED]\n"
             "core.sshCommand [REDACTED]\n"
             "smtppass [REDACTED]\n"
+            "pass\t[REDACTED]\n"
+            "sshCommand   [REDACTED]\n"
             "src/config.txt:12: core.sshCommand [REDACTED]\n"
         )
         for source, module in SANITIZERS:
@@ -159,6 +165,9 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
             "token_count 12\n"
             "credential.helperText visible\n"
             "sshCommandLine visible\n"
+            "compass north\n"
+            "bypass enabled\n"
+            "passenger count\n"
         )
         expected = (
             "api_key=[REDACTED]\n"
@@ -166,6 +175,9 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
             "token_count 12\n"
             "credential.helperText visible\n"
             "sshCommandLine visible\n"
+            "compass north\n"
+            "bypass enabled\n"
+            "passenger count\n"
         )
         for source, module in SANITIZERS:
             with self.subTest(source=source):
@@ -179,6 +191,31 @@ class SanitizerCorrectnessF5Test(unittest.TestCase):
         for source, module in SANITIZERS:
             with self.subTest(source=source):
                 self.assertEqual(sanitize_lines(module, raw), raw)
+
+    def test_bare_key_prose_does_not_redact_or_enter_multiline_state(self) -> None:
+        raw = (
+            "password authentication failed\n"
+            "token refresh pending\n"
+            "PASS tests/test_example.py\n"
+            'token "refresh pending\n'
+            "next visible line\n"
+        )
+        for source, module in SANITIZERS:
+            with self.subTest(source=source):
+                self.assertEqual(sanitize_lines(module, raw), raw)
+
+    def test_pass_candidates_require_an_exact_or_delimited_key_boundary(self) -> None:
+        sensitive = ("pass", "smtppass", "smtp_pass", "db.pass", "db-pass")
+        benign = ("compass", "bypass", "encompass", "passenger", "passport")
+        for source, module in SANITIZERS:
+            for key in sensitive:
+                with self.subTest(source=source, key=key, expected="sensitive"):
+                    self.assertIsNotNone(re.fullmatch(module.SECRET_KEY, key, re.IGNORECASE))
+                    self.assertTrue(module.is_sensitive_key(key))
+            for key in benign:
+                with self.subTest(source=source, key=key, expected="benign"):
+                    self.assertIsNone(re.fullmatch(module.SECRET_KEY, key, re.IGNORECASE))
+                    self.assertFalse(module.is_sensitive_key(key))
 
 
 if __name__ == "__main__":
