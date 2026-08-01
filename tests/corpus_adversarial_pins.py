@@ -295,16 +295,18 @@ FIX5_ENV_WRAPPER_BYPASS_PINS: list[AdversarialPin] = [
         "fix": "FIX-5",
         "command": "/usr/bin/env GIT_EXTERNAL_DIFF=/tmp/evil.sh git diff",
         "expected_decision": "deny",
-        "expected_reason_code": "unsafe_env_name_denied",
-        "note": "경로 한정 `env` 도 basename 으로 인식되므로 동일하게 막혀야 한다.",
+        "expected_reason_code": "command_identity_denied",
+        "note": "F-11 이후 경로 한정 `env` 는 환경 래퍼로 신뢰하지 않고 명령 "
+        "identity 단계에서 먼저 거부한다.",
     },
     {
         "case_id": "fix5-bypass-env-path-qualified-quoted",
         "fix": "FIX-5",
         "command": "/usr/bin/env -- 'GIT_PAGER'=/tmp/evil.sh git diff",
         "expected_decision": "deny",
-        "expected_reason_code": "unsafe_env_name_denied",
-        "note": "경로 한정 + `--` + 인용 피연산자 조합.",
+        "expected_reason_code": "command_identity_denied",
+        "note": "경로 한정 + `--` + 인용 피연산자 조합도 F-11 명령 identity "
+        "단계에서 먼저 거부한다.",
     },
     {
         "case_id": "fix5-bypass-env-quoted-operand",

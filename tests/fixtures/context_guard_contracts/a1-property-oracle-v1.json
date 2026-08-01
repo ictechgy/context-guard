@@ -7207,8 +7207,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-canonical-jvm-noisy-first-bf805ce206",
-      "command": "./gradlew test | cat",
+      "case_id": "route-canonical-jvm-noisy-first-5423c88ff9",
+      "command": "gradlew test | cat",
       "entrypoint": "canonical",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -7454,8 +7454,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-canonical-jvm-noisy-standalone-dc74e1e281",
-      "command": "./gradlew test",
+      "case_id": "route-canonical-jvm-noisy-standalone-f72d90623b",
+      "command": "gradlew test",
       "entrypoint": "canonical",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -7584,8 +7584,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-canonical-jvm-noisy-standalone-7b38ff081f",
-      "command": "./mvnw test",
+      "case_id": "route-canonical-jvm-noisy-standalone-876bc70066",
+      "command": "mvnw test",
       "entrypoint": "canonical",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -8494,8 +8494,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-canonical-jvm-noisy-first-ffdd66e87f",
-      "command": "./mvnw test | cat",
+      "case_id": "route-canonical-jvm-noisy-first-6b62007846",
+      "command": "mvnw test | cat",
       "entrypoint": "canonical",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -11666,8 +11666,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-packaged-jvm-noisy-first-8863b98a97",
-      "command": "./gradlew test | cat",
+      "case_id": "route-packaged-jvm-noisy-first-7a0150b3b6",
+      "command": "gradlew test | cat",
       "entrypoint": "packaged",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -11913,8 +11913,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-packaged-jvm-noisy-standalone-060a5dda7a",
-      "command": "./gradlew test",
+      "case_id": "route-packaged-jvm-noisy-standalone-d0e777d718",
+      "command": "gradlew test",
       "entrypoint": "packaged",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -12043,8 +12043,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-packaged-jvm-noisy-standalone-59553aada9",
-      "command": "./mvnw test",
+      "case_id": "route-packaged-jvm-noisy-standalone-383bcfcacf",
+      "command": "mvnw test",
       "entrypoint": "packaged",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
@@ -12953,8 +12953,8 @@
       "seed": 10551299
     },
     {
-      "case_id": "route-packaged-jvm-noisy-first-e1bec0e10d",
-      "command": "./mvnw test | cat",
+      "case_id": "route-packaged-jvm-noisy-first-1e2e502e7a",
+      "command": "mvnw test | cat",
       "entrypoint": "packaged",
       "expectation": "accept",
       "expected_decision": "rewrite_trim",
