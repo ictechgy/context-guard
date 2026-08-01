@@ -6,8 +6,10 @@ line, redaction and path-redaction counts, and the packaged mirror. The frozen
 baseline is committed as a text fixture so the comparison cannot drift with the
 working tree.
 
-F-5 behaviour changes are deliberately out of scope for this story, so a
-difference here is a regression, never an intended improvement.
+The corpus remains scoped to behavior that F-5 does not intentionally change.
+F-5 whitespace/key-classification cases live in
+``tests/test_sanitizer_correctness_f5.py``; differences inside this retained
+S004 corpus are still regressions.
 """
 from __future__ import annotations
 
