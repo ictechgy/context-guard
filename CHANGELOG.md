@@ -4,7 +4,13 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-08-01
+
+- Sanitizer output-scanning is now one monotonic left-to-right pass. All nine location-prefix consumers previously re-parsed the same optional `path:line:` fragment at every offset, which made lines with few colons quadratic: a single 82,015-byte line took 2.62 s and a 100,014-byte line took 3.98 s. The leading prefix is identified once and the seven unanchored consumers run as fragment-free twins, while the two `^`-anchored header consumers keep their original patterns because they were never a per-offset cost. The same lines now take 64.3 ms and 0.078 s, with doubling ratios of 1.84 to 2.01. Redaction output is byte-identical to the previous implementation, pinned by a differential oracle against a hash-frozen baseline across eleven corpora, three sanitization contexts, both path-display modes, and both shared-state and per-line runs.
+- `context-guard-trim-output --digest` no longer inflates small output. When a command succeeds and its output is already smaller than the digest would be, the output is passed through with a one-line marker; a 19-byte output previously produced a 461-byte markdown digest or a 755-byte JSON digest. A failing command always keeps the digest, because that is where the exit code and failure signature live, and requesting `--artifact-receipt` always keeps it too. Pass `--digest-always` to force the structured digest in every case.
+- Both READMEs now document the standing per-request cost of the advisory rule blocks (`brief-mode.lite` 1,487 bytes, `brief-mode.standard` 1,568, `brief-mode.ultra` 1,523, `narration-mode.quiet` 866) and frame that size as the break-even threshold a reply-length reduction has to clear. Hook guardrails are contrasted honestly: they charge only when they act, and a sub-threshold `Read` adds 3 bytes.
 - Added a default-off, Claude-only quiet-narration rule managed through a dedicated rules-only setup path. It suppresses discretionary narration while preserving approvals, blockers, failures, safety warnings, final results, changed files, and verification; it does not activate settings or hooks or claim guaranteed savings.
+- Benchmark measurement substrate for the planned token-savings study: scheduling, accounting, resume, and inference surfaces plus a real twelve-task fixture suite with out-of-workspace success checkers and a zero-cost seventy-two-run fake-provider rehearsal. These are measurement-enabling only. No provider-measured token or cost savings are claimed, and the rehearsal explicitly records that its own token counts are scripted local fixtures.
 
 ## [0.4.15] - 2026-07-15
 
