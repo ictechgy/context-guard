@@ -255,7 +255,7 @@ class SanitizationModeTests(unittest.TestCase):
                                 "command_search_diff",
                                 "--",
                                 "bash",
-                                "-lc",
+                                "-c",
                                 f"grep -q {pattern} {haystack.name}",
                             ],
                             cwd=workdir,

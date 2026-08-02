@@ -220,7 +220,7 @@ def _route_examples() -> list[dict[str, str]]:
     #   3. 축 b 무영향 근거: `_cat_is_safe`(허용 플래그, `allow_files`)는 전혀
     #      바뀌지 않았다 — 라우트 코드만 바뀐다. 이 변경은 deny -> allow
     #      전환이 아니므로(둘 다 accept) INV-A/INV-B 대상이 아니다 — 대신
-    #      새로 진입하는 `bash -lc` 재래핑 경로는 INV-C(AC-2.3)로 검증한다.
+    #      새로 진입하는 `bash -c` 재래핑 경로는 INV-C(AC-2.3)로 검증한다.
     #   4. 역방향 케이스: `cat --number README.md`(아래 negatives)는
     #      `--number`가 허용 플래그 집합(`bnsETAvet`) 밖이라 여전히 deny —
     #      완화가 플래그 검증을 재승인하지 않음을 보인다.
@@ -830,23 +830,23 @@ def minishell_normative_cases() -> list[dict[str, object]]:
 
     wrapper_commands = (
         (
-            "context-guard-trim-output --max-lines 220 -- bash -lc 'pytest -q'",
+            "context-guard-trim-output --max-lines 220 -- bash -c 'pytest -q'",
             "incoming_wrapper_denied",
         ),
         (
-            "context-guard-sanitize-output --context-guard-wrapper-v1 command_search_diff -- bash -lc 'rg x .'",
+            "context-guard-sanitize-output --context-guard-wrapper-v1 command_search_diff -- bash -c 'rg x .'",
             "incoming_wrapper_denied",
         ),
         (
-            "claude-trim-output --max-lines 220 -- bash -lc 'pytest -q'",
+            "claude-trim-output --max-lines 220 -- bash -c 'pytest -q'",
             "incoming_wrapper_denied",
         ),
         (
-            "python3 /tmp/trim_command_output.py --max-lines 220 -- bash -lc 'pytest -q'",
+            "python3 /tmp/trim_command_output.py --max-lines 220 -- bash -c 'pytest -q'",
             "incoming_wrapper_denied",
         ),
         (
-            "context-guard-sanitize-output x--context-guard-wrapper-v1 -- bash -lc 'rg x .'",
+            "context-guard-sanitize-output x--context-guard-wrapper-v1 -- bash -c 'rg x .'",
             "nested_wrapper_denied",
         ),
         (

@@ -83,7 +83,7 @@ class NudgeProtocolTests(unittest.TestCase):
                 "220",
                 "--",
                 "bash",
-                "-lc",
+                "-c",
                 logical,
             ]
         else:
@@ -94,7 +94,7 @@ class NudgeProtocolTests(unittest.TestCase):
                 "command_search_diff",
                 "--",
                 "bash",
-                "-lc",
+                "-c",
                 logical,
             ]
         return shlex.join(argv)
@@ -136,7 +136,7 @@ class NudgeProtocolTests(unittest.TestCase):
                         "command_search_diff",
                         "--",
                         "bash",
-                        "-lc",
+                        "-c",
                         logical,
                     ]),
                     self.wrapped(

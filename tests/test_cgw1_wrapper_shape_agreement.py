@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shlex
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -13,6 +16,7 @@ KIT_DIR = ROOT / "context-guard-kit"
 REWRITE_BASH_SCRIPT = KIT_DIR / "rewrite_bash_for_token_budget.py"
 NUDGE_SCRIPT = KIT_DIR / "failed_attempt_nudge.py"
 SANITIZE_OUTPUT_SCRIPT = KIT_DIR / "sanitize_output.py"
+TRIM_OUTPUT_SCRIPT = KIT_DIR / "trim_command_output.py"
 
 
 def _load_module(name: str, path: Path) -> types.ModuleType:
@@ -66,6 +70,9 @@ class Cgw1WrapperShapeAgreementTests(unittest.TestCase):
         """
         logical_command = "pytest tests/example.py -k some_case"
 
+        self.assertEqual(rewrite_bash.CGW1_SHELL_ARGV, ("bash", "-c"))
+        self.assertEqual(nudge.CGW1_SHELL_ARGV, ("bash", "-c"))
+
         trim_wrapper = self._wrapper_path("trim_command_output.py")
         wrapped_trim = rewrite_bash.build_wrapped_command(trim_wrapper, logical_command)
         identity_trim = nudge.command_identity(wrapped_trim)
@@ -87,7 +94,7 @@ class Cgw1WrapperShapeAgreementTests(unittest.TestCase):
         도달 불가하므로 실제 subprocess로 검사한다.
 
         올바른 CGW1 envelope(현재 producer가 실제로 내보내는 모양)는 rc != 2여야
-        하고, 모양이 어긋난 envelope(``bash -lc`` 대신 다른 셸 스펠링)는 rc == 2로
+        하고, 모양이 어긋난 login-shell envelope(``bash -lc``)는 rc == 2로
         큰 소리로 실패해야 한다. sanitize 플레이버 전용 방어선이다.
         """
         matching = subprocess.run(
@@ -98,7 +105,7 @@ class Cgw1WrapperShapeAgreementTests(unittest.TestCase):
                 "command_search_diff",
                 "--",
                 "bash",
-                "-lc",
+                "-c",
                 "echo shape-ok",
             ],
             text=True,
@@ -118,8 +125,8 @@ class Cgw1WrapperShapeAgreementTests(unittest.TestCase):
                 "--context-guard-wrapper-v1",
                 "command_search_diff",
                 "--",
-                "sh",
-                "-c",
+                "bash",
+                "-lc",
                 "echo shape-mismatch",
             ],
             text=True,
@@ -128,6 +135,60 @@ class Cgw1WrapperShapeAgreementTests(unittest.TestCase):
         )
         self.assertEqual(mismatched.returncode, 2, mismatched.stdout)
         self.assertIn("invalid context-guard wrapper v1 shape", mismatched.stderr)
+
+    def test_trim_wrapper_preserves_inherited_path_without_login_profile(self) -> None:
+        """F-2 — 내부 래퍼는 호출 환경의 PATH를 그대로 사용하고 login profile을
+        읽지 않는다. 같은 이름의 두 실행 파일과 의도적으로 PATH를 바꾸는
+        ``.bash_profile``을 만들어 문자열 모양이 아니라 실제 해석 결과를 고정한다.
+        """
+        with tempfile.TemporaryDirectory(prefix="context-guard-f2-path-") as tmp:
+            root = Path(tmp)
+            inherited_bin = root / "inherited-bin"
+            login_bin = root / "login-bin"
+            home = root / "home"
+            for directory in (inherited_bin, login_bin, home):
+                directory.mkdir()
+
+            for directory, marker in (
+                (inherited_bin, "INHERITED_PATH"),
+                (login_bin, "LOGIN_PROFILE_PATH"),
+            ):
+                probe = directory / "contextguard-path-probe"
+                probe.write_text(
+                    f"#!/bin/sh\nprintf '%s\\n' {marker}\n",
+                    encoding="utf-8",
+                )
+                probe.chmod(0o755)
+
+            (home / ".bash_profile").write_text(
+                f"export PATH={shlex.quote(str(login_bin))}:$PATH\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = os.pathsep.join(
+                (
+                    str(inherited_bin),
+                    str(Path(sys.executable).parent),
+                    "/usr/bin",
+                    "/bin",
+                )
+            )
+            wrapped = rewrite_bash.build_wrapped_command(
+                str(TRIM_OUTPUT_SCRIPT),
+                "contextguard-path-probe",
+            )
+
+            proc = subprocess.run(
+                shlex.split(wrapped),
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, "INHERITED_PATH\n")
 
 
 if __name__ == "__main__":

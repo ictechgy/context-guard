@@ -20437,7 +20437,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
         self.assertIn("python3", rewrite.build_wrapped_command("/tmp/trim_command_output.py", "pytest -q"))
         sanitized = rewrite.build_sanitized_command("/tmp/context-guard-sanitize-output", "git diff")
         self.assertIn("/tmp/context-guard-sanitize-output", sanitized)
-        self.assertIn("--context-guard-wrapper-v1 command_search_diff -- bash -lc", sanitized)
+        self.assertIn("--context-guard-wrapper-v1 command_search_diff -- bash -c", sanitized)
 
     def test_trim_uses_adjacent_primary_sanitizer_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -23284,7 +23284,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
             with self.subTest(command=command):
                 out = hook_json(KIT_REWRITE, command)
                 wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
-                self.assertIn("bash -lc", wrapped)
+                self.assertIn("bash -c", wrapped)
                 self.assertIn(command, wrapped)
                 self.assertTrue("trim_command_output.py" in wrapped or "context-guard-trim-output" in wrapped)
 

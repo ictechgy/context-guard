@@ -1076,9 +1076,9 @@ def fix1b_ac1b2_case_count() -> int:
 # 적이 있는 행(§5.5 4번째 열의 역방향 케이스, AC-2.5의 범위 외 확인)에만
 # 채우고 나머지는 None 이다 — 거부 이력이 없기 때문이다.
 #
-# `cat`이 이번에 처음 `bash -lc` 재래핑 경로(INV-C)에 진입한다 — 왕복 실행
+# `cat`이 이번에 처음 `bash -c` 재래핑 경로(INV-C)에 진입한다 — 왕복 실행
 # 검증은 `test_context_guard_shell_contract.py`의 e2e 테스트(AC-2.3)가 실제
-# `bash -lc`를 통해 담당하므로 이 표에서는 라우트 판정만 고정한다.
+# `bash -c`를 통해 담당하므로 이 표에서는 라우트 판정만 고정한다.
 # ---------------------------------------------------------------------------
 FIX2_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
     {
