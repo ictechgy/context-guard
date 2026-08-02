@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,7 +73,10 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
             "3f9ee86abd2b3b79775421529290822eb829a238",
         )
         self.assertEqual(proof.get("baseline_cache_case_count"), 57)
-        self.assertRegex(str(proof.get("baseline_cache_sha256")), r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            proof.get("baseline_cache_sha256"),
+            "527bfe395b948fc12ad4ac23a2ff11e6c51646e1ba5e9802137493eaa4daa946",
+        )
 
     def write_mutated_cache(self, directory: Path, mutate: Any) -> Path:
         cache = json.loads(
@@ -196,7 +201,80 @@ def fix1a_route_predicate_relaxations():
             self.proof_module.ProofError,
             "classifier returned a non-object result",
         ):
-            self.proof_module._result_map(["invalid-result"])
+            self.proof_module._result_map(["invalid-result"], ("expected-case",))
+
+    def test_classifier_result_case_ids_must_match_requests(self) -> None:
+        with self.assertRaisesRegex(
+            self.proof_module.ProofError,
+            "classifier returned unexpected case ids",
+        ):
+            self.proof_module._result_map(
+                [{"case_id": "wrong-case", "action": "deny", "reason_code": None}],
+                ("expected-case",),
+            )
+
+    def test_coordinated_candidate_expectation_change_fails_pinned_digest(self) -> None:
+        suffix = """
+import copy as _s008_copy
+_s008_original_fix1a_relaxations = fix1a_route_predicate_relaxations
+def fix1a_route_predicate_relaxations():
+    cases = _s008_copy.deepcopy(_s008_original_fix1a_relaxations())
+    cases[0]["expected_reason_code"] = "coordinated_mutated_reason"
+    return cases
+"""
+        with tempfile.TemporaryDirectory(prefix="route-baseline-test-") as temp_dir:
+            corpus_path = self.write_mutated_corpus(Path(temp_dir), suffix)
+            cases = self.proof_module.load_route_relaxation_cases(corpus_path)
+            baseline_results = self.proof_module._classify_isolated(
+                self.proof_module._resolve_baseline_source(ROOT),
+                cases,
+            )
+            baseline_by_id = {
+                result["case_id"]: result for result in baseline_results
+            }
+            candidate_results = [
+                {
+                    "case_id": case["case_id"],
+                    "action": case["expected_decision"],
+                    "reason_code": case["expected_reason_code"],
+                }
+                for case in cases
+                if baseline_by_id[case["case_id"]]["action"] == "deny"
+            ]
+            with mock.patch.object(
+                self.proof_module,
+                "_classify_isolated",
+                side_effect=[
+                    baseline_results,
+                    candidate_results,
+                    candidate_results,
+                ],
+            ):
+                with self.assertRaisesRegex(
+                    self.proof_module.ProofError,
+                    "pinned candidate expectation digest mismatch",
+                ):
+                    self.proof_module.verify_route_historical_baseline(
+                        corpus_path=corpus_path
+                    )
+
+    def test_cli_main_returns_json_error_for_proof_failure(self) -> None:
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(
+                self.proof_module,
+                "verify_route_historical_baseline",
+                side_effect=self.proof_module.ProofError("tampered baseline"),
+            ),
+            mock.patch("sys.stdout", stdout),
+        ):
+            return_code = self.proof_module.main(["--json"])
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {"status": "error", "error": "tampered baseline"},
+        )
 
     def test_coordinated_corpus_and_cache_shrink_fails_pinned_inventory(self) -> None:
         cache = json.loads(

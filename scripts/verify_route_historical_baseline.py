@@ -27,6 +27,9 @@ BASELINE_INVENTORY_CASE_COUNT = 57
 BASELINE_INVENTORY_CASES_SHA256 = (
     "3df5ab65f3d18ca3d79f6015a137b86aefbf888fbda64e5efc0bb28981edfd3b"
 )
+BASELINE_CANDIDATE_EXPECTATIONS_SHA256 = (
+    "ae7fafa6d6499016e919f2c79f15c651ba5a5e705ec7bac8a5c009c6f1248244"
+)
 CORPUS_PATH = ROOT / "tests" / "corpus_adversarial_pins.py"
 BASELINE_CACHE_PATH = (
     ROOT
@@ -222,7 +225,10 @@ def _resolve_baseline_source(repo: Path) -> bytes:
     return runtime_source
 
 
-def _result_map(results: Sequence[dict[str, object]]) -> dict[str, dict[str, object]]:
+def _result_map(
+    results: Sequence[dict[str, object]],
+    expected_case_ids: Sequence[str],
+) -> dict[str, dict[str, object]]:
     mapped: dict[str, dict[str, object]] = {}
     for result in results:
         if not isinstance(result, dict):
@@ -231,6 +237,8 @@ def _result_map(results: Sequence[dict[str, object]]) -> dict[str, dict[str, obj
         if not isinstance(case_id, str) or case_id in mapped:
             raise ProofError("classifier returned invalid or duplicate case ids")
         mapped[case_id] = result
+    if set(mapped) != set(expected_case_ids):
+        raise ProofError("classifier returned unexpected case ids")
     return mapped
 
 
@@ -309,6 +317,20 @@ def _assert_cache_inventory(
         raise ProofError("cache inventory does not match executable observations")
 
 
+def _assert_candidate_expectations(cases: Sequence[dict[str, object]]) -> None:
+    records = [
+        {
+            "case_id": str(case["case_id"]),
+            "expected_decision": case["expected_decision"],
+            "expected_reason_code": case["expected_reason_code"],
+        }
+        for case in cases
+    ]
+    records.sort(key=lambda record: str(record["case_id"]))
+    if _canonical_sha256(records) != BASELINE_CANDIDATE_EXPECTATIONS_SHA256:
+        raise ProofError("pinned candidate expectation digest mismatch")
+
+
 def verify_route_historical_baseline(
     repo: Path = ROOT,
     *,
@@ -325,7 +347,11 @@ def verify_route_historical_baseline(
         raise ProofError("baseline cache is missing identity or inventory")
     cases = load_route_relaxation_cases(corpus_path)
     baseline_source = _resolve_baseline_source(repo)
-    baseline_results = _result_map(_classify_isolated(baseline_source, cases))
+    case_ids = [str(case["case_id"]) for case in cases]
+    baseline_results = _result_map(
+        _classify_isolated(baseline_source, cases),
+        case_ids,
+    )
     deny_to_allow_cases = [
         case
         for case in cases
@@ -350,12 +376,15 @@ def verify_route_historical_baseline(
         baseline_reasons[str(reason_code)] += 1
 
     _assert_cache_inventory(cache_inventory, deny_to_allow_cases, baseline_results)
+    _assert_candidate_expectations(deny_to_allow_cases)
 
     entrypoint_names: list[str] = []
     reference_results: dict[str, dict[str, object]] | None = None
+    deny_to_allow_case_ids = [str(case["case_id"]) for case in deny_to_allow_cases]
     for entrypoint_name, entrypoint_path in candidate_entrypoints:
         candidate_results = _result_map(
-            _classify_isolated(entrypoint_path.read_bytes(), deny_to_allow_cases)
+            _classify_isolated(entrypoint_path.read_bytes(), deny_to_allow_cases),
+            deny_to_allow_case_ids,
         )
         for case in deny_to_allow_cases:
             result = candidate_results[str(case["case_id"])]
