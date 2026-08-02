@@ -1906,6 +1906,78 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 "is not exercising the intended safety boundary",
             )
 
+    def test_s009_multi_range_segment_count_is_bounded(self) -> None:
+        """반복 SEG가 출력량과 sed 평가 비용을 무제한 증폭하지 못하게 한다."""
+        allowed_script = ";".join("1p" for _ in range(8))
+        denied_script = ";".join("1p" for _ in range(9))
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s009_segment_cap_{index}")
+            classify_command = namespace["classify_command"]
+            with self.subTest(entrypoint=index, segments=8):
+                self.assertEqual(
+                    classify_command(
+                        f"sed -n '{allowed_script}' README.md"
+                    ).action,
+                    "trim",
+                )
+            with self.subTest(entrypoint=index, segments=9):
+                decision = classify_command(f"sed -n '{denied_script}' README.md")
+                self.assertEqual(decision.action, "deny")
+                self.assertEqual(decision.reason_code, "route_policy_denied")
+
+    def test_s009_adjacent_multi_command_spellings_stay_denied(self) -> None:
+        """개행 구분자와 alternate-expression/fileless 변형을 직접 고정한다."""
+        cases = (
+            (
+                "newline-positional-write",
+                "sed -n '1,5p\nw out.txt' README.md",
+                "forbidden_quoted_whitespace",
+            ),
+            (
+                "newline-dash-e-execute",
+                "sed -n -e '1,5p\ne id' README.md",
+                "forbidden_quoted_whitespace",
+            ),
+            (
+                "newline-long-expression-write",
+                "sed -n --expression='1,5p\nw out.txt' README.md",
+                "forbidden_quoted_whitespace",
+            ),
+            (
+                "dash-e-write",
+                "sed -n -e '1,5p;w out.txt' README.md",
+                "route_policy_denied",
+            ),
+            (
+                "long-expression-execute",
+                "sed -n --expression='1,5p;e id' README.md",
+                "route_policy_denied",
+            ),
+            (
+                "fileless-dash-e-producer",
+                "sed -n -e '1,5p;10,20p' | cat",
+                "route_policy_denied",
+            ),
+            (
+                "fileless-long-expression-producer",
+                "sed -n --expression='1,5p;10,20p' | cat",
+                "route_policy_denied",
+            ),
+            (
+                "multiple-long-expressions",
+                "sed -n --expression='1,5p' --expression='10,20p' README.md",
+                "route_policy_denied",
+            ),
+        )
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s009_adjacent_denies_{index}")
+            classify_command = namespace["classify_command"]
+            for case_id, command, expected_reason in cases:
+                with self.subTest(entrypoint=index, case_id=case_id):
+                    decision = classify_command(command)
+                    self.assertEqual(decision.action, "deny")
+                    self.assertEqual(decision.reason_code, expected_reason)
+
     def test_sed_in_place_spellings_all_stay_denied(self) -> None:
         """FIX-SED 의 실패 모드는 이 세 클래스 중 유일하게 파일 변조다(`-i`).
         `-i` 의 모든 스펠링 — 순수형, 붙임 접미사, BSD 빈 접미사형, GNU 순열
