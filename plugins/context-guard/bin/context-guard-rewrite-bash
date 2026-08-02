@@ -1372,7 +1372,12 @@ def _cut_is_safe(argv: tuple[str, ...]) -> bool:
     return selector is not None and (not delimiter or selector == "-f")
 
 
-_SED_SCRIPT_RE = re.compile(r"(?:[1-9]\d*|[1-9]\d*,(?:[1-9]\d*|\$))p")
+_SED_SEGMENT_PATTERN = r"(?:[1-9]\d*|[1-9]\d*,(?:[1-9]\d*|\$))p"
+_SED_MAX_SEGMENTS = 8
+_SED_SCRIPT_RE = re.compile(
+    rf"{_SED_SEGMENT_PATTERN}(?:;{_SED_SEGMENT_PATTERN})"
+    rf"{{0,{_SED_MAX_SEGMENTS - 1}}}"
+)
 
 
 def _sed_route_shape(argv: tuple[str, ...]) -> tuple[bool, int]:
@@ -1390,8 +1395,9 @@ def _sed_route_shape(argv: tuple[str, ...]) -> tuple[bool, int]:
          전부 거부하고 정확한 토큰만 허용한다.
 
     스크립트 본문 자체의 안전 경계(`w`/`W`/`s///w`/`e`/`s///e`/`r`/`R` 배제)는
-    `_SED_SCRIPT_RE` 의 `re.fullmatch` 가 담당하며 이번 변경으로 절대
-    느슨해지지 않는다 — 이 함수는 그 정규식이 실제로 검사하는 대상이 진짜
+    `_SED_SCRIPT_RE` 의 `re.fullmatch` 가 담당한다. S009는 기존의 안전한
+    p-only SEG를 `;`로 최대 `_SED_MAX_SEGMENTS` 개 조합할 뿐 SEG 자체를
+    넓히지 않는다 — 이 함수는 그 정규식이 실제로 검사하는 대상이 진짜
     스크립트임을 보장하는 역할만 한다.
     """
     quiet_seen = False

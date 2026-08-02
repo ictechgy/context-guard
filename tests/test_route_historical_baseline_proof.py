@@ -60,9 +60,9 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
             proof["baseline_runtime_blob"],
             "2439e99c6e7388ad330d6d74b003aeff5df9b90a",
         )
-        self.assertEqual(proof["relaxation_case_count"], 60)
-        self.assertEqual(proof["deny_to_allow_case_count"], 57)
-        self.assertEqual(proof["baseline_reason_counts"], {"route_policy_denied": 57})
+        self.assertEqual(proof["relaxation_case_count"], 66)
+        self.assertEqual(proof["deny_to_allow_case_count"], 63)
+        self.assertEqual(proof["baseline_reason_counts"], {"route_policy_denied": 63})
         self.assertEqual(proof["candidate_entrypoints"], ["canonical", "plugin"])
 
     def test_proof_binds_observations_to_tree_keyed_cache(self) -> None:
@@ -72,10 +72,10 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
             proof.get("baseline_cache_tree"),
             "3f9ee86abd2b3b79775421529290822eb829a238",
         )
-        self.assertEqual(proof.get("baseline_cache_case_count"), 57)
+        self.assertEqual(proof.get("baseline_cache_case_count"), 63)
         self.assertEqual(
             proof.get("baseline_cache_sha256"),
-            "527bfe395b948fc12ad4ac23a2ff11e6c51646e1ba5e9802137493eaa4daa946",
+            "30d54a8471720d5bbdf4b8ba93476d02fac272f5602509d8b86a059a6a20eb62",
         )
 
     def write_mutated_cache(self, directory: Path, mutate: Any) -> Path:
@@ -166,7 +166,7 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
             proof = self.proof_module.verify_route_historical_baseline(repo=repo)
 
             self.assertEqual(proof["status"], "ok")
-            self.assertEqual(proof["deny_to_allow_case_count"], 57)
+            self.assertEqual(proof["deny_to_allow_case_count"], 63)
 
     def test_missing_expected_reason_code_fails_closed(self) -> None:
         suffix = """

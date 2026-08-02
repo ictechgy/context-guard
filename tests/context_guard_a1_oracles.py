@@ -548,6 +548,49 @@ def _route_examples() -> list[dict[str, str]]:
         "the numeric-range script regex.",
     )
     add(
+        "sed-multi-range-producer",
+        ("standalone", "first"),
+        (
+            "sed -n '1,5p;10,20p' README.md",
+            "sed -n '1p;5,9p;20,$p' README.md",
+            "sed -n -e '1,5p;10p;20,$p' README.md",
+            "sed -n --expression='1,5p;10,20p' README.md",
+            "sed -n '1,5p;10,20p' -- README.md",
+        ),
+        "rewrite_trim",
+        (
+            "sed -n '' README.md",
+            "sed -n ';1,5p' README.md",
+            "sed -n '1,5p;' README.md",
+            "sed -n '1,5p;;10,20p' README.md",
+            "sed -n '1,5p;w out.txt' README.md",
+            "sed -n '1,5p;W out.txt' README.md",
+            "sed -n '1,5p;e id' README.md",
+            "sed -n '1,5p;r other.txt' README.md",
+            "sed -n '1,5p;R other.txt' README.md",
+            "sed -n '1,5p;q' README.md",
+            "sed -n '1,5p;s/x/y/' README.md",
+            "sed -n '1,5p;/re/p' README.md",
+            "sed -n '1,5p;10,20p' -i README.md",
+            "sed -ne '1,5p;10,20p' README.md",
+            "sed -n -e '1,5p' -e '10,20p' README.md",
+            "sed -n '1,5p;0p' README.md",
+            "sed -n '1,5p;10,1000001p' README.md",
+        ),
+        note="S009 semicolon multi-range sed: compose only the existing safe "
+        "numeric p-only SEG grammar. Empty segments and any w/W/e/r/R/q/s, "
+        "regex-address, in-place, cluster, multiple-script, zero-address, or "
+        "out-of-range segment remain denied.",
+    )
+    add(
+        "sed-multi-range-fileless-producer",
+        ("first",),
+        (),
+        "rewrite_trim",
+        ("sed -n '1,5p;10,20p'",),
+        note="S009 preserves the fileless-producer non-termination guard.",
+    )
+    add(
         "sort",
         ("standalone", "filter"),
         ("sort -k1,1", "sort -r -t: -k1"),
