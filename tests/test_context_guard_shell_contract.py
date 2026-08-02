@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import random
+import re
 import runpy
 import shlex
 import subprocess
@@ -55,6 +56,9 @@ from tests.corpus_adversarial_pins import (
     ls_relaxation_case_count,
     ls_route_predicate_relaxations,
     ls_stay_denied_case_count,
+    s009_sed_multi_range_cases,
+    s009_sed_multi_range_relaxations,
+    s009_sed_multi_range_stay_denied,
     sed_relaxation_case_count,
     sed_route_predicate_relaxations,
     sed_stay_denied_case_count,
@@ -1800,9 +1804,107 @@ class MiniShellBoundaryTests(unittest.TestCase):
         """FIX-SED 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
         표의 크기를 고정한다(FIX-LS/FIX-GREP 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
-        self.assertEqual(sed_relaxation_case_count(), 6)
-        self.assertEqual(sed_stay_denied_case_count(), 34)
-        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 40)
+        self.assertEqual(sed_relaxation_case_count(), 12)
+        self.assertEqual(sed_stay_denied_case_count(), 51)
+        self.assertEqual(len(FIX_SED_ROUTE_PREDICATE_CASES), 63)
+
+    def test_s009_semicolon_multi_range_cases_match_both_entrypoints(self) -> None:
+        """S009의 observable contract를 직접 검사한다.
+
+        생산 코드가 단일 SEG 정규식으로 되돌아가면 6개 완화 행이 deny가 되어
+        실패하고, 세미콜론 뒤를 무검증으로 받으면 18개 역방향 행 중 하나가
+        trim으로 바뀌어 실패한다. mock 없이 canonical/packaged 분류기를 실제로
+        실행한다.
+        """
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s009_cases_{index}")
+            classify_command = namespace["classify_command"]
+            for case in s009_sed_multi_range_cases():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code,
+                        case["expected_reason_code"],
+                    )
+
+    def test_s009_multi_range_relaxations_roundtrip_through_trim_wrapper(self) -> None:
+        """새로 허용한 모든 명령이 실제 trim wrapper에 들어가며 원문을 보존한다.
+
+        predicate만 `trim`을 반환하고 wrapper 인용이 세미콜론을 셸 구문으로
+        재해석하게 만드는 변경을 잡는다.
+        """
+        commands = tuple(
+            case["command"] for case in s009_sed_multi_range_relaxations()
+        )
+        for script in self.contract_scripts():
+            for command in commands:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(a1_route_decision(proc), "rewrite_trim")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_s009_multi_range_case_table_is_not_vacuous(self) -> None:
+        """S009 허용/거부 루프가 빈 표나 한쪽짜리 표로 퇴화하지 않게 고정한다."""
+        self.assertEqual(len(s009_sed_multi_range_relaxations()), 6)
+        self.assertEqual(len(s009_sed_multi_range_stay_denied()), 18)
+        self.assertEqual(len(s009_sed_multi_range_cases()), 24)
+
+    def test_s009_dangerous_semicolon_capabilities_have_named_pins(self) -> None:
+        """철자가 아니라 세미콜론 뒤의 위험 능력별로 필수 핀이 존재해야 한다."""
+        required_case_ids = {
+            "s009-empty-script-denied",
+            "s009-leading-semicolon-denied",
+            "s009-trailing-semicolon-denied",
+            "s009-double-semicolon-denied",
+            "s009-write-command-denied",
+            "s009-write-first-line-command-denied",
+            "s009-execute-command-denied",
+            "s009-read-file-command-denied",
+            "s009-read-first-line-command-denied",
+            "s009-quit-command-denied",
+            "s009-substitute-command-denied",
+            "s009-regex-address-segment-denied",
+            "s009-permuted-in-place-denied",
+            "s009-cluster-denied",
+            "s009-multiple-script-options-denied",
+            "s009-fileless-producer-denied",
+        }
+        by_id = {case["case_id"]: case for case in s009_sed_multi_range_cases()}
+        self.assertFalse(
+            required_case_ids - by_id.keys(),
+            f"S009 필수 역방향 핀이 빠졌다: {required_case_ids - by_id.keys()}",
+        )
+        self.assertEqual(
+            by_id["s009-write-command-denied"]["command"],
+            "sed -n '1,5p;w out.txt' README.md",
+        )
+
+    def test_s009_broad_script_regex_mutation_is_killed_by_write_pin(self) -> None:
+        """명세 mutation `SEG(?:;SEG)* -> .*`를 필수 w 핀이 실제로 구별한다.
+
+        정규식 객체만 넓혀 나머지 실제 파서/라우트 코드는 그대로 둔다. 현재
+        구현은 deny여야 하고 mutant는 trim이 되어야 하므로, mandatory pin을
+        잃거나 predicate가 이 정규식을 우회하면 실패한다.
+        """
+        command = "sed -n '1,5p;w out.txt' README.md"
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s009_mutation_{index}")
+            classify_command = namespace["classify_command"]
+            self.assertEqual(classify_command(command).action, "deny")
+            classify_command.__globals__["_SED_SCRIPT_RE"] = re.compile(r".*")
+            self.assertEqual(
+                classify_command(command).action,
+                "trim",
+                "broad script-regex mutant did not survive, so the mandatory pin "
+                "is not exercising the intended safety boundary",
+            )
 
     def test_sed_in_place_spellings_all_stay_denied(self) -> None:
         """FIX-SED 의 실패 모드는 이 세 클래스 중 유일하게 파일 변조다(`-i`).

@@ -6,7 +6,7 @@
     "tree": "3f9ee86abd2b3b79775421529290822eb829a238"
   },
   "inventory": {
-    "case_count": 57,
+    "case_count": 63,
     "cases": [
       {
         "baseline_action": "deny",
@@ -406,9 +406,51 @@
         "case_id": "fix6-relax-remote-verbose-long",
         "command_sha256": "75a68fc22166bf1a1880c673634655f8f5670d92eede8cde29cca79e565aa75a",
         "fix": "FIX-6"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-basic-allowed",
+        "command_sha256": "b3c5348efb4be86524ff6266afe2863f2e672d3cda26d1876874b0b285aead96",
+        "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-dash-e-allowed",
+        "command_sha256": "4d9829e4793b1a70bb0d83c9c93793c82fdf873d2b33efb70ca307594938f7b5",
+        "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-double-dash-allowed",
+        "command_sha256": "fa6b1b7bd2bcbfde609e2a6fbdd906dad5d3f36b3e88027ea243470876b83d9a",
+        "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-first-allowed",
+        "command_sha256": "9c25a4db7210d2c10a74f7385c38250c1f7e43c24424515e685d38203e972d00",
+        "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-long-expression-allowed",
+        "command_sha256": "829fea9e68f9da7583f6de53f67b7b5b93ec415f28de46b38cb17c0ce4509b7d",
+        "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s009-multi-range-single-and-dollar-allowed",
+        "command_sha256": "2c618cdcd2a3a3dea66e1101c6eb232bcc1a2395cfa47969d09306fdde75861a",
+        "fix": "S009-SED-MULTI-RANGE"
       }
     ],
-    "cases_sha256": "3df5ab65f3d18ca3d79f6015a137b86aefbf888fbda64e5efc0bb28981edfd3b"
+    "cases_sha256": "4f93b67d12afc9742570699dcc8fa8c8e4e3e6d408127c45627f9a65ad8ca26c"
   },
   "schema_version": "contextguard.route-historical-baseline.v1"
 }

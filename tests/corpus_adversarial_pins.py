@@ -2020,6 +2020,65 @@ FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "expected_reason_code": None,
         "note": "`--` 이후는 전부 피연산자다 — 옵션 스캔은 거기서 멈춰야 한다.",
     },
+    # --- S009 — 안전한 p-only SEG를 세미콜론으로 조합한다 ---
+    {
+        "case_id": "s009-multi-range-basic-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "S009 핵심 완화 — 이미 허용된 숫자 p-only SEG 둘을 `;` 로 "
+        "조합한 부분 읽기다. 각 SEG를 독립적으로 같은 문법으로 검증해야 한다.",
+    },
+    {
+        "case_id": "s009-multi-range-first-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,20p' README.md | head -5",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "파이프라인 producer 역할에서도 파일 피연산자가 있는 동일한 "
+        "multi-range 스크립트는 trim 으로 재래핑된다.",
+    },
+    {
+        "case_id": "s009-multi-range-single-and-dollar-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1p;5,9p;20,$p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "단일 숫자, 숫자 범위, `$` 끝 범위를 한 스크립트에서 조합한다. "
+        "새 문법은 기존 SEG의 합성일 뿐 각 SEG의 주소 범위를 넓히지 않는다.",
+    },
+    {
+        "case_id": "s009-multi-range-dash-e-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n -e '1,5p;10p;20,$p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "허용된 단일 `-e` 표현식에서도 같은 합성 문법을 적용한다.",
+    },
+    {
+        "case_id": "s009-multi-range-long-expression-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n --expression='1,5p;10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "허용된 `--expression=` 스펠링도 단일 스크립트라는 기존 "
+        "조건을 유지한 채 multi-range 를 받는다.",
+    },
+    {
+        "case_id": "s009-multi-range-double-dash-allowed",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,20p' -- README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "trim",
+        "expected_reason_code": None,
+        "note": "`--` 뒤 파일 피연산자 처리와 multi-range 문법이 함께 유지된다.",
+    },
     # --- 역방향 — 완화 표면에 인접하지만 여전히 거부(INV-A 대상) ---
     {
         "case_id": "fix-sed-inv-a-filter-role-with-file-denied",
@@ -2145,14 +2204,169 @@ FIX_SED_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "— 선택 범위가 무계(unbounded)일 수 있어 Tier-2 로 유보된다.",
     },
     {
-        "case_id": "fix-sed-inv-a-multi-command-script-denied",
-        "fix": "FIX-SED",
-        "command": "sed -n '1,5p;10,20p' README.md",
+        "case_id": "s009-empty-script-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '' README.md",
         "baseline_reason_code": "route_policy_denied",
         "expected_decision": "deny",
         "expected_reason_code": "route_policy_denied",
-        "note": "`;` 로 이어지는 다중 명령 스크립트는 `fullmatch` 에 걸려 거부된다 "
-        "— `;` 는 스크립트 언어 전체로 가는 입구다.",
+        "note": "빈 스크립트는 SEG가 하나도 없으므로 거부된다.",
+    },
+    {
+        "case_id": "s009-leading-semicolon-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n ';1,5p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "선행 세미콜론은 첫 SEG가 비어 있으므로 거부된다.",
+    },
+    {
+        "case_id": "s009-trailing-semicolon-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "후행 세미콜론은 마지막 SEG가 비어 있으므로 거부된다.",
+    },
+    {
+        "case_id": "s009-double-semicolon-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;;10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "연속 세미콜론 사이의 빈 SEG를 허용하지 않는다.",
+    },
+    {
+        "case_id": "s009-write-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;w out.txt' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "명세의 필수 역방향 핀 — `w` 는 파일을 쓰므로 한 SEG가 "
+        "안전해도 전체 스크립트를 거부해야 한다.",
+    },
+    {
+        "case_id": "s009-write-first-line-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;W out.txt' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `W` 도 파일 쓰기 능력이므로 거부한다.",
+    },
+    {
+        "case_id": "s009-execute-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;e id' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `e` 는 명령 실행 능력이므로 거부한다.",
+    },
+    {
+        "case_id": "s009-read-file-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;r other.txt' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`r` 로 추가 파일을 읽는 스크립트는 predicate가 그 경로를 "
+        "회계할 수 없으므로 거부한다.",
+    },
+    {
+        "case_id": "s009-read-first-line-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;R other.txt' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "GNU `R` 도 추가 파일 읽기 능력이므로 거부한다.",
+    },
+    {
+        "case_id": "s009-quit-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;q' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`q` 는 허용된 p-only SEG가 아니므로 거부한다.",
+    },
+    {
+        "case_id": "s009-substitute-command-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;s/x/y/' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "`s` 변환은 p-only 부분 읽기가 아니므로 거부한다.",
+    },
+    {
+        "case_id": "s009-regex-address-segment-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;/re/p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "세그먼트 하나라도 정규식 주소면 숫자 전용 경계를 벗어난다.",
+    },
+    {
+        "case_id": "s009-permuted-in-place-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,20p' -i README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "multi-range 뒤에 순열된 `-i` 도 전체 argv 옵션 스캔이 막는다.",
+    },
+    {
+        "case_id": "s009-cluster-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -ne '1,5p;10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "S009도 기존의 모든 짧은 옵션 클러스터 거부를 유지한다.",
+    },
+    {
+        "case_id": "s009-multiple-script-options-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n -e '1,5p' -e '10,20p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "여러 `-e`를 조합하는 별도 문법은 여전히 범위 밖이다.",
+    },
+    {
+        "case_id": "s009-fileless-producer-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,20p' | head -5",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "파일 없는 producer는 stdin을 상속해 블록할 수 있으므로 "
+        "multi-range여도 거부한다.",
+    },
+    {
+        "case_id": "s009-zero-address-segment-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;0p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "각 SEG는 기존의 1-based 숫자 주소를 그대로 사용한다.",
+    },
+    {
+        "case_id": "s009-line-number-upper-bound-segment-denied",
+        "fix": "S009-SED-MULTI-RANGE",
+        "command": "sed -n '1,5p;10,1000001p' README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "한 SEG라도 `_valid_n` 상한을 넘으면 전체 스크립트를 거부한다.",
     },
     {
         "case_id": "fix-sed-inv-a-substitute-script-denied",
@@ -2423,6 +2637,33 @@ def sed_stay_denied_case_count() -> int:
         for case in FIX_SED_ROUTE_PREDICATE_CASES
         if case["expected_decision"] == "deny"
     )
+
+
+def s009_sed_multi_range_cases() -> list[RoutePredicateCase]:
+    """S009가 추가한 multi-range 허용/거부 표면만 반환한다."""
+    return [
+        case
+        for case in FIX_SED_ROUTE_PREDICATE_CASES
+        if case["fix"] == "S009-SED-MULTI-RANGE"
+    ]
+
+
+def s009_sed_multi_range_relaxations() -> list[RoutePredicateCase]:
+    """S009의 deny -> trim 전환만 반환한다."""
+    return [
+        case
+        for case in s009_sed_multi_range_cases()
+        if case["expected_decision"] != "deny"
+    ]
+
+
+def s009_sed_multi_range_stay_denied() -> list[RoutePredicateCase]:
+    """S009 인접 표면에서 계속 거부되어야 하는 케이스만 반환한다."""
+    return [
+        case
+        for case in s009_sed_multi_range_cases()
+        if case["expected_decision"] == "deny"
+    ]
 
 
 # ---------------------------------------------------------------------------
