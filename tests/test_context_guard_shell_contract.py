@@ -42,6 +42,7 @@ from tests.corpus_adversarial_pins import (
     FIX_LS_ROUTE_PREDICATE_CASES,
     FIX_LS_STANDALONE_INVARIANT_COMMANDS,
     FIX_SED_ROUTE_PREDICATE_CASES,
+    S010_GREP_INCLUDE_CASES,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -59,6 +60,8 @@ from tests.corpus_adversarial_pins import (
     s009_sed_multi_range_cases,
     s009_sed_multi_range_relaxations,
     s009_sed_multi_range_stay_denied,
+    s010_grep_include_route_predicate_relaxations,
+    s010_grep_include_stay_denied,
     sed_relaxation_case_count,
     sed_route_predicate_relaxations,
     sed_stay_denied_case_count,
@@ -1683,8 +1686,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
         표의 크기를 고정한다(FIX-1b/FIX-LS 개수 가드와 동일한 역할). 이 표를
         비우거나 모든 행을 `deny`로 오염시키는 변이는 이 테스트가 즉시 잡는다."""
         self.assertEqual(fix_grep_relaxation_case_count(), 27)
-        self.assertEqual(fix_grep_stay_denied_case_count(), 25)
-        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 52)
+        self.assertEqual(fix_grep_stay_denied_case_count(), 24)
+        self.assertEqual(len(FIX_GREP_ROUTE_PREDICATE_CASES), 51)
 
     def test_fix_grep_cases_cover_both_call_sites_of_the_shared_predicate(self) -> None:
         """`_grep_is_safe` 는 `grep`/`egrep`/`fgrep` 라우트와 `git grep`(`_git_is_safe`
@@ -1736,6 +1739,149 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         f"{alias} 가 FIX_GREP_ROUTE_PREDICATE_CASES 에 "
                         "독립 토큰으로 등장하지 않는다 — 감시되지 않는 별칭이다.",
                     )
+
+    def test_s010_recursive_include_cases_match_both_entrypoints(self) -> None:
+        """S010's exact include-only contract is observable on both package surfaces."""
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s010_cases_{index}")
+            classify_command = namespace["classify_command"]
+            for case in S010_GREP_INCLUDE_CASES:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code,
+                        case["expected_reason_code"],
+                    )
+
+    def test_s010_relaxations_roundtrip_through_sanitize_wrapper(self) -> None:
+        """Every admitted include form is sanitized without changing the command."""
+        commands = tuple(
+            case["command"]
+            for case in s010_grep_include_route_predicate_relaxations()
+        )
+        for script in self.contract_scripts():
+            for command in commands:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
+                    response = json.loads(proc.stdout)
+                    wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
+                    self.assertEqual(shlex.split(wrapped)[-1], command)
+
+    def test_s010_case_table_is_not_vacuous(self) -> None:
+        """The include grammar cannot silently lose either its allow or deny side."""
+        self.assertEqual(len(s010_grep_include_route_predicate_relaxations()), 7)
+        self.assertEqual(len(s010_grep_include_stay_denied()), 28)
+        self.assertEqual(len(S010_GREP_INCLUDE_CASES), 35)
+
+    def test_s010_required_mutation_pins_are_present(self) -> None:
+        """Each preregistered grammar/arity mutation has a named counterexample."""
+        required_case_ids = {
+            "s010-wildcard-star-only-denied",
+            "s010-wildcard-question-only-denied",
+            "s010-star-dashes-without-literal-denied",
+            "s010-leading-dash-denied",
+            "s010-slash-denied",
+            "s010-backslash-denied",
+            "s010-whitespace-denied",
+            "s010-bracket-syntax-denied",
+            "s010-brace-syntax-denied",
+            "s010-newline-denied",
+            "s010-nul-denied",
+            "s010-empty-value-denied",
+            "s010-97-byte-value-denied",
+            "s010-duplicate-include-denied",
+            "s010-nonrecursive-denied",
+            "s010-operand-free-denied",
+            "s010-included-prefix-typo-denied",
+            "s010-includes-prefix-typo-denied",
+            "s010-separated-value-form-denied",
+            "s010-exclude-denied",
+            "s010-exclude-dir-denied",
+            "s010-filter-file-operand-denied",
+            "s010-git-grep-denied",
+            "s010-egrep-denied",
+            "s010-fgrep-denied",
+            "s010-stdin-operand-denied",
+            "s010-double-dash-stdin-operand-denied",
+            "s010-nonascii-denied",
+        }
+        actual_case_ids = {case["case_id"] for case in S010_GREP_INCLUDE_CASES}
+        self.assertFalse(
+            required_case_ids - actual_case_ids,
+            f"S010 required pins missing: {required_case_ids - actual_case_ids}",
+        )
+
+    def test_s010_preregistered_mutations_are_observable(self) -> None:
+        """The required pins distinguish each structural S010 widening mutant."""
+        import tempfile
+
+        source = REWRITE_SCRIPTS[0].read_text(encoding="utf-8")
+        mutations = (
+            (
+                "broad-include-prefix",
+                'or not argument.startswith("--include=")',
+                'or not argument.startswith("--include")',
+                "grep -r --included='*.py' token .",
+            ),
+            (
+                "length-removal",
+                "1 <= len(value) <= 96",
+                "True",
+                "grep -r --include='" + ("a" * 97) + "' token .",
+            ),
+            (
+                "wildcard-only",
+                'and re.search(r"[A-Za-z0-9._]", value, re.ASCII) is not None',
+                "and True",
+                "grep -r --include='*' token .",
+            ),
+            (
+                "duplicate-include",
+                "or include_seen",
+                "or False",
+                "grep -r --include='*.py' --include='*.json' token .",
+            ),
+            (
+                "nonrecursive",
+                "and recursive_seen",
+                "and True",
+                "grep --include='*.py' token .",
+            ),
+            (
+                "operand-free",
+                "and files > 0",
+                "and True",
+                "grep -r --include='*.py' token",
+            ),
+            (
+                "stdin-operand",
+                "and not stdin_operand_seen",
+                "and True",
+                "grep -r --include='*.py' token -",
+            ),
+        )
+        for mutation, old, new, command in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertEqual(source.count(old), 1, f"stale mutation anchor: {old}")
+                original = self.load_namespace(
+                    REWRITE_SCRIPTS[0], f"s010_original_{mutation}"
+                )
+                self.assertEqual(original["classify_command"](command).action, "deny")
+                with tempfile.TemporaryDirectory(prefix="context-guard-s010-mutant-") as td:
+                    mutant_path = Path(td) / "rewrite.py"
+                    mutant_path.write_text(source.replace(old, new), encoding="utf-8")
+                    mutant = self.load_namespace(mutant_path, f"s010_mutant_{mutation}")
+                self.assertEqual(
+                    mutant["classify_command"](command).action,
+                    "sanitize",
+                    f"{mutation} did not widen the intended S010 boundary",
+                )
 
     def test_inv_a_sed_stay_denied_forms(self) -> None:
         """INV-A(거부 보존) — `FIX_SED_ROUTE_PREDICATE_CASES` 중 거부로 남아야

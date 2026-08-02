@@ -1589,18 +1589,15 @@ def _head_tail_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
 #: 이 저장소에서 결함이 전파되는 경로다. `-s`를 허용하기로 결정한다면 짧은 옵션
 #: 쪽을 먼저 넓히고 그 다음 이 표에 롱 형태를 추가한다.
 #:
-#: 값 형태를 취하는 옵션(`--include=`, `--exclude=`, `--exclude-dir=`, `--devices=`,
+#: 값 형태를 취하는 옵션(`--exclude=`, `--exclude-dir=`, `--devices=`,
 #: `--directories=`, `--label=`, `--binary-files=`, `-D/-U/-z/-Z/--null` 계열)은
 #: 의도적으로 제외한다. 이유는 값이 동작을 바꾸기 때문이다(예: `--directories=read`).
 #:
-#: 주의 — 이 제외를 "어차피 파서 단계(`active_2a`)에서 글롭으로 거부된다"로
-#: 정당화하면 **틀린다.** 비인용 `--include=*.py`는 확실히 `active_2a`로 죽지만,
-#: 인용된 `--include='*.py'`는 셸이 확장하지 않아 롱플래그로 여기까지 도달하며
-#: `route_policy_denied`를 받는다(리뷰 라운드 실측: 그런 명령이 코퍼스에 66건).
-#: 즉 이들은 여기서 다루면 실제로 열린다. 다루지 않는 이유는 `--flag=value` 형태를
-#: 담으려면 값 문법을 갖춘 접두 규칙이 필요한데, 그 첫 접두 규칙을 "접두사 매칭
-#: 금지" 규율을 세우는 바로 이 변경에 함께 넣으면 규율 자체가 무너지기 때문이다.
-#: 별도 변경으로 다룬다.
+#: S010은 incidence gate를 통과한 bare recursive `grep`의 정확히 한 개
+#: `--include=<glob>`만 아래 별도 값 문법으로 다룬다. 이 옵션은 정확 일치 이름,
+#: 제한된 ASCII basename grammar, recursive/file-operand 조건을 모두 만족해야 하며
+#: 이 별칭 표에는 들어오지 않는다. 다른 값 옵션과 `--include*` 근접 철자는 계속
+#: exact-match fail-closed 규칙을 따른다.
 _GREP_LONG_ALIASES = frozenset(
     {
         "--only-matching",
@@ -1629,10 +1626,29 @@ _GREP_LONG_ALIASES = frozenset(
     }
 )
 
+_GREP_INCLUDE_GLOB_RE = re.compile(r"[A-Za-z0-9._*?-]+\Z", re.ASCII)
 
-def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
+
+def _grep_include_glob_is_safe(value: str) -> bool:
+    return (
+        1 <= len(value) <= 96
+        and not value.startswith("-")
+        and _GREP_INCLUDE_GLOB_RE.fullmatch(value) is not None
+        and re.search(r"[A-Za-z0-9._]", value, re.ASCII) is not None
+    )
+
+
+def _grep_is_safe(
+    argv: tuple[str, ...],
+    *,
+    allow_files: bool,
+    allow_include: bool = False,
+) -> bool:
     pattern_seen = False
     files = 0
+    include_seen = False
+    recursive_seen = False
+    stdin_operand_seen = False
     allowed_flags = set("nHhivEFGPwxcolLrRq".replace(" ", ""))
     index = 1
     while index < len(argv):
@@ -1640,6 +1656,17 @@ def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
         if argument == "--":
             index += 1
             break
+        if argument.startswith("--include"):
+            if (
+                not allow_include
+                or include_seen
+                or not argument.startswith("--include=")
+                or not _grep_include_glob_is_safe(argument.split("=", 1)[1])
+            ):
+                return False
+            include_seen = True
+            index += 1
+            continue
         if argument in {"-f", "--file"} or argument.startswith(("--file=", "--binary-files=")):
             return False
         if argument == "-e":
@@ -1664,9 +1691,12 @@ def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
             index += 1
             continue
         if argument == "--recursive":
+            recursive_seen = True
             index += 1
             continue
         if argument in _GREP_LONG_ALIASES:
+            if argument == "--dereference-recursive":
+                recursive_seen = True
             index += 1
             continue
         if argument.startswith("-") and argument != "-":
@@ -1676,19 +1706,31 @@ def _grep_is_safe(argv: tuple[str, ...], *, allow_files: bool) -> bool:
                 or not set(argument[1:]).issubset(allowed_flags)
             ):
                 return False
+            if "r" in argument[1:] or "R" in argument[1:]:
+                recursive_seen = True
             index += 1
             continue
         if not pattern_seen:
             pattern_seen = True
         else:
             files += 1
+            stdin_operand_seen = stdin_operand_seen or argument == "-"
         index += 1
     while index < len(argv):
         if not pattern_seen:
             pattern_seen = True
         else:
             files += 1
+            stdin_operand_seen = stdin_operand_seen or argv[index] == "-"
         index += 1
+    if include_seen:
+        return (
+            allow_files
+            and recursive_seen
+            and pattern_seen
+            and files > 0
+            and not stdin_operand_seen
+        )
     return pattern_seen and (allow_files or files == 0)
 
 
@@ -2331,7 +2373,11 @@ def command_search_diff(
     if first in {"grep", "egrep", "fgrep"}:
         return (
             "sanitize"
-            if _grep_is_safe(argv, allow_files=role != "filter")
+            if _grep_is_safe(
+                argv,
+                allow_files=role != "filter",
+                allow_include=first == "grep" and role != "filter",
+            )
             else "deny"
         )
     if first == "rg":

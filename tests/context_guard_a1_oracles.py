@@ -697,11 +697,64 @@ def _route_examples() -> list[dict[str, str]]:
     return examples
 
 
+def _s010_route_examples() -> list[dict[str, str]]:
+    """Append S010 cases without reshuffling the frozen pre-S010 oracle rows."""
+    positives = (
+        "grep -rn --include='*.py' token .",
+        "grep -R --include='test_?.json' token src",
+        "grep --recursive --include='a' token .",
+        "grep -r --include='.env*' token config",
+    )
+    negatives = (
+        "grep -r --include='*' token .",
+        "grep -r --include='*--' token .",
+        "grep -r --include='-a' token .",
+        "grep -r --include='a/b' token .",
+        "grep -r --include='a[b]' token .",
+        "grep -r --include='*.py' --include='*.json' token .",
+        "grep --include='*.py' token .",
+        "grep -r --include='*.py' token",
+        "grep -r --included='*.py' token .",
+        "grep -r --include='*.py' --exclude-dir='.git' token .",
+    )
+    note = (
+        "S010 admits exactly one recursive quoted --include=<glob> for bare grep "
+        "with a file/directory operand. The restricted ASCII basename grammar, "
+        "recursion/arity, duplicate, prefix, and exclude boundaries are pinned."
+    )
+    examples: list[dict[str, str]] = []
+    for role in ("standalone", "first"):
+        for command in positives:
+            examples.append(
+                {
+                    "family": "grep-include",
+                    "role": role,
+                    "command": _route_command(command, role),
+                    "expected_decision": "rewrite_sanitize",
+                    "expectation": "accept",
+                    "note": note,
+                }
+            )
+        for command in negatives:
+            examples.append(
+                {
+                    "family": "grep-include",
+                    "role": role,
+                    "command": _route_command(command, role),
+                    "expected_decision": "deny",
+                    "expectation": "reject",
+                    "note": note,
+                }
+            )
+    return examples
+
+
 def route_cases(seed: int = ROUTE_SEED) -> list[dict[str, object]]:
     """Return the route-table corpus crossed with canonical/package entrypoints."""
     rng = random.Random(seed)
     examples = _route_examples()
     rng.shuffle(examples)
+    examples.extend(_s010_route_examples())
     cases: list[dict[str, object]] = []
     for entrypoint in ENTRYPOINTS:
         for ordinal, example in enumerate(examples):
