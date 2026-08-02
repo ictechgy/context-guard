@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +115,104 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
             ):
                 self.proof_module.verify_route_historical_baseline(cache_path=cache_path)
 
+    def test_git_replace_cannot_substitute_pinned_runtime_bytes(self) -> None:
+        pinned_source = b'def classify_command(command):\n    return command\n'
+        replacement_source = b'raise RuntimeError("replacement executed")\n'
+        with tempfile.TemporaryDirectory(prefix="route-baseline-git-") as temp_dir:
+            repo = Path(temp_dir)
+
+            def run_git(*args: str, input_bytes: bytes | None = None) -> bytes:
+                proc = subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    input=input_bytes,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+                return proc.stdout
+
+            run_git("init", "--quiet")
+            runtime_path = repo / "runtime.py"
+            runtime_path.write_bytes(pinned_source)
+            run_git("add", "runtime.py")
+            run_git(
+                "-c",
+                "user.name=Context Guard Tests",
+                "-c",
+                "user.email=context-guard@example.invalid",
+                "commit",
+                "--quiet",
+                "--message",
+                "pinned runtime",
+            )
+            commit = run_git("rev-parse", "HEAD").decode().strip()
+            tree = run_git("rev-parse", "HEAD^{tree}").decode().strip()
+            blob = run_git("rev-parse", "HEAD:runtime.py").decode().strip()
+            replacement_blob = run_git(
+                "hash-object",
+                "-w",
+                "--stdin",
+                input_bytes=replacement_source,
+            ).decode().strip()
+            run_git("replace", blob, replacement_blob)
+            self.assertEqual(run_git("show", "HEAD:runtime.py"), replacement_source)
+
+            with mock.patch.multiple(
+                self.proof_module,
+                BASELINE_COMMIT=commit,
+                BASELINE_TREE=tree,
+                BASELINE_RUNTIME_BLOB=blob,
+                BASELINE_RUNTIME_PATH="runtime.py",
+            ):
+                resolved_source = self.proof_module._resolve_baseline_source(repo)
+
+            self.assertEqual(resolved_source, pinned_source)
+
+    def test_coordinated_corpus_and_cache_shrink_fails_pinned_inventory(self) -> None:
+        cache = json.loads(
+            self.proof_module.BASELINE_CACHE_PATH.read_text(encoding="utf-8")
+        )
+        cached_record = cache["inventory"]["cases"][0]
+        case_id = cached_record["case_id"]
+        case = next(
+            item
+            for item in self.proof_module.load_route_relaxation_cases()
+            if item["case_id"] == case_id
+        )
+        reduced_records = [cached_record]
+        encoded_records = json.dumps(
+            reduced_records,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        cache["inventory"] = {
+            "case_count": 1,
+            "cases_sha256": hashlib.sha256(encoded_records).hexdigest(),
+            "cases": reduced_records,
+        }
+
+        with tempfile.TemporaryDirectory(prefix="route-baseline-shrink-") as temp_dir:
+            directory = Path(temp_dir)
+            corpus_path = directory / "reduced_corpus.py"
+            corpus_path.write_text(
+                "def reduced_route_predicate_relaxations():\n"
+                f"    return {repr([case])}\n",
+                encoding="utf-8",
+            )
+            cache_path = directory / "reduced_cache.json"
+            cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                self.proof_module.ProofError,
+                "pinned deny-to-allow inventory",
+            ):
+                self.proof_module.verify_route_historical_baseline(
+                    corpus_path=corpus_path,
+                    cache_path=cache_path,
+                )
+
     def test_fixture_literal_cannot_substitute_for_executable_observation(self) -> None:
         suffix = """
 import copy as _s008_copy
@@ -142,7 +242,7 @@ def fix1a_route_predicate_relaxations():
             corpus_path = self.write_mutated_corpus(Path(temp_dir), suffix)
             with self.assertRaisesRegex(
                 self.proof_module.ProofError,
-                "cache inventory",
+                "pinned deny-to-allow inventory",
             ):
                 self.proof_module.verify_route_historical_baseline(
                     corpus_path=corpus_path

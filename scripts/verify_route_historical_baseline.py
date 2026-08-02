@@ -23,6 +23,10 @@ BASELINE_TREE = "3f9ee86abd2b3b79775421529290822eb829a238"
 BASELINE_RUNTIME_BLOB = "2439e99c6e7388ad330d6d74b003aeff5df9b90a"
 BASELINE_RUNTIME_PATH = "context-guard-kit/rewrite_bash_for_token_budget.py"
 BASELINE_CACHE_SCHEMA = "contextguard.route-historical-baseline.v1"
+BASELINE_INVENTORY_CASE_COUNT = 57
+BASELINE_INVENTORY_CASES_SHA256 = (
+    "3df5ab65f3d18ca3d79f6015a137b86aefbf888fbda64e5efc0bb28981edfd3b"
+)
 CORPUS_PATH = ROOT / "tests" / "corpus_adversarial_pins.py"
 BASELINE_CACHE_PATH = (
     ROOT
@@ -71,6 +75,10 @@ json.dump(results, sys.stdout, ensure_ascii=False, separators=(",", ":"))
 
 def _proof_environment(home: Path) -> dict[str, str]:
     return {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "HOME": str(home),
         "LANG": "C",
         "LC_ALL": "C",
@@ -191,7 +199,15 @@ def _resolve_baseline_source(repo: Path) -> bytes:
     resolved_blob = _run_git(repo, "rev-parse", f"{BASELINE_COMMIT}:{BASELINE_RUNTIME_PATH}")
     if resolved_blob.decode().strip() != BASELINE_RUNTIME_BLOB:
         raise ProofError("baseline runtime blob does not match the pinned blob")
-    return _run_git(repo, "show", f"{BASELINE_COMMIT}:{BASELINE_RUNTIME_PATH}")
+    runtime_source = _run_git(repo, "cat-file", "blob", BASELINE_RUNTIME_BLOB)
+    object_bytes = f"blob {len(runtime_source)}\0".encode("ascii") + runtime_source
+    resolved_source_blob = hashlib.sha1(
+        object_bytes,
+        usedforsecurity=False,
+    ).hexdigest()
+    if resolved_source_blob != BASELINE_RUNTIME_BLOB:
+        raise ProofError("baseline runtime bytes do not match the pinned blob")
+    return runtime_source
 
 
 def _result_map(results: Sequence[dict[str, object]]) -> dict[str, dict[str, object]]:
@@ -261,6 +277,10 @@ def _assert_cache_inventory(
             }
         )
     actual_records.sort(key=lambda record: str(record["case_id"]))
+    if len(actual_records) != BASELINE_INVENTORY_CASE_COUNT:
+        raise ProofError("pinned deny-to-allow inventory count mismatch")
+    if _canonical_sha256(actual_records) != BASELINE_INVENTORY_CASES_SHA256:
+        raise ProofError("pinned deny-to-allow inventory digest mismatch")
 
     cached_records = cache_inventory.get("cases")
     if not isinstance(cached_records, list):
