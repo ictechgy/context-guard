@@ -214,8 +214,12 @@ def fix1a_route_predicate_relaxations():
             )
 
     def test_coordinated_candidate_expectation_change_fails_pinned_digest(self) -> None:
-        suffix = """
+        suffix = f"""
 import copy as _s008_copy
+import sys as _s008_sys
+_s008_parent = _s008_sys.modules.get({self.proof_module.__name__!r})
+if _s008_parent is not None:
+    _s008_parent._assert_candidate_expectations = lambda cases: None
 _s008_original_fix1a_relaxations = fix1a_route_predicate_relaxations
 def fix1a_route_predicate_relaxations():
     cases = _s008_copy.deepcopy(_s008_original_fix1a_relaxations())

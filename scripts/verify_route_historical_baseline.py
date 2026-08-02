@@ -5,16 +5,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +73,26 @@ for request in requests:
 json.dump(results, sys.stdout, ensure_ascii=False, separators=(",", ":"))
 """
 
+_ISOLATED_CORPUS_LOADER = r"""
+from __future__ import annotations
+import importlib.util
+import json
+import sys
+
+corpus_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("context_guard_route_baseline_corpus", corpus_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("could not load corpus")
+corpus = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = corpus
+spec.loader.exec_module(corpus)
+selectors = []
+for name, value in sorted(vars(corpus).items()):
+    if name.endswith("_route_predicate_relaxations") and callable(value):
+        selectors.append({"name": name, "cases": value()})
+json.dump(selectors, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+"""
+
 
 def _proof_environment(home: Path) -> dict[str, str]:
     return {
@@ -110,31 +128,45 @@ def _run_git(repo: Path, *args: str) -> bytes:
     return proc.stdout
 
 
-def _load_module(path: Path, module_name: str) -> Any:
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ProofError(f"could not load {path.name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        raise ProofError(f"could not execute {path.name}: {exc}") from exc
-    return module
-
-
 def load_route_relaxation_cases(corpus_path: Path = CORPUS_PATH) -> list[dict[str, object]]:
-    corpus = _load_module(corpus_path, "context_guard_route_baseline_corpus")
-    selectors: list[tuple[str, Callable[[], list[dict[str, object]]]]] = []
-    for name, value in vars(corpus).items():
-        if name.endswith("_route_predicate_relaxations") and callable(value):
-            selectors.append((name, value))
+    with tempfile.TemporaryDirectory(prefix="context-guard-route-corpus-") as temp_dir:
+        private_root = Path(temp_dir)
+        private_corpus_path = private_root / "corpus.py"
+        runner_path = private_root / "load_corpus.py"
+        private_corpus_path.write_bytes(corpus_path.read_bytes())
+        runner_path.write_text(_ISOLATED_CORPUS_LOADER, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-I", "-S", str(runner_path), str(private_corpus_path)],
+            cwd=private_root,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=_proof_environment(private_root),
+            timeout=30,
+        )
+    if proc.returncode:
+        detail = proc.stderr.strip()
+        raise ProofError(
+            f"isolated corpus loader failed: {detail or f'exit {proc.returncode}'}"
+        )
+    try:
+        selectors = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ProofError("isolated corpus loader returned invalid JSON") from exc
+    if not isinstance(selectors, list):
+        raise ProofError("isolated corpus loader returned invalid selectors")
     if not selectors:
         raise ProofError("route relaxation inventory is empty")
 
     cases: list[dict[str, object]] = []
-    for selector_name, selector in sorted(selectors):
-        selected = selector()
+    for selector in selectors:
+        if not isinstance(selector, dict) or not isinstance(selector.get("name"), str):
+            raise ProofError("isolated corpus loader returned an invalid selector")
+        selector_name = str(selector["name"])
+        selected = selector.get("cases")
         if not isinstance(selected, list):
             raise ProofError(f"{selector_name} did not return a list")
         for case in selected:
