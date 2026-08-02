@@ -1804,20 +1804,6 @@ FIX_GREP_ROUTE_PREDICATE_CASES: list[RoutePredicateCase] = [
         "추가하는 변이가 감시 없이 통과하지 못하게 한다.",
     },
     {
-        "case_id": "fix-grep-inv-a-quoted-include-glob-denied",
-        "fix": "FIX-GREP",
-        "command": "grep -rn --include='*.py' token .",
-        "baseline_reason_code": "route_policy_denied",
-        "expected_decision": "deny",
-        "expected_reason_code": "route_policy_denied",
-        "note": "**인용된** `--include=` 는 셸 글롭 확장이 막히므로 파서의 "
-        "`active_2a` 축에 걸리지 않고 route 축까지 도달해 "
-        "`route_policy_denied` 로 죽는다(인용하지 않은 `--include=*.py` 는 "
-        "`active_2a`). 즉 이 형태의 재승인은 route 표의 결정이며, 값 소비 "
-        "롱플래그를 위한 통제된 접두 규칙이 별도로 설계될 때까지 의도적으로 "
-        "보류된 상태다. 그 보류가 조용히 뒤집히지 않도록 고정한다.",
-    },
-    {
         "case_id": "fix-grep-inv-a-quoted-exclude-dir-glob-denied",
         "fix": "FIX-GREP",
         "command": "grep -rn --exclude-dir='.git' token .",
@@ -1945,6 +1931,350 @@ def fix_grep_stay_denied_case_count() -> int:
         for case in FIX_GREP_ROUTE_PREDICATE_CASES
         if case["expected_decision"] == "deny"
     )
+
+
+# ---------------------------------------------------------------------------
+# S010 — incidence-gated recursive grep with exactly one include glob.
+# The value grammar is intentionally smaller than shell glob syntax and the
+# route remains limited to the bare `grep` producer with a real file/directory
+# operand.  `git grep`, egrep/fgrep aliases, stdin operands, excludes, duplicate
+# includes, and every near-prefix spelling remain denied.
+# ---------------------------------------------------------------------------
+S010_GREP_INCLUDE_CASES: list[RoutePredicateCase] = [
+    {
+        "case_id": "s010-include-py-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -rn --include='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "Canonical recursive include-only form with an ordinary extension glob.",
+    },
+    {
+        "case_id": "s010-include-question-json-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -R --include='test_?.json' token src",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "Question-mark wildcard is allowed when the value also has literals.",
+    },
+    {
+        "case_id": "s010-include-literal-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep --recursive --include='a' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "The minimum one-byte literal value is admissible.",
+    },
+    {
+        "case_id": "s010-include-dotfile-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='.env*' token config",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "A leading dot is a literal and therefore not wildcard-only.",
+    },
+    {
+        "case_id": "s010-include-mixed-grammar-double-dash-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a-b_c.1' token -- src tests",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "All grammar characters plus multiple operands after `--` remain bounded.",
+    },
+    {
+        "case_id": "s010-96-byte-value-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='" + ("a" * 96) + "' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "The exact 96-byte upper boundary remains admissible.",
+    },
+    {
+        "case_id": "s010-include-producer-pipeline-allowed",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.md' token docs | head -5",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "sanitize",
+        "expected_reason_code": None,
+        "note": "The same file-backed form is safe as the first pipeline segment.",
+    },
+    {
+        "case_id": "s010-wildcard-star-only-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Wildcard-only values provide no include selectivity.",
+    },
+    {
+        "case_id": "s010-wildcard-question-only-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='???' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Question-mark-only values are also wildcard-only.",
+    },
+    {
+        "case_id": "s010-star-dashes-without-literal-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*--' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Hyphen is allowed syntax but does not satisfy the literal requirement.",
+    },
+    {
+        "case_id": "s010-leading-dash-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='-a' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "A value may not begin with a dash.",
+    },
+    {
+        "case_id": "s010-slash-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a/b' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Include values are ASCII basenames, not paths.",
+    },
+    {
+        "case_id": "s010-backslash-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a\\b' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Backslash/escape syntax is outside the canonical grammar.",
+    },
+    {
+        "case_id": "s010-whitespace-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a b' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Quoted whitespace still lies outside the value grammar.",
+    },
+    {
+        "case_id": "s010-bracket-syntax-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a[b]' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Bracket glob syntax is deliberately unsupported.",
+    },
+    {
+        "case_id": "s010-brace-syntax-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a{b}' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Brace syntax is deliberately unsupported.",
+    },
+    {
+        "case_id": "s010-newline-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a\nb' token .",
+        "baseline_reason_code": "forbidden_quoted_whitespace",
+        "expected_decision": "deny",
+        "expected_reason_code": "forbidden_quoted_whitespace",
+        "note": "A literal newline is rejected before route evaluation.",
+    },
+    {
+        "case_id": "s010-nul-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='a\0b' token .",
+        "baseline_reason_code": "nul_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "nul_denied",
+        "note": "NUL is rejected before route evaluation.",
+    },
+    {
+        "case_id": "s010-empty-value-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The value length lower bound is one.",
+    },
+    {
+        "case_id": "s010-97-byte-value-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='" + ("a" * 97) + "' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The value length upper bound is 96 ASCII bytes.",
+    },
+    {
+        "case_id": "s010-duplicate-include-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' --include='*.json' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Exactly one include option is required.",
+    },
+    {
+        "case_id": "s010-nonrecursive-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep --include='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "An include option is admitted only with recursive grep.",
+    },
+    {
+        "case_id": "s010-operand-free-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' token",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The route must have a file or directory operand.",
+    },
+    {
+        "case_id": "s010-included-prefix-typo-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --included='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Unknown --include* prefixes are not accepted by startswith matching.",
+    },
+    {
+        "case_id": "s010-includes-prefix-typo-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --includes='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "A second near-prefix spelling pins the exact option name.",
+    },
+    {
+        "case_id": "s010-separated-value-form-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include '*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Only the exact --include=<glob> token form is allowed.",
+    },
+    {
+        "case_id": "s010-exclude-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' --exclude='test*' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Exclude forms remain reserved for the later C011 checkpoint.",
+    },
+    {
+        "case_id": "s010-exclude-dir-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' --exclude-dir='.git' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Exclude-dir forms remain reserved for the later C011 checkpoint.",
+    },
+    {
+        "case_id": "s010-filter-file-operand-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "printf '%s\\n' ok | grep -r --include='*.py' token README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "A grep filter may not acquire file operands through this route.",
+    },
+    {
+        "case_id": "s010-git-grep-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "git grep -r --include='*.py' token -- README.md",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The shared predicate must not widen git grep, which has different semantics.",
+    },
+    {
+        "case_id": "s010-egrep-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "egrep -r --include='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The incidence gate covered the bare grep command, not legacy aliases.",
+    },
+    {
+        "case_id": "s010-fgrep-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "fgrep -r --include='*.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The incidence gate covered the bare grep command, not legacy aliases.",
+    },
+    {
+        "case_id": "s010-stdin-operand-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' token -",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "Explicit stdin is not a file/directory operand and may block.",
+    },
+    {
+        "case_id": "s010-double-dash-stdin-operand-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='*.py' token -- -",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The stdin operand remains stdin after the option terminator.",
+    },
+    {
+        "case_id": "s010-nonascii-denied",
+        "fix": "S010-GREP-INCLUDE",
+        "command": "grep -r --include='é.py' token .",
+        "baseline_reason_code": "route_policy_denied",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "The canonical value grammar is ASCII only.",
+    },
+]
+
+
+def s010_grep_include_route_predicate_relaxations() -> list[RoutePredicateCase]:
+    """Return only S010 deny-to-sanitize admissions for the F-15 proof."""
+    return [
+        case
+        for case in S010_GREP_INCLUDE_CASES
+        if case["expected_decision"] != "deny"
+    ]
+
+
+def s010_grep_include_stay_denied() -> list[RoutePredicateCase]:
+    """Return the S010-adjacent shapes that must remain denied."""
+    return [
+        case
+        for case in S010_GREP_INCLUDE_CASES
+        if case["expected_decision"] == "deny"
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
     "tree": "3f9ee86abd2b3b79775421529290822eb829a238"
   },
   "inventory": {
-    "case_count": 63,
+    "case_count": 70,
     "cases": [
       {
         "baseline_action": "deny",
@@ -448,9 +448,58 @@
         "case_id": "s009-multi-range-single-and-dollar-allowed",
         "command_sha256": "2c618cdcd2a3a3dea66e1101c6eb232bcc1a2395cfa47969d09306fdde75861a",
         "fix": "S009-SED-MULTI-RANGE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-96-byte-value-allowed",
+        "command_sha256": "88468d0b3cb8250149ed51535b7a4e9f76bce631e24875d4ac40161e335c2114",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-dotfile-allowed",
+        "command_sha256": "f50727fcf9d7f0abc3354a066df81f5ebf71ac23b455c91db6607488eca72371",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-literal-allowed",
+        "command_sha256": "fd33d309c3ff3c2f346894cba7040015075119ea9e13a84b49fadab8be2f927f",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-mixed-grammar-double-dash-allowed",
+        "command_sha256": "bf0ecfbb813832272e92667f34d3ca1a5f00c7dabf57cc924f10e99a4479f5fb",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-producer-pipeline-allowed",
+        "command_sha256": "73d0cbc5b1db3cd01a4eb171b70b7a435f78f7a4984c6276ff6bd077f71bc9a6",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-py-allowed",
+        "command_sha256": "eafaa3d480499caa04e61be8a6b7fa1629898e99ae57cac265d40622fe8299aa",
+        "fix": "S010-GREP-INCLUDE"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "s010-include-question-json-allowed",
+        "command_sha256": "184960e5a9fe43526f6053a95a3546d3adcff7622a0f14b74a539b257d4a6da0",
+        "fix": "S010-GREP-INCLUDE"
       }
     ],
-    "cases_sha256": "4f93b67d12afc9742570699dcc8fa8c8e4e3e6d408127c45627f9a65ad8ca26c"
+    "cases_sha256": "3b6f251fa1651fef574dbe0a4f0309fa35993291dc06e588a1c97229bcd6390c"
   },
   "schema_version": "contextguard.route-historical-baseline.v1"
 }
