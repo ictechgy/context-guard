@@ -137,10 +137,20 @@ def load_route_relaxation_cases(corpus_path: Path = CORPUS_PATH) -> list[dict[st
         for case in selected:
             if not isinstance(case, dict):
                 raise ProofError(f"{selector_name} returned a non-object case")
-            required = ("case_id", "fix", "command", "expected_decision")
-            missing = [key for key in required if not isinstance(case.get(key), str)]
-            if missing:
-                raise ProofError(f"{selector_name} case is missing string fields: {missing}")
+            required_strings = ("case_id", "fix", "command", "expected_decision")
+            missing_strings = [
+                key for key in required_strings if not isinstance(case.get(key), str)
+            ]
+            if missing_strings:
+                raise ProofError(
+                    f"{selector_name} case is missing string fields: {missing_strings}"
+                )
+            required_fields = ("baseline_reason_code", "expected_reason_code")
+            missing_fields = [key for key in required_fields if key not in case]
+            if missing_fields:
+                raise ProofError(
+                    f"{selector_name} case is missing required fields: {missing_fields}"
+                )
             if case["expected_decision"] == "deny":
                 raise ProofError(f"{case['case_id']} is not a relaxation candidate")
             cases.append(dict(case))
@@ -171,6 +181,8 @@ def _classify_isolated(
             cwd=private_root,
             input=json.dumps(requests, ensure_ascii=False, separators=(",", ":")),
             text=True,
+            encoding="utf-8",
+            errors="strict",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -213,6 +225,8 @@ def _resolve_baseline_source(repo: Path) -> bytes:
 def _result_map(results: Sequence[dict[str, object]]) -> dict[str, dict[str, object]]:
     mapped: dict[str, dict[str, object]] = {}
     for result in results:
+        if not isinstance(result, dict):
+            raise ProofError("classifier returned a non-object result")
         case_id = result.get("case_id")
         if not isinstance(case_id, str) or case_id in mapped:
             raise ProofError("classifier returned invalid or duplicate case ids")
@@ -302,6 +316,8 @@ def verify_route_historical_baseline(
     cache_path: Path = BASELINE_CACHE_PATH,
     candidate_entrypoints: Sequence[tuple[str, Path]] = CANDIDATE_ENTRYPOINTS,
 ) -> dict[str, object]:
+    if not candidate_entrypoints:
+        raise ProofError("candidate entrypoint inventory is empty")
     cache_bytes, cache = _load_baseline_cache(cache_path)
     cache_baseline = cache["baseline"]
     cache_inventory = cache["inventory"]

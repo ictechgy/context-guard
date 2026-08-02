@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +74,9 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
         self.assertRegex(str(proof.get("baseline_cache_sha256")), r"^[0-9a-f]{64}$")
 
     def write_mutated_cache(self, directory: Path, mutate: Any) -> Path:
-        cache = json.loads(self.proof_module.BASELINE_CACHE_PATH.read_text())
+        cache = json.loads(
+            self.proof_module.BASELINE_CACHE_PATH.read_text(encoding="utf-8")
+        )
         mutate(cache)
         path = directory / "mutated-cache.json"
         path.write_text(json.dumps(cache), encoding="utf-8")
@@ -116,10 +117,16 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
                 self.proof_module.verify_route_historical_baseline(cache_path=cache_path)
 
     def test_git_replace_cannot_substitute_pinned_runtime_bytes(self) -> None:
-        pinned_source = b'def classify_command(command):\n    return command\n'
         replacement_source = b'raise RuntimeError("replacement executed")\n'
         with tempfile.TemporaryDirectory(prefix="route-baseline-git-") as temp_dir:
-            repo = Path(temp_dir)
+            repo = Path(temp_dir) / "repo"
+            clone = subprocess.run(
+                ["git", "clone", "--quiet", "--no-checkout", str(ROOT), str(repo)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(clone.returncode, 0, clone.stderr.decode())
 
             def run_git(*args: str, input_bytes: bytes | None = None) -> bytes:
                 proc = subprocess.run(
@@ -132,42 +139,64 @@ class RouteHistoricalBaselineProofTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr.decode())
                 return proc.stdout
 
-            run_git("init", "--quiet")
-            runtime_path = repo / "runtime.py"
-            runtime_path.write_bytes(pinned_source)
-            run_git("add", "runtime.py")
-            run_git(
-                "-c",
-                "user.name=Context Guard Tests",
-                "-c",
-                "user.email=context-guard@example.invalid",
-                "commit",
-                "--quiet",
-                "--message",
-                "pinned runtime",
-            )
-            commit = run_git("rev-parse", "HEAD").decode().strip()
-            tree = run_git("rev-parse", "HEAD^{tree}").decode().strip()
-            blob = run_git("rev-parse", "HEAD:runtime.py").decode().strip()
             replacement_blob = run_git(
                 "hash-object",
                 "-w",
                 "--stdin",
                 input_bytes=replacement_source,
             ).decode().strip()
-            run_git("replace", blob, replacement_blob)
-            self.assertEqual(run_git("show", "HEAD:runtime.py"), replacement_source)
+            run_git(
+                "replace",
+                self.proof_module.BASELINE_RUNTIME_BLOB,
+                replacement_blob,
+            )
+            self.assertEqual(
+                run_git(
+                    "show",
+                    f"{self.proof_module.BASELINE_COMMIT}:"
+                    f"{self.proof_module.BASELINE_RUNTIME_PATH}",
+                ),
+                replacement_source,
+            )
+            proof = self.proof_module.verify_route_historical_baseline(repo=repo)
 
-            with mock.patch.multiple(
-                self.proof_module,
-                BASELINE_COMMIT=commit,
-                BASELINE_TREE=tree,
-                BASELINE_RUNTIME_BLOB=blob,
-                BASELINE_RUNTIME_PATH="runtime.py",
+            self.assertEqual(proof["status"], "ok")
+            self.assertEqual(proof["deny_to_allow_case_count"], 57)
+
+    def test_missing_expected_reason_code_fails_closed(self) -> None:
+        suffix = """
+import copy as _s008_copy
+_s008_original_fix1a_relaxations = fix1a_route_predicate_relaxations
+def fix1a_route_predicate_relaxations():
+    cases = _s008_copy.deepcopy(_s008_original_fix1a_relaxations())
+    cases[0].pop("expected_reason_code")
+    return cases
+"""
+        with tempfile.TemporaryDirectory(prefix="route-baseline-test-") as temp_dir:
+            corpus_path = self.write_mutated_corpus(Path(temp_dir), suffix)
+            with self.assertRaisesRegex(
+                self.proof_module.ProofError,
+                "missing required fields.*expected_reason_code",
             ):
-                resolved_source = self.proof_module._resolve_baseline_source(repo)
+                self.proof_module.verify_route_historical_baseline(
+                    corpus_path=corpus_path
+                )
 
-            self.assertEqual(resolved_source, pinned_source)
+    def test_empty_candidate_entrypoint_inventory_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            self.proof_module.ProofError,
+            "candidate entrypoint inventory is empty",
+        ):
+            self.proof_module.verify_route_historical_baseline(
+                candidate_entrypoints=()
+            )
+
+    def test_non_object_classifier_result_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            self.proof_module.ProofError,
+            "classifier returned a non-object result",
+        ):
+            self.proof_module._result_map(["invalid-result"])
 
     def test_coordinated_corpus_and_cache_shrink_fails_pinned_inventory(self) -> None:
         cache = json.loads(
