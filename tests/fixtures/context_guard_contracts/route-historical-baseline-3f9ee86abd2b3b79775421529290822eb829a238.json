@@ -1,0 +1,414 @@
+{
+  "baseline": {
+    "commit": "ed46287ee03710d4df6003d52f4eeee60bcd1f4e",
+    "runtime_blob": "2439e99c6e7388ad330d6d74b003aeff5df9b90a",
+    "runtime_path": "context-guard-kit/rewrite_bash_for_token_budget.py",
+    "tree": "3f9ee86abd2b3b79775421529290822eb829a238"
+  },
+  "inventory": {
+    "case_count": 57,
+    "cases": [
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-cluster-oq-allowed",
+        "command_sha256": "ed27be926e9170416d9bf311aa68a1b5c0ca2c60ba4b10feb8bad374c17afec2",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-double-dash-terminator-with-o-allowed",
+        "command_sha256": "9229816fdb4318640fb01a883c32b265c3a663d3a2dda75edd9aa217c9d7ba2a",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-git-grep-long-only-matching-allowed",
+        "command_sha256": "92bf9b3acd675cb186c426956dee80c513c07c76962451a67acca654dcea7794",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-git-grep-short-o-allowed",
+        "command_sha256": "2b1f9fab904ee352c1ef06e5df0dfdcfac576915e89ae9a64a01db4a753420f2",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-git-grep-short-q-allowed",
+        "command_sha256": "67e1cacd30086148856acb9bf479cc57519883c931732221dd872e044575e512",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-basic-regexp-allowed",
+        "command_sha256": "5b6d7b898e354bd0e7b2454de3eb0fdbd226fc01f8f7fd10f511e065ac102cb7",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-color-auto-allowed",
+        "command_sha256": "70c3d1ae6a41976f9dcb8c209cf53ec61ffab0229c5a5554def796dfd0f1db7b",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-color-never-allowed",
+        "command_sha256": "2151bf0909d2da4bca50acdfd5bb67aa779fced34863048475d95be71581b8a8",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-count-allowed",
+        "command_sha256": "0f92dcb4056386872214281e7f8e5b9a2bafb13988b19e06863daa68c993b307",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-dereference-recursive-allowed",
+        "command_sha256": "93f465d38a3d2e19515f1b8b7e4bf1984b0aeeb449117df1c7497183cc439224",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-extended-regexp-allowed",
+        "command_sha256": "e93f29ca6839aac0c1e859bd8d7be81a451157822c9f8ad7fe961440a67345a0",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-files-with-matches-allowed",
+        "command_sha256": "d42c068eaa525b8a377156aefc2c572170542679bd9eb2f200357852414b9fae",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-files-without-match-allowed",
+        "command_sha256": "2ab39a94f014bd4de857e64ff2bc133d9d7005b40ca94db018e06962d5078556",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-fixed-strings-allowed",
+        "command_sha256": "a0e87f32f886b9d051ebfb0cc2dfa02775f25ee87621db52ba558937028f4eed",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-ignore-case-allowed",
+        "command_sha256": "cc899edbc4a0b3aadb6b6c22c85480c5fe760ece778e0968a19e71f2e0d13904",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-invert-match-allowed",
+        "command_sha256": "7bf6fa71962de2650cc10bb849ba90423d955eeb77285df65c395e7af20206d2",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-line-number-allowed",
+        "command_sha256": "1f61723d4e6fb3c61deef1b21283dbfc798e423265c4a01159d082e196fc9309",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-line-regexp-allowed",
+        "command_sha256": "771dad60a21216f24fd7333d7861f6090135b8cb3d5c92b33e88f39f5b462568",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-no-filename-allowed",
+        "command_sha256": "9f6a0327e67c3c06f9f01eb5974646d9397a298ddad392a920360254c68a82da",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-only-matching-allowed",
+        "command_sha256": "2a7b4d1cc22b7662743bf2335736c5991a6b7ba7929356f1e118e186f9a9ce42",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-perl-regexp-allowed",
+        "command_sha256": "af2fbc5be97801cd8eda0dd94c7d9ed48d62e146b715db3a652e2f5ae160bd43",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-quiet-allowed",
+        "command_sha256": "b7c940f32ba518916603f7ade8e2b6244a0ba3681a9c15bb635bc1ba8be179a0",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-silent-allowed",
+        "command_sha256": "e5d902963626915d49042715ba6d8dd968390d278e108a1ce70295e260a2ea4a",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-with-filename-allowed",
+        "command_sha256": "d4e5adc4b07b761772b7e18d350523790e7bab13b8a171aa4bb5813170df81ed",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-long-word-regexp-allowed",
+        "command_sha256": "70798b58d2d8240e84dc73b8031685e5bb3db2a8dc58e31653ebd1d7533ec862",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-short-o-allowed",
+        "command_sha256": "58824466449882b1ecf726fba8053b7debd89e8500e3145f76b85cd7e8ea3d26",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-grep-short-q-allowed",
+        "command_sha256": "50d97c276df08161b722810419218cea41c1f857c21f513197dcf1d63ec07efe",
+        "fix": "FIX-GREP"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-ls-first-basic-allowed",
+        "command_sha256": "bb96a39a7d5910235eb9389d672d475c1c144e86e05da3466c83ff15b9f58c5d",
+        "fix": "FIX-LS"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-ls-first-cluster-allowed",
+        "command_sha256": "300b7d134bd2406c8c03fd8e26697f13e1abf2c3f93e446f4180642be238abea",
+        "fix": "FIX-LS"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-ls-first-double-dash-flaglike-operand-allowed",
+        "command_sha256": "d9f8c89042ab755e760104bbcb52f2456da09a742164721b2c843bb496f58cb9",
+        "fix": "FIX-LS"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-ls-first-double-dash-operands-allowed",
+        "command_sha256": "9643105485406a657c76d51c8e42a8554f88ca5933f979ceedd5c7c0fae07283",
+        "fix": "FIX-LS"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-ls-first-recursive-allowed",
+        "command_sha256": "824a4cbae87d4b59bd1362c87a5c195418c75d923359c7732c3dbfeec31cbc0b",
+        "fix": "FIX-LS"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-first-basic-allowed",
+        "command_sha256": "ca69779892461d6b5d6d296288c873f23d383accebdcb8d5bc2bf5027ac27b9f",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-standalone-basic-allowed",
+        "command_sha256": "35fa5c4008f09b57fb5a9064861ccef43b2e9445c1319152e9fd24a9efce32c2",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-standalone-dash-e-form-allowed",
+        "command_sha256": "8967a57bad40d9397ab754088c895bf9634ba83dceac7d661d66e81eafa8f932",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-standalone-double-dash-operand-allowed",
+        "command_sha256": "094a540bb20ff92066f2377cc505ec912e5e9421f77092d3d6ee141469d12033",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-standalone-long-expression-form-allowed",
+        "command_sha256": "aaf5413267063ec6b862f20255b029f172d98f3346fb7c3d0b68d9bbb76aca2e",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix-sed-standalone-multi-file-allowed",
+        "command_sha256": "8132a35290f79b7fabbdee919e49bd121c474e294d3f0a74fa01faec94a81ee3",
+        "fix": "FIX-SED"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1a-head-bare-file-standalone-allowed",
+        "command_sha256": "829661c844aa3e95ebff89a020999e4eee1859ba55cfe796fb15dd8331aa12cb",
+        "fix": "FIX-1a"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1a-head-bare-no-operand-filter-allowed",
+        "command_sha256": "4928aff5507191f2019d2d8863929e43499a0bb6232001f5587377538e81d44f",
+        "fix": "FIX-1a"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1a-tail-bare-file-standalone-allowed",
+        "command_sha256": "3d77760d4e003e493262527f3b98a5677d46354182f46ce3f4584dc0718ebb31",
+        "fix": "FIX-1a"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1a-wc-file-standalone-allowed",
+        "command_sha256": "0f2e907111176affb1d3138808fd3e2c88155857aaa6e03115e9d8a98e18f3b7",
+        "fix": "FIX-1a"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1a-wc-multi-file-standalone-allowed",
+        "command_sha256": "2d046877ecdc10501adeada284e571094fec25b351c04e3863a561e58a9db9b6",
+        "fix": "FIX-1a"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-blame",
+        "command_sha256": "a625cc023c32b7c80e1db784947962985433d9ad50fa0bdaa447cd7509eeaab3",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-branch",
+        "command_sha256": "5836153259dd078d2ac495badf0f934446a2b249fdd1f69bdcffef92e42a6453",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-describe",
+        "command_sha256": "922de52e37c8bc8cac5be23d52adb3687d192b91543bba4bf37cf7d9260ddb48",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-log-oneline",
+        "command_sha256": "369bd0e7e26c760e19dcda7787923530bed23cd920f24babcd1ee2686d5aa48d",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-ls-files",
+        "command_sha256": "0e96252549e1caadf265204940268601b37473894045c113e34b53ff96c58f35",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-rev-parse",
+        "command_sha256": "8ce8c38e64cea7f85802980f60eb2af9fb78ae00c4e60ce7a3bee0f2c952a2a5",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-shortlog",
+        "command_sha256": "2f1e8289122cd025067e19990e950d176916055106ba1882315fe36cb13c596a",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-stash-list",
+        "command_sha256": "f6faf70d0a101a19fd16b3654e69fe1848daa47cf7b34db191e1580481da6265",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-stash-show",
+        "command_sha256": "20a725664c65f9150a2b6a5239593b610f5ef76ddd7f05dd06953a03f3cbe22c",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-status",
+        "command_sha256": "646156367b6c0bbf793ebd442dc5c3048c708cb48209c2f57fcef82ea3c97664",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix1b-relax-tag",
+        "command_sha256": "83a5afc8ea5200c8f473ad18356035c2643a141b7ee48267f0f1d4465d020ae8",
+        "fix": "FIX-1b"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix6-relax-remote-bare",
+        "command_sha256": "7c74059127393a2d9f63a26f493012d1eafed3bf0debdfcca2372645eed1fd57",
+        "fix": "FIX-6"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix6-relax-remote-verbose",
+        "command_sha256": "b67659689dbe4817eacc4b7877fa749c546b7787e4827e13a3cf96810f65796e",
+        "fix": "FIX-6"
+      },
+      {
+        "baseline_action": "deny",
+        "baseline_reason_code": "route_policy_denied",
+        "case_id": "fix6-relax-remote-verbose-long",
+        "command_sha256": "75a68fc22166bf1a1880c673634655f8f5670d92eede8cde29cca79e565aa75a",
+        "fix": "FIX-6"
+      }
+    ],
+    "cases_sha256": "3df5ab65f3d18ca3d79f6015a137b86aefbf888fbda64e5efc0bb28981edfd3b"
+  },
+  "schema_version": "contextguard.route-historical-baseline.v1"
+}
