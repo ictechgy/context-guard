@@ -80,6 +80,7 @@ _GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS = (
     "GIT_CONFIG_KEY_0=core.fsmonitor",
     "GIT_CONFIG_VALUE_0=false",
 )
+_GIT_ORIGINAL_COMMAND_ENV_FOR_TESTS = "CONTEXT_GUARD_ORIGINAL_COMMAND"
 
 
 def run_rewrite_raw(script: Path, raw_payload: str) -> subprocess.CompletedProcess[str]:
@@ -1690,13 +1691,17 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     if command.startswith("git grep "):
                         rewritten_argv = shlex.split(rewritten_command)
                         self.assertEqual(
-                            rewritten_argv[:3],
+                            rewritten_argv[0],
+                            f"{_GIT_ORIGINAL_COMMAND_ENV_FOR_TESTS}={command}",
+                        )
+                        self.assertEqual(
+                            rewritten_argv[1:4],
                             list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
                         )
                         self.assertEqual(
                             [
                                 argument
-                                for argument in rewritten_argv[3:]
+                                for argument in rewritten_argv[4:]
                                 if argument != "--no-textconv"
                             ],
                             shlex.split(command),
@@ -2162,6 +2167,10 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     ]["command"]
                     guarded_command = shlex.split(wrapped)[-1]
                     guarded_argv = shlex.split(guarded_command)
+                    original_command_marker = (
+                        f"{_GIT_ORIGINAL_COMMAND_ENV_FOR_TESTS}={command}"
+                    )
+                    self.assertEqual(guarded_argv.count(original_command_marker), 1)
                     self.assertTrue(config_guard.issubset(guarded_argv))
                     for guard_word in config_guard:
                         self.assertEqual(guarded_argv.count(guard_word), 1)
@@ -2172,11 +2181,29 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         [
                             argument
                             for argument in guarded_argv
-                            if argument not in config_guard
+                            if argument != original_command_marker
+                            and argument not in config_guard
                             and argument not in expected_flags
                         ],
                         shlex.split(command),
                     )
+
+    def test_s012_guarded_wrapper_keeps_original_git_command_visible(self) -> None:
+        commands = (
+            "git diff",
+            "git diff -U3",
+            "git show HEAD",
+            "git diff | cat",
+        )
+        for script in self.contract_scripts():
+            for command in commands:
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    wrapped = json.loads(proc.stdout)["hookSpecificOutput"][
+                        "updatedInput"
+                    ]["command"]
+                    self.assertIn(command, wrapped)
 
     def test_inv_a_sed_stay_denied_forms(self) -> None:
         """INV-A(거부 보존) — `FIX_SED_ROUTE_PREDICATE_CASES` 중 거부로 남아야

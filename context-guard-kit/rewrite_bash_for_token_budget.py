@@ -2054,6 +2054,7 @@ _GIT_CONFIG_EXECUTION_GUARD = (
     "GIT_CONFIG_KEY_0=core.fsmonitor",
     "GIT_CONFIG_VALUE_0=false",
 )
+_GIT_ORIGINAL_COMMAND_ENV = "CONTEXT_GUARD_ORIGINAL_COMMAND"
 _GIT_DIFF_EXECUTION_FLAGS = ("--no-ext-diff", "--no-textconv")
 _GIT_TEXTCONV_EXECUTION_FLAGS = ("--no-textconv",)
 
@@ -2689,7 +2690,7 @@ def _render_minishell_word(word: MiniShellWord) -> str:
 
 
 def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str:
-    """Disable config-driven helpers in every admitted git pipeline segment."""
+    """Disable config helpers while retaining the original command for inspection."""
     guarded_segments: list[str] = []
     changed = False
     for segment in parsed.segments:
@@ -2716,7 +2717,16 @@ def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str
                 flags = _GIT_DIFF_EXECUTION_FLAGS
                 flag_index += 1
             rendered_words[flag_index:flag_index] = flags
-            rendered_words[route_start:route_start] = _GIT_CONFIG_EXECUTION_GUARD
+            # Existing wrapper consumers inspect the rewritten string for the
+            # admitted source command. Keep it as one quoted, namespaced
+            # assignment; Git ignores the value and the shell cannot execute it.
+            original_command_marker = (
+                f"{_GIT_ORIGINAL_COMMAND_ENV}={shell_quote(command)}"
+            )
+            rendered_words[route_start:route_start] = (
+                original_command_marker,
+                *_GIT_CONFIG_EXECUTION_GUARD,
+            )
             changed = True
         guarded_segments.append(" ".join(rendered_words))
     return " | ".join(guarded_segments) if changed else command

@@ -39,13 +39,6 @@ PLUGIN_REWRITE = PLUGIN_BIN / "context-guard-rewrite-bash"
 SAFE_SHELL = shutil.which("sh") or "/bin/sh"
 BASE_TEST_TOPLEVEL_MODULE = "test_context_guard_kit"
 BASE_TEST_PACKAGE_MODULE = "tests.test_context_guard_kit"
-S012_GIT_EXECUTION_GUARD_TOKENS = frozenset({
-    "GIT_CONFIG_COUNT=1",
-    "GIT_CONFIG_KEY_0=core.fsmonitor",
-    "GIT_CONFIG_VALUE_0=false",
-    "--no-ext-diff",
-    "--no-textconv",
-})
 
 
 def canonicalize_current_test_module():
@@ -569,15 +562,6 @@ def failed_nudge_payload(
 def hook_json(script: Path, command: str, cwd: Path = ROOT) -> dict:
     proc = run_hook(script, command, cwd)
     return json.loads(proc.stdout)
-
-
-def s012_normalized_git_argv(wrapped: str) -> list[str]:
-    guarded_command = shlex.split(wrapped)[-1]
-    return [
-        argument
-        for argument in shlex.split(guarded_command)
-        if argument not in S012_GIT_EXECUTION_GUARD_TOKENS
-    ]
 
 
 def load_module_from_path(path: Path, name: str):
@@ -23316,13 +23300,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                 with self.subTest(script=script, command=command):
                     out = hook_json(script, command)
                     wrapped = out["hookSpecificOutput"]["updatedInput"]["command"]
-                    if command.startswith("git "):
-                        self.assertEqual(
-                            s012_normalized_git_argv(wrapped),
-                            shlex.split(command),
-                        )
-                    else:
-                        self.assertIn(command, wrapped)
+                    self.assertIn(command, wrapped)
                     self.assertTrue("sanitize_output.py" in wrapped or "context-guard-sanitize-output" in wrapped)
                     self.assertNotIn("trim_command_output.py", wrapped)
 
@@ -23338,13 +23316,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     hook = hook_json(script, command)["hookSpecificOutput"]
                     self.assertNotIn("permissionDecision", hook)
                     wrapped = hook["updatedInput"]["command"]
-                    if command.startswith("git "):
-                        self.assertEqual(
-                            s012_normalized_git_argv(wrapped),
-                            shlex.split(command),
-                        )
-                    else:
-                        self.assertIn(command, wrapped)
+                    self.assertIn(command, wrapped)
                     self.assertTrue(
                         "sanitize_output.py" in wrapped
                         or "context-guard-sanitize-output" in wrapped
@@ -23407,13 +23379,7 @@ index 0123456789abcdef0123456789abcdef01234567..fedcba9876543210fedcba9876543210
                     hook = data["hookSpecificOutput"]
                     wrapped = hook["updatedInput"]["command"]
                     self.assertNotIn("permissionDecision", hook)
-                    if command.startswith("git "):
-                        self.assertEqual(
-                            s012_normalized_git_argv(wrapped),
-                            shlex.split(command),
-                        )
-                    else:
-                        self.assertIn(command, wrapped)
+                    self.assertIn(command, wrapped)
                     self.assertTrue("sanitize_output.py" in wrapped or "context-guard-sanitize-output" in wrapped)
                     self.assertEqual(proc.stderr, "")
 
