@@ -32,6 +32,7 @@ MAX_CALLS = 1000
 MAX_ARTIFACTS = 1000
 MAX_VISITED_ENTRIES = 4000
 HELPER_TIMEOUT = 10.0
+HELPER_TERMINATE_GRACE = 0.1
 MAX_HELPER_STDERR = 16 * 1024
 MAX_HELPER_OUTPUT = 5 * 1024 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
@@ -456,7 +457,7 @@ class Server:
             # process group and inherited pipes alive. Give the whole group a
             # bounded TERM grace period, then escalate the group independently
             # of the direct child's return code.
-            grace_deadline = time.monotonic() + 0.5
+            grace_deadline = time.monotonic() + HELPER_TERMINATE_GRACE
             group_exists = True
             while time.monotonic() < grace_deadline:
                 try:
