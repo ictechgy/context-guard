@@ -979,6 +979,46 @@ class GateBGenerationsTests(SyntheticGenerationHelpers, unittest.TestCase):
                     repo, generation, dirty_bless
                 )
 
+    def test_bless_tree_must_not_move_gate_b_marker_to_another_component(self) -> None:
+        """F-9 — C3-b scans every component path, not only the declared owner."""
+        marker = rollback_proof.GateBMarker("SECRET_GATE_B_TOKEN", "owner.txt")
+        moved_paths = ("g/moved-b1.txt", "g/moved-b2.txt")
+        generation = self.make_generation(
+            "gen-marker-moved",
+            b1_paths=frozenset({moved_paths[0]}),
+            b2_paths=frozenset({moved_paths[1]}),
+            shared_paths=frozenset({"owner.txt"}),
+            gate_b_markers=(marker,),
+        )
+        for moved_path in moved_paths:
+            with self.subTest(moved_path=moved_path):
+                with tempfile.TemporaryDirectory(
+                    prefix="context-guard-proof-marker-moved-"
+                ) as tmp:
+                    repo = Path(tmp) / "repo"
+                    repo.mkdir()
+                    rollback_proof.run_git(repo, "init", "--quiet")
+                    commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+                    moved_bless = commit_paths_for_test(
+                        repo,
+                        {
+                            "owner.txt": "declared owner is clean\n",
+                            moved_path: "SECRET_GATE_B_TOKEN moved here\n",
+                        },
+                        generation.bless_subject,
+                    )
+
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError,
+                        "retains Gate-B marker",
+                    ) as raised:
+                        rollback_proof.assert_gate_b_markers_absent_from_bless(
+                            repo,
+                            generation,
+                            moved_bless,
+                        )
+                    self.assertIn(moved_path, str(raised.exception))
+
     def test_gate_b_markers_must_be_present_at_active_head(self) -> None:
         """U-9 — 활성 세대의 Gate-B 마커가 HEAD에 없으면 거부된다 (C3-a,
         자기 무효화 — 마커가 rot하면 부재 검사보다 먼저 큰 소리로 실패한다).
@@ -1619,9 +1659,9 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 self.drive(tmp, (gen1, blank))
 
     def test_resolve_history_rejects_marker_owner_outside_component_paths(self) -> None:
-        """D6-3 — C3-b가 '소유 경로가 bless에 없으면 통과'로 건너뛰는 근거는
-        소유 경로가 컴포넌트 경로일 때만 성립한다. 컴포넌트 밖 경로를 소유자로
-        선언하면 아무것도 평가하지 않고 성공을 보고한다.
+        """D6-3 — 선언된 소유 경로는 C3-a와 전방 이월의 기준이다.
+
+        컴포넌트 밖 경로를 허용하면 그 보증들이 세대의 동결 경계 밖을 가리킨다.
         """
         gen1, _ = self.make_pair()
         foreign = self.make_generation(
@@ -2015,12 +2055,12 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 self.drive(tmp, (gen1, rotted))
 
     def test_c3b_rejects_a_generation_that_evaluates_no_markers(self) -> None:
-        """마커 소유 경로를 전부 'bless가 삭제하는 경로'로 선언해 C3-b가 0개를
-        평가한 채 성공하는 것을 막는다.
+        """bless가 모든 컴포넌트 경로를 삭제해 C3-b가 0개 파일을 평가한 채
+        성공하는 것을 막는다.
 
         ``commit_paths``는 ``diff-tree --name-only``라 상태를 보지 않으므로,
-        bless가 삭제한 경로도 여전히 정당한 컴포넌트 경로다. 따라서 소유 경로가
-        컴포넌트 경로인지 보는 D6-3만으로는 이 공허화를 막지 못한다.
+        bless가 삭제한 경로도 여전히 정당한 컴포넌트 경로다. 따라서 경로 집합
+        구조 검사만으로는 이 공허화를 막지 못한다.
         """
         marker_owner = "shared/only.txt"
         generation = self.make_generation(
@@ -2038,7 +2078,7 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             repo.mkdir()
             rollback_proof.run_git(repo, "init", "--quiet")
             commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
-            # 소유 경로가 아예 없는 bless 트리 — 모든 마커가 continue로 건너뛰어진다.
+            # 컴포넌트 경로가 아예 없는 bless 트리 — 검사할 파일이 하나도 없다.
             empty_bless = commit_paths_for_test(
                 repo, {"other.txt": "no marker owner here\n"}, "bless without owners"
             )
@@ -2262,7 +2302,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         ``git cat-file -e <commit>:<path>``는 '트리에 경로 없음'과 '잘못된
         리비전' 양쪽에 128을 돌려주므로 종료 코드로 둘을 가를 수 없었다. 그
         구현에서는 인프라 실패가 곧 '부재'로 읽혀 D5가 before/after 모두 비어
-        통과하고 C3-b가 마커 검사를 건너뛰었다 — 릴리스 게이트의 fail-open이다.
+        통과하고 C3-b가 실제 파일을 검사 표면에서 뺐다 — 릴리스 게이트의
+        fail-open이다.
         """
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-badrev-") as tmp:
             repo = Path(tmp) / "repo"
@@ -2396,7 +2437,8 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         따옴표 처리한다(``"hangul_\\355\\225\\234..."``). 그 출력을 줄 단위로
         비교하면 실재하는 경로가 일치하지 않아 '부재'가 되고, 이 함수가 막으려던
         fail-open이 그대로 되살아난다 — D5는 before/after가 함께 줄어 통과하고
-        C3-b는 마커 검사를 건너뛴다. ``-z``(NUL 구분)는 따옴표 처리를 하지 않는다.
+        C3-b는 실제 파일을 검사 표면에서 뺀다. ``-z``(NUL 구분)는 따옴표 처리를
+        하지 않는다.
 
         오늘의 18개 컴포넌트 경로는 모두 ASCII라 잠재적이지만, 경로 집합은 세대마다
         재선언되므로 릴리스 게이트에 잠복시켜 둘 종류의 결함이 아니다.
