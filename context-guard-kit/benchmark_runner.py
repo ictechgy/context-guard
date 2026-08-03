@@ -10525,6 +10525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
+    load_task_fixture_trees(tasks, task_file_dir=args.tasks.parent)
     targets = filter_targets(tasks, variants, args.task_id, args.variant)
     if not targets:
         if args.dry_run and (not tasks or not variants):

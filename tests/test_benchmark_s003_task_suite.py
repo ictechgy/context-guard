@@ -320,6 +320,67 @@ class TaskFixtureParsingTest(unittest.TestCase):
             self.assertEqual(tasks[0].success_command, "true")
 
 
+class NormalBenchmarkFixtureBindingTest(unittest.TestCase):
+    def test_normal_cli_binds_fixture_tree_before_provider_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_tree(root)
+            tasks_path = write_task_file(
+                root, [sample_task(output_format="stream-json")],
+            )
+            for arm in ("baseline", "treatment"):
+                shutil.copyfile(
+                    SUITE / "settings" / f"{arm}.settings.json",
+                    root / f"{arm}.settings.json",
+                )
+            artifacts = root / "artifacts"
+            variants_text = (
+                (SUITE / "variants.template.json").read_text(encoding="utf-8")
+                .replace("{{CANDIDATE_HASH}}", "a" * 64)
+                .replace("{{NAMESPACE}}", "normal-cli-fixture-binding")
+                .replace("{{ARTIFACT_ROOT}}", str(artifacts))
+            )
+            variants_path = root / "variants.json"
+            variants_path.write_text(variants_text, encoding="utf-8")
+            provider_marker = root / "provider-launched"
+            fake_cli = root / "fake-claude"
+            fake_cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "if '--help' in sys.argv:\n"
+                " print('--settings --setting-sources --include-hook-events --no-session-persistence stream-json')\n"
+                " raise SystemExit(0)\n"
+                "if '--version' in sys.argv:\n"
+                " print('fake-claude-normal-binding 1.0')\n"
+                " raise SystemExit(0)\n"
+                f"Path({str(provider_marker)!r}).write_text('launched\\n')\n"
+                "if Path('src/app.py').read_text() != 'value = 1\\n':\n"
+                " raise SystemExit(22)\n"
+                "print(json.dumps({'type':'result','subtype':'success','is_error':False,'usage':{'input_tokens':1,'cache_creation_input_tokens':0,'cache_read_input_tokens':0,'output_tokens':1},'total_cost_usd':0.0}))\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o700)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(RUNNER),
+                    "--tasks", str(tasks_path),
+                    "--variants", str(variants_path),
+                    "--csv", str(root / "results.csv"),
+                    "--variant", "baseline",
+                    "--claude-bin", str(fake_cli),
+                    "--project-root", str(root),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            self.assertEqual(provider_marker.read_text(), "launched\n")
+
+
 class CheckerIsolationTest(unittest.TestCase):
     """The success checker must be unreachable from the measured workspace."""
 
