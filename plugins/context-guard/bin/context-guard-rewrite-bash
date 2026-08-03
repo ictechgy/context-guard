@@ -24,6 +24,13 @@ WRAPPER_BASENAMES = frozenset({
     "claude-sanitize-output",
 })
 MINISHELL_ROUTE_POLICY_VERSION = "minishell-route-v1"
+MINISHELL_EXPLICIT_NOOP_ARGV = frozenset({
+    ("kubectl", "get", "pods"),
+    ("kubectl", "version"),
+    ("docker", "ps"),
+    ("docker", "images"),
+    ("docker", "compose", "ps"),
+})
 MINISHELL_MAX_COMMAND_BYTES = 65_536
 MINISHELL_MAX_LEXICAL_ITEMS = 4_096
 MINISHELL_MAX_SEGMENTS = 8
@@ -2294,6 +2301,27 @@ def _make_route(argv: tuple[str, ...]) -> str:
     return "noop"
 
 
+def _is_explicit_noop_command(argv: tuple[str, ...]) -> bool:
+    """Match only the pre-existing short-command controls kept by S011.
+
+    Tool basenames are deliberately insufficient: e.g. `kubectl get secrets`
+    and `docker run` still reach the fail-closed fallback. The one variable
+    shape is a read-only pod description with a static Kubernetes-style name.
+    """
+    if argv in MINISHELL_EXPLICIT_NOOP_ARGV:
+        return True
+    return (
+        len(argv) == 4
+        and argv[:3] == ("kubectl", "describe", "pod")
+        and re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?",
+            argv[3],
+            re.ASCII,
+        )
+        is not None
+    )
+
+
 def command_search_diff(
     argv: tuple[str, ...],
     *,
@@ -2392,7 +2420,20 @@ def command_search_diff(
             if role != "filter" and _git_is_safe(argv)
             else "deny"
         )
-    if first in {"npm", "pnpm", "yarn", "bun"}:
+    if first == "echo" or _is_explicit_noop_command(argv):
+        # `echo` is the explicit side-effect-free noop used by the shell
+        # contract and hook-envelope controls. The exact kubectl/docker rows
+        # are the pre-existing short-command controls. Keep both distinct from
+        # the unregistered-command fallback so closing F-1 does not turn a
+        # broad tool basename into an allowlist.
+        route = "noop"
+    elif _wrapper_invocation(argv) is not None:
+        # A direct ContextGuard helper CLI is not an incoming CGW1/v0
+        # execution envelope. `classify_incoming_wrapper` already denied the
+        # exact envelope shapes before route classification; preserve the
+        # established direct-CLI compatibility contract here explicitly.
+        route = "noop"
+    elif first in {"npm", "pnpm", "yarn", "bun"}:
         route = _package_script_route(argv)
     elif first == "npx":
         route = _npx_route(argv)
@@ -2423,7 +2464,11 @@ def command_search_diff(
     elif is_log_streaming_command(list(argv)):
         route = "sanitize"
     else:
-        route = "noop"
+        # F-1: an unregistered executable identity (including execution-prefix
+        # wrappers such as nice/command/xargs/stdbuf/nohup) has no modeled
+        # semantics.  It must not inherit standalone `noop` merely because it
+        # contains no pipeline.
+        route = "deny"
     if role == "standalone":
         return route
     if role == "first":

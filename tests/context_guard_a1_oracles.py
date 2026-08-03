@@ -683,8 +683,9 @@ def _route_examples() -> list[dict[str, str]]:
         "unknown",
         ("standalone",),
         ("custom-tool alpha beta",),
-        "noop",
+        "deny",
         (),
+        note="S011 fails closed for unregistered executable identities",
     )
     add(
         "unknown-pipeline",
@@ -749,12 +750,96 @@ def _s010_route_examples() -> list[dict[str, str]]:
     return examples
 
 
+def _s011_route_examples() -> list[dict[str, str]]:
+    """Append F-1 cases without reshuffling the pre-S011 oracle rows."""
+    denied_commands = (
+        "rm -rf /",
+        "sudo rm -rf /",
+        "dd if=/dev/zero of=/tmp/context-guard-s011-canary",
+        "mkfs.ext4 /dev/context-guard-s011-canary",
+        "yes",
+        "nice env GIT_EXTERNAL_DIFF=helper git diff",
+        "command git diff",
+        "xargs git diff",
+        "stdbuf -oL git diff",
+        "nohup git diff",
+        "kubectl get secrets",
+        "kubectl delete pod context-guard-s011-canary",
+        "docker run context-guard-s011-canary",
+        "docker compose up",
+    )
+    note = (
+        "S011 denies unregistered executable identities and execution-prefix "
+        "wrappers at the shared route_policy_denied fallback."
+    )
+    examples = [
+        {
+            "family": "unknown-wrapper-fail-closed",
+            "role": "standalone",
+            "command": command,
+            "expected_decision": "deny",
+            "expectation": "reject",
+            "note": note,
+        }
+        for command in denied_commands
+    ]
+    examples.extend(
+        (
+            {
+                "family": "s011-safe-noop-control",
+                "role": "standalone",
+                "command": "echo s011-safe-control",
+                "expected_decision": "noop",
+                "expectation": "accept",
+                "note": "A recognized side-effect-free noop command remains unchanged.",
+            },
+            {
+                "family": "s011-direct-contextguard-cli-control",
+                "role": "standalone",
+                "command": "context-guard-trim-output --max-lines 10 -- pytest",
+                "expected_decision": "noop",
+                "expectation": "accept",
+                "note": "Direct helper CLI use is not an incoming execution envelope.",
+            },
+            {
+                "family": "s011-direct-contextguard-cli-control",
+                "role": "standalone",
+                "command": "python3 /tmp/trim_command_output.py --help",
+                "expected_decision": "noop",
+                "expectation": "accept",
+                "note": "Direct Python helper CLI use retains the F-11 compatibility contract.",
+            },
+            *(
+                {
+                    "family": "s011-exact-noop-control",
+                    "role": "standalone",
+                    "command": command,
+                    "expected_decision": "noop",
+                    "expectation": "accept",
+                    "note": "An exact pre-existing short-command control remains unchanged.",
+                }
+                for command in (
+                    "kubectl get pods",
+                    "kubectl describe pod mypod",
+                    "kubectl describe pod api-1",
+                    "kubectl version",
+                    "docker ps",
+                    "docker images",
+                    "docker compose ps",
+                )
+            ),
+        )
+    )
+    return examples
+
+
 def route_cases(seed: int = ROUTE_SEED) -> list[dict[str, object]]:
     """Return the route-table corpus crossed with canonical/package entrypoints."""
     rng = random.Random(seed)
     examples = _route_examples()
     rng.shuffle(examples)
     examples.extend(_s010_route_examples())
+    examples.extend(_s011_route_examples())
     cases: list[dict[str, object]] = []
     for entrypoint in ENTRYPOINTS:
         for ordinal, example in enumerate(examples):
@@ -1307,7 +1392,7 @@ def _assignment_effective_expectation(
     template: Mapping[str, object],
     position: str,
 ) -> tuple[str, str | None]:
-    """B1 템플릿의 (decision, reason) 을 FIX-5 접두사 이름 게이트까지 반영해 계산한다.
+    """B1 템플릿의 (decision, reason) 을 FIX-5/F-1 게이트까지 반영해 계산한다.
 
     B1 오라클은 항상 화이트리스트 밖 이름(FOO/A/VAR/...)만 쓴다 — 애초에 tilde
     출처 판정을 시험하려는 목적이지 이름 정책을 시험하려는 게 아니다. 템플릿이
@@ -1330,6 +1415,12 @@ def _assignment_effective_expectation(
     name_recognized = bool(template.get("env_prefix_name_recognized", False))
     if position in _ENV_PREFIX_ROUTED_POSITIONS and name_recognized:
         return "deny", "unsafe_env_name_denied"
+    if position == "direct_prefix":
+        # 인용/escape 때문에 셸 assignment로 인식되지 않은 첫 word는 실제 실행
+        # 파일 identity다. 과거에는 미등록-command noop 폴스루에 기대었지만 S011
+        # 이후에는 F-1의 공통 deny sink로 수렴한다. ordinary_argv는 명시적으로
+        # 허용된 printf의 데이터이므로 기존 noop을 유지한다.
+        return "deny", "route_policy_denied"
     return "noop", None
 
 

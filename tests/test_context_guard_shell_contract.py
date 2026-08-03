@@ -43,6 +43,7 @@ from tests.corpus_adversarial_pins import (
     FIX_LS_STANDALONE_INVARIANT_COMMANDS,
     FIX_SED_ROUTE_PREDICATE_CASES,
     S010_GREP_INCLUDE_CASES,
+    S011_UNKNOWN_AND_WRAPPER_CASES,
     fix1a_route_predicate_relaxations,
     fix1b_ac1_4_case_count,
     fix1b_ac1b2_case_count,
@@ -1882,6 +1883,76 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     "sanitize",
                     f"{mutation} did not widen the intended S010 boundary",
                 )
+
+    def test_s011_unknown_and_wrapper_commands_fail_closed(self) -> None:
+        """F-1 unknown identities and execution-prefix wrappers share one deny sink."""
+        self.assertEqual(len(S011_UNKNOWN_AND_WRAPPER_CASES), 15)
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s011_cases_{index}")
+            classify_command = namespace["classify_command"]
+            for case in S011_UNKNOWN_AND_WRAPPER_CASES:
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    case_id=case["case_id"],
+                ):
+                    decision = classify_command(case["command"])
+                    self.assertEqual(decision.action, case["expected_decision"])
+                    self.assertEqual(
+                        decision.reason_code,
+                        case["expected_reason_code"],
+                    )
+
+    def test_s011_explicit_safe_noop_and_direct_cli_controls_do_not_move(self) -> None:
+        """Fail-closed fallback must not reclassify deliberate safe/no-envelope forms."""
+        controls = {
+            "echo s011-safe-control": ("noop", None),
+            "printf '%s\\n' ok": ("noop", None),
+            "ls -la": ("noop", None),
+            "cat README.md": ("trim", None),
+            "grep token README.md": ("sanitize", None),
+            "pytest -q": ("trim", None),
+            "env NO_COLOR=1 git status --short": ("sanitize", None),
+            "context-guard-trim-output --max-lines 10 -- pytest": ("noop", None),
+            "python3 /tmp/trim_command_output.py --help": ("noop", None),
+            "kubectl get pods": ("noop", None),
+            "kubectl describe pod mypod": ("noop", None),
+            "kubectl describe pod api-1": ("noop", None),
+            "kubectl version": ("noop", None),
+            "docker ps": ("noop", None),
+            "docker images": ("noop", None),
+            "docker compose ps": ("noop", None),
+        }
+        for index, script in enumerate(self.contract_scripts()):
+            namespace = self.load_namespace(script, f"s011_controls_{index}")
+            classify_command = namespace["classify_command"]
+            for command, (expected_action, expected_reason_code) in controls.items():
+                with self.subTest(
+                    entrypoint="canonical" if index == 0 else "staged",
+                    command=command,
+                ):
+                    decision = classify_command(command)
+                    self.assertEqual(decision.action, expected_action)
+                    self.assertEqual(decision.reason_code, expected_reason_code)
+
+    def test_s011_noop_fallback_mutation_is_killed(self) -> None:
+        """Restoring the old final `noop` makes every F-1 pin observably fail."""
+        import tempfile
+
+        source = REWRITE_SCRIPTS[0].read_text(encoding="utf-8")
+        fail_closed = '        route = "deny"\n    if role == "standalone":'
+        fail_open = fail_closed.replace('route = "deny"', 'route = "noop"')
+        self.assertEqual(source.count(fail_closed), 1, "stale S011 mutation anchor")
+
+        with tempfile.TemporaryDirectory(prefix="context-guard-s011-mutant-") as td:
+            mutant_path = Path(td) / "rewrite.py"
+            mutant_path.write_text(source.replace(fail_closed, fail_open), encoding="utf-8")
+            mutant = self.load_namespace(mutant_path, "s011_noop_fallback_mutant")
+
+        for case in S011_UNKNOWN_AND_WRAPPER_CASES:
+            with self.subTest(case_id=case["case_id"]):
+                decision = mutant["classify_command"](case["command"])
+                self.assertEqual(decision.action, "noop")
+                self.assertNotEqual(decision.action, case["expected_decision"])
 
     def test_inv_a_sed_stay_denied_forms(self) -> None:
         """INV-A(거부 보존) — `FIX_SED_ROUTE_PREDICATE_CASES` 중 거부로 남아야

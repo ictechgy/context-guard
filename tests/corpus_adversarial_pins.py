@@ -3126,3 +3126,136 @@ def fix6_route_predicate_relaxations() -> list[RoutePredicateCase]:
         for case in FIX6_ROUTE_PREDICATE_CASES
         if case.get("expected_decision") != "deny"
     ]
+
+
+# ---------------------------------------------------------------------------
+# S011 / F-1 — 등록되지 않은 실행 파일과 실행 접두사 래퍼는 fail-closed.
+#
+# 이 표는 알려진 명령의 안전한 `noop`/rewrite 형태를 넓히지 않는다. F-1 감사에서
+# 실증된 공통 결함, 즉 `command_search_diff`의 마지막 미등록-command `noop` 폴스루만
+# 고정한다. `nice`/`command`/`xargs`/`stdbuf`/`nohup`은 내부 명령을 대신 실행하는
+# 접두사인데 MiniShell-v1이 그 의미를 모델링하지 않으므로 미등록 실행 파일과 같은
+# `route_policy_denied` 경계에 속한다.
+# ---------------------------------------------------------------------------
+S011_UNKNOWN_AND_WRAPPER_CASES: list[AdversarialPin] = [
+    {
+        "case_id": "s011-unknown-custom-tool-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "custom-tool alpha beta",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "미등록 실행 파일은 standalone이어도 무변형 통과하지 않는다.",
+    },
+    {
+        "case_id": "s011-unknown-rm-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "rm -rf /",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "F-1 감사에서 실증된 미등록 파괴 명령.",
+    },
+    {
+        "case_id": "s011-unknown-sudo-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "sudo rm -rf /",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "미등록 권한 상승 실행 파일도 같은 폴스루를 탈 수 없다.",
+    },
+    {
+        "case_id": "s011-unknown-dd-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "dd if=/dev/zero of=/tmp/context-guard-s011-canary",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "F-1 감사에서 실증된 미등록 쓰기 명령.",
+    },
+    {
+        "case_id": "s011-unknown-mkfs-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "mkfs.ext4 /dev/context-guard-s011-canary",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "F-1 감사에서 실증된 미등록 파일시스템 명령.",
+    },
+    {
+        "case_id": "s011-unknown-yes-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "yes",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "F-1 감사에서 실증된 무한 출력 명령.",
+    },
+    {
+        "case_id": "s011-wrapper-nice-env-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "nice env GIT_EXTERNAL_DIFF=helper git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "감사에서 실증된 외부 실행 환경변수 우회 래퍼.",
+    },
+    {
+        "case_id": "s011-wrapper-command-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "command git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "MiniShell-v1이 모델링하지 않는 command 실행 접두사.",
+    },
+    {
+        "case_id": "s011-wrapper-xargs-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "xargs git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "stdin으로 실행 argv를 구성하는 래퍼는 정적 라우트 표 밖이다.",
+    },
+    {
+        "case_id": "s011-wrapper-stdbuf-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "stdbuf -oL git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "내부 명령을 대신 실행하는 미등록 접두사 래퍼.",
+    },
+    {
+        "case_id": "s011-wrapper-nohup-denied",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "nohup git diff",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "내부 명령을 대신 실행하는 미등록 접두사 래퍼.",
+    },
+    {
+        "case_id": "s011-known-kubectl-secrets-not-noop",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "kubectl get secrets",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "도구 basename만으로 noop을 재승인하지 않는다.",
+    },
+    {
+        "case_id": "s011-known-kubectl-write-not-noop",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "kubectl delete pod context-guard-s011-canary",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "명시된 읽기 제어군 옆의 쓰기 subcommand는 계속 거부된다.",
+    },
+    {
+        "case_id": "s011-known-docker-run-not-noop",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "docker run context-guard-s011-canary",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "docker basename 전체를 noop allowlist로 넓히지 않는다.",
+    },
+    {
+        "case_id": "s011-known-docker-compose-up-not-noop",
+        "fix": "S011-UNKNOWN-WRAPPER",
+        "command": "docker compose up",
+        "expected_decision": "deny",
+        "expected_reason_code": "route_policy_denied",
+        "note": "compose의 쓰기/실행 형태는 정확한 `compose ps` 제어군과 다르다.",
+    },
+]
