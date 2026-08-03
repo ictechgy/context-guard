@@ -10,6 +10,7 @@ import argparse
 import codecs
 import collections
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,11 @@ COMMAND_READ_CHUNK_BYTES = 64 * 1024
 COMMAND_MAX_UNTERMINATED_LINE_CHARS = 4_096
 RAW_TRUNCATION_REDACTION_HOLDBACK_CHARS = 1_024
 MAX_DYNAMIC_SIBLING_MODULE_BYTES = 2_000_000
+MAX_HOOK_INPUT_BYTES = 16 * 1024 * 1024
+
+
+class HookInputError(ValueError):
+    """The PostToolUse payload is malformed or violates the bounded schema."""
 
 
 def bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -530,6 +536,217 @@ def cap_text(text: str, max_chars: int) -> tuple[str, bool]:
     marker = f"\n[context-guard-kit] text capped: {len(text)} chars total\n"
     keep = max(0, max_chars - len(marker))
     return text[:keep].rstrip() + marker, True
+
+
+def trim_captured_output(
+    text: str,
+    *,
+    exit_code: int | None = 0,
+    max_lines: int = 220,
+    max_chars: int = 20_000,
+    max_line_chars: int = 4_000,
+    head_lines: int = 40,
+    tail_lines: int = 80,
+    error_lines: int = 120,
+    runner_summary_items: int = 12,
+) -> str:
+    """Sanitize and budget already-captured command output without rerunning it."""
+    max_lines = bounded_int(max_lines, 220, 1, MAX_LINES_LIMIT)
+    max_chars = bounded_int(max_chars, 20_000, 1, MAX_CHARS_LIMIT)
+    max_line_chars = bounded_int(max_line_chars, 4_000, 1, MAX_LINE_CHARS_LIMIT)
+    head_lines = bounded_int(head_lines, 40, 0, MAX_SECTION_LINES_LIMIT)
+    tail_lines = bounded_int(tail_lines, 80, 0, MAX_SECTION_LINES_LIMIT)
+    error_lines = bounded_int(error_lines, 120, 0, MAX_SECTION_LINES_LIMIT)
+    runner_summary_items = bounded_int(
+        runner_summary_items,
+        12,
+        0,
+        MAX_RUNNER_SUMMARY_ITEMS_LIMIT,
+    )
+
+    line_sanitizer = load_line_sanitizer(False, context="unknown_text")
+    all_lines: list[str] = []
+    head: list[str] = []
+    tail: collections.deque[str] = collections.deque(maxlen=tail_lines)
+    matched_errors: list[str] = []
+    visible_chars = 0
+    redacted_lines = 0
+    any_line_capped = False
+    runner_summary = RunnerFailureSummary(runner_summary_items, show_paths=False)
+    total = 0
+    with io.StringIO(text, newline="") as lines:
+        for line_number, line in enumerate(lines, start=1):
+            total = line_number
+            visible_source, redacted = line_sanitizer.sanitize(line)  # type: ignore[attr-defined]
+            path_safe_source = anonymize_absolute_paths(visible_source)
+            redacted = redacted or path_safe_source != visible_source
+            visible_source = path_safe_source
+            if redacted:
+                redacted_lines += 1
+            visible_line, line_capped = cap_line(visible_source, max_line_chars)
+            any_line_capped = any_line_capped or line_capped
+            visible_chars += len(visible_line)
+            if line_number <= head_lines:
+                head.append(visible_line)
+            tail.append(visible_line)
+            if ERROR_RE.search(visible_line) and len(matched_errors) < error_lines:
+                matched_errors.append(visible_line)
+            runner_summary.feed(line)
+            if line_number <= max_lines:
+                all_lines.append(visible_line)
+    if total <= max_lines and visible_chars <= max_chars and not any_line_capped:
+        return "".join(all_lines)
+
+    head_budget = min(head_lines, max(1, max_lines // 4))
+    tail_budget = min(tail_lines, max(1, max_lines // 3))
+    head_out = head[:head_budget]
+    tail_out = [line for line in list(tail)[-tail_budget:] if line not in set(head_out)]
+    remaining = max(0, max_lines - len(head_out) - len(tail_out))
+    error_out = unique_keep_order(matched_errors)[:remaining]
+
+    parts = [
+        (
+            f"[context-guard-kit] output trimmed: {total} lines/{len(text)} chars "
+            f"-> budget about {max_lines} log lines/{max_chars} chars\n"
+        )
+    ]
+    if exit_code is not None:
+        parts.append(f"[context-guard-kit] command exit_code={exit_code}\n")
+    if any_line_capped:
+        parts.append(
+            f"[context-guard-kit] one or more lines were capped at {max_line_chars} chars\n"
+        )
+    if redacted_lines:
+        parts.append(f"[context-guard-kit] redacted_lines={redacted_lines}\n")
+
+    summary_budget = max(0, min(max_lines, max(4, max_lines // 3)))
+    runner_lines = (
+        runner_summary.as_lines(max_line_chars, summary_budget)
+        if exit_code not in {None, 0}
+        else []
+    )
+    remaining_log_budget = max(0, max_lines - len("".join(runner_lines).splitlines()))
+    parts.extend(runner_lines)
+    parts.append("\n--- head ---\n")
+    if remaining_log_budget > 0:
+        head_out = head_out[:remaining_log_budget]
+        parts.extend(head_out)
+        remaining_log_budget -= len(head_out)
+    if error_out:
+        parts.append("\n--- matched error/failure lines ---\n")
+        error_out = error_out[:remaining_log_budget]
+        parts.extend(error_out)
+        remaining_log_budget -= len(error_out)
+    parts.append("\n--- tail ---\n")
+    if remaining_log_budget > 0:
+        parts.extend(tail_out[-remaining_log_budget:])
+    parts.append(
+        "\n[context-guard-kit] rerun the command without trim only if more context is essential.\n"
+    )
+    output, capped = cap_text("".join(parts), max_chars)
+    if capped:
+        output += "[context-guard-kit] final summary was capped by --max-chars.\n"
+    return output
+
+
+def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise HookInputError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def read_post_tool_hook_payload() -> object:
+    raw = sys.stdin.buffer.read(MAX_HOOK_INPUT_BYTES + 1)
+    if len(raw) > MAX_HOOK_INPUT_BYTES:
+        raise HookInputError("hook input exceeds byte cap")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+        return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
+    except HookInputError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HookInputError("hook input is not valid JSON") from exc
+
+
+def validate_post_tool_bash_response(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        raise HookInputError("hook payload must be an object")
+    if payload.get("hook_event_name") != "PostToolUse" or payload.get("tool_name") != "Bash":
+        return None
+    response = payload.get("tool_response")
+    if not isinstance(response, dict):
+        raise HookInputError("Bash tool_response must be an object")
+    if not isinstance(response.get("stdout"), str) or not isinstance(response.get("stderr"), str):
+        raise HookInputError("Bash stdout and stderr must be strings")
+    if not isinstance(response.get("interrupted"), bool) or not isinstance(response.get("isImage"), bool):
+        raise HookInputError("Bash flags must be booleans")
+    return response
+
+
+def run_post_tool_use_hook(args: argparse.Namespace) -> int:
+    if (
+        args.command
+        or args.show_paths
+        or args.digest != "off"
+        or args.digest_always
+        or args.artifact_receipt
+    ):
+        print(
+            "context-guard-trim-output: incompatible PostToolUse hook options",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        response = validate_post_tool_bash_response(read_post_tool_hook_payload())
+        if response is None:
+            return 0
+        # Claude Code's documented Bash replacement shape has no exit-status
+        # field, so do not invent success or suppress diagnostics as if rc=0.
+        updated = {
+            "stdout": trim_captured_output(
+                response["stdout"],
+                exit_code=None,
+                max_lines=args.max_lines,
+                max_chars=args.max_chars,
+                max_line_chars=args.max_line_chars,
+                head_lines=args.head_lines,
+                tail_lines=args.tail_lines,
+                error_lines=args.error_lines,
+                runner_summary_items=args.runner_summary_items,
+            ),
+            "stderr": trim_captured_output(
+                response["stderr"],
+                exit_code=None,
+                max_lines=args.max_lines,
+                max_chars=args.max_chars,
+                max_line_chars=args.max_line_chars,
+                head_lines=args.head_lines,
+                tail_lines=args.tail_lines,
+                error_lines=args.error_lines,
+                runner_summary_items=args.runner_summary_items,
+            ),
+            "interrupted": response["interrupted"],
+            "isImage": response["isImage"],
+        }
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "updatedToolOutput": updated,
+            }
+        }
+        sys.stdout.write(
+            json.dumps(output, ensure_ascii=False, separators=(",", ":")) + "\n"
+        )
+        return 0
+    except HookInputError:
+        print("context-guard-trim-output: invalid hook input", file=sys.stderr)
+        return 2
+    except Exception:
+        print("context-guard-trim-output: hook trim unavailable", file=sys.stderr)
+        return 2
 
 
 def compact_item(
@@ -1542,6 +1759,11 @@ def main() -> int:
             f"(default: {DEFAULT_ARTIFACT_RECEIPT_MAX_BYTES}, max: {MAX_ARTIFACT_RECEIPT_MAX_BYTES})"
         ),
     )
+    parser.add_argument(
+        "--post-tool-use-hook",
+        action="store_true",
+        help="read one Bash PostToolUse JSON payload from stdin and emit updatedToolOutput JSON",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     normalize_budgets(args)
@@ -1551,6 +1773,8 @@ def main() -> int:
         1,
         MAX_ARTIFACT_RECEIPT_MAX_BYTES,
     )
+    if args.post_tool_use_hook:
+        return run_post_tool_use_hook(args)
     if args.artifact_receipt and args.digest == "off":
         print("trim_command_output.py: --artifact-receipt requires --digest markdown or --digest json", file=sys.stderr)
         return 2
