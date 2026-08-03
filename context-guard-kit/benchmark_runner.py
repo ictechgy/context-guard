@@ -400,6 +400,7 @@ MEASUREMENT_DOCUMENTED_HOOK_EVENTS = (
 )
 SUCCESS_COMMAND_OUTPUT_MAX_BYTES = 64_000
 VERSION_OUTPUT_MAX_BYTES = 16_000
+MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES = 65_536
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
 ALLOWED_FIRST_ABSOLUTE_SYMLINKS = {
     "tmp": Path("/private/tmp"),
@@ -2697,7 +2698,7 @@ def validate_measurement_cli_capabilities(claude_bin: str, spec: MeasurementVari
                 [executable, "--help"],
                 cwd=cwd,
                 timeout_seconds=10,
-                max_output_bytes=VERSION_OUTPUT_MAX_BYTES,
+                max_output_bytes=MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES,
                 env=env,
             )
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
@@ -8932,7 +8933,7 @@ def run_measurement_cli_probes(
                 [claude_bin, flag],
                 cwd=Path("<probe-root>/cwd"),
                 timeout_seconds=10.0,
-                max_output_bytes=65_536,
+                max_output_bytes=MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES,
                 env=dict(env),
             )
             for flag in ("--version", "--help")
@@ -8988,7 +8989,7 @@ def run_measurement_cli_probes(
                 [executable, flag],
                 cwd=paths["cwd"],
                 timeout_seconds=10,
-                max_output_bytes=65_536,
+                max_output_bytes=MEASUREMENT_CLI_PROBE_OUTPUT_MAX_BYTES,
                 env=env,
             ))
         version_raw = _study_validate_probe_output(results[0], kind="version")
