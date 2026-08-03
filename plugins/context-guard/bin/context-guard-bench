@@ -8064,8 +8064,10 @@ def parse_measurement_terminal_usage(raw: bytes | str) -> dict[str, int]:
     if parsed.payload is None or parsed.payload.get("type") != "result":
         raise ValueError("measurement terminal usage requires one terminal result record")
     usage = parsed.payload.get("usage")
-    if not isinstance(usage, dict) or set(usage) != set(MEASUREMENT_STUDY_USAGE_KEYS):
-        raise ValueError("measurement terminal usage must contain the exact four buckets")
+    # Claude Code may add diagnostic telemetry beside the four accounting
+    # buckets. Only the frozen required buckets participate in the estimator.
+    if not isinstance(usage, dict) or not set(MEASUREMENT_STUDY_USAGE_KEYS).issubset(usage):
+        raise ValueError("measurement terminal usage must contain all four required buckets")
     result: dict[str, int] = {}
     total = 0
     for key in MEASUREMENT_STUDY_USAGE_KEYS:
@@ -9287,6 +9289,7 @@ def build_measurement_study_manifest(
                 "record_type": "result",
                 "object_path": "$.usage",
                 "keys": list(MEASUREMENT_STUDY_USAGE_KEYS),
+                "additional_fields": "ignored_not_counted_v1",
                 "integer_grammar": "0|[1-9][0-9]*",
                 "maximum": MAX_USAGE_TOKEN_COUNT,
                 "formula": "P=input_tokens+cache_creation_input_tokens+cache_read_input_tokens+output_tokens",

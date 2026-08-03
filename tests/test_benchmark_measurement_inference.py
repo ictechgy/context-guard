@@ -634,6 +634,30 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
         streams = FIXTURE["terminal_streams"]
         parsed = self.runner.parse_measurement_terminal_usage(streams["valid"].encode())
         self.assertEqual(parsed, {"input_tokens": 11, "cache_creation_input_tokens": 13, "cache_read_input_tokens": 17, "output_tokens": 19, "primary_tokens": 60})
+        live_shaped = json.loads(streams["valid"])
+        live_shaped["usage"].update({
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": 13,
+                "ephemeral_5m_input_tokens": 0,
+            },
+            "inference_geo": "not_available",
+            "iterations": [{"type": "message", "input_tokens": 11}],
+            "server_tool_use": {"web_fetch_requests": 0, "web_search_requests": 0},
+            "service_tier": "standard",
+            "speed": "standard",
+        })
+        self.assertEqual(
+            self.runner.parse_measurement_terminal_usage(
+                (json.dumps(live_shaped, separators=(",", ":")) + "\n").encode()
+            ),
+            parsed,
+        )
+        self.assertEqual(
+            self.runner.parse_measurement_terminal_usage(
+                streams["additional_bucket"].encode()
+            ),
+            parsed,
+        )
         raw = streams["valid"].encode()
         self.assertEqual(len(raw), 164)
         self.assertEqual(
@@ -641,7 +665,6 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
             "e3bf1b6b4f6e40c5c79e6ecf0ca847a0417b905bcf2e095993b0ccb4b8cd134c",
         )
         malformed = {
-            "additional": streams["additional_bucket"],
             "duplicate": streams["duplicate_key"],
             "string": streams["string_number"],
             "bool": streams["valid"].replace('"input_tokens":11', '"input_tokens":true'),
