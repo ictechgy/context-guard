@@ -1485,8 +1485,11 @@ def _measurement_parse_variant(
     if any(item not in MEASUREMENT_DOCUMENTED_HOOK_EVENTS for item in required_event_classes):
         raise SystemExit(f"{owner}.hook_events.required_event_classes contains unsupported hook event")
     ordered_classes = tuple(dict.fromkeys(event for event, _command in registered_bindings))
-    if required_event_classes != ordered_classes:
-        raise SystemExit(f"{owner}.hook_events.required_event_classes must match binding order")
+    required_set = set(required_event_classes)
+    if required_event_classes != tuple(event for event in ordered_classes if event in required_set):
+        raise SystemExit(
+            f"{owner}.hook_events.required_event_classes must be an ordered subset of registered hook events"
+        )
     if variant_name == "baseline" and (registered_bindings or required_event_classes):
         raise SystemExit(f"{owner} baseline hook configuration must be empty")
 
@@ -1639,7 +1642,7 @@ def _measurement_validate_treatment_bindings(spec: MeasurementVariant) -> dict[s
         raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
     binding_set = set(spec.registered_bindings)
     occurrences = {binding: 0 for binding in spec.registered_bindings}
-    for event in spec.required_event_classes:
+    for event in dict.fromkeys(event for event, _command in spec.registered_bindings):
         registrations = hooks.get(event)
         if not isinstance(registrations, list) or not registrations:
             raise SystemExit("measurement baseline and treatment settings differ outside registered hooks")
@@ -3350,9 +3353,11 @@ def normalize_measurement_hook_events(raw: bytes) -> list[dict[str, Any]]:
 def _measurement_resolve_terminal_status(
     *, raw_byte_limit: bool, raw_line_limit: bool, raw_line_byte_limit: bool,
     process_status: str, stream_status: str, hook_result: dict[str, Any],
-    arm: str, required_event_classes: tuple[str, ...],
+    arm: str, allowed_event_classes: tuple[str, ...],
+    required_event_classes: tuple[str, ...],
 ) -> str:
     completed_classes = {item["hook_event"] for item in hook_result["hooks"]}
+    allowed_classes = set(allowed_event_classes)
     required_classes = set(required_event_classes)
     hook_process_failed = any(
         item["hook_process_outcome"] != "success" or item["hook_process_exit_code"] not in (None, 0)
@@ -3382,7 +3387,7 @@ def _measurement_resolve_terminal_status(
     ):
         if hook_result.get("classification") == status or status in hook_result.get("failure_flags", ()):
             return status
-    if arm == "treatment" and completed_classes - required_classes:
+    if arm == "treatment" and completed_classes - allowed_classes:
         return "unexpected_hook_event_class"
     if arm == "baseline" and hook_result["observed"]:
         return "baseline_hook_contamination"
@@ -3430,12 +3435,13 @@ def _measurement_receipt(
 ) -> dict[str, Any]:
     raw_sha256 = hashlib.sha256(raw).hexdigest()
     raw_lines = len(raw.splitlines())
-    required_classes = tuple(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+    allowed_classes = tuple(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+    required_classes = spec.required_event_classes
     counts = collections.Counter(item["hook_event"] for item in hook_result["hooks"])
     event_class_counts = [
         {"hook_event": event, "count": counts[event]}
         for event in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
-        if counts[event] or event in required_classes
+        if counts[event] or event in allowed_classes
     ]
     settings_relative = Path("session") / spec.settings_file.name
     return {
@@ -3583,6 +3589,9 @@ def _run_measurement_fixture_locked(
         stream_status=parsed.status,
         hook_result=hook_result,
         arm=variant.name,
+        allowed_event_classes=tuple(
+            dict.fromkeys(event for event, _command in spec.pair_registered_bindings)
+        ),
         required_event_classes=spec.required_event_classes,
     )
 
@@ -7403,7 +7412,8 @@ def _verify_existing_measurement_run(
         hooks = receipt.get("hooks")
         if not isinstance(hooks, list) or summary.get("completed_lifecycle_count") != len(hooks):
             raise ValueError("hook count")
-        required_classes = list(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+        allowed_classes = list(dict.fromkeys(event for event, _command in spec.pair_registered_bindings))
+        required_classes = list(spec.required_event_classes)
         if summary.get("required_event_classes") != required_classes:
             raise ValueError("required hook classes")
         for count_name in ("observed_lifecycle_count", "completed_lifecycle_count"):
@@ -7444,7 +7454,7 @@ def _verify_existing_measurement_run(
         expected_counts = [
             {"hook_event": event, "count": counts[event]}
             for event in MEASUREMENT_DOCUMENTED_HOOK_EVENTS
-            if counts[event] or event in required_classes
+            if counts[event] or event in allowed_classes
         ]
         if summary.get("event_class_counts") != expected_counts:
             raise ValueError("event class counts")
@@ -7483,6 +7493,7 @@ def _verify_existing_measurement_run(
                 stream_status=reparsed_stream.status,
                 hook_result=reparsed_hooks,
                 arm=spec.identity.arm,
+                allowed_event_classes=tuple(allowed_classes),
                 required_event_classes=spec.required_event_classes,
             )
         expected_receipt = _measurement_receipt(

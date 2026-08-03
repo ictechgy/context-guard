@@ -493,11 +493,9 @@ class CheckerIsolationTest(unittest.TestCase):
         treatment = next(item for item in template if item["name"] == "treatment")
         hooks = treatment["measurement"]["hook_events"]
         events = [binding["hook_event"] for binding in hooks["registered_bindings"]]
-        # 조건부 이벤트는 등록하지 않는다. frozen 계약이 관측 클래스와 필수 클래스의
-        # 정확한 일치를 요구하므로, 실패 훅을 등록하면 어느 방향으로든 attempt 가 폐기된다.
         self.assertNotIn("PostToolUseFailure", events)
         self.assertEqual(events, ["PreToolUse", "PostToolUse"])
-        self.assertEqual(hooks["required_event_classes"], events)
+        self.assertEqual(hooks["required_event_classes"], [])
         for event in events:
             with self.subTest(event=event):
                 self.assertIn(event, documented)
@@ -555,9 +553,14 @@ class CheckerIsolationTest(unittest.TestCase):
             (SUITE / "variants.template.json").read_text(encoding="utf-8")
         )
         treatment = next(item for item in template if item["name"] == "treatment")
+        registered = [
+            row["hook_event"]
+            for row in treatment["measurement"]["hook_events"]["registered_bindings"]
+        ]
         required = treatment["measurement"]["hook_events"]["required_event_classes"]
+        self.assertEqual(evidence["events_registered_by_treatment"], registered)
         self.assertEqual(evidence["events_required_by_treatment"], required)
-        for event in required:
+        for event in registered:
             with self.subTest(event=event, source="recorded evidence"):
                 self.assertGreater(evidence["event_occurrences"][event], 0)
         which = shutil.which("claude")
@@ -567,7 +570,7 @@ class CheckerIsolationTest(unittest.TestCase):
         if not resolved.is_file():
             self.skipTest("claude CLI does not resolve to a single readable bundle")
         raw = resolved.read_bytes()
-        for event in required:
+        for event in registered:
             with self.subTest(event=event, source="installed CLI"):
                 self.assertGreater(
                     raw.count(event.encode("ascii")), 0,

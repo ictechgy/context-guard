@@ -111,30 +111,33 @@ receipt bytes. Only the `declared_timestamps` block changes between runs.
 
 ## Verified hook-event note
 
-The measured treatment registers only **unconditional** hook classes,
-`PreToolUse` and `PostToolUse`. `PostToolUseFailure` is a real event, but it fires
-only when a tool call fails, and the frozen measurement contract requires the
-observed treatment event classes to equal the declared required classes exactly.
-Registering a conditional event therefore discards attempts either way: a missing
-required class when nothing failed, or an unexpected class when it did. Requiring
-it per attempt would have silently filtered the treatment sample down to attempts
-that happened to fail a tool. The failure-nudge hook is consequently **out of the
-measured treatment for this suite**, which narrows what the study can claim about
-that specific guardrail.
+The measured treatment registers `PreToolUse` and `PostToolUse`, but each event is
+conditional on the model invoking a matching tool. Registered classes define the
+events the runner permits and validates when they occur; the ordered
+`required_event_classes` subset defines events that must occur in every attempt.
+The analytic suite leaves that subset empty so stochastic tool choice cannot
+silently filter the treatment sample. Every observed hook process must still
+succeed, and any unregistered event still invalidates the attempt. A discarded
+canary that forces both matching tool calls separately verifies `PreToolUse` and
+`PostToolUse` before analytic authorization.
+
+`PostToolUseFailure` is a real event, but the exact treatment candidate does not
+configure the failure-nudge hook. It remains **out of the measured treatment for
+this suite**, which narrows what the study can claim about that specific guardrail.
 
 The event evidence itself is external rather than circular. `hook-event-evidence.json` records the resolved
 `claude --version` output and literal occurrence counts for every event the
-treatment arm requires, measured against the installed CLI bundle: `PreToolUse`
+treatment arm registers, measured against the installed CLI bundle: `PreToolUse`
 133, `PostToolUse` 185, `PostToolUseFailure` 54 in Claude Code 2.1.220. A test
 re-checks the installed CLI directly when one is present and falls back to the
 recorded evidence with an explicit skip when it is not, so pinning to this
 project's own frozen list is no longer the only argument.
 
-Occurrence counts prove the event name ships in the CLI. They do not prove the
-provider emits it for a given attempt, which is checked at runtime instead: a
-treatment attempt that does not complete every required event class aborts as a
-missing-required-event-class failure rather than being counted. Re-collect this
-evidence against the exact CLI version before freezing a measurement manifest.
+Occurrence counts prove the event name ships in the CLI. They do not prove a
+matching tool invocation occurs in every attempt. Runtime validation instead
+rejects unregistered event classes, missing explicitly required classes, and any
+observed hook process failure. Re-collect this evidence against the exact CLI
+version before freezing a measurement manifest.
 
 ## Claim boundary
 
