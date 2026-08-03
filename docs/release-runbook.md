@@ -153,7 +153,19 @@ Re-blessing procedure:
 
 1. Confirm the freeze is actually the blocker (an otherwise-unrelated PR touches a frozen component path) and that no cheaper option — narrowing the frozen path set for a future generation, or splitting a large frozen test file — resolves it instead.
 2. Author the new generation's four reapply commits (`bless`, `b1`, `b2`, `shared-integration`) with subjects that are globally unique across the whole `GENERATIONS` history (uniqueness is enforced mechanically: two commits sharing a subject make the proof fail with "found N" instead of silently picking one).
-3. Append a new `Generation` record to `GENERATIONS` and append its canonical digest to `GENERATION_RECORD_FINGERPRINTS` in the same commit that lands the fourth reapply commit's ancestor chain. Do not edit or delete any prior record or digest — both tuples are append-only, including every prior path set and marker. Run the verifier after committing: the history-prefix check intentionally uses committed Git evidence and cannot establish the new prefix from an uncommitted worktree alone.
+3. Append a new `Generation` record to `GENERATIONS` and append its canonical digest to `GENERATION_RECORD_FINGERPRINTS` in the same commit that lands the fourth reapply commit's ancestor chain. Do not edit or delete any prior record or digest — both tuples are append-only, including every prior path set and marker. Compute the digest with the production canonicalizer rather than hand-serializing the record:
+   ```bash
+   python3 - <<'PY'
+   import runpy
+   proof = runpy.run_path(
+       "scripts/verify_gate_b_rollback.py",
+       run_name="gate_b_fingerprint",
+   )
+   generation = proof["GENERATIONS"][-1]
+   print(proof["generation_record_fingerprint"](generation))
+   PY
+   ```
+   Run the full verifier again after committing. A worktree run can prove that the previously committed ledger is still a prefix, but only the committed PR head is durable release evidence for the newly appended record and digest.
 
    The record itself is validated mechanically before any git work happens (`assert_generation_records_wellformed`, a git-free pre-pass so a malformed record fails loudly even in a truncated checkout). A new generation is rejected outright when:
    - its `name` duplicates any existing generation's `name` — `all_commits` is keyed by name, so a collision would silently make one generation overwrite the other and both cross-generation checks (`residual_edits` and the existence-set invariant) would compare a `bless` commit against itself and pass vacuously;
