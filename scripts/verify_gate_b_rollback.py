@@ -433,15 +433,20 @@ def assert_disjoint_paths(generation: Generation) -> None:
             )
 
 
-# 컴포넌트 경로가 사람의 셸에서 안전하게 리터럴로 남으려면 선행 ``:`` 뿐 아니라
-# 공백과 셸/glob 메타문자도 없어야 한다. 공백은 `-- $(jq -r ...)` 같은 인용 없는
+# 컴포넌트 경로가 사람의 셸·터미널에서 안전하게 리터럴로 남으려면 선행 ``:``
+# 뿐 아니라 제어문자, 공백, 셸/glob 메타문자도 없어야 한다. 공백은
+# `-- $(jq -r ...)` 같은 인용 없는
 # 확장에서 워드 스플리팅으로 경로 하나를 여러 토큰으로 쪼개 사람의 리뷰 diff에서
 # 조용히 사라지게 만든다(런북은 이제 인용된 배열 확장을 쓰지만, 레코드 자체를
 # 안전하게 만들어 두면 인용을 놓친 미래의 실수에도 방어선이 남는다). glob
 # 메타문자(``*?[``)는 git 자체를 속이지는 못한다고 측정으로 확인했지만(git은
 # wildmatch보다 먼저 정확 일치를 시도한다), 셸 쪽 경로명 확장은 별개의 위험이라
-# 함께 막는다.
-_UNSAFE_COMPONENT_PATH_CHARS = re.compile(r"[\s*?\[\]{}$`\"'\\|;&<>()~!#]")
+# 함께 막는다. C0/DEL/C1 제어문자는 ``jq -r``가 원시 바이트로 내보낼 때 커서
+# 이동·지움 같은 터미널 효과로 이웃 경로를 숨길 수 있으므로 전 범위를 거부한다.
+# ``\s``는 비ASCII 공백류까지 계속 맡는다.
+_UNSAFE_COMPONENT_PATH_CHARS = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\s*?\[\]{}$`\"'\\|;&<>()~!#]"
+)
 
 
 def generation_record_fingerprint(generation: Generation) -> str:
@@ -635,9 +640,9 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
        컴포넌트 경로를 검사하지만, C3-a는 live HEAD의 선언된 소유 경로에서
        리터럴을 확인하고 전방 이월도 그 소유 관계를 기준으로 한다. 컴포넌트 밖
        경로를 소유자로 허용하면 그 두 보증이 세대의 동결 경계 밖을 가리킨다.
-    5. 컴포넌트 경로가 리터럴이고 사람의 셸에서 안전함. 선행 ``:``는 git
-       pathspec 매직이고, 공백과 셸/glob 메타문자는 런북이 지시하는 사람의
-       리뷰 diff에서만 경로를 조용히 잃게 만든다 — 기계 게이트는
+    5. 컴포넌트 경로가 리터럴이고 사람의 셸·터미널에서 안전함. 선행 ``:``는 git
+       pathspec 매직이고, 제어문자·공백·셸/glob 메타문자는 런북이 지시하는
+       사람의 리뷰 diff를 조작하거나 경로를 조용히 잃게 만든다 — 기계 게이트는
        ``GIT_LITERAL_PATHSPECS=1``로 전체 경로를 그대로 보므로 exit 0인 채
        사람 검토만 좁아지는 비대칭이 생긴다. 자세한 근거는 아래 검사부의
        주석을 참고한다.
@@ -682,9 +687,10 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
                 raise ProofError(
                     f"generation {generation.name!r} declares a component path "
                     f"{path!r} containing unsafe character {unsafe.group()!r}: "
+                    "control characters can alter terminal rendering, while "
                     "whitespace and shell/glob metacharacters can narrow or split "
-                    "the path when a human pastes review_pathspec into their own "
-                    "shell, hiding it from the review diff"
+                    "the path when a human reviews review_pathspec, hiding it from "
+                    "the review diff"
                 )
         for marker in generation.gate_b_markers:
             if not marker.literal.strip():

@@ -1765,7 +1765,7 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     def test_resolve_history_rejects_unsafe_shell_characters_in_component_path(
         self,
     ) -> None:
-        """D6-5 확장 — 공백과 셸/glob 메타문자를 가진 컴포넌트 경로를 거부한다.
+        """D6-5 확장 — 공백, 제어문자, 셸/glob 메타문자 경로를 거부한다.
 
         ``GIT_LITERAL_PATHSPECS=1``은 이 문제를 풀지 못한다: 공백은 git이 아니라
         *사람의 셸*이 ``-- $(jq -r '.review_pathspec[]' ...)``를 인용 없이 확장할
@@ -1788,6 +1788,9 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ("g2/has space.txt", "b1_paths"),
             ("g2/glob[ab].txt", "b2_paths"),
             ("shared/star*.txt", "shared_paths"),
+            ("g2/control\x1b.txt", "b1_paths"),
+            ("g2/control\x07.txt", "b2_paths"),
+            ("shared/control\x7f.txt", "shared_paths"),
         )
         for unsafe_path, slot in cases:
             with self.subTest(unsafe_path=unsafe_path, slot=slot):
@@ -1831,8 +1834,12 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         ``x/has$dollar.txt``를 실제로 받아들인다(측정 확인). 교차를 전부
         고정하면 어느 슬롯의 어느 문자가 빠져도 그 하위 테스트가 실패한다.
         """
+        control_characters = tuple(chr(codepoint) for codepoint in range(0x20)) + tuple(
+            chr(codepoint) for codepoint in range(0x7F, 0xA0)
+        )
         unsafe_characters = (
-            " ", "\t", "\n", "\r", "\v", "\f",
+            *control_characters,
+            " ",
             # 비ASCII 공백류. bash의 IFS는 ASCII 공백만 쪼개므로 이들은 워드
             # 스플리팅 위험은 아니지만, `jq -r` 목록을 눈으로 읽는 사람에게는
             # 보통 공백과 구별되지 않는다 — 사람 검토 무결성이 곧 이 규칙의
