@@ -1264,11 +1264,22 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                 "--no-session-persistence", "stream-json",
             )
         )
-        capability_result = SimpleNamespace(
-            returncode=0, timed_out=False, output_truncated=False,
-            stdout="--settings --setting-sources --include-hook-events --no-session-persistence stream-json\n",
-            stderr="",
+        capability_help = (
+            "--settings --setting-sources --include-hook-events "
+            "--no-session-persistence stream-json\n"
+            + ("x" * 16_000)
         )
+
+        def capability_probe(_argv, **kwargs):
+            trace.record("capability_probe", **kwargs)
+            return SimpleNamespace(
+                returncode=0,
+                timed_out=False,
+                output_truncated=len(capability_help.encode()) > kwargs["max_output_bytes"],
+                stdout=capability_help[:kwargs["max_output_bytes"]],
+                stderr="",
+            )
+
         with (
             tempfile.TemporaryDirectory() as raw,
             mock.patch.object(
@@ -1278,11 +1289,12 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                     __exit__=lambda _self, *_args: False,
                 ),
             ),
-            mock.patch.object(self.runner, "run_bounded_command", return_value=capability_result),
+            mock.patch.object(self.runner, "run_bounded_command", side_effect=capability_probe),
         ):
             self.assertIsNone(
                 self.runner.validate_measurement_cli_capabilities("claude", capability_spec)
             )
+        self.assertEqual(trace.calls[-1]["max_output_bytes"], 65_536)
         action_trace = TraceRecorder()
         with tempfile.TemporaryDirectory() as raw:
             action = self.runner.run_measurement_study_action(
