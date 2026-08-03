@@ -14,10 +14,17 @@ reapply 커밋(subject로 식별), 세 그룹의 컴포넌트 경로 집합, 이
 세대(목록의 마지막 원소)만 HEAD에 대한 동결, 순서 있는 라이브 롤백, Gate-B
 마커 존재/부재를 추가로 검사받는다. 재축복은 세대 하나를 append하는 명시적
 리뷰 커밋이며, 기존 세대의 레코드는 절대 수정하지 않는다.
+
+각 레코드의 정규 지문은 ``GENERATION_RECORD_FINGERPRINTS``의 같은 위치에
+append된다. 검증기는 현재 레코드와 지문을 대조한 뒤, 도달 가능한 과거 버전의
+지문 목록이 모두 현재 목록의 prefix인지 확인한다. 따라서 기존 레코드의 삭제나
+경로 축소와 함께 현재 지문을 고쳐도 이미 커밋된 더 긴/다른 prefix가 이를 막는다.
 """
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
 import os
 import re
@@ -185,6 +192,18 @@ GENERATIONS: tuple[Generation, ...] = (
         residual_edits=frozenset({"tests/test_context_guard_kit.py"}),
     ),
 )
+
+# F-7 append-only anchor. Each digest binds one complete, canonical Generation
+# record (subjects, owned path sets, residual contract, Gate-B markers, and
+# declared residual edits). A routine re-bless appends both a Generation and its
+# digest; editing or deleting an already shipped record makes the proof fail
+# before it consults git history.
+GENERATION_RECORD_FINGERPRINTS: tuple[str, ...] = (
+    "b7cd908dcf516350ba0ac41f9db0043bc19ef5805550acb0a6667a51af6cd62b",
+    "77f3117dff264c2fac25ea338af7d7cda6ff66c28e01aa479390e1109e9db7e2",
+    "6a70a0217c89ed0c06767c95197449323fc62a1d22fda5c4639e83688e2da19f",
+)
+GENERATION_FINGERPRINT_SOURCE_PATH = "scripts/verify_gate_b_rollback.py"
 
 
 class ProofError(RuntimeError):
@@ -422,6 +441,166 @@ def assert_disjoint_paths(generation: Generation) -> None:
 # wildmatch보다 먼저 정확 일치를 시도한다), 셸 쪽 경로명 확장은 별개의 위험이라
 # 함께 막는다.
 _UNSAFE_COMPONENT_PATH_CHARS = re.compile(r"[\s*?\[\]{}$`\"'\\|;&<>()~!#]")
+
+
+def generation_record_fingerprint(generation: Generation) -> str:
+    """Return the domain-separated canonical SHA-256 for one generation record."""
+    payload = {
+        "name": generation.name,
+        "subjects": {
+            "bless": generation.bless_subject,
+            "b1": generation.b1_subject,
+            "b2": generation.b2_subject,
+            "shared-integration": generation.shared_subject,
+        },
+        "paths": {
+            "b1": sorted(generation.b1_paths),
+            "b2": sorted(generation.b2_paths),
+            "shared-integration": sorted(generation.shared_paths),
+        },
+        "residual_markers": {
+            path: list(generation.residual_markers[path])
+            for path in sorted(generation.residual_markers)
+        },
+        "gate_b_markers": [
+            {"literal": marker.literal, "owner_path": marker.owner_path}
+            for marker in generation.gate_b_markers
+        ],
+        "residual_edits": sorted(generation.residual_edits),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(
+        b"contextguard.gate-b-generation-record.v1\0" + encoded
+    ).hexdigest()
+
+
+def assert_generation_fingerprint_ledger_matches(
+    generations: tuple[Generation, ...],
+    fingerprints: tuple[str, ...],
+) -> None:
+    """Reject deletion or mutation of a record bound by the shipped ledger."""
+    if len(generations) != len(fingerprints):
+        raise ProofError(
+            "generation fingerprint ledger length mismatch: "
+            f"records={len(generations)} fingerprints={len(fingerprints)}"
+        )
+    for generation, expected in zip(generations, fingerprints):
+        actual = generation_record_fingerprint(generation)
+        if actual != expected:
+            raise ProofError(
+                "generation fingerprint ledger mismatch for "
+                f"{generation.name!r}: actual={actual} expected={expected}"
+            )
+
+
+def generation_fingerprint_ledger_from_source(
+    source: str,
+    *,
+    revision: str,
+) -> tuple[str, ...] | None:
+    """Read the literal fingerprint tuple from one historical verifier source."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ProofError(
+            f"could not parse historical Gate-B verifier at {revision}: {exc.msg}"
+        ) from exc
+
+    values: list[ast.expr] = []
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and (
+                node.target.id == "GENERATION_RECORD_FINGERPRINTS"
+            ):
+                if node.value is not None:
+                    values.append(node.value)
+        elif isinstance(node, ast.Assign):
+            if any(
+                isinstance(target, ast.Name)
+                and target.id == "GENERATION_RECORD_FINGERPRINTS"
+                for target in node.targets
+            ):
+                values.append(node.value)
+    if not values:
+        return None
+    if len(values) != 1:
+        raise ProofError(
+            "historical Gate-B verifier declares "
+            f"GENERATION_RECORD_FINGERPRINTS {len(values)} times at {revision}"
+        )
+    try:
+        ledger = ast.literal_eval(values[0])
+    except (TypeError, ValueError) as exc:
+        raise ProofError(
+            "historical GENERATION_RECORD_FINGERPRINTS is not a literal tuple at "
+            f"{revision}"
+        ) from exc
+    if not isinstance(ledger, tuple) or any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+        for value in ledger
+    ):
+        raise ProofError(
+            "historical GENERATION_RECORD_FINGERPRINTS is malformed at "
+            f"{revision}"
+        )
+    return ledger
+
+
+def assert_generation_fingerprint_history_append_only(
+    repo: Path,
+    source_head: str,
+    current: tuple[str, ...],
+    *,
+    history_may_be_truncated: bool = False,
+) -> None:
+    """Require every committed fingerprint ledger to be a prefix of the current one."""
+    if not path_exists_in_tree(repo, source_head, GENERATION_FINGERPRINT_SOURCE_PATH):
+        raise ProofError(
+            "generation fingerprint source path is missing at "
+            f"{source_head}: {GENERATION_FINGERPRINT_SOURCE_PATH!r}"
+        )
+    history = run_git(
+        repo,
+        "log",
+        "--format=%H",
+        "--follow",
+        source_head,
+        "--",
+        GENERATION_FINGERPRINT_SOURCE_PATH,
+    ).stdout.splitlines()
+    observed = 0
+    for commit in history:
+        shown = run_git(
+            repo,
+            "show",
+            f"{commit}:{GENERATION_FINGERPRINT_SOURCE_PATH}",
+            check=False,
+        )
+        if shown.returncode:
+            continue
+        historical = generation_fingerprint_ledger_from_source(
+            shown.stdout,
+            revision=commit,
+        )
+        if historical is None:
+            continue
+        observed += 1
+        if len(historical) > len(current) or current[: len(historical)] != historical:
+            raise ProofError(
+                "historical generation fingerprint ledger is not a prefix of the "
+                f"current ledger: revision={commit} historical={len(historical)} "
+                f"current={len(current)}"
+            )
+    if not observed and not history_may_be_truncated:
+        raise ProofError(
+            "no committed generation fingerprint ledger was reachable from "
+            f"{source_head}: the append-only history check would pass vacuously"
+        )
 
 
 def assert_generation_records_wellformed(generations: tuple[Generation, ...]) -> None:
@@ -1008,7 +1187,17 @@ def run_proof(repo: Path = ROOT) -> dict[str, object]:
     assert_generation_records_wellformed(GENERATIONS)
     for generation in GENERATIONS:
         assert_disjoint_paths(generation)
+    assert_generation_fingerprint_ledger_matches(
+        GENERATIONS,
+        GENERATION_RECORD_FINGERPRINTS,
+    )
     source_head, history_may_be_truncated = resolve_source_head(repo)
+    assert_generation_fingerprint_history_append_only(
+        repo,
+        source_head,
+        GENERATION_RECORD_FINGERPRINTS,
+        history_may_be_truncated=history_may_be_truncated,
+    )
     all_commits = resolve_history(
         repo,
         source_head,
