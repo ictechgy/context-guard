@@ -171,7 +171,7 @@ class VerdictEquivalenceTests(unittest.TestCase):
         ),
         (
             "three_level_keys_tuple",
-            'token = safe_int(first_present_mapping_value(telemetry, keys=("a", "b")))',
+            'token = safe_int(f(v, keys=("a", "b")))',
         ),
         ("non_secret_name", 'username = fetch_name(user_id)'),
         ("quoted_value_not_a_call", 'token = "static-looking-value"'),
@@ -191,9 +191,10 @@ class VerdictEquivalenceTests(unittest.TestCase):
         unfixed_re = _build_call_assignment_re(UNFIXED_CALL_ARGUMENT_CHUNK)
         for name, line in self.POSITIVE_AND_NEGATIVE_CASES:
             with self.subTest(case=name):
-                # Budget generously since some of these are intentionally the
-                # slow shape; this test asserts equivalence, not speed.
-                _, unfixed_match = _search_with_budget(unfixed_re, line, budget_seconds=20.0)
+                # The dedicated regression tests above carry the intentionally
+                # slow ReDoS witnesses.  This characterization battery must stay
+                # cheap so its reference regex does not make CI timing-sensitive.
+                _, unfixed_match = _search_with_budget(unfixed_re, line, budget_seconds=1.0)
                 self.assertNotEqual(
                     unfixed_match, "TIMEOUT", f"case {name!r} unexpectedly hangs the unfixed regex too"
                 )
@@ -238,7 +239,7 @@ class VerdictEquivalenceTests(unittest.TestCase):
         ),
         (
             "three_level_keys_tuple",
-            'token = safe_int(first_present_mapping_value(telemetry, keys=("a", "b")))',
+            'token = safe_int(f(v, keys=("a", "b")))',
             "token = [REDACTED]",
             True,
         ),
