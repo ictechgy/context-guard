@@ -134,6 +134,7 @@ def _measurement(
     arm: str = "baseline",
     attempt: int = 0,
     bindings: tuple[tuple[str, str], ...] = (),
+    required_event_classes: tuple[str, ...] | None = None,
     fake_mode: str = "auto",
     artifact_root: str = "artifacts",
 ) -> dict:
@@ -162,7 +163,11 @@ def _measurement(
                 {"hook_event": event, "configured_command": command}
                 for event, command in bindings
             ],
-            "required_event_classes": list(dict.fromkeys(event for event, _ in bindings)),
+            "required_event_classes": list(
+                dict.fromkeys(event for event, _ in bindings)
+                if required_event_classes is None
+                else required_event_classes
+            ),
         },
         "cli_capabilities": [
             "--settings",
@@ -1540,6 +1545,110 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
             receipt = json.loads(harness.receipts()[0].read_text(encoding="utf-8"))
             self.assertEqual(receipt["terminal_status"], "missing_required_hook_event_class")
 
+    def test_registered_hook_classes_are_allowed_without_being_required(self):
+        cases = (
+            ("valid-no-hooks", [], "success"),
+            ("valid-hooks", ["PreToolUse", "PostToolUseFailure"], "success"),
+        )
+        for script, root in self._for_each_script():
+            for attempt, (mode, observed, expected_status) in enumerate(cases, start=120):
+                with self.subTest(script=script, mode=mode):
+                    case_root = root / mode
+                    case_root.mkdir()
+                    harness = MeasurementHarness(case_root, script)
+                    treatment = _variant("treatment", _measurement(
+                        settings_file="treatment-settings.json",
+                        arm="treatment",
+                        attempt=attempt,
+                        bindings=DEFAULT_BINDINGS,
+                        required_event_classes=(),
+                        fake_mode=mode,
+                    ))
+
+                    proc = harness.run([treatment])
+
+                    self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+                    receipt = json.loads(harness.receipts()[0].read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["terminal_status"], expected_status)
+                    self.assertEqual(receipt["hook_summary"]["required_event_classes"], [])
+                    self.assertEqual([row["hook_event"] for row in receipt["hooks"]], observed)
+
+    def test_required_hook_classes_are_an_ordered_subset_and_still_enforced(self):
+        for script, root in self._for_each_script():
+            harness = MeasurementHarness(root, script)
+            treatment = _variant("treatment", _measurement(
+                settings_file="treatment-settings.json",
+                arm="treatment",
+                attempt=122,
+                bindings=DEFAULT_BINDINGS,
+                required_event_classes=("PreToolUse",),
+                fake_mode="valid-no-hooks",
+            ))
+
+            proc = harness.run([treatment])
+
+            self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            receipt = json.loads(harness.receipts()[0].read_text(encoding="utf-8"))
+            self.assertEqual(receipt["hook_summary"]["required_event_classes"], ["PreToolUse"])
+            self.assertEqual(receipt["terminal_status"], "missing_required_hook_event_class")
+
+    def test_registered_hook_failure_remains_fatal_when_no_class_is_required(self):
+        for script, root in self._for_each_script():
+            harness = MeasurementHarness(root, script)
+            treatment = _variant("treatment", _measurement(
+                settings_file="treatment-settings.json",
+                arm="treatment",
+                attempt=123,
+                bindings=DEFAULT_BINDINGS,
+                required_event_classes=(),
+                fake_mode="hook-process-error",
+            ))
+
+            proc = harness.run([treatment])
+
+            self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            receipt = json.loads(harness.receipts()[0].read_text(encoding="utf-8"))
+            self.assertEqual(receipt["terminal_status"], "hook_process_failure")
+
+    def test_unregistered_hook_class_remains_fatal_when_no_class_is_required(self):
+        for script, root in self._for_each_script():
+            harness = MeasurementHarness(root, script)
+            treatment = _variant("treatment", _measurement(
+                settings_file="treatment-settings.json",
+                arm="treatment",
+                attempt=124,
+                bindings=DEFAULT_BINDINGS,
+                required_event_classes=(),
+                fake_mode="unsupported-hook-class",
+            ))
+
+            proc = harness.run([treatment])
+
+            self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            receipt = json.loads(harness.receipts()[0].read_text(encoding="utf-8"))
+            self.assertEqual(receipt["terminal_status"], "unexpected_hook_event_class")
+
+    def test_empty_required_classes_still_validate_every_registered_binding(self):
+        for script, root in self._for_each_script():
+            harness = MeasurementHarness(root, script)
+            settings = _settings(managed_hooks=True)
+            del settings["hooks"]["PostToolUseFailure"]
+            (root / "treatment-settings.json").write_text(json.dumps(settings), encoding="utf-8")
+            treatment = _variant("treatment", _measurement(
+                settings_file="treatment-settings.json",
+                arm="treatment",
+                attempt=125,
+                bindings=DEFAULT_BINDINGS,
+                required_event_classes=(),
+                fake_mode="valid-no-hooks",
+            ))
+
+            proc = harness.run([treatment])
+
+            self.assertNotEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            self.assertIn("differ outside registered hooks", proc.stderr)
+            self.assertEqual(harness.provider_calls(), [])
+
     def test_raw_only_recovery_rejects_invalid_or_oversized_raw_without_creating_outputs(self):
         terminal = _canonical_json_bytes({
             "type":"result", "subtype":"success", "is_error":False,
@@ -2044,7 +2153,7 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.normalize_measurement_hook_events(raw)
 
-    def test_registered_bindings_and_required_classes_are_exact_and_ordered(self):
+    def test_registered_bindings_are_exact_and_required_classes_are_an_ordered_subset(self):
         mutations: list[tuple[str, Callable[[dict, dict], None]]] = [
             ("hook-events-unknown", lambda m, s: m["hook_events"].__setitem__("unknown", 1)),
             ("binding-unknown", lambda m, s: m["hook_events"]["registered_bindings"][0].__setitem__("unknown", 1)),
@@ -2052,6 +2161,8 @@ class BenchmarkMeasurementSubstrateTests(unittest.TestCase):
                 copy.deepcopy(m["hook_events"]["registered_bindings"][0]))),
             ("required-order", lambda m, s: m["hook_events"].__setitem__(
                 "required_event_classes", ["PostToolUseFailure", "PreToolUse"])),
+            ("required-unregistered", lambda m, s: m["hook_events"].__setitem__(
+                "required_event_classes", ["PostToolUse"])),
             ("unsupported-class", lambda m, s: m["hook_events"]["registered_bindings"][0].__setitem__(
                 "hook_event", "FutureToolUse")),
             ("oversized-command", lambda m, s: m["hook_events"]["registered_bindings"][0].__setitem__(

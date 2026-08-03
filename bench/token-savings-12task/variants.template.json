@@ -74,10 +74,7 @@
             "hook_event": "PostToolUse"
           }
         ],
-        "required_event_classes": [
-          "PreToolUse",
-          "PostToolUse"
-        ]
+        "required_event_classes": []
       },
       "identity": {
         "arm": "treatment",
