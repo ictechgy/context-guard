@@ -2049,6 +2049,14 @@ _GIT_DIFF_SHOW_BOOLEAN_FLAGS = frozenset({
     "--color=never", "--cached", "--staged", "--oneline",
 })
 
+_GIT_CONFIG_EXECUTION_GUARD = (
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=core.fsmonitor",
+    "GIT_CONFIG_VALUE_0=false",
+)
+_GIT_DIFF_EXECUTION_FLAGS = ("--no-ext-diff", "--no-textconv")
+_GIT_TEXTCONV_EXECUTION_FLAGS = ("--no-textconv",)
+
 
 def _git_diff_show_is_safe(arguments: tuple[str, ...]) -> bool:
     """`git diff`/`git show`: 기존 `_git_is_safe` 경로를 그대로 보존한다
@@ -2672,6 +2680,48 @@ def shell_join(argv: list[str] | tuple[str, ...]) -> str:
     return " ".join(shell_quote(value) for value in argv)
 
 
+def _render_minishell_word(word: MiniShellWord) -> str:
+    assignment_name = _env_prefix_name(word)
+    if assignment_name is None:
+        return shell_quote(word.value)
+    assignment_value = word.value[len(assignment_name) + 1 :]
+    return f"{assignment_name}={shell_quote(assignment_value)}"
+
+
+def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str:
+    """Disable config-driven helpers in every admitted git pipeline segment."""
+    guarded_segments: list[str] = []
+    changed = False
+    for segment in parsed.segments:
+        segment_argv = tuple(word.value for word in segment)
+        route_start = _routing_start(segment, segment_argv)
+        rendered_words = [_render_minishell_word(word) for word in segment]
+        if (
+            route_start >= 0
+            and route_start + 1 < len(segment_argv)
+            and command_basename(segment_argv[route_start]) == "git"
+        ):
+            subcommand = segment_argv[route_start + 1]
+            flags: tuple[str, ...] = ()
+            flag_index = route_start + 2
+            if subcommand in {"diff", "show", "log"}:
+                flags = _GIT_DIFF_EXECUTION_FLAGS
+            elif subcommand in {"grep", "blame"}:
+                flags = _GIT_TEXTCONV_EXECUTION_FLAGS
+            elif (
+                subcommand == "stash"
+                and route_start + 2 < len(segment_argv)
+                and segment_argv[route_start + 2] == "show"
+            ):
+                flags = _GIT_DIFF_EXECUTION_FLAGS
+                flag_index += 1
+            rendered_words[flag_index:flag_index] = flags
+            rendered_words[route_start:route_start] = _GIT_CONFIG_EXECUTION_GUARD
+            changed = True
+        guarded_segments.append(" ".join(rendered_words))
+    return " | ".join(guarded_segments) if changed else command
+
+
 def build_wrapped_command(wrapper: str, command: str) -> str:
     if wrapper.endswith(".py"):
         prefix = ["python3", wrapper]
@@ -2759,7 +2809,8 @@ def main() -> int:
             )
             deny(reason)
             return 0
-        wrapped = build_sanitized_command(wrapper, command)
+        guarded_command = neutralize_git_config_execution(command, decision.parsed)
+        wrapped = build_sanitized_command(wrapper, guarded_command)
     else:
         raise AssertionError(f"unknown command action: {decision.action}")
 

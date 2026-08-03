@@ -75,6 +75,11 @@ REWRITE_SCRIPTS = (
     ROOT / "plugins" / "context-guard" / "bin" / "context-guard-rewrite-bash",
 )
 EXPECTED_MAX_HOOK_ENVELOPE_BYTES = 1_048_576
+_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS = (
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=core.fsmonitor",
+    "GIT_CONFIG_VALUE_0=false",
+)
 
 
 def run_rewrite_raw(script: Path, raw_payload: str) -> subprocess.CompletedProcess[str]:
@@ -1664,8 +1669,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
 
     def test_inv_c_newly_rewrapped_grep_flag_surface_commands_roundtrip(self) -> None:
         """INV-C(재래핑 왕복) — FIX-GREP 완화 대상(`fix_grep_route_predicate_relaxations()`)을
-        전수 열거하고, `sanitize_output.py`로 재래핑된 명령을 되찢어 원본 명령
-        문자열이 손실 없이 보존되는지 확인한다. grep 은 FIX-2/FIX-LS 의 trim
+        전수 열거하고, `sanitize_output.py`로 재래핑된 명령을 되찢어 원본 인자가
+        손실 없이 보존되는지 확인한다. `git grep`은 S012 실행 가드만 추가되고,
+        일반 grep 문자열은 그대로여야 한다. grep 은 FIX-2/FIX-LS 의 trim
         경로가 아니라 이미 배선된 `bash -c` sanitize 경로로 들어간다(§4.2
         INV-C — "새 wrapper 경로가 생기는 게 아니다") — `a1_route_decision`이
         `rewrite_sanitize`를 반환하는지까지 함께 고정해 trim 경로로 잘못
@@ -1680,7 +1686,23 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
                     response = json.loads(proc.stdout)
                     wrapped = response["hookSpecificOutput"]["updatedInput"]["command"]
-                    self.assertEqual(shlex.split(wrapped)[-1], command)
+                    rewritten_command = shlex.split(wrapped)[-1]
+                    if command.startswith("git grep "):
+                        rewritten_argv = shlex.split(rewritten_command)
+                        self.assertEqual(
+                            rewritten_argv[:3],
+                            list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
+                        )
+                        self.assertEqual(
+                            [
+                                argument
+                                for argument in rewritten_argv[3:]
+                                if argument != "--no-textconv"
+                            ],
+                            shlex.split(command),
+                        )
+                    else:
+                        self.assertEqual(rewritten_command, command)
 
     def test_fix_grep_case_tables_are_not_vacuous(self) -> None:
         """FIX-GREP 의 INV-A/INV-B/INV-C 루프가 공허하게 통과하지 않도록 케이스
@@ -1953,6 +1975,208 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 decision = mutant["classify_command"](case["command"])
                 self.assertEqual(decision.action, "noop")
                 self.assertNotEqual(decision.action, case["expected_decision"])
+
+    def test_s012_git_diff_neutralizes_config_driven_programs(self) -> None:
+        """An admitted diff must not execute fsmonitor, external-diff, or textconv."""
+        import tempfile
+
+        for script in self.contract_scripts():
+            with self.subTest(script=script), tempfile.TemporaryDirectory(
+                prefix="context-guard-s012-git-config-"
+            ) as td:
+                sandbox = Path(td)
+                root = sandbox / "repo"
+                home = sandbox / "home"
+                root.mkdir()
+                home.mkdir()
+                git_env = {
+                    **os.environ,
+                    "HOME": str(home),
+                    "XDG_CONFIG_HOME": str(home / "xdg"),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_AUTHOR_NAME": "ContextGuard Test",
+                    "GIT_AUTHOR_EMAIL": "context-guard@example.invalid",
+                    "GIT_COMMITTER_NAME": "ContextGuard Test",
+                    "GIT_COMMITTER_EMAIL": "context-guard@example.invalid",
+                }
+
+                subprocess.run(["git", "init", "-q"], cwd=root, env=git_env, check=True)
+                (root / ".gitattributes").write_text(
+                    "watched.txt diff=s012\n", encoding="utf-8"
+                )
+                (root / "watched.txt").write_text("before\n", encoding="utf-8")
+                subprocess.run(
+                    ["git", "add", ".gitattributes", "watched.txt"],
+                    cwd=root,
+                    env=git_env,
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "commit", "-qm", "fixture"],
+                    cwd=root,
+                    env=git_env,
+                    check=True,
+                )
+
+                markers: dict[str, Path] = {}
+                helpers: dict[str, Path] = {}
+                helper_bodies = {
+                    "fsmonitor": "exit 0\n",
+                    "external-diff": "exit 0\n",
+                    "textconv": 'cat "$1"\n',
+                }
+                for name, body in helper_bodies.items():
+                    marker = root / f"{name}-ran"
+                    helper = sandbox / f"{name}.sh"
+                    helper.write_text(
+                        "#!/bin/sh\n"
+                        f": > {shlex.quote(str(marker))}\n"
+                        f"{body}",
+                        encoding="utf-8",
+                    )
+                    helper.chmod(0o700)
+                    markers[name] = marker
+                    helpers[name] = helper
+
+                for scope, key, value in (
+                    (("--global",), "core.fsmonitor", str(helpers["fsmonitor"])),
+                    ((), "diff.external", str(helpers["external-diff"])),
+                    (("--global",), "diff.s012.textconv", str(helpers["textconv"])),
+                ):
+                    subprocess.run(
+                        ["git", "config", *scope, key, value],
+                        cwd=root,
+                        env=git_env,
+                        check=True,
+                    )
+                (root / "watched.txt").write_text("after\n", encoding="utf-8")
+                hostile_exec_env = {
+                    **git_env,
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "core.fsmonitor",
+                    "GIT_CONFIG_VALUE_0": str(helpers["fsmonitor"]),
+                }
+
+                proc = run_rewrite(script, {"tool_input": {"command": "git diff"}})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
+                wrapped = json.loads(proc.stdout)["hookSpecificOutput"]["updatedInput"][
+                    "command"
+                ]
+                exec_proc = subprocess.run(
+                    ["bash", "-c", wrapped],
+                    cwd=root,
+                    env=hostile_exec_env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(exec_proc.returncode, 0, exec_proc.stderr)
+                self.assertIn("after", exec_proc.stdout)
+                executed_helpers = {
+                    "external-diff-configured": [
+                        name for name, marker in markers.items() if marker.exists()
+                    ]
+                }
+
+                subprocess.run(
+                    ["git", "config", "--unset", "diff.external"],
+                    cwd=root,
+                    env=git_env,
+                    check=True,
+                )
+                for marker in markers.values():
+                    marker.unlink(missing_ok=True)
+                exec_proc = subprocess.run(
+                    ["bash", "-c", wrapped],
+                    cwd=root,
+                    env=hostile_exec_env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(exec_proc.returncode, 0, exec_proc.stderr)
+                executed_helpers["textconv-only"] = [
+                    name for name, marker in markers.items() if marker.exists()
+                ]
+                self.assertEqual(
+                    executed_helpers,
+                    {
+                        "external-diff-configured": [],
+                        "textconv-only": [],
+                    },
+                    "rewritten git diff executed a config-driven external program",
+                )
+
+    def test_s012_admitted_git_commands_carry_subcommand_specific_guards(self) -> None:
+        cases = {
+            "git status --short": (),
+            "git diff --stat": ("--no-ext-diff", "--no-textconv"),
+            "git show HEAD": ("--no-ext-diff", "--no-textconv"),
+            "git log -p": ("--no-ext-diff", "--no-textconv"),
+            "git branch": (),
+            "git tag": (),
+            "git remote": (),
+            "git rev-parse HEAD": (),
+            "git describe": (),
+            "git ls-files": (),
+            "git shortlog -sn HEAD": (),
+            "git grep token -- '*.py'": ("--no-textconv",),
+            "git blame -- watched.txt": ("--no-textconv",),
+            "git stash list": (),
+            "git stash show": ("--no-ext-diff", "--no-textconv"),
+            "git diff -- 'file with space.txt'": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+            "git grep 'token|password' -- 'file name.py'": ("--no-textconv",),
+            "env NO_COLOR=1 git diff | head -n 1": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+            "LANG='C UTF-8' git diff -- README.md | head -n 1": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+            "env -- NO_COLOR=1 git show HEAD": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+            "env 'NO_COLOR=1 2' git show HEAD": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+            "env env NO_COLOR=1 git diff": (
+                "--no-ext-diff",
+                "--no-textconv",
+            ),
+        }
+        config_guard = set(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS)
+
+        for script in self.contract_scripts():
+            for command, expected_flags in cases.items():
+                with self.subTest(script=script, command=command):
+                    proc = run_rewrite(script, {"tool_input": {"command": command}})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
+                    wrapped = json.loads(proc.stdout)["hookSpecificOutput"][
+                        "updatedInput"
+                    ]["command"]
+                    guarded_command = shlex.split(wrapped)[-1]
+                    guarded_argv = shlex.split(guarded_command)
+                    self.assertTrue(config_guard.issubset(guarded_argv))
+                    for guard_word in config_guard:
+                        self.assertEqual(guarded_argv.count(guard_word), 1)
+                    for flag in expected_flags:
+                        self.assertIn(flag, guarded_argv)
+                        self.assertEqual(guarded_argv.count(flag), 1)
+                    self.assertEqual(
+                        [
+                            argument
+                            for argument in guarded_argv
+                            if argument not in config_guard
+                            and argument not in expected_flags
+                        ],
+                        shlex.split(command),
+                    )
 
     def test_inv_a_sed_stay_denied_forms(self) -> None:
         """INV-A(거부 보존) — `FIX_SED_ROUTE_PREDICATE_CASES` 중 거부로 남아야
