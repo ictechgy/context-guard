@@ -555,8 +555,15 @@ def assert_generation_fingerprint_history_append_only(
     repo: Path,
     source_head: str,
     current: tuple[str, ...],
+    *,
+    history_may_be_truncated: bool = False,
 ) -> None:
     """Require every committed fingerprint ledger to be a prefix of the current one."""
+    if not path_exists_in_tree(repo, source_head, GENERATION_FINGERPRINT_SOURCE_PATH):
+        raise ProofError(
+            "generation fingerprint source path is missing at "
+            f"{source_head}: {GENERATION_FINGERPRINT_SOURCE_PATH!r}"
+        )
     history = run_git(
         repo,
         "log",
@@ -566,6 +573,7 @@ def assert_generation_fingerprint_history_append_only(
         "--",
         GENERATION_FINGERPRINT_SOURCE_PATH,
     ).stdout.splitlines()
+    observed = 0
     for commit in history:
         shown = run_git(
             repo,
@@ -581,12 +589,18 @@ def assert_generation_fingerprint_history_append_only(
         )
         if historical is None:
             continue
+        observed += 1
         if len(historical) > len(current) or current[: len(historical)] != historical:
             raise ProofError(
                 "historical generation fingerprint ledger is not a prefix of the "
                 f"current ledger: revision={commit} historical={len(historical)} "
                 f"current={len(current)}"
             )
+    if not observed and not history_may_be_truncated:
+        raise ProofError(
+            "no committed generation fingerprint ledger was reachable from "
+            f"{source_head}: the append-only history check would pass vacuously"
+        )
 
 
 def assert_generation_records_wellformed(generations: tuple[Generation, ...]) -> None:
@@ -1182,6 +1196,7 @@ def run_proof(repo: Path = ROOT) -> dict[str, object]:
         repo,
         source_head,
         GENERATION_RECORD_FINGERPRINTS,
+        history_may_be_truncated=history_may_be_truncated,
     )
     all_commits = resolve_history(
         repo,

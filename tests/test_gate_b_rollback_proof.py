@@ -22,6 +22,8 @@ rollback_proof = importlib.util.module_from_spec(SPEC)
 sys.modules["verify_gate_b_rollback"] = rollback_proof
 SPEC.loader.exec_module(rollback_proof)
 
+HISTORICAL_FINGERPRINT_LEDGER_SOURCE = "GENERATION_RECORD_FINGERPRINTS = ()\n"
+
 
 def commit_paths_for_test(repo: Path, contents: dict[str, str], subject: str) -> str:
     """주어진 경로들에 내용을 쓰고 한 커밋으로 묶어 SHA를 반환한다.
@@ -45,7 +47,15 @@ class GateBRollbackProofTests(unittest.TestCase):
         repo.mkdir()
         rollback_proof.run_git(repo, "init", "--quiet")
         (repo / "README.md").write_text("snapshot\n", encoding="utf-8")
-        rollback_proof.run_git(repo, "add", "README.md")
+        verifier = repo / rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH
+        verifier.parent.mkdir(parents=True, exist_ok=True)
+        verifier.write_text(HISTORICAL_FINGERPRINT_LEDGER_SOURCE, encoding="utf-8")
+        rollback_proof.run_git(
+            repo,
+            "add",
+            "README.md",
+            rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH,
+        )
         rollback_proof.run_git(repo, "commit", "--quiet", "-m", "snapshot")
         return repo
 
@@ -60,7 +70,15 @@ class GateBRollbackProofTests(unittest.TestCase):
         repo = root / "gate-b-history"
         repo.mkdir()
         rollback_proof.run_git(repo, "init", "--quiet")
-        base = commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+        base = commit_paths_for_test(
+            repo,
+            {
+                "README.md": "base\n",
+                rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH:
+                    HISTORICAL_FINGERPRINT_LEDGER_SOURCE,
+            },
+            "base",
+        )
         active_commits: dict[str, str] | None = None
         for generation in rollback_proof.GENERATIONS:
             bless_contents = {
@@ -575,7 +593,15 @@ class SyntheticGenerationHelpers:
         repo = root / "generations-history"
         repo.mkdir()
         rollback_proof.run_git(repo, "init", "--quiet")
-        base = commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+        base = commit_paths_for_test(
+            repo,
+            {
+                "README.md": "base\n",
+                rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH:
+                    HISTORICAL_FINGERPRINT_LEDGER_SOURCE,
+            },
+            "base",
+        )
 
         deletions = bless_deletions or {}
         all_commits: dict[str, dict[str, str]] = {}
@@ -1179,6 +1205,7 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
         """F-7: editing a retired record cannot silently narrow its proof scope."""
         generations = rollback_proof.GENERATIONS
         removed_path = "tests/test_context_guard_nudge_protocol.py"
+        self.assertIn(removed_path, generations[0].b1_paths)
         narrowed_gen1 = replace(
             generations[0],
             b1_paths=generations[0].b1_paths - {removed_path},
@@ -1227,6 +1254,74 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                     "historical generation fingerprint ledger is not a prefix",
                 ):
                     rollback_proof.run_proof(ROOT)
+
+    def test_fingerprint_history_rejects_missing_source_path(self) -> None:
+        """F-7: moving the verifier cannot make its append-only history vacuous."""
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-ledger-missing-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            head = commit_paths_for_test(repo, {"README.md": "no verifier\n"}, "head")
+
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError,
+                "generation fingerprint source path is missing",
+            ):
+                rollback_proof.assert_generation_fingerprint_history_append_only(
+                    repo,
+                    head,
+                    rollback_proof.GENERATION_RECORD_FINGERPRINTS,
+                )
+
+    def test_fingerprint_history_rejects_no_observed_ledger(self) -> None:
+        """F-7: complete history must expose at least one committed ledger."""
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-ledger-empty-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            head = commit_paths_for_test(
+                repo,
+                {
+                    rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH:
+                        "print('verifier without a fingerprint ledger')\n",
+                },
+                "verifier without ledger",
+            )
+
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError,
+                "no committed generation fingerprint ledger",
+            ):
+                rollback_proof.assert_generation_fingerprint_history_append_only(
+                    repo,
+                    head,
+                    rollback_proof.GENERATION_RECORD_FINGERPRINTS,
+                )
+
+    def test_fingerprint_history_allows_no_observed_ledger_when_truncated(self) -> None:
+        """A truncated checkout may lack the historical ledger it cannot fetch."""
+        with tempfile.TemporaryDirectory(prefix="context-guard-proof-ledger-shallow-") as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            rollback_proof.run_git(repo, "init", "--quiet")
+            head = commit_paths_for_test(
+                repo,
+                {
+                    rollback_proof.GENERATION_FINGERPRINT_SOURCE_PATH:
+                        "print('shallow verifier without visible ledger')\n",
+                },
+                "shallow verifier without visible ledger",
+            )
+
+            try:
+                rollback_proof.assert_generation_fingerprint_history_append_only(
+                    repo,
+                    head,
+                    rollback_proof.GENERATION_RECORD_FINGERPRINTS,
+                    history_may_be_truncated=True,
+                )
+            except (TypeError, rollback_proof.ProofError) as exc:
+                self.fail(f"truncated history did not permit an unobserved ledger: {exc}")
 
     def make_pair(self, *, residual_edits=frozenset()):
         """컴포넌트 경로가 *겹치는* 두 세대를 만든다.
