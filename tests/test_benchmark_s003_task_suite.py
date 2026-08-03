@@ -1036,6 +1036,10 @@ class SanitizedR9ResultContractTest(unittest.TestCase):
         )
         self.assertEqual(self.summary["suite"], "token-savings-12task")
         self.assertEqual(
+            self.summary["candidate_commit"],
+            "c311a208c731a5460c021c38577b68f909bc70b8",
+        )
+        self.assertEqual(
             self.summary["manifest_sha256"],
             "e5f4548371cf03fb80e134093d9a6113c7e4c29d578c267925bdb3c6f873f1df",
         )
