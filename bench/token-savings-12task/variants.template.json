@@ -70,7 +70,7 @@
             "hook_event": "PreToolUse"
           },
           {
-            "configured_command": "context-guard-post-tool-trim",
+            "configured_command": "context-guard-trim-output --post-tool-use-hook",
             "hook_event": "PostToolUse"
           }
         ],

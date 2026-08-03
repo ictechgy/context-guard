@@ -2,13 +2,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CANONICAL = ROOT / "context-guard-kit" / "post_tool_trim_hook.py"
-PACKAGED = ROOT / "plugins" / "context-guard" / "bin" / "context-guard-post-tool-trim"
+CANONICAL = ROOT / "context-guard-kit" / "trim_command_output.py"
+PACKAGED = ROOT / "plugins" / "context-guard" / "bin" / "context-guard-trim-output"
 SUITE = ROOT / "bench" / "token-savings-12task"
 
 
@@ -43,7 +42,7 @@ class PostToolTrimHookTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         wire = payload if isinstance(payload, str) else json.dumps(payload)
         return subprocess.run(
-            [sys.executable, str(script)],
+            [sys.executable, str(script), "--post-tool-use-hook"],
             input=wire,
             text=True,
             capture_output=True,
@@ -89,6 +88,7 @@ class PostToolTrimHookTests(unittest.TestCase):
         updated = json.loads(proc.stdout)["hookSpecificOutput"]["updatedToolOutput"]
         self.assertLess(len(updated["stdout"]), len(stdout))
         self.assertIn("output trimmed", updated["stdout"])
+        self.assertNotIn("command exit_code=", updated["stdout"])
         self.assertEqual(updated["stderr"], "warning only\n")
         self.assertIs(updated["interrupted"], True)
         self.assertIs(updated["isImage"], False)
@@ -121,6 +121,32 @@ class PostToolTrimHookTests(unittest.TestCase):
         self.assertIn("invalid hook input", proc.stderr)
         self.assertNotIn(marker, proc.stderr)
 
+    def test_invalid_bash_response_shape_fails_without_echoing_values(self) -> None:
+        marker = "DO_NOT_ECHO_INVALID_RESPONSE"
+        payload = post_tool_payload()
+        response = payload["tool_response"]
+        self.assertIsInstance(response, dict)
+        response["stdout"] = {"unexpected": marker}
+        proc = self.run_hook(CANONICAL, payload)
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("invalid hook input", proc.stderr)
+        self.assertNotIn(marker, proc.stderr)
+
+    def test_oversized_input_fails_at_the_byte_cap_without_echoing_input(self) -> None:
+        marker = b"DO_NOT_ECHO_OVERSIZED_INPUT"
+        wire = marker + b" " * (16 * 1024 * 1024)
+        proc = subprocess.run(
+            [sys.executable, str(CANONICAL), "--post-tool-use-hook"],
+            input=wire,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout, b"")
+        self.assertIn(b"invalid hook input", proc.stderr)
+        self.assertNotIn(marker, proc.stderr)
+
     def test_wrong_event_is_a_quiet_noop(self) -> None:
         payload = post_tool_payload()
         payload["hook_event_name"] = "PreToolUse"
@@ -129,29 +155,12 @@ class PostToolTrimHookTests(unittest.TestCase):
         self.assertEqual(proc.stdout, "")
         self.assertEqual(proc.stderr, "")
 
-    def test_trim_runtime_failure_does_not_echo_internal_error_details(self) -> None:
-        marker = "DO_NOT_ECHO_INTERNAL_TRIM_FAILURE"
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            adapter = root / "post_tool_trim_hook.py"
-            adapter.write_bytes(CANONICAL.read_bytes())
-            (root / "trim_command_output.py").write_text(
-                "def trim_captured_output(*args, **kwargs):\n"
-                f"    raise RuntimeError({marker!r})\n",
-                encoding="utf-8",
-            )
-            proc = self.run_hook(adapter, post_tool_payload())
-        self.assertEqual(proc.returncode, 2)
-        self.assertEqual(proc.stdout, "")
-        self.assertIn("trim implementation unavailable", proc.stderr)
-        self.assertNotIn(marker, proc.stderr)
-
     def test_treatment_suite_registers_the_dedicated_hook_adapter(self) -> None:
         settings = json.loads(
             (SUITE / "settings" / "treatment.settings.json").read_text(encoding="utf-8")
         )
         command = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-        self.assertEqual(command, "context-guard-post-tool-trim")
+        self.assertEqual(command, "context-guard-trim-output --post-tool-use-hook")
 
         template = json.loads((SUITE / "variants.template.json").read_text(encoding="utf-8"))
         treatment = next(variant for variant in template if variant["name"] == "treatment")

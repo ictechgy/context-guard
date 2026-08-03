@@ -1670,7 +1670,7 @@ def npm_dispatcher_smoke_plan() -> tuple[dict[str, Any], ...]:
 
 
 def launch_stdin(mode: str) -> str | None:
-    if mode in {"hook-json", "hook-quiet"}:
+    if mode == "hook-json":
         return HOOK_STDIN
     if mode == "statusline":
         return STATUSLINE_STDIN
@@ -1679,10 +1679,6 @@ def launch_stdin(mode: str) -> str | None:
 
 def check_launch_smoke(proc: subprocess.CompletedProcess[str], command: str, mode: str) -> None:
     raw_stdout = proc.stdout
-    if mode == "hook-quiet":
-        if raw_stdout:
-            fail(f"{command} quiet hook smoke emitted stdout")
-        return
     if not raw_stdout.strip():
         fail(f"{command} launch smoke emitted no stdout")
     if mode in {"hook-json", "json"}:
