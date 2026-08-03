@@ -10525,7 +10525,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     variants = parse_variants(args.variants)
     tasks = parse_tasks(args.tasks, variants=variants)
-    load_task_fixture_trees(tasks, task_file_dir=args.tasks.parent)
     targets = filter_targets(tasks, variants, args.task_id, args.variant)
     if not targets:
         if args.dry_run and (not tasks or not variants):
@@ -10533,6 +10532,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         print("no (task, variant) targets matched the filters", file=sys.stderr)
         return 1
+    target_task_ids = {task.id for task, _variant in targets}
+    load_task_fixture_trees(
+        [task for task in tasks if task.id in target_task_ids],
+        task_file_dir=args.tasks.parent,
+    )
     preflight_measurement_targets(
         targets,
         claude_bin=args.claude_bin,

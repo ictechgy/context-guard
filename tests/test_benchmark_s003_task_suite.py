@@ -321,12 +321,26 @@ class TaskFixtureParsingTest(unittest.TestCase):
 
 
 class NormalBenchmarkFixtureBindingTest(unittest.TestCase):
-    def test_normal_cli_binds_fixture_tree_before_provider_launch(self) -> None:
+    def test_normal_cli_binds_selected_fixture_before_provider_launch(self) -> None:
+        for runner in (RUNNER, PACKAGED_RUNNER):
+            with self.subTest(runner=runner):
+                self._assert_selected_fixture_is_bound(runner)
+
+    def _assert_selected_fixture_is_bound(self, runner: Path) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sample_tree(root)
             tasks_path = write_task_file(
-                root, [sample_task(output_format="stream-json")],
+                root,
+                [
+                    sample_task(output_format="stream-json"),
+                    sample_task(
+                        id="unselected_broken_task",
+                        fixture_tree="trees/missing",
+                        success_checker="checkers/missing.py",
+                        output_format="stream-json",
+                    ),
+                ],
             )
             for arm in ("baseline", "treatment"):
                 shutil.copyfile(
@@ -364,10 +378,11 @@ class NormalBenchmarkFixtureBindingTest(unittest.TestCase):
             proc = subprocess.run(
                 [
                     sys.executable,
-                    str(RUNNER),
+                    str(runner),
                     "--tasks", str(tasks_path),
                     "--variants", str(variants_path),
                     "--csv", str(root / "results.csv"),
+                    "--task-id", "sample_task",
                     "--variant", "baseline",
                     "--claude-bin", str(fake_cli),
                     "--project-root", str(root),
