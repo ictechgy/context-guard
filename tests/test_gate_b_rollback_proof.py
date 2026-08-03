@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -862,8 +863,17 @@ class GateBGenerationsTests(SyntheticGenerationHelpers, unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="context-guard-proof-schema-") as tmp:
             repo, base, all_commits = self.make_repo_for_generations(Path(tmp), (gen_a, gen_b))
             with mock.patch.object(rollback_proof, "GENERATIONS", (gen_a, gen_b)):
-                with mock.patch.object(rollback_proof, "BASE_COMMIT", base):
-                    result = rollback_proof.run_proof(repo)
+                fingerprints = tuple(
+                    rollback_proof.generation_record_fingerprint(generation)
+                    for generation in (gen_a, gen_b)
+                )
+                with mock.patch.object(
+                    rollback_proof,
+                    "GENERATION_RECORD_FINGERPRINTS",
+                    fingerprints,
+                ):
+                    with mock.patch.object(rollback_proof, "BASE_COMMIT", base):
+                        result = rollback_proof.run_proof(repo)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["schema_version"], "contextguard.gate-b-rollback-proof.v3")
@@ -1164,6 +1174,39 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ),
             gen3_subjects,
         )
+
+    def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
+        """F-7: editing a retired record cannot silently narrow its proof scope."""
+        generations = rollback_proof.GENERATIONS
+        removed_path = "tests/test_context_guard_nudge_protocol.py"
+        narrowed_gen1 = replace(
+            generations[0],
+            b1_paths=generations[0].b1_paths - {removed_path},
+        )
+
+        with mock.patch.object(
+            rollback_proof,
+            "GENERATIONS",
+            (narrowed_gen1, *generations[1:]),
+        ):
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError,
+                "generation fingerprint ledger mismatch.*gen1",
+            ):
+                rollback_proof.run_proof(ROOT)
+
+    def test_run_proof_rejects_removal_of_shipped_generation_record(self) -> None:
+        """F-7: the generation registry itself is mechanically append-only."""
+        with mock.patch.object(
+            rollback_proof,
+            "GENERATIONS",
+            rollback_proof.GENERATIONS[:-1],
+        ):
+            with self.assertRaisesRegex(
+                rollback_proof.ProofError,
+                "generation fingerprint ledger length mismatch",
+            ):
+                rollback_proof.run_proof(ROOT)
 
     def make_pair(self, *, residual_edits=frozenset()):
         """컴포넌트 경로가 *겹치는* 두 세대를 만든다.
