@@ -1208,6 +1208,26 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
             ):
                 rollback_proof.run_proof(ROOT)
 
+    def test_run_proof_rejects_historical_fingerprint_ledger_truncation(self) -> None:
+        """F-7: editing records and their local digests cannot erase prior history."""
+        shortened_generations = rollback_proof.GENERATIONS[:-1]
+        shortened_fingerprints = rollback_proof.GENERATION_RECORD_FINGERPRINTS[:-1]
+        with mock.patch.object(
+            rollback_proof,
+            "GENERATIONS",
+            shortened_generations,
+        ):
+            with mock.patch.object(
+                rollback_proof,
+                "GENERATION_RECORD_FINGERPRINTS",
+                shortened_fingerprints,
+            ):
+                with self.assertRaisesRegex(
+                    rollback_proof.ProofError,
+                    "historical generation fingerprint ledger is not a prefix",
+                ):
+                    rollback_proof.run_proof(ROOT)
+
     def make_pair(self, *, residual_edits=frozenset()):
         """컴포넌트 경로가 *겹치는* 두 세대를 만든다.
 
