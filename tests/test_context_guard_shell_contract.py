@@ -2174,6 +2174,12 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertTrue(config_guard.issubset(guarded_argv))
                     for guard_word in config_guard:
                         self.assertEqual(guarded_argv.count(guard_word), 1)
+                    git_index = guarded_argv.index("git")
+                    guard_length = len(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS)
+                    self.assertEqual(
+                        guarded_argv[git_index - guard_length : git_index],
+                        list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
+                    )
                     for flag in expected_flags:
                         self.assertIn(flag, guarded_argv)
                         self.assertEqual(guarded_argv.count(flag), 1)
