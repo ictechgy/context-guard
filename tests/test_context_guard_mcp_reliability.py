@@ -34,24 +34,26 @@ class ContextGuardMcpReliabilityTests(unittest.TestCase):
                 "child = os.fork()\n"
                 "if child == 0:\n"
                 "    open('descendant-ready', 'w').write('yes')\n"
-                "    time.sleep(0.45)\n"
+                "    time.sleep(0.8)\n"
                 "    open('descendant-survived-grace', 'w').write('yes')\n"
-                "    time.sleep(60)\n"
+                "    time.sleep(5)\n"
                 "else:\n"
                 "    open('descendant.pid', 'w').write(str(child))\n"
-                "    time.sleep(60)\n",
+                "    time.sleep(5)\n",
                 encoding="utf-8",
             )
             server = module.Server(root, "timeout-escalation")
             old_timeout = module.HELPER_TIMEOUT
-            module.HELPER_TIMEOUT = 0.2
+            module.HELPER_TIMEOUT = 0.5
             descendant_pid = None
             try:
                 self.assertIsNone(server.run_helper([str(helper)], b"", 1024))
                 pid_file = root / "descendant.pid"
                 if pid_file.exists():
                     descendant_pid = int(pid_file.read_text(encoding="utf-8"))
-                time.sleep(0.1)
+                # If group escalation regresses, the descendant has enough
+                # time to cross its survivor marker before this assertion.
+                time.sleep(0.4)
                 self.assertTrue((root / "descendant-ready").exists())
                 self.assertFalse((root / "descendant-survived-grace").exists())
             finally:
