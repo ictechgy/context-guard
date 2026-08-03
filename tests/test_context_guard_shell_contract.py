@@ -81,6 +81,7 @@ _GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS = (
     "GIT_CONFIG_VALUE_0=false",
 )
 _GIT_ORIGINAL_COMMAND_ENV_FOR_TESTS = "CONTEXT_GUARD_ORIGINAL_COMMAND"
+_GIT_GUARD_MODE_FOR_TESTS = "--context-guard-exec-git"
 
 
 def run_rewrite_raw(script: Path, raw_payload: str) -> subprocess.CompletedProcess[str]:
@@ -1690,18 +1691,25 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     rewritten_command = shlex.split(wrapped)[-1]
                     if command.startswith("git grep "):
                         rewritten_argv = shlex.split(rewritten_command)
+                        mode_index = rewritten_argv.index(_GIT_GUARD_MODE_FOR_TESTS)
+                        helper_start = mode_index - 2
+                        git_index = mode_index + 2
                         self.assertEqual(
                             rewritten_argv[0],
                             f"{_GIT_ORIGINAL_COMMAND_ENV_FOR_TESTS}={command}",
                         )
                         self.assertEqual(
-                            rewritten_argv[1:4],
+                            rewritten_argv[helper_start - 3 : helper_start],
                             list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
+                        )
+                        self.assertEqual(
+                            rewritten_argv[mode_index + 1 : git_index + 1],
+                            ["--", "git"],
                         )
                         self.assertEqual(
                             [
                                 argument
-                                for argument in rewritten_argv[4:]
+                                for argument in rewritten_argv[git_index:]
                                 if argument != "--no-textconv"
                             ],
                             shlex.split(command),
@@ -1982,7 +1990,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
                 self.assertNotEqual(decision.action, case["expected_decision"])
 
     def test_s012_git_diff_neutralizes_config_driven_programs(self) -> None:
-        """An admitted diff must not execute fsmonitor, external-diff, or textconv."""
+        """An admitted diff must not execute Git config helper programs."""
         import tempfile
 
         for script in self.contract_scripts():
@@ -2007,7 +2015,7 @@ class MiniShellBoundaryTests(unittest.TestCase):
 
                 subprocess.run(["git", "init", "-q"], cwd=root, env=git_env, check=True)
                 (root / ".gitattributes").write_text(
-                    "watched.txt diff=s012\n", encoding="utf-8"
+                    "watched.txt diff=s012 filter=s012\n", encoding="utf-8"
                 )
                 (root / "watched.txt").write_text("before\n", encoding="utf-8")
                 subprocess.run(
@@ -2029,6 +2037,8 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     "fsmonitor": "exit 0\n",
                     "external-diff": "exit 0\n",
                     "textconv": 'cat "$1"\n',
+                    "clean-filter": "cat\n",
+                    "process-filter": "exit 99\n",
                 }
                 for name, body in helper_bodies.items():
                     marker = root / f"{name}-ran"
@@ -2047,6 +2057,9 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     (("--global",), "core.fsmonitor", str(helpers["fsmonitor"])),
                     ((), "diff.external", str(helpers["external-diff"])),
                     (("--global",), "diff.s012.textconv", str(helpers["textconv"])),
+                    ((), "filter.s012.clean", str(helpers["clean-filter"])),
+                    ((), "filter.s012.process", str(helpers["process-filter"])),
+                    ((), "filter.s012.required", "true"),
                 ):
                     subprocess.run(
                         ["git", "config", *scope, key, value],
@@ -2111,6 +2124,52 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     "rewritten git diff executed a config-driven external program",
                 )
 
+    def test_s012_git_guard_mode_revalidates_argv_before_exec(self) -> None:
+        import tempfile
+
+        for script in self.contract_scripts():
+            with self.subTest(script=script), tempfile.TemporaryDirectory(
+                prefix="context-guard-s012-git-mode-"
+            ) as td:
+                root = Path(td)
+                subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+                safe = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script),
+                        _GIT_GUARD_MODE_FOR_TESTS,
+                        "--",
+                        "git",
+                        "status",
+                        "--short",
+                    ],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(safe.returncode, 0, safe.stderr)
+
+                for unsafe_argv in (
+                    ("git", "config", "--list"),
+                    ("git", "diff"),
+                    ("git", "diff", "--no-ext-diff", "--no-textconv", "--ext-diff"),
+                ):
+                    with self.subTest(unsafe_argv=unsafe_argv):
+                        denied = subprocess.run(
+                            [
+                                sys.executable,
+                                str(script),
+                                _GIT_GUARD_MODE_FOR_TESTS,
+                                "--",
+                                *unsafe_argv,
+                            ],
+                            cwd=root,
+                            capture_output=True,
+                            text=True,
+                        )
+                        self.assertEqual(denied.returncode, 126)
+                        self.assertLess(len(denied.stderr), 256)
+
     def test_s012_admitted_git_commands_carry_subcommand_specific_guards(self) -> None:
         cases = {
             "git status --short": (),
@@ -2174,10 +2233,16 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertTrue(config_guard.issubset(guarded_argv))
                     for guard_word in config_guard:
                         self.assertEqual(guarded_argv.count(guard_word), 1)
+                    mode_index = guarded_argv.index(_GIT_GUARD_MODE_FOR_TESTS)
+                    helper_start = mode_index - 2
                     git_index = guarded_argv.index("git")
+                    self.assertEqual(git_index, mode_index + 2)
+                    self.assertEqual(guarded_argv[mode_index + 1], "--")
                     guard_length = len(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS)
                     self.assertEqual(
-                        guarded_argv[git_index - guard_length : git_index],
+                        guarded_argv[
+                            helper_start - guard_length : helper_start
+                        ],
                         list(_GIT_CONFIG_EXECUTION_GUARD_FOR_TESTS),
                     )
                     for flag in expected_flags:
@@ -2186,7 +2251,10 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     self.assertEqual(
                         [
                             argument
-                            for argument in guarded_argv
+                            for argument in (
+                                guarded_argv[:helper_start]
+                                + guarded_argv[git_index:]
+                            )
                             if argument != original_command_marker
                             and argument not in config_guard
                             and argument not in expected_flags

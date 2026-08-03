@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import subprocess
 import sys
 
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
@@ -2055,8 +2056,17 @@ _GIT_CONFIG_EXECUTION_GUARD = (
     "GIT_CONFIG_VALUE_0=false",
 )
 _GIT_ORIGINAL_COMMAND_ENV = "CONTEXT_GUARD_ORIGINAL_COMMAND"
+_GIT_GUARD_MODE = "--context-guard-exec-git"
 _GIT_DIFF_EXECUTION_FLAGS = ("--no-ext-diff", "--no-textconv")
 _GIT_TEXTCONV_EXECUTION_FLAGS = ("--no-textconv",)
+_GIT_FILTER_CONFIG_KEY_RE = re.compile(
+    r"^filter\..+\.(?:clean|smudge|process|required)$",
+    re.IGNORECASE,
+)
+_GIT_FILTER_CONFIG_QUERY = r"^filter\..*\.(clean|smudge|process|required)$"
+_GIT_FILTER_CONFIG_MAX_KEYS = 128
+_GIT_FILTER_CONFIG_MAX_BYTES = 65_536
+_GIT_FILTER_CONFIG_TIMEOUT_SECONDS = 5
 
 
 def _git_diff_show_is_safe(arguments: tuple[str, ...]) -> bool:
@@ -2689,6 +2699,121 @@ def _render_minishell_word(word: MiniShellWord) -> str:
     return f"{assignment_name}={shell_quote(assignment_value)}"
 
 
+def _git_execution_guard_spec(git_argv: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
+    if len(git_argv) < 2:
+        return (len(git_argv), ())
+    subcommand = git_argv[1]
+    if subcommand in {"diff", "show", "log"}:
+        return (2, _GIT_DIFF_EXECUTION_FLAGS)
+    if subcommand in {"grep", "blame"}:
+        return (2, _GIT_TEXTCONV_EXECUTION_FLAGS)
+    if len(git_argv) >= 3 and git_argv[:3] == ("git", "stash", "show"):
+        return (3, _GIT_DIFF_EXECUTION_FLAGS)
+    return (2, ())
+
+
+def _validated_guarded_git_argv(argv: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Accept only the exact guarded form of an independently safe Git command."""
+    if not argv or command_basename(argv[0]) != "git":
+        return None
+    flag_index, expected_flags = _git_execution_guard_spec(argv)
+    if tuple(argv[flag_index : flag_index + len(expected_flags)]) != expected_flags:
+        return None
+    original_argv = (
+        argv[:flag_index]
+        + argv[flag_index + len(expected_flags) :]
+    )
+    if not _git_is_safe(original_argv):
+        return None
+    return argv
+
+
+def _clear_git_command_scope_config(environment: dict[str, str]) -> None:
+    environment.pop("GIT_CONFIG_COUNT", None)
+    environment.pop("GIT_CONFIG_PARAMETERS", None)
+    for name in tuple(environment):
+        if re.fullmatch(r"GIT_CONFIG_(?:KEY|VALUE)_\d+", name):
+            environment.pop(name, None)
+
+
+def _discover_git_filter_config_keys() -> tuple[str, ...]:
+    discovery_env = os.environ.copy()
+    _clear_git_command_scope_config(discovery_env)
+    discovery_env.update(
+        {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_0": "false",
+        }
+    )
+    result = subprocess.run(
+        [
+            "git",
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            _GIT_FILTER_CONFIG_QUERY,
+        ],
+        env=discovery_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=_GIT_FILTER_CONFIG_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode not in {0, 1}:
+        raise RuntimeError("git config discovery failed")
+    if len(result.stdout) > _GIT_FILTER_CONFIG_MAX_BYTES:
+        raise RuntimeError("git filter config exceeded the discovery limit")
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw_key in result.stdout.split(b"\0"):
+        if not raw_key:
+            continue
+        key = os.fsdecode(raw_key)
+        if not _GIT_FILTER_CONFIG_KEY_RE.fullmatch(key):
+            raise RuntimeError("git config discovery returned an unexpected key")
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if len(keys) > _GIT_FILTER_CONFIG_MAX_KEYS:
+        raise RuntimeError("too many git filter config keys")
+    return tuple(keys)
+
+
+def _guarded_git_environment(filter_keys: tuple[str, ...]) -> dict[str, str]:
+    environment = os.environ.copy()
+    _clear_git_command_scope_config(environment)
+    environment.pop("GIT_EXTERNAL_DIFF", None)
+    config_pairs: list[tuple[str, str]] = [("core.fsmonitor", "false")]
+    for key in filter_keys:
+        value = "false" if key.casefold().endswith(".required") else ""
+        config_pairs.append((key, value))
+    environment["GIT_CONFIG_COUNT"] = str(len(config_pairs))
+    for index, (key, value) in enumerate(config_pairs):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    return environment
+
+
+def run_guarded_git(argv: tuple[str, ...]) -> int:
+    guarded_argv = _validated_guarded_git_argv(argv)
+    if guarded_argv is None:
+        print("ContextGuard denied an invalid guarded Git invocation.", file=sys.stderr)
+        return 126
+    try:
+        filter_keys = _discover_git_filter_config_keys()
+        environment = _guarded_git_environment(filter_keys)
+        os.execvpe(guarded_argv[0], list(guarded_argv), environment)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        print("ContextGuard could not neutralize Git execution configuration.", file=sys.stderr)
+        return 126
+    raise AssertionError("os.execvpe returned unexpectedly")
+
+
 def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str:
     """Disable config helpers while retaining the original command for inspection."""
     guarded_segments: list[str] = []
@@ -2702,21 +2827,17 @@ def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str
             and route_start + 1 < len(segment_argv)
             and command_basename(segment_argv[route_start]) == "git"
         ):
-            subcommand = segment_argv[route_start + 1]
-            flags: tuple[str, ...] = ()
-            flag_index = route_start + 2
-            if subcommand in {"diff", "show", "log"}:
-                flags = _GIT_DIFF_EXECUTION_FLAGS
-            elif subcommand in {"grep", "blame"}:
-                flags = _GIT_TEXTCONV_EXECUTION_FLAGS
-            elif (
-                subcommand == "stash"
-                and route_start + 2 < len(segment_argv)
-                and segment_argv[route_start + 2] == "show"
-            ):
-                flags = _GIT_DIFF_EXECUTION_FLAGS
-                flag_index += 1
+            git_argv = segment_argv[route_start:]
+            relative_flag_index, flags = _git_execution_guard_spec(git_argv)
+            flag_index = route_start + relative_flag_index
             rendered_words[flag_index:flag_index] = flags
+            rendered_words[route_start : route_start + 1] = (
+                shell_quote(sys.executable),
+                shell_quote(os.path.realpath(__file__)),
+                _GIT_GUARD_MODE,
+                "--",
+                "git",
+            )
             # Existing wrapper consumers inspect the rewritten string for the
             # admitted source command. Keep it as one quoted, namespaced
             # assignment; Git ignores the value and the shell cannot execute it.
@@ -2773,6 +2894,11 @@ def print_updated_command(wrapped: str, tool_input: dict[str, object]) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:3] == [_GIT_GUARD_MODE, "--"]:
+        return run_guarded_git(tuple(sys.argv[3:]))
+    if _GIT_GUARD_MODE in sys.argv[1:]:
+        print("ContextGuard denied a malformed guarded Git invocation.", file=sys.stderr)
+        return 126
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
         return 0
