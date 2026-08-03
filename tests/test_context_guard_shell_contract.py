@@ -1008,6 +1008,27 @@ class MiniShellBoundaryTests(unittest.TestCase):
                         decision.reason_code, pin["expected_reason_code"]
                     )
 
+    def test_s014_all_fix5_vectors_deny_through_hook_envelope_without_payload_echo(
+        self,
+    ) -> None:
+        """F-6 — AC-5.1의 19개 주 벡터를 실제 설치형 훅 엔벌로프까지 확장한다."""
+        self.assertEqual(len(FIX5_ADVERSARIAL_PINS), 19)
+        for script in self.contract_scripts():
+            for pin in FIX5_ADVERSARIAL_PINS:
+                with self.subTest(script=script.name, case_id=pin["case_id"]):
+                    proc = self.assert_command_decision(
+                        pin["command"], "deny", script=script
+                    )
+                    self.assert_bounded_deny(proc)
+
+                    rendered = proc.stdout + proc.stderr
+                    assignment = pin["command"].split(" ", 1)[0]
+                    unsafe_name, unsafe_value = assignment.split("=", 1)
+                    self.assertNotIn(pin["command"], rendered)
+                    self.assertNotIn(unsafe_name.removesuffix("+"), rendered)
+                    if len(unsafe_value) >= 4:
+                        self.assertNotIn(unsafe_value, rendered)
+
     def test_fix5_env_wrapper_forms_cannot_bypass_allowlist(self) -> None:
         """`env -- NAME=val cmd` 와 `env env NAME=val cmd` 는 이름 화이트리스트를
         우회하지 못한다.
