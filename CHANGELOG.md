@@ -4,6 +4,11 @@ All notable changes for the ContextGuard plugin are documented here.
 
 ## [Unreleased]
 
+- Published the sanitized result of the first frozen 12-task live study. The
+  study is explicitly `inconclusive`: one arm-unit exhausted its fixed retry,
+  no favorable subset or correction assessment was analyzed, and no token or
+  cost savings claim is allowed.
+
 ## [0.4.16] - 2026-08-01
 
 - Sanitizer output-scanning is now one monotonic left-to-right pass. All nine location-prefix consumers previously re-parsed the same optional `path:line:` fragment at every offset, which made lines with few colons quadratic: a single 82,015-byte line took 2.62 s and a 100,014-byte line took 3.98 s. The leading prefix is identified once and the seven unanchored consumers run as fragment-free twins, while the two `^`-anchored header consumers keep their original patterns because they were never a per-offset cost. The same lines now take 64.3 ms and 0.078 s, with doubling ratios of 1.84 to 2.01. Redaction output is byte-identical to the previous implementation, pinned by a differential oracle against a hash-frozen baseline across eleven corpora, three sanitization contexts, both path-display modes, and both shared-state and per-line runs.
