@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "context-guard-kit" / "benchmark_runner.py"
 PACKAGED_RUNNER = ROOT / "plugins" / "context-guard" / "bin" / "context-guard-bench"
 SUITE = ROOT / "bench" / "token-savings-12task"
+RESULTS = SUITE / "results"
 HARNESS = ROOT / "scripts" / "rehearse_measurement_study.py"
 
 REQUIRED_CATEGORIES = (
@@ -1017,6 +1018,117 @@ class CheckerAdversarialControlTest(unittest.TestCase):
         result = run_bound_checker(tree, source, solution)
         self.assertEqual(result.returncode, 1)
         self.assertIn("byte-identical", result.stdout)
+
+
+class SanitizedR9ResultContractTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.summary_path = RESULTS / "r9-summary.json"
+        self.report_path = RESULTS / "r9-summary.md"
+        self.dashboard_path = RESULTS / "r9-dashboard.md"
+        self.summary = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        self.report = self.report_path.read_text(encoding="utf-8")
+        self.dashboard = self.dashboard_path.read_text(encoding="utf-8")
+
+    def test_result_is_explicitly_inconclusive_and_claimless(self) -> None:
+        self.assertEqual(
+            self.summary["schema_version"],
+            "contextguard.bench.sanitized-study-summary.v1",
+        )
+        self.assertEqual(self.summary["suite"], "token-savings-12task")
+        self.assertEqual(
+            self.summary["manifest_sha256"],
+            "e5f4548371cf03fb80e134093d9a6113c7e4c29d578c267925bdb3c6f873f1df",
+        )
+        self.assertEqual(self.summary["verdict"], "inconclusive")
+        self.assertFalse(self.summary["claim_allowed"])
+        self.assertIsNone(self.summary["claim"])
+        self.assertFalse(self.summary["gates"]["complete_pairs"])
+        self.assertFalse(self.summary["subset_analysis_performed"])
+        self.assertEqual(
+            self.summary["methods"]["correction_severity"],
+            "Theta_severity=mean_task(mean_repetition(S_treatment-S_baseline))",
+        )
+        self.assertEqual(
+            self.summary["methods"]["correction_incidence"],
+            "Theta_incidence=mean_task(mean_repetition(K_treatment-K_baseline)); K=1[S>0]",
+        )
+        self.assertEqual(
+            self.summary["methods"]["inference_seed"],
+            "0x434F4E5445585447",
+        )
+        self.assertEqual(
+            self.summary["methods"]["correction_shuffle_seed"],
+            "0x434F525245435433",
+        )
+        self.assertIn("rejection", self.summary["methods"]["bounded_draw"])
+        self.assertIsNone(
+            self.summary["correction_assessment"]["theta_severity"]
+        )
+        self.assertIsNone(
+            self.summary["correction_assessment"]["theta_incidence"]
+        )
+        self.assertIsNone(
+            self.summary["correction_assessment"]["theta_severity_q975"]
+        )
+        self.assertIsNone(
+            self.summary["correction_assessment"]["theta_incidence_q975"]
+        )
+        self.assertIsNone(self.summary["cost_accounting"]["engineering_usd"])
+        self.assertIsNone(self.summary["cost_accounting"]["review_usd"])
+
+    def test_result_contains_no_private_execution_metadata(self) -> None:
+        serialized = "\n".join((
+            json.dumps(self.summary, sort_keys=True),
+            self.report,
+            self.dashboard,
+        )).lower()
+        for forbidden_key in (
+            "run_id", "receipt_sha256", "artifact_index_sha256", "local_path",
+            "raw_output", "credential", "access_token", "refresh_token",
+        ):
+            with self.subTest(forbidden_key=forbidden_key):
+                self.assertNotIn(forbidden_key, serialized)
+        self.assertNotIn("/users/", serialized)
+
+    def test_human_report_discloses_methods_costs_and_stop_reason(self) -> None:
+        for required in (
+            "No token-savings claim",
+            "inconclusive",
+            "P = input + cache creation + cache read + output",
+            "C = sum(P for every consumed attempt through success)",
+            "D = C(treatment) - C(baseline)",
+            "SplitMix64-v1",
+            "Hyndman-Fan Type 7",
+            "S(v,t,r)",
+            "K(v,t,r) = 1[S(v,t,r) > 0]",
+            "Theta_severity",
+            "Theta_incidence",
+            "0x434F4E5445585447",
+            "0x434F525245435433",
+            "rejection",
+            "fixed retry",
+            "correction assessment was not run",
+            "client-reported diagnostic estimate",
+            "canary",
+            "engineering and review",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.report)
+        for forbidden_claim in (
+            "product-wide savings",
+            "default-on savings",
+            "proven savings",
+            "guaranteed savings",
+        ):
+            with self.subTest(forbidden_claim=forbidden_claim):
+                self.assertNotIn(forbidden_claim, self.report.lower())
+
+    def test_dashboard_keeps_verdict_and_claim_boundary_visible(self) -> None:
+        self.assertIn("Verdict | `inconclusive`", self.dashboard)
+        self.assertIn("Claim allowed | `false`", self.dashboard)
+        self.assertIn("Complete pairs | `false`", self.dashboard)
+        self.assertIn("Correction assessment | Not run", self.dashboard)
+        self.assertIn("No token-savings claim", self.dashboard)
 
 
 class RehearsalHarnessContractTest(unittest.TestCase):

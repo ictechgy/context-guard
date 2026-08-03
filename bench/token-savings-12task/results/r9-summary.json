@@ -1,0 +1,72 @@
+{
+  "schema_version": "contextguard.bench.sanitized-study-summary.v1",
+  "suite": "token-savings-12task",
+  "manifest_sha256": "e5f4548371cf03fb80e134093d9a6113c7e4c29d578c267925bdb3c6f873f1df",
+  "candidate_commit": "c311a208c731a5460c021c38577b68f909bc70b8",
+  "environment": {
+    "client": "Claude Code 2.1.220",
+    "model": "sonnet",
+    "effort": "medium"
+  },
+  "verdict": "inconclusive",
+  "claim_allowed": false,
+  "claim": null,
+  "subset_analysis_performed": false,
+  "stop_reason": "A baseline arm-unit failed both its initial attempt and its sole fixed-policy retry.",
+  "attempts": {
+    "consumed": 33,
+    "initial": 31,
+    "fixed_policy_retries": 2,
+    "successful": 30,
+    "valid_task_failures": 3,
+    "planned_initial": 72
+  },
+  "gates": {
+    "complete_pairs": false,
+    "token_upper_bound_strictly_negative": false,
+    "retry_non_regression": false,
+    "correction_non_regression": null
+  },
+  "estimates": {
+    "delta": null,
+    "gamma": null,
+    "bootstrap_delta": null,
+    "bootstrap_gamma": null,
+    "reason": "incomplete_or_invalid_pair"
+  },
+  "correction_assessment": {
+    "required_successful_outputs": 72,
+    "performed": false,
+    "provider_calls": 0,
+    "theta_severity": null,
+    "theta_incidence": null,
+    "theta_severity_q975": null,
+    "theta_incidence_q975": null,
+    "reason": "The complete 72-output population did not exist; partial scoring is forbidden."
+  },
+  "cost_accounting": {
+    "analytic_client_reported_diagnostic_usd": "4.50374909999999998",
+    "analytic_conservative_ceiling_accounted_usd": "24.75",
+    "excluded_canary_client_reported_diagnostic_usd": "0.2653266",
+    "excluded_prior_invalid_analytic_conservative_usd": "2.25",
+    "assessment_usd": "0.00",
+    "provider_billing_export_present": false,
+    "engineering_usd": null,
+    "review_usd": null
+  },
+  "methods": {
+    "primary_tokens": "P=input_tokens+cache_creation_input_tokens+cache_read_input_tokens+output_tokens",
+    "arm_cost": "C=sum(P for every consumed attempt through success)",
+    "paired_difference": "D=C(treatment)-C(baseline)",
+    "token_estimator": "Delta=mean_task(mean_repetition(D))",
+    "retry_indicator": "I=1 when a successful arm-unit consumed more than one attempt, otherwise 0",
+    "retry_estimator": "Gamma=mean_task(mean_repetition(I_treatment-I_baseline))",
+    "correction_severity": "Theta_severity=mean_task(mean_repetition(S_treatment-S_baseline))",
+    "correction_incidence": "Theta_incidence=mean_task(mean_repetition(K_treatment-K_baseline)); K=1[S>0]",
+    "inference_seed": "0x434F4E5445585447",
+    "correction_shuffle_seed": "0x434F525245435433",
+    "bounded_draw": "unsigned 64-bit rejection draw; accept x below 2^64-(2^64 mod 12), then use x mod 12",
+    "bootstrap": "SplitMix64-v1; 10000 task-cluster resamples; Hyndman-Fan Type 7 quantiles"
+  },
+  "claim_boundary": "This frozen execution did not demonstrate token savings. Client cost telemetry is diagnostic, the canary and prior invalid attempt are excluded, correction burden is unmeasured, and no favorable subset is analyzed."
+}

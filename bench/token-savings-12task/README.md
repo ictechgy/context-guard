@@ -139,6 +139,15 @@ rejects unregistered event classes, missing explicitly required classes, and any
 observed hook process failure. Re-collect this evidence against the exact CLI
 version before freezing a measurement manifest.
 
+## Recorded R9 outcome
+
+The first frozen live study is retained as an **inconclusive** result. One
+arm-unit failed both its initial attempt and its sole fixed-policy retry, so the
+complete-pair gate could not pass. No subset estimate or correction assessment
+was performed, and no token-savings claim is allowed. See the sanitized
+[R9 report](results/r9-summary.md), [dashboard](results/r9-dashboard.md), and
+[machine-readable summary](results/r9-summary.json).
+
 ## Claim boundary
 
 - The rehearsal makes no provider call, opens no network socket, reads no
