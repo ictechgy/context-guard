@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "context-guard-trim-output",
+            "command": "context-guard-post-tool-trim",
             "type": "command"
           }
         ],

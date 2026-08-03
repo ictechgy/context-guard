@@ -13372,6 +13372,7 @@ class ClaudeTokenKitTests(unittest.TestCase):
         self.assertEqual(plan["context-guard-statusline"]["mode"], "statusline")
         self.assertEqual(plan["context-guard-statusline-merged"]["mode"], "statusline")
         self.assertEqual(plan["context-guard-guard-read"]["mode"], "hook-json")
+        self.assertEqual(plan["context-guard-post-tool-trim"]["mode"], "hook-quiet")
 
         statusline_stdin = json.loads(smoke.launch_stdin("statusline"))
         self.assertEqual(statusline_stdin["session_id"], "release-smoke")
