@@ -2075,6 +2075,20 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     "GIT_CONFIG_VALUE_0": str(helpers["fsmonitor"]),
                 }
 
+                subprocess.run(
+                    ["git", "diff", "--no-ext-diff", "--no-textconv"],
+                    cwd=root,
+                    env=hostile_exec_env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertTrue(
+                    markers["process-filter"].exists(),
+                    "hostile filter fixture did not execute without the guard",
+                )
+                for marker in markers.values():
+                    marker.unlink(missing_ok=True)
+
                 proc = run_rewrite(script, {"tool_input": {"command": "git diff"}})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(a1_route_decision(proc), "rewrite_sanitize")
@@ -2248,6 +2262,18 @@ class MiniShellBoundaryTests(unittest.TestCase):
                     for flag in expected_flags:
                         self.assertIn(flag, guarded_argv)
                         self.assertEqual(guarded_argv.count(flag), 1)
+                    flag_index = git_index + (
+                        3
+                        if guarded_argv[git_index + 1 : git_index + 3]
+                        == ["stash", "show"]
+                        else 2
+                    )
+                    self.assertEqual(
+                        guarded_argv[
+                            flag_index : flag_index + len(expected_flags)
+                        ],
+                        list(expected_flags),
+                    )
                     self.assertEqual(
                         [
                             argument
