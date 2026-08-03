@@ -284,7 +284,8 @@ def path_exists_in_tree(repo: Path, commit: str, path: str) -> bool:
     없음'과 '잘못된 리비전·손상된 객체' 양쪽에 똑같이 128을 돌려주므로, 종료
     코드로 둘을 가를 수 없다(1은 나오지 않는다 — 실측 확인). 두 경우를 '부재'로
     합치면 인프라 실패가 곧 통과가 된다: D5는 before/after가 함께 비어 같아지고,
-    C3-b는 마커 검사를 통째로 건너뛴다 — 릴리스 게이트가 fail-open 한다.
+    C3-b는 실제 파일 내용을 검사 표면에서 빼 버린다 — 릴리스 게이트가
+    fail-open 한다.
 
     ``git ls-tree``는 정확히 필요한 분리를 준다. 커밋이 유효하면 경로가 없어도
     종료 0에 빈 출력이고, 리비전 자체가 나쁘면 0이 아닌 종료로 실패한다. 따라서
@@ -630,11 +631,10 @@ def assert_generation_records_wellformed(generations: tuple[Generation, ...]) ->
        두지 않는다: 그런 필드는 바로 그 세탁을 잡을 마커를 지목해 버리게 해준다.
        리터럴이 정말로 사라졌다면 C3-a가 HEAD에 대해 먼저 큰 소리로 실패하므로
        그 경우는 이미 자기 신고된다(P5).
-    3. 마커 소유 경로가 그 세대의 컴포넌트 경로에 속함. C3-b가 'bless 트리에
-       소유 경로가 없으면 통과'로 건너뛰는 근거는 '경로의 부재는 경로 집합
-       검사가 이미 구속한다'인데, 그 논거는 소유 경로가 컴포넌트 경로일 때만
-       성립한다. 컴포넌트 밖 경로를 소유자로 선언하면 C3-b가 아무것도 평가하지
-       않고 성공을 보고한다.
+    3. 마커 소유 경로가 그 세대의 컴포넌트 경로에 속함. C3-b는 bless의 모든
+       컴포넌트 경로를 검사하지만, C3-a는 live HEAD의 선언된 소유 경로에서
+       리터럴을 확인하고 전방 이월도 그 소유 관계를 기준으로 한다. 컴포넌트 밖
+       경로를 소유자로 허용하면 그 두 보증이 세대의 동결 경계 밖을 가리킨다.
     5. 컴포넌트 경로가 리터럴이고 사람의 셸에서 안전함. 선행 ``:``는 git
        pathspec 매직이고, 공백과 셸/glob 메타문자는 런북이 지시하는 사람의
        리뷰 diff에서만 경로를 조용히 잃게 만든다 — 기계 게이트는
@@ -812,34 +812,31 @@ def assert_gate_b_markers_absent_from_bless(
     """활성 세대의 bless 트리가 활성 세대의 Gate-B 마커를 포함하지 않는지 검사한다
     (C3-b, 활성 세대 한정).
 
-    bless 트리에 소유 경로 자체가 없으면(그 경로가 이 세대에서 통째로 삭제된
-    경우) 부재로 간주해 통과한다 — 경로의 부재는 ``assert_generation_structure``의
-    경로 집합 검사가 이미 구속한다.
-
-    다만 그 건너뛰기가 *모든* 마커에 적용되면 이 검사는 0개를 평가한 채 성공을
-    보고한다. ``commit_paths``가 ``diff-tree --name-only``(상태 무시)라 bless가
-    삭제한 경로도 정당한 컴포넌트 경로이므로, 마커 소유 경로를 전부 '이 세대가
-    삭제하는 경로'로 선언하면 역방향 anti-laundering 검사가 통째로 공허해진다
-    (소유 경로가 컴포넌트 경로인지 보는 D6-3으로는 막히지 않는다). 그래서 최소
-    하나는 실제로 평가되었는지 요구한다.
+    선언된 소유 경로만 보면 re-blesser가 같은 리터럴을 다른 컴포넌트 파일로
+    옮겨 C3-b를 우회할 수 있다. 따라서 bless 트리에 남아 있는 모든 컴포넌트
+    파일의 내용을 읽고, 모든 마커를 그 전체 표면에 대해 검사한다. 개별 경로가
+    bless에서 삭제된 경우는 구조 검사가 이미 구속하지만, 모든 컴포넌트 경로가
+    사라지면 검사가 공허해지므로 명시적으로 실패한다.
     """
-    evaluated = 0
-    for marker in generation.gate_b_markers:
-        if not path_exists_in_tree(repo, bless, marker.owner_path):
-            continue
-        evaluated += 1
-        content = file_at(repo, bless, marker.owner_path)
-        if marker.literal in content:
-            raise ProofError(
-                f"generation {generation.name!r} bless tree {bless} retains Gate-B "
-                f"marker {marker.literal!r} in {marker.owner_path}"
-            )
-    if not evaluated:
+    component_contents = {
+        path: file_at(repo, bless, path)
+        for path in sorted(generation.all_component_paths)
+        if path_exists_in_tree(repo, bless, path)
+    }
+    if not component_contents:
         raise ProofError(
             f"generation {generation.name!r} evaluated no Gate-B markers against "
-            f"bless tree {bless}: every marker owner path is absent there, so the "
+            f"bless tree {bless}: every component path is absent there, so the "
             "reverse anti-laundering check would pass vacuously"
         )
+    for marker in generation.gate_b_markers:
+        for path, content in component_contents.items():
+            if marker.literal in content:
+                raise ProofError(
+                    f"generation {generation.name!r} bless tree {bless} retains Gate-B "
+                    f"marker {marker.literal!r} in {path} "
+                    f"(declared owner {marker.owner_path})"
+                )
 
 
 def assert_gate_b_markers_present_at_head(
