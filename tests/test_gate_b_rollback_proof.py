@@ -982,37 +982,42 @@ class GateBGenerationsTests(SyntheticGenerationHelpers, unittest.TestCase):
     def test_bless_tree_must_not_move_gate_b_marker_to_another_component(self) -> None:
         """F-9 — C3-b scans every component path, not only the declared owner."""
         marker = rollback_proof.GateBMarker("SECRET_GATE_B_TOKEN", "owner.txt")
-        moved_path = "g/moved.txt"
+        moved_paths = ("g/moved-b1.txt", "g/moved-b2.txt")
         generation = self.make_generation(
             "gen-marker-moved",
-            b1_paths=frozenset({moved_path}),
-            b2_paths=frozenset({"g/b2.txt"}),
+            b1_paths=frozenset({moved_paths[0]}),
+            b2_paths=frozenset({moved_paths[1]}),
             shared_paths=frozenset({"owner.txt"}),
             gate_b_markers=(marker,),
         )
-        with tempfile.TemporaryDirectory(prefix="context-guard-proof-marker-moved-") as tmp:
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            rollback_proof.run_git(repo, "init", "--quiet")
-            commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
-            moved_bless = commit_paths_for_test(
-                repo,
-                {
-                    "owner.txt": "declared owner is clean\n",
-                    moved_path: "SECRET_GATE_B_TOKEN moved here\n",
-                },
-                generation.bless_subject,
-            )
+        for moved_path in moved_paths:
+            with self.subTest(moved_path=moved_path):
+                with tempfile.TemporaryDirectory(
+                    prefix="context-guard-proof-marker-moved-"
+                ) as tmp:
+                    repo = Path(tmp) / "repo"
+                    repo.mkdir()
+                    rollback_proof.run_git(repo, "init", "--quiet")
+                    commit_paths_for_test(repo, {"README.md": "base\n"}, "base")
+                    moved_bless = commit_paths_for_test(
+                        repo,
+                        {
+                            "owner.txt": "declared owner is clean\n",
+                            moved_path: "SECRET_GATE_B_TOKEN moved here\n",
+                        },
+                        generation.bless_subject,
+                    )
 
-            with self.assertRaisesRegex(
-                rollback_proof.ProofError,
-                r"retains Gate-B marker.*g/moved\.txt",
-            ):
-                rollback_proof.assert_gate_b_markers_absent_from_bless(
-                    repo,
-                    generation,
-                    moved_bless,
-                )
+                    with self.assertRaisesRegex(
+                        rollback_proof.ProofError,
+                        "retains Gate-B marker",
+                    ) as raised:
+                        rollback_proof.assert_gate_b_markers_absent_from_bless(
+                            repo,
+                            generation,
+                            moved_bless,
+                        )
+                    self.assertIn(moved_path, str(raised.exception))
 
     def test_gate_b_markers_must_be_present_at_active_head(self) -> None:
         """U-9 — 활성 세대의 Gate-B 마커가 HEAD에 없으면 거부된다 (C3-a,
