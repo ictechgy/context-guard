@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "gate_result": {"additionalProperties": false, "oneOf": [{"properties": {"blocking_reasons": {"maxItems": 0}, "status": {"const": "pass"}}, "required": ["status", "blocking_reasons"]}, {"properties": {"blocking_reasons": {"minItems": 1}, "status": {"const": "claim_blocked"}}, "required": ["status", "blocking_reasons"]}, {"properties": {"blocking_reasons": {"minItems": 1}, "status": {"const": "unavailable"}}, "required": ["status", "blocking_reasons"]}], "properties": {"blocking_reasons": {"items": {"$ref": "#/$defs/reason_code"}, "maxItems": 32, "type": "array", "uniqueItems": true}, "gate": {"enum": ["activation", "correction", "failure", "latency", "privacy", "provenance", "quality"], "type": "string"}, "status": {"enum": ["claim_blocked", "pass", "unavailable"], "type": "string"}}, "required": ["gate", "status", "blocking_reasons"], "type": "object"},
+    "gate_results": {"additionalProperties": false, "properties": {"activation": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "activation"}}, "required": ["gate"]}]}, "correction": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "correction"}}, "required": ["gate"]}]}, "failure": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "failure"}}, "required": ["gate"]}]}, "latency": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "latency"}}, "required": ["gate"]}]}, "privacy": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "privacy"}}, "required": ["gate"]}]}, "provenance": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "provenance"}}, "required": ["gate"]}]}, "quality": {"allOf": [{"$ref": "#/$defs/gate_result"}, {"properties": {"gate": {"const": "quality"}}, "required": ["gate"]}]}}, "required": ["activation", "correction", "failure", "latency", "privacy", "provenance", "quality"], "type": "object"},
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "metric_result": {"additionalProperties": false, "oneOf": [{"properties": {"blocking_reasons": {"maxItems": 0}, "status": {"const": "complete"}}, "required": ["status", "blocking_reasons"]}, {"properties": {"blocking_reasons": {"minItems": 1}, "status": {"const": "claim_blocked"}}, "required": ["status", "blocking_reasons"]}, {"properties": {"blocking_reasons": {"minItems": 1}, "status": {"const": "unavailable"}}, "required": ["status", "blocking_reasons"]}], "properties": {"blocking_reasons": {"items": {"$ref": "#/$defs/reason_code"}, "maxItems": 32, "type": "array", "uniqueItems": true}, "metric": {"enum": ["EPR", "FLC-QGS", "PAT-PCD"], "type": "string"}, "status": {"enum": ["claim_blocked", "complete", "unavailable"], "type": "string"}}, "required": ["metric", "status", "blocking_reasons"], "type": "object"},
+    "metric_results": {"additionalProperties": false, "properties": {"EPR": {"allOf": [{"$ref": "#/$defs/metric_result"}, {"properties": {"metric": {"const": "EPR"}}, "required": ["metric"]}]}, "FLC-QGS": {"allOf": [{"$ref": "#/$defs/metric_result"}, {"properties": {"metric": {"const": "FLC-QGS"}}, "required": ["metric"]}]}, "PAT-PCD": {"allOf": [{"$ref": "#/$defs/metric_result"}, {"properties": {"metric": {"const": "PAT-PCD"}}, "required": ["metric"]}]}}, "required": ["EPR", "FLC-QGS", "PAT-PCD"], "type": "object"},
+    "reason_code": {"pattern": "^[A-Z][A-Z0-9_]{2,95}$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "claim-completeness-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {"properties": {"claim_allowed": {"const": true}, "completeness": {"const": "complete"}}, "required": ["claim_allowed", "completeness"]},
+    {"properties": {"claim_allowed": {"const": false}, "completeness": {"const": "claim_blocked"}}, "required": ["claim_allowed", "completeness"]},
+    {"properties": {"claim_allowed": {"const": false}, "completeness": {"const": "incomplete"}}, "required": ["claim_allowed", "completeness"]}
+  ],
+  "properties": {
+    "attempt_id": {"$ref": "#/$defs/id"},
+    "bundle_sha256": {"$ref": "#/$defs/sha256"},
+    "claim_allowed": {"type": "boolean"},
+    "completeness": {"enum": ["claim_blocked", "complete", "incomplete"], "type": "string"},
+    "gate_results": {"$ref": "#/$defs/gate_results"},
+    "metric_results": {"$ref": "#/$defs/metric_results"},
+    "result_id": {"$ref": "#/$defs/id"},
+    "result_sha256": {"$ref": "#/$defs/sha256"},
+    "schema_version": {"const": "v1", "type": "string"}
+  },
+  "required": ["schema_version", "result_id", "result_sha256", "attempt_id", "bundle_sha256", "completeness", "claim_allowed", "metric_results", "gate_results"],
+  "title": "Claim completeness result",
+  "type": "object"
+}

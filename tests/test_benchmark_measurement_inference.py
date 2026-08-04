@@ -1496,6 +1496,7 @@ class BenchmarkMeasurementInferenceContractTests(unittest.TestCase):
                 self.runner.validate_measurement_probe_layout(first)
             victim.unlink()
             victim.mkdir(mode=0o755)
+            victim.chmod(0o755)
             with self.assertRaises(ValueError):
                 self.runner.validate_measurement_probe_layout(first)
 

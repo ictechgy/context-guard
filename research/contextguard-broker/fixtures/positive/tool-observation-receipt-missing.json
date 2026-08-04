@@ -1,0 +1,1 @@
+{"attempt_id":"attempt-p0-001","domain_separated_content_sha256":null,"host_framing_status":"not_observed","lifecycle":"PostToolUseFailure","observation_status":"missing","observed_at_ms":42,"receipt_id":"observe-p0-002","result_utf8_bytes":null,"schema_version":"v1","session_id":"session-p0-001","tool_name":"Read","tool_use_id":"tooluse-p0-002"}

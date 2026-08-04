@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "nullable_sha256": {"pattern": "^[0-9a-f]{64}$", "type": ["null", "string"]},
+    "opaque_host_id": {"maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "tool-observation-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {"properties": {"domain_separated_content_sha256": {"$ref": "#/$defs/sha256"}, "host_framing_status": {"const": "framed"}, "observation_status": {"const": "observed"}, "result_utf8_bytes": {"minimum": 0, "type": "integer"}}, "required": ["observation_status", "host_framing_status", "result_utf8_bytes", "domain_separated_content_sha256"]},
+    {"properties": {"domain_separated_content_sha256": {"type": "null"}, "host_framing_status": {"const": "not_observed"}, "observation_status": {"const": "missing"}, "result_utf8_bytes": {"type": "null"}}, "required": ["observation_status", "host_framing_status", "result_utf8_bytes", "domain_separated_content_sha256"]},
+    {"properties": {"domain_separated_content_sha256": {"type": "null"}, "host_framing_status": {"const": "truncated"}, "observation_status": {"const": "truncated"}, "result_utf8_bytes": {"type": "null"}}, "required": ["observation_status", "host_framing_status", "result_utf8_bytes", "domain_separated_content_sha256"]}
+  ],
+  "properties": {
+    "attempt_id": {"$ref": "#/$defs/id"},
+    "domain_separated_content_sha256": {"$ref": "#/$defs/nullable_sha256"},
+    "host_framing_status": {"enum": ["framed", "not_observed", "truncated"], "type": "string"},
+    "lifecycle": {"enum": ["PostToolUse", "PostToolUseFailure"], "type": "string"},
+    "observation_status": {"enum": ["missing", "observed", "truncated"], "type": "string"},
+    "observed_at_ms": {"minimum": 0, "type": "integer"},
+    "receipt_id": {"$ref": "#/$defs/id"},
+    "result_utf8_bytes": {"minimum": 0, "type": ["integer", "null"]},
+    "schema_version": {"const": "v1", "type": "string"},
+    "session_id": {"$ref": "#/$defs/opaque_host_id"},
+    "tool_name": {"enum": ["Bash", "Read"], "type": "string"},
+    "tool_use_id": {"$ref": "#/$defs/opaque_host_id"}
+  },
+  "required": ["schema_version", "receipt_id", "attempt_id", "session_id", "tool_name", "tool_use_id", "lifecycle", "observation_status", "host_framing_status", "result_utf8_bytes", "domain_separated_content_sha256", "observed_at_ms"],
+  "title": "Privacy-safe tool observation receipt",
+  "type": "object"
+}

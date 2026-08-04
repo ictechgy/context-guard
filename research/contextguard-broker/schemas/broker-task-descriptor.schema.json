@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "broker-task-descriptor.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allowed_seed_paths": {"items": {"maxLength": 240, "minLength": 1, "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*(?:^|/)\\.env(?:[./]|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$", "type": "string"}, "maxItems": 32, "minItems": 1, "type": "array", "uniqueItems": true},
+    "authorization_ref": {"$ref": "#/$defs/id"},
+    "checker_id": {"$ref": "#/$defs/id"},
+    "descriptor_id": {"$ref": "#/$defs/id"},
+    "descriptor_sha256": {"$ref": "#/$defs/sha256"},
+    "eligible_host_versions": {"items": {"maxLength": 48, "minLength": 1, "pattern": "^[0-9A-Za-z._-]+$", "type": "string"}, "maxItems": 16, "minItems": 1, "type": "array", "uniqueItems": true},
+    "evidence_classes": {"items": {"enum": ["code", "documentation", "metadata", "test"], "type": "string"}, "maxItems": 4, "minItems": 1, "type": "array", "uniqueItems": true},
+    "expansion_policy_version": {"$ref": "#/$defs/id"},
+    "language_id": {"$ref": "#/$defs/id"},
+    "max_expansions": {"maximum": 8, "minimum": 0, "type": "integer"},
+    "max_pack_bytes": {"maximum": 1048576, "minimum": 1, "type": "integer"},
+    "max_source_count": {"maximum": 256, "minimum": 1, "type": "integer"},
+    "pair_id": {"$ref": "#/$defs/id"},
+    "protected_zone_policy_id": {"$ref": "#/$defs/id"},
+    "render_policy_version": {"$ref": "#/$defs/id"},
+    "repository_policy_id": {"$ref": "#/$defs/id"},
+    "revision_policy_id": {"$ref": "#/$defs/id"},
+    "schema_version": {"const": "v1", "type": "string"},
+    "selection_policy_version": {"$ref": "#/$defs/id"},
+    "stratum_id": {"$ref": "#/$defs/id"},
+    "study_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "task_id": {"$ref": "#/$defs/id"}
+  },
+  "required": ["schema_version", "descriptor_id", "descriptor_sha256", "study_manifest_sha256", "task_id", "pair_id", "stratum_id", "language_id", "checker_id", "allowed_seed_paths", "evidence_classes", "protected_zone_policy_id", "selection_policy_version", "render_policy_version", "expansion_policy_version", "max_pack_bytes", "max_source_count", "max_expansions", "repository_policy_id", "revision_policy_id", "eligible_host_versions", "authorization_ref"],
+  "title": "Frozen broker task descriptor",
+  "type": "object"
+}

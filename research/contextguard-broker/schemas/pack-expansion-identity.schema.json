@@ -1,0 +1,38 @@
+{
+  "$defs": {
+    "expansion": {"additionalProperties": false, "properties": {"delivered_content_sha256": {"$ref": "#/$defs/sha256"}, "delivered_utf8_bytes": {"minimum": 0, "type": "integer"}, "expansion_id": {"$ref": "#/$defs/id"}, "source_byte_length": {"minimum": 1, "type": "integer"}, "source_byte_start": {"minimum": 0, "type": "integer"}, "source_content_sha256": {"$ref": "#/$defs/sha256"}, "source_id": {"$ref": "#/$defs/id"}, "source_path": {"$ref": "#/$defs/repository_relative_path"}, "source_total_bytes": {"minimum": 1, "type": "integer"}}, "required": ["expansion_id", "source_id", "source_path", "source_total_bytes", "source_content_sha256", "delivered_content_sha256", "source_byte_start", "source_byte_length", "delivered_utf8_bytes"], "type": "object"},
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "repository_relative_path": {"maxLength": 240, "minLength": 1, "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*(?:^|/)\\.env(?:[./]|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "pack-expansion-identity.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {"properties": {"expansion_count": {"const": 0}, "expansions": {"maxItems": 0}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 1}, "expansions": {"maxItems": 1, "minItems": 1}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 2}, "expansions": {"maxItems": 2, "minItems": 2}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 3}, "expansions": {"maxItems": 3, "minItems": 3}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 4}, "expansions": {"maxItems": 4, "minItems": 4}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 5}, "expansions": {"maxItems": 5, "minItems": 5}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 6}, "expansions": {"maxItems": 6, "minItems": 6}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 7}, "expansions": {"maxItems": 7, "minItems": 7}}, "required": ["expansion_count", "expansions"]},
+    {"properties": {"expansion_count": {"const": 8}, "expansions": {"maxItems": 8, "minItems": 8}}, "required": ["expansion_count", "expansions"]}
+  ],
+  "properties": {
+    "attempt_id": {"$ref": "#/$defs/id"},
+    "expansion_count": {"maximum": 8, "minimum": 0, "type": "integer"},
+    "expansion_identity_sha256": {"$ref": "#/$defs/sha256"},
+    "expansions": {"items": {"$ref": "#/$defs/expansion"}, "maxItems": 8, "type": "array", "uniqueItems": true},
+    "immutable_status": {"enum": ["immutable", "verification_failed"], "type": "string"},
+    "pack_content_sha256": {"$ref": "#/$defs/sha256"},
+    "pack_identity_id": {"$ref": "#/$defs/id"},
+    "pack_utf8_bytes": {"minimum": 0, "type": "integer"},
+    "root_policy_id": {"$ref": "#/$defs/id"},
+    "schema_version": {"const": "v1", "type": "string"},
+    "selection_snapshot_id": {"$ref": "#/$defs/id"}
+  },
+  "required": ["schema_version", "pack_identity_id", "attempt_id", "selection_snapshot_id", "pack_content_sha256", "pack_utf8_bytes", "expansion_count", "expansions", "expansion_identity_sha256", "root_policy_id", "immutable_status"],
+  "title": "Immutable pack and expansion identity",
+  "type": "object"
+}

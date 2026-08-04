@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "nullable_opaque_host_id": {"maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$", "type": ["null", "string"]},
+    "opaque_host_id": {"maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "provider-turn-join.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {"properties": {"immediately_following_status": {"const": "immediately_following"}, "joining_status": {"const": "attributed"}, "provider_cost_status": {"const": "available"}, "provider_turn_id": {"$ref": "#/$defs/opaque_host_id"}, "provider_usage_status": {"const": "available"}}, "required": ["joining_status", "immediately_following_status", "provider_turn_id", "provider_usage_status", "provider_cost_status"]},
+    {"properties": {"immediately_following_status": {"const": "missing"}, "joining_status": {"const": "missing"}, "provider_cost_status": {"enum": ["missing", "unavailable"]}, "provider_turn_id": {"type": "null"}, "provider_usage_status": {"enum": ["missing", "unavailable"]}}, "required": ["joining_status", "immediately_following_status", "provider_turn_id", "provider_usage_status", "provider_cost_status"]},
+    {"properties": {"immediately_following_status": {"const": "ambiguous"}, "joining_status": {"const": "ambiguous"}, "provider_cost_status": {"const": "unavailable"}, "provider_turn_id": {"$ref": "#/$defs/nullable_opaque_host_id"}, "provider_usage_status": {"const": "unavailable"}}, "required": ["joining_status", "immediately_following_status", "provider_turn_id", "provider_usage_status", "provider_cost_status"]}
+  ],
+  "properties": {
+    "attempt_id": {"$ref": "#/$defs/id"},
+    "immediately_following_status": {"enum": ["ambiguous", "immediately_following", "missing"], "type": "string"},
+    "join_id": {"$ref": "#/$defs/id"},
+    "join_sha256": {"$ref": "#/$defs/sha256"},
+    "joining_status": {"enum": ["ambiguous", "attributed", "missing"], "type": "string"},
+    "observation_receipt_id": {"$ref": "#/$defs/id"},
+    "observation_receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "provider_cost_status": {"enum": ["available", "missing", "unavailable"], "type": "string"},
+    "provider_turn_id": {"$ref": "#/$defs/nullable_opaque_host_id"},
+    "provider_usage_status": {"enum": ["available", "missing", "unavailable"], "type": "string"},
+    "schema_version": {"const": "v1", "type": "string"},
+    "session_id": {"$ref": "#/$defs/opaque_host_id"},
+    "tool_use_id": {"$ref": "#/$defs/opaque_host_id"}
+  },
+  "required": ["schema_version", "join_id", "join_sha256", "attempt_id", "session_id", "tool_use_id", "observation_receipt_id", "observation_receipt_sha256", "provider_turn_id", "immediately_following_status", "joining_status", "provider_usage_status", "provider_cost_status"],
+  "title": "Provider turn attribution join",
+  "type": "object"
+}

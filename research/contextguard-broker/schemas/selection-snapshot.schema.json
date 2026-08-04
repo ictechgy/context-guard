@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "counts": {"additionalProperties": false, "properties": {"rejected": {"minimum": 0, "type": "integer"}, "selected": {"minimum": 0, "type": "integer"}, "unenumerated": {"minimum": 0, "type": "integer"}}, "required": ["selected", "rejected", "unenumerated"], "type": "object"},
+    "id": {"pattern": "^[a-z][a-z0-9_-]{2,63}$", "type": "string"},
+    "sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "$id": "selection-snapshot.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_universe_sha256": {"$ref": "#/$defs/sha256"},
+    "counts_by_evidence_class": {"additionalProperties": false, "properties": {"code": {"$ref": "#/$defs/counts"}, "documentation": {"$ref": "#/$defs/counts"}, "metadata": {"$ref": "#/$defs/counts"}, "test": {"$ref": "#/$defs/counts"}}, "required": ["code", "documentation", "metadata", "test"], "type": "object"},
+    "descriptor_id": {"$ref": "#/$defs/id"},
+    "descriptor_sha256": {"$ref": "#/$defs/sha256"},
+    "diff_base_revision_sha256": {"$ref": "#/$defs/sha256"},
+    "diff_basis": {"enum": ["dirty", "range", "repository_head"], "type": "string"},
+    "diff_head_or_dirty_sha256": {"$ref": "#/$defs/sha256"},
+    "diff_fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+    "dirty_state_fingerprint_sha256": {"$ref": "#/$defs/sha256"},
+    "head_revision_sha256": {"$ref": "#/$defs/sha256"},
+    "index_contents_sha256": {"$ref": "#/$defs/sha256"},
+    "index_build_revision_sha256": {"$ref": "#/$defs/sha256"},
+    "index_policy_version": {"$ref": "#/$defs/id"},
+    "index_schema_version": {"$ref": "#/$defs/id"},
+    "isolated_worktree_identity_sha256": {"$ref": "#/$defs/sha256"},
+    "protected_zone_policy_version": {"$ref": "#/$defs/id"},
+    "renderer_policy_version": {"$ref": "#/$defs/id"},
+    "repository_identity_sha256": {"$ref": "#/$defs/sha256"},
+    "schema_version": {"const": "v1", "type": "string"},
+    "selection_snapshot_id": {"$ref": "#/$defs/id"},
+    "selection_snapshot_sha256": {"$ref": "#/$defs/sha256"},
+    "selector_policy_version": {"$ref": "#/$defs/id"}
+  },
+  "required": ["schema_version", "selection_snapshot_id", "selection_snapshot_sha256", "descriptor_id", "descriptor_sha256", "repository_identity_sha256", "isolated_worktree_identity_sha256", "head_revision_sha256", "dirty_state_fingerprint_sha256", "candidate_universe_sha256", "index_schema_version", "index_contents_sha256", "index_build_revision_sha256", "index_policy_version", "diff_basis", "diff_base_revision_sha256", "diff_head_or_dirty_sha256", "diff_fingerprint_sha256", "selector_policy_version", "renderer_policy_version", "protected_zone_policy_version", "counts_by_evidence_class"],
+  "title": "Complete-candidate selection snapshot",
+  "type": "object"
+}
