@@ -4,12 +4,17 @@
 whose work is confined to explicitly supplied local inputs and state.
 
 It exposes the fixed boundary inspection, local evidence, blueprint, and
-tool-schema assembly, and explicit local command capture:
+tool-schema assembly, explicit local command capture, and advisory local
+diagnostics:
 
 ```text
 context-guard-receipt inspect boundary
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
 context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
+context-guard-receipt inspect diagnostics --input <file|->
+context-guard-receipt inspect diagnostics --input <file|-> --state-scope durable --root <absolute> --state-dir <absolute>
+context-guard-receipt inspect firewall --input <file|->
+context-guard-receipt inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <1..256>]
 ```
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
@@ -18,8 +23,33 @@ settings, contact a provider, or establish provider or host authority. It does
 not report provider token, cost, cache, or percentage-savings claims. Assembly
 is a byte proxy for explicitly provided local bytes, not a token or
 provider-usage claim. `run --escrow` is provider-free local capture only;
-`inspect` targets other than `boundary` and the MCP transport remain
-intentionally unavailable.
+diagnostics and firewall results are advisory and non-applying. The remaining
+reserved `inspect` targets and the MCP transport stay intentionally
+unavailable.
+
+Process-scope diagnostics use a new random fingerprint key for every invocation
+and create no state. They report bounded byte accounting, a position-bound
+rolling prefix comparison, the existing byte-benefit route projection, and a
+shadow firewall finding with `applied: false`. They do not output supplied raw
+fragments or acquire provider routing, live-observation, or efficacy-claim
+authority. Exact byte counts in a report can still correlate similar inputs;
+process-local HMAC unlinkability does not hide those counts.
+
+Durable diagnostics require the complete explicit opt-in tuple
+`--state-scope durable --root ... --state-dir ...`. After validating the input,
+they append the same content-free fields to an independently keyed,
+authenticated `auxiliary-v1/diagnostics-v1` ledger. The ledger is append-only,
+keeps at most 1,024 entries, limits each canonical entry to 4,096 bytes and the
+whole ledger to 4 MiB, and never evicts history. It is separate from
+`store-v1`; removing the entire auxiliary compartment does not invalidate
+capability-store artifacts. A stdout failure after append returns exit `74` and
+cannot roll back the committed advisory row.
+
+If an unsupported top-level entry appears after the durable-state preflight but
+before a newly created lock can validate the directory, opening returns
+`commit_uncertain` and preserves every name, including the lock residue. Portable
+POSIX APIs cannot conditionally unlink a pathname by inode, so recovery never
+risks deleting a concurrent same-UID replacement.
 
 `run --escrow` executes only the explicitly supplied absolute executable and
 argument vector. It does not invoke a shell. The child runs with the requested

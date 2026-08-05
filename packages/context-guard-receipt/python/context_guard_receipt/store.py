@@ -45,6 +45,9 @@ __all__ = [
 
 _STORE_DIRECTORY: Final = "store-v1"
 _LOCK_NAME: Final = "lock"
+_AUXILIARY_DIRECTORY: Final = "auxiliary-v1"
+_AUXILIARY_METADATA_NAME: Final = "metadata.json"
+_DIAGNOSTICS_DIRECTORY: Final = "diagnostics-v1"
 _KEY_NAME: Final = "integrity-key"
 _METADATA_NAME: Final = "metadata.json"
 _COMMITS_NAME: Final = "commits"
@@ -68,6 +71,14 @@ _COMMIT_JSON_LIMITS: Final = JSONLimits(
     max_object_members=32,
     max_string_bytes=256,
 )
+_AUXILIARY_JSON_LIMITS: Final = JSONLimits(
+    max_document_bytes=4096,
+    max_depth=4,
+    max_total_values=64,
+    max_object_members=16,
+    max_string_bytes=128,
+)
+_AUXILIARY_SCHEMA_VERSION: Final = "contextguard-receipt-auxiliary-metadata/v1"
 _HEX_256 = re.compile(r"[0-9a-f]{64}\Z")
 _CAPABILITY_PATTERN = re.compile(r"cgr1p_[A-Za-z0-9_-]{43}\Z")
 
@@ -691,6 +702,43 @@ def _parse_document(raw: bytes, limits: JSONLimits | None = None) -> object:
         _raise(StoreErrorCode.STORE_CORRUPT)
 
 
+def _validate_auxiliary_compartment(state_fd: int, top_names: set[str]) -> None:
+    """Validate only the removable axis boundary, never its private internals."""
+
+    if _AUXILIARY_DIRECTORY not in top_names:
+        return
+    auxiliary_fd = _open_directory_at(state_fd, _AUXILIARY_DIRECTORY)
+    diagnostics_fd: int | None = None
+    try:
+        names = set(
+            _bounded_names(
+                auxiliary_fd, 2, overflow=StoreErrorCode.RECOVERY_REQUIRED
+            )
+        )
+        if names not in (
+            {_AUXILIARY_METADATA_NAME},
+            {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_DIRECTORY},
+        ):
+            _raise(StoreErrorCode.RECOVERY_REQUIRED)
+        metadata = _parse_document(
+            _read_named_file(auxiliary_fd, _AUXILIARY_METADATA_NAME, 4096),
+            _AUXILIARY_JSON_LIMITS,
+        )
+        if metadata != {
+            "evidence_boundary": evidence_boundary(),
+            "schema_version": _AUXILIARY_SCHEMA_VERSION,
+        }:
+            _raise(StoreErrorCode.STORE_CORRUPT)
+        if _DIAGNOSTICS_DIRECTORY in names:
+            diagnostics_fd = _open_directory_at(
+                auxiliary_fd, _DIAGNOSTICS_DIRECTORY
+            )
+    finally:
+        if diagnostics_fd is not None:
+            os.close(diagnostics_fd)
+        os.close(auxiliary_fd)
+
+
 def _limits_object(limits: StoreLimits) -> dict[str, int]:
     return {item.name: getattr(limits, item.name) for item in fields(limits)}
 
@@ -910,12 +958,13 @@ class CapabilityStore:
         self._revalidate_state_disjoint()
         names = set(
             _bounded_names(
-                self._state_fd, 2, overflow=StoreErrorCode.RECOVERY_REQUIRED
+                self._state_fd, 3, overflow=StoreErrorCode.RECOVERY_REQUIRED
             )
         )
-        allowed = {_LOCK_NAME, _STORE_DIRECTORY}
+        allowed = {_LOCK_NAME, _STORE_DIRECTORY, _AUXILIARY_DIRECTORY}
         if any(name not in allowed for name in names):
             _raise(StoreErrorCode.RECOVERY_REQUIRED)
+        _validate_auxiliary_compartment(self._state_fd, names)
         if _STORE_DIRECTORY in names:
             return
         if not create:
@@ -1039,6 +1088,17 @@ class CapabilityStore:
             opened.append(state_fd)
             if self._descriptor_identity(state_fd) != self._state_anchor:
                 _raise(StoreErrorCode.UNSAFE_STATE)
+            names = set(
+                _bounded_names(
+                    state_fd, 3, overflow=StoreErrorCode.RECOVERY_REQUIRED
+                )
+            )
+            if names not in (
+                {_LOCK_NAME, _STORE_DIRECTORY},
+                {_LOCK_NAME, _STORE_DIRECTORY, _AUXILIARY_DIRECTORY},
+            ):
+                _raise(StoreErrorCode.RECOVERY_REQUIRED)
+            _validate_auxiliary_compartment(state_fd, names)
             lock_fd = _open_private_file(state_fd, _LOCK_NAME)
             opened.append(lock_fd)
             if self._descriptor_identity(lock_fd) != self._lock_anchor:

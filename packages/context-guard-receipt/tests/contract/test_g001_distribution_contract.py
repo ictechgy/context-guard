@@ -50,11 +50,16 @@ EXPECTED_HELP = (
     "  expand <handle> --root <absolute> --state-dir <absolute> [options]\n"
     "  expand tool-schema --request <file|-> --root <absolute> "
     "--state-dir <absolute> [options]\n"
-    "  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> "
-    "[options]\n\n"
+    "  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> "
+    "--state-dir <absolute>]\n"
+    "  inspect firewall --input <file|->\n"
+    "  inspect diagnostic-ledger --state-scope durable --root <absolute> "
+    "--state-dir <absolute> [--limit <positive-decimal>]\n"
+    "  inspect <receipt|twin|lease|state> [options]\n\n"
     "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. "
-    "Run is explicit local capture only. It is provider-free and makes no host-request, "
-    "network, or token-saving claim. Other commands remain inert.\n"
+    "Run is explicit local capture only. Diagnostics and firewall findings are advisory and "
+    "non-applying. The companion is provider-free and makes no host-request, network, or "
+    "token-saving claim. Remaining commands are inert.\n"
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
@@ -111,6 +116,8 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/cli.py": 0o644,
     "python/context_guard_receipt/cli_io.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
+    "python/context_guard_receipt/diagnostic_ledger.py": 0o644,
+    "python/context_guard_receipt/diagnostics.py": 0o644,
     "python/context_guard_receipt/evidence_pack.py": 0o644,
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
@@ -125,6 +132,11 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/blueprint-descriptor.schema.json": 0o644,
     "schemas/capability-record.schema.json": 0o644,
     "schemas/command-capture-receipt.schema.json": 0o644,
+    "schemas/diagnostic-ledger-entry.schema.json": 0o644,
+    "schemas/diagnostic-ledger-inspection.schema.json": 0o644,
+    "schemas/diagnostic-ledger-metadata.schema.json": 0o644,
+    "schemas/diagnostics-report.schema.json": 0o644,
+    "schemas/diagnostics-request.schema.json": 0o644,
     "schemas/evidence-descriptor.schema.json": 0o644,
     "schemas/evidence-boundary.schema.json": 0o644,
     "schemas/evidence-pack.schema.json": 0o644,
@@ -132,6 +144,7 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/expansion-envelope.schema.json": 0o644,
     "schemas/expansion-refusal.schema.json": 0o644,
     "schemas/protection-decision.schema.json": 0o644,
+    "schemas/shadow-firewall-report.schema.json": 0o644,
     "schemas/source-identity.schema.json": 0o644,
     "schemas/store-commit.schema.json": 0o644,
     "schemas/store-metadata.schema.json": 0o644,
@@ -871,6 +884,14 @@ class G001DistributionContractTests(unittest.TestCase):
                 "--state-dir",
                 "relative",
             ),
+            (
+                "inspect",
+                "diagnostics",
+                "--state-dir",
+                "/tmp/contextguard-receipt-state",
+                "--input",
+                "-",
+            ),
             ("unknown",),
         )
         for arguments in invalid_commands:
@@ -917,17 +938,6 @@ class G001DistributionContractTests(unittest.TestCase):
 
             inactive = (
                 ("inspect_receipt", ("inspect", "receipt")),
-                (
-                    "inspect_diagnostics",
-                    (
-                        "inspect",
-                        "diagnostics",
-                        "--state-dir",
-                        str(root / "state"),
-                        "--input",
-                        "-",
-                    ),
-                ),
             )
             for operation, arguments in inactive:
                 with self.subTest(operation=operation):

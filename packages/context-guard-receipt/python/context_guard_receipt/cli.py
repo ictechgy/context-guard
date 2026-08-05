@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import os
+import secrets
 import sys
+import time
 from collections.abc import Callable, Sequence
 
 from . import runner
@@ -24,6 +26,12 @@ from .canonical import (
 )
 from .cli_io import CliIOError, read_descriptor, write_receipt, write_stdout
 from .contracts import canonical_json, evidence_boundary, response
+from .diagnostics import DiagnosticsError, analyze_request, parse_diagnostics_request
+from .diagnostic_ledger import (
+    DiagnosticLedger,
+    DiagnosticLedgerError,
+    DiagnosticLedgerErrorCode,
+)
 from .expansion import ExpansionDisposition, expand_capability
 from .store import CapabilityStore
 from .tool_schemas import (
@@ -36,7 +44,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. It is provider-free and makes no host-request, network, or token-saving claim. Other commands remain inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics and firewall findings are advisory and non-applying. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -213,6 +221,41 @@ def _valid_expand(arguments: Sequence[str]) -> bool:
 def _valid_inspect(arguments: Sequence[str]) -> bool:
     if not arguments or arguments[0] not in INSPECT_TARGETS:
         return False
+    target = arguments[0]
+    if target == "firewall":
+        seen = _parse_options(
+            arguments[1:], values={"--input": _is_file_argument}
+        )
+        return seen == frozenset({"--input"})
+    if target == "diagnostics":
+        seen = _parse_options(
+            arguments[1:],
+            values={
+                "--input": _is_file_argument,
+                "--root": _is_absolute,
+                "--state-dir": _is_absolute,
+                "--state-scope": lambda value: value == "durable",
+            },
+        )
+        return seen in {
+            frozenset({"--input"}),
+            frozenset({"--input", "--root", "--state-dir", "--state-scope"}),
+        }
+    if target == "diagnostic-ledger":
+        seen = _parse_options(
+            arguments[1:],
+            values={
+                "--limit": lambda value: _is_positive_integer(value)
+                and int(value, 10) <= 256,
+                "--root": _is_absolute,
+                "--state-dir": _is_absolute,
+                "--state-scope": lambda value: value == "durable",
+            },
+        )
+        return seen in {
+            frozenset({"--root", "--state-dir", "--state-scope"}),
+            frozenset({"--limit", "--root", "--state-dir", "--state-scope"}),
+        }
     return _parse_options(
         arguments[1:],
         values={"--state-dir": _is_absolute, "--input": _is_file_argument},
@@ -559,6 +602,125 @@ def _run(arguments: Sequence[str]) -> int:
     return exit_code
 
 
+def _read_diagnostic_request(arguments: Sequence[str]):
+    options = _option_values(arguments, flags=frozenset())
+    try:
+        raw = read_descriptor(str(options["--input"]))
+    except KeyError:
+        raise DiagnosticsError("invalid_request") from None
+    return parse_diagnostics_request(raw)
+
+
+def _write_diagnostic_payload(
+    payload: dict[str, object], *, operation: str
+) -> int:
+    try:
+        encoded = canonical_json_bytes(payload)
+    except Exception:
+        return emit_error(
+            operation, "error", "diagnostic_internal_failure", 70
+        )
+    try:
+        write_stdout(encoded)
+    except Exception:
+        return emit_error(
+            operation, "error", "diagnostic_delivery_failed", 74
+        )
+    return 0
+
+
+def _inspect_process_diagnostics(
+    target: str, arguments: Sequence[str]
+) -> int:
+    operation = f"inspect_{target.replace('-', '_')}"
+    try:
+        request = _read_diagnostic_request(arguments)
+    except CliIOError:
+        return emit_error(
+            operation, "error", "diagnostic_input_unavailable", 74
+        )
+    except DiagnosticsError:
+        return emit_error(operation, "error", "diagnostic_input_rejected", 65)
+    try:
+        fingerprint_key = secrets.token_bytes(32)
+        result = analyze_request(request, fingerprint_key=fingerprint_key)
+        del fingerprint_key
+        payload = (
+            result.firewall_report()
+            if target == "firewall"
+            else result.report(state_scope="process")
+        )
+    except Exception:
+        return emit_error(operation, "error", "diagnostic_internal_failure", 70)
+    return _write_diagnostic_payload(payload, operation=operation)
+
+
+def _inspect_durable_diagnostics(arguments: Sequence[str]) -> int:
+    operation = "inspect_diagnostics"
+    try:
+        request = _read_diagnostic_request(arguments)
+    except CliIOError:
+        return emit_error(
+            operation, "error", "diagnostic_input_unavailable", 74
+        )
+    except DiagnosticsError:
+        return emit_error(operation, "error", "diagnostic_input_rejected", 65)
+    options = _option_values(arguments, flags=frozenset())
+    root = options.get("--root")
+    state_dir = options.get("--state-dir")
+    if type(root) is not str or type(state_dir) is not str:
+        return emit_error("cli", "error", "usage", 64)
+    try:
+        with DiagnosticLedger.open(
+            state_dir=state_dir, repository_root=root, create=True
+        ) as ledger:
+            fingerprint_key = ledger.fingerprint_key
+            result = analyze_request(request, fingerprint_key=fingerprint_key)
+            del fingerprint_key
+            ledger.append(
+                result.ledger_fields(),
+                observed_at_unix_ms=time.time_ns() // 1_000_000,
+            )
+            payload = result.report(state_scope="durable")
+    except DiagnosticLedgerError:
+        return emit_error(
+            operation, "error", "diagnostic_persistence_failed", 74
+        )
+    except Exception:
+        return emit_error(operation, "error", "diagnostic_internal_failure", 70)
+    return _write_diagnostic_payload(payload, operation=operation)
+
+
+def _inspect_diagnostic_ledger(arguments: Sequence[str]) -> int:
+    operation = "inspect_diagnostic_ledger"
+    options = _option_values(arguments, flags=frozenset())
+    root = options.get("--root")
+    state_dir = options.get("--state-dir")
+    limit_value = options.get("--limit", "256")
+    if (
+        type(root) is not str
+        or type(state_dir) is not str
+        or type(limit_value) is not str
+    ):
+        return emit_error("cli", "error", "usage", 64)
+    try:
+        with DiagnosticLedger.open(
+            state_dir=state_dir, repository_root=root, create=False
+        ) as ledger:
+            payload = ledger.inspect(limit=int(limit_value, 10))
+    except DiagnosticLedgerError as error:
+        if error.code is DiagnosticLedgerErrorCode.LEDGER_UNINITIALIZED:
+            return emit_error(
+                operation, "unavailable", "diagnostic_ledger_uninitialized", 69
+            )
+        return emit_error(
+            operation, "error", "diagnostic_ledger_unavailable", 74
+        )
+    except Exception:
+        return emit_error(operation, "error", "diagnostic_internal_failure", 70)
+    return _write_diagnostic_payload(payload, operation=operation)
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments == ("--help",):
@@ -574,6 +736,13 @@ def receipt_main(arguments: Sequence[str]) -> int:
     if arguments and arguments[0] == "expand" and _valid_expand(arguments[1:]):
         return _expand(arguments[1:])
     if arguments and arguments[0] == "inspect" and _valid_inspect(arguments[1:]):
+        if arguments[1] in {"diagnostics", "firewall"}:
+            options = _option_values(arguments[2:], flags=frozenset())
+            if "--state-scope" not in options:
+                return _inspect_process_diagnostics(arguments[1], arguments[2:])
+            return _inspect_durable_diagnostics(arguments[2:])
+        if arguments[1] == "diagnostic-ledger":
+            return _inspect_diagnostic_ledger(arguments[2:])
         operation = f"inspect_{arguments[1].replace('-', '_')}"
         return emit_error(operation, "unavailable", "feature_not_available", 69)
     return emit_error("cli", "error", "usage", 64)

@@ -1,0 +1,25 @@
+{
+  "$id": "https://context-guard.local/schemas/receipt-diagnostics-request-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blueprint_b64u": {"$ref": "#/$defs/base64url"},
+    "caller_classification": {"enum": ["eligible", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "refuse"], "type": "string"},
+    "current_prefix_b64u": {"$ref": "#/$defs/base64url"},
+    "detector_signals": {"items": {"enum": ["exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "secret"], "type": "string"}, "maxItems": 64, "type": "array", "uniqueItems": true},
+    "handle_b64u": {"$ref": "#/$defs/base64url"},
+    "input_b64u": {"$ref": "#/$defs/base64url"},
+    "mandatory_expansion_b64u": {"$ref": "#/$defs/base64url"},
+    "previous_prefix_b64u": {"anyOf": [{"$ref": "#/$defs/base64url"}, {"type": "null"}]},
+    "retained_wire_b64u": {"$ref": "#/$defs/base64url"},
+    "schema_version": {"const": "contextguard-receipt-diagnostics-request/v1"},
+    "subject_kind": {"enum": ["evidence", "evidence_pack", "blueprint", "tool_schema_catalog", "command_capture"], "type": "string"},
+    "wrapper_b64u": {"$ref": "#/$defs/base64url"}
+  },
+  "required": ["blueprint_b64u", "caller_classification", "current_prefix_b64u", "detector_signals", "handle_b64u", "input_b64u", "mandatory_expansion_b64u", "previous_prefix_b64u", "retained_wire_b64u", "schema_version", "subject_kind", "wrapper_b64u"],
+  "title": "Context Guard Receipt diagnostics request",
+  "type": "object",
+  "$defs": {
+    "base64url": {"maxLength": 1200000, "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}|[A-Za-z0-9_-]{3})?$", "type": "string"}
+  }
+}

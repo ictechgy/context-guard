@@ -1,0 +1,36 @@
+{
+  "$id": "https://context-guard.local/schemas/diagnostic-ledger-inspection-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "evidenceBoundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "entries": {"items": {"$ref": "diagnostic-ledger-entry.schema.json"}, "maxItems": 256, "type": "array"},
+    "entry_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "evidence_boundary": {"$ref": "#/$defs/evidenceBoundary"},
+    "recovery_required": {"type": "boolean"},
+    "schema_version": {"const": "contextguard-receipt-diagnostic-ledger-inspection/v1"},
+    "state_scope": {"const": "durable"},
+    "total_canonical_bytes": {"maximum": 4194304, "minimum": 0, "type": "integer"}
+  },
+  "required": ["entries", "entry_count", "evidence_boundary", "recovery_required", "schema_version", "state_scope", "total_canonical_bytes"],
+  "title": "Context Guard Receipt diagnostic ledger inspection",
+  "type": "object"
+}
