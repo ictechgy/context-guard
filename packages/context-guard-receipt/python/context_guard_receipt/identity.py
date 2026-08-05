@@ -208,6 +208,17 @@ def _root_path(root: object) -> str:
     return os.path.abspath(raw_path)
 
 
+def _fstat_owned_descriptor(descriptor: int, error_code: str) -> os.stat_result:
+    try:
+        return os.fstat(descriptor)
+    except OSError:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise IdentityError(error_code) from None
+
+
 def _open_root(root_path: str) -> int:
     try:
         path_status = os.lstat(root_path)
@@ -223,7 +234,7 @@ def _open_root(root_path: str) -> int:
         descriptor = os.open(root_path, flags | no_follow)
     except OSError:
         raise IdentityError("invalid_root") from None
-    opened_status = os.fstat(descriptor)
+    opened_status = _fstat_owned_descriptor(descriptor, "root_changed")
     if (
         opened_status.st_dev != path_status.st_dev
         or opened_status.st_ino != path_status.st_ino
@@ -402,7 +413,9 @@ def _open_regular_file(
             raise IdentityError("source_missing") from None
     finally:
         os.close(current_descriptor)
-    opened_status = os.fstat(file_descriptor)
+    opened_status = _fstat_owned_descriptor(
+        file_descriptor, "source_changed_during_read"
+    )
     if not stat.S_ISREG(opened_status.st_mode):
         os.close(file_descriptor)
         raise IdentityError("source_not_regular")
@@ -905,13 +918,13 @@ def _validated_exclusion_directory(
     )
 
 
-def _repository_exclusion_paths(
+def _repository_exclusion_snapshot(
     root: object,
     *,
     git_executable: object = None,
     limits: IdentityLimits = _DEFAULT_LIMITS,
-) -> tuple[Path, ...]:
-    """Return private validated directories that repository-local storage must avoid."""
+) -> tuple[tuple[Path, tuple[int, int]], ...]:
+    """Return validated exclusion paths with identities from one root snapshot."""
 
     checked_limits = _require_limits(limits)
     root_path = _root_path(root)
@@ -928,7 +941,7 @@ def _repository_exclusion_paths(
         if root_identity != (resolved_status.st_dev, resolved_status.st_ino):
             raise IdentityError("repository_exclusion_unavailable")
 
-        result = [Path(resolved_root)]
+        result = [(Path(resolved_root), root_identity)]
         seen_identities = {root_identity}
         seen_paths = {os.path.normcase(resolved_root)}
         executable = _resolve_git_executable(git_executable)
@@ -967,11 +980,29 @@ def _repository_exclusion_paths(
                 continue
             seen_identities.add(directory_identity)
             seen_paths.add(normalized_path)
-            result.append(path)
+            result.append((path, directory_identity))
         _root_is_unchanged(root_path, root_status)
         return tuple(result)
     finally:
         os.close(root_descriptor)
+
+
+def _repository_exclusion_paths(
+    root: object,
+    *,
+    git_executable: object = None,
+    limits: IdentityLimits = _DEFAULT_LIMITS,
+) -> tuple[Path, ...]:
+    """Return private validated directories that repository-local storage must avoid."""
+
+    return tuple(
+        path
+        for path, _identity in _repository_exclusion_snapshot(
+            root,
+            git_executable=git_executable,
+            limits=limits,
+        )
+    )
 
 
 def _validate_byte_range(byte_range: object, byte_length: int) -> tuple[int, int]:

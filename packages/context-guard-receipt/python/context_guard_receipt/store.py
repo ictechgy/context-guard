@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Final, Iterator
+from typing import Callable, Final, Iterator
 
 from .canonical import (
     CanonicalJSONError,
@@ -26,7 +26,7 @@ from .canonical import (
     parse_canonical_json_bytes,
 )
 from .contracts import evidence_boundary
-from .identity import IdentityError, _repository_exclusion_paths
+from .identity import IdentityError, _repository_exclusion_snapshot
 
 
 __all__ = [
@@ -194,12 +194,40 @@ def _raise(code: StoreErrorCode) -> None:
     raise StoreError(code) from None
 
 
+def _descriptor_status(
+    descriptor: object,
+    *,
+    error_code: StoreErrorCode = StoreErrorCode.UNSAFE_STATE,
+) -> os.stat_result:
+    if type(descriptor) is not int or descriptor < 0:
+        _raise(error_code)
+    try:
+        return os.fstat(descriptor)
+    except OSError:
+        _raise(error_code)
+
+
+def _require_directory_descriptor(descriptor: object) -> int:
+    status = _descriptor_status(descriptor)
+    if not stat.S_ISDIR(status.st_mode):
+        _raise(StoreErrorCode.UNSAFE_STATE)
+    return descriptor
+
+
+def _require_private_file_descriptor(descriptor: object) -> int:
+    status = _descriptor_status(descriptor)
+    if not _private_file(status):
+        _raise(StoreErrorCode.UNSAFE_STATE)
+    return descriptor
+
+
 def _bounded_names(
     descriptor: int, maximum: int, *, overflow: StoreErrorCode = StoreErrorCode.STORE_CORRUPT
 ) -> list[str]:
+    checked_descriptor = _require_directory_descriptor(descriptor)
     names: list[str] = []
     try:
-        with os.scandir(descriptor) as entries:
+        with os.scandir(checked_descriptor) as entries:
             for entry in entries:
                 names.append(entry.name)
                 if len(names) > maximum:
@@ -218,6 +246,15 @@ def _require_filesystem_features() -> None:
     if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
         _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
     if os.rename not in os.supports_dir_fd or os.stat not in os.supports_dir_fd:
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    effective_uid = getattr(os, "geteuid", None)
+    if not callable(effective_uid) or not hasattr(stat, "S_ISVTX"):
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    try:
+        observed_uid = effective_uid()
+    except OSError:
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    if type(observed_uid) is not int or observed_uid < 0:
         _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
 
 
@@ -250,6 +287,59 @@ def _private_file(status: os.stat_result) -> bool:
     )
 
 
+def _trusted_ancestry_directory(status: os.stat_result) -> bool:
+    effective_uid = getattr(os, "geteuid", None)
+    if not callable(effective_uid):
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    try:
+        observed_uid = effective_uid()
+    except OSError:
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    if type(observed_uid) is not int or observed_uid < 0:
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    writable_by_other_principal = bool(
+        status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    )
+    return (
+        stat.S_ISDIR(status.st_mode)
+        and status.st_uid in (0, observed_uid)
+        and (
+            not writable_by_other_principal
+            or bool(status.st_mode & stat.S_ISVTX)
+        )
+    )
+
+
+def _adopt_open_descriptor(
+    descriptor: int,
+    *,
+    validator: Callable[[os.stat_result], bool],
+    error_code: StoreErrorCode,
+) -> tuple[int, os.stat_result]:
+    try:
+        status = os.fstat(descriptor)
+        valid = validator(status)
+    except StoreError:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    except OSError:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        _raise(error_code)
+    if not valid:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        _raise(error_code)
+    return descriptor, status
+
+
 def _directory_flags() -> int:
     return os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 
@@ -259,13 +349,16 @@ def _file_read_flags() -> int:
 
 
 def _open_directory_at(parent_fd: int, name: str) -> int:
+    checked_parent = _require_directory_descriptor(parent_fd)
     try:
-        descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
+        descriptor = os.open(name, _directory_flags(), dir_fd=checked_parent)
     except OSError:
         _raise(StoreErrorCode.UNSAFE_STATE)
-    if not _private_directory(os.fstat(descriptor)):
-        os.close(descriptor)
-        _raise(StoreErrorCode.UNSAFE_STATE)
+    descriptor, _status = _adopt_open_descriptor(
+        descriptor,
+        validator=_private_directory,
+        error_code=StoreErrorCode.UNSAFE_STATE,
+    )
     return descriptor
 
 
@@ -300,7 +393,7 @@ def _open_absolute_state_directory(path: str, *, create: bool) -> int:
                 _raise(StoreErrorCode.UNSAFE_STATE)
             os.close(current)
             current = next_descriptor
-        if not _private_directory(os.fstat(current)):
+        if not _private_directory(_descriptor_status(current)):
             _raise(StoreErrorCode.UNSAFE_STATE)
         return current
     except Exception:
@@ -308,32 +401,152 @@ def _open_absolute_state_directory(path: str, *, create: bool) -> int:
         raise
 
 
-def _check_disjoint(state_path: str, repository_root: object, git_executable: object) -> None:
+def _open_existing_absolute_ancestor(path: str) -> tuple[int, bool]:
     try:
-        exclusions = _repository_exclusion_paths(
+        current = os.open(os.sep, _directory_flags())
+    except OSError:
+        _raise(StoreErrorCode.FILESYSTEM_UNSUPPORTED)
+    try:
+        for component in path.split(os.sep)[1:]:
+            try:
+                next_descriptor = os.open(
+                    component, _directory_flags(), dir_fd=current
+                )
+            except FileNotFoundError:
+                return current, False
+            except OSError:
+                _raise(StoreErrorCode.UNSAFE_STATE)
+            os.close(current)
+            current = next_descriptor
+        return current, True
+    except Exception:
+        os.close(current)
+        raise
+
+
+def _open_existing_absolute_directory(path: str) -> int:
+    descriptor, complete = _open_existing_absolute_ancestor(path)
+    if not complete:
+        os.close(descriptor)
+        _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+    return descriptor
+
+
+def _physical_directory_ancestry(descriptor: int) -> frozenset[tuple[int, int]]:
+    checked_descriptor = _require_directory_descriptor(descriptor)
+    try:
+        opened = os.open(".", _directory_flags(), dir_fd=checked_descriptor)
+    except OSError:
+        _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+    current, current_status = _adopt_open_descriptor(
+        opened,
+        validator=_trusted_ancestry_directory,
+        error_code=StoreErrorCode.STATE_DIR_FORBIDDEN,
+    )
+    identities: set[tuple[int, int]] = set()
+    try:
+        for _depth in range(4096):
+            identity = current_status.st_dev, current_status.st_ino
+            identities.add(identity)
+            opened_parent = os.open("..", _directory_flags(), dir_fd=current)
+            parent, parent_status = _adopt_open_descriptor(
+                opened_parent,
+                validator=_trusted_ancestry_directory,
+                error_code=StoreErrorCode.STATE_DIR_FORBIDDEN,
+            )
+            parent_identity = parent_status.st_dev, parent_status.st_ino
+            if parent_identity == identity:
+                os.close(parent)
+                return frozenset(identities)
+            os.close(current)
+            current = parent
+            current_status = parent_status
+    except OSError:
+        _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+    finally:
+        os.close(current)
+    _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+
+
+def _require_physical_disjoint(
+    state_descriptor: int,
+    *,
+    state_complete: bool,
+    exclusion_descriptors: tuple[int, ...],
+) -> None:
+    try:
+        state_status = os.fstat(state_descriptor)
+        state_identity = state_status.st_dev, state_status.st_ino
+        state_ancestry = _physical_directory_ancestry(state_descriptor)
+        for excluded_descriptor in exclusion_descriptors:
+            excluded_status = os.fstat(excluded_descriptor)
+            excluded_identity = excluded_status.st_dev, excluded_status.st_ino
+            excluded_ancestry = _physical_directory_ancestry(excluded_descriptor)
+            if excluded_identity in state_ancestry or (
+                state_complete and state_identity in excluded_ancestry
+            ):
+                _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+    except StoreError:
+        raise
+    except OSError:
+        _raise(StoreErrorCode.UNSAFE_STATE)
+
+
+def _close_directory_descriptors(descriptors: tuple[int, ...] | list[int]) -> None:
+    for descriptor in reversed(descriptors):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
+def _check_disjoint(
+    state_path: str, repository_root: object, git_executable: object
+) -> tuple[int, ...]:
+    try:
+        exclusions = _repository_exclusion_snapshot(
             repository_root, git_executable=git_executable
         )
     except IdentityError:
         _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
-    normalized_state = os.path.normcase(state_path)
-    for excluded in exclusions:
-        normalized_excluded = os.path.normcase(str(excluded))
+    exclusion_descriptors: list[int] = []
+    try:
+        for excluded, expected_identity in exclusions:
+            excluded_descriptor = _open_existing_absolute_directory(str(excluded))
+            exclusion_descriptors.append(excluded_descriptor)
+            excluded_status = _descriptor_status(
+                excluded_descriptor,
+                error_code=StoreErrorCode.STATE_DIR_FORBIDDEN,
+            )
+            observed_identity = excluded_status.st_dev, excluded_status.st_ino
+            if observed_identity != expected_identity:
+                _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+        state_descriptor, state_complete = _open_existing_absolute_ancestor(state_path)
         try:
-            common = os.path.commonpath((normalized_state, normalized_excluded))
-        except ValueError:
-            _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
-        if common in (normalized_state, normalized_excluded):
-            _raise(StoreErrorCode.STATE_DIR_FORBIDDEN)
+            _require_physical_disjoint(
+                state_descriptor,
+                state_complete=state_complete,
+                exclusion_descriptors=tuple(exclusion_descriptors),
+            )
+        finally:
+            os.close(state_descriptor)
+        return tuple(exclusion_descriptors)
+    except Exception:
+        _close_directory_descriptors(exclusion_descriptors)
+        raise
 
 
 def _open_private_file(parent_fd: int, name: str) -> int:
+    checked_parent = _require_directory_descriptor(parent_fd)
     try:
-        descriptor = os.open(name, _file_read_flags(), dir_fd=parent_fd)
+        descriptor = os.open(name, _file_read_flags(), dir_fd=checked_parent)
     except OSError:
         _raise(StoreErrorCode.STORE_CORRUPT)
-    if not _private_file(os.fstat(descriptor)):
-        os.close(descriptor)
-        _raise(StoreErrorCode.UNSAFE_STATE)
+    descriptor, _status = _adopt_open_descriptor(
+        descriptor,
+        validator=_private_file,
+        error_code=StoreErrorCode.UNSAFE_STATE,
+    )
     return descriptor
 
 
@@ -359,9 +572,13 @@ def _read_all(descriptor: int, maximum: int) -> bytes:
 def _read_named_file(parent_fd: int, name: str, maximum: int) -> bytes:
     descriptor = _open_private_file(parent_fd, name)
     try:
-        before = os.fstat(descriptor)
+        before = _descriptor_status(
+            descriptor, error_code=StoreErrorCode.STORE_CORRUPT
+        )
         raw = _read_all(descriptor, maximum)
-        after = os.fstat(descriptor)
+        after = _descriptor_status(
+            descriptor, error_code=StoreErrorCode.STORE_CORRUPT
+        )
         if (
             before.st_dev,
             before.st_ino,
@@ -396,9 +613,10 @@ def _write_all(descriptor: int, raw: bytes) -> None:
 
 
 def _write_new_file(parent_fd: int, name: str, raw: bytes) -> None:
+    checked_parent = _require_directory_descriptor(parent_fd)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
-        descriptor = os.open(name, flags, 0o600, dir_fd=parent_fd)
+        descriptor = os.open(name, flags, 0o600, dir_fd=checked_parent)
     except OSError:
         _raise(StoreErrorCode.WRITE_FAILED)
     try:
@@ -541,8 +759,11 @@ class CapabilityStore:
 
     def __init__(self) -> None:
         self._closed = True
+        self._close_requested = False
+        self._active_operations = 0
+        self._exclusion_fds: tuple[int, ...] = ()
         self._opener_pid = os.getpid()
-        self._thread_lock = threading.Lock()
+        self._thread_lock = threading.RLock()
 
     @classmethod
     def open(
@@ -558,11 +779,28 @@ class CapabilityStore:
         checked_path = _validate_state_path(state_dir)
         if type(create) is not bool or (limits is not None and type(limits) is not StoreLimits):
             _raise(StoreErrorCode.INVALID_ARGUMENT)
-        _check_disjoint(checked_path, repository_root, git_executable)
-        state_fd = _open_absolute_state_directory(checked_path, create=create)
-        instance = cls()
-        instance._state_path = checked_path
-        instance._state_fd = state_fd
+        exclusion_descriptors = _check_disjoint(
+            checked_path, repository_root, git_executable
+        )
+        state_fd: int | None = None
+        try:
+            state_fd = _open_absolute_state_directory(checked_path, create=create)
+            _require_physical_disjoint(
+                state_fd,
+                state_complete=True,
+                exclusion_descriptors=exclusion_descriptors,
+            )
+            instance = cls()
+            instance._state_path = checked_path
+            instance._state_fd = state_fd
+            instance._exclusion_fds = exclusion_descriptors
+            state_fd = None
+            exclusion_descriptors = ()
+        except Exception:
+            if state_fd is not None:
+                os.close(state_fd)
+            _close_directory_descriptors(exclusion_descriptors)
+            raise
         try:
             instance._lock_fd = instance._open_lock(create=create)
             with instance._locked(exclusive=True):
@@ -576,7 +814,23 @@ class CapabilityStore:
             instance._close_descriptors()
             raise
 
+    def _revalidate_state_disjoint(self) -> None:
+        exclusion_fds = self._exclusion_fds
+        if type(exclusion_fds) is not tuple or not exclusion_fds:
+            _raise(StoreErrorCode.UNSAFE_STATE)
+        state_fd = _require_directory_descriptor(self._state_fd)
+        checked_exclusions = tuple(
+            _require_directory_descriptor(descriptor)
+            for descriptor in exclusion_fds
+        )
+        _require_physical_disjoint(
+            state_fd,
+            state_complete=True,
+            exclusion_descriptors=checked_exclusions,
+        )
+
     def _open_lock(self, *, create: bool) -> int:
+        self._revalidate_state_disjoint()
         flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
         created = False
         descriptor: int | None = None
@@ -605,9 +859,11 @@ class CapabilityStore:
             _raise(StoreErrorCode.UNSAFE_STATE)
         if descriptor is None:
             _raise(StoreErrorCode.WRITE_FAILED)
-        if not _private_file(os.fstat(descriptor)):
-            os.close(descriptor)
-            _raise(StoreErrorCode.UNSAFE_STATE)
+        descriptor, _status = _adopt_open_descriptor(
+            descriptor,
+            validator=_private_file,
+            error_code=StoreErrorCode.UNSAFE_STATE,
+        )
         if created:
             try:
                 os.fsync(descriptor)
@@ -628,9 +884,10 @@ class CapabilityStore:
             _raise(StoreErrorCode.LOCK_TIMEOUT)
         flock_acquired = False
         try:
+            lock_fd = _require_private_file_descriptor(self._lock_fd)
             while True:
                 try:
-                    fcntl.flock(self._lock_fd, operation | fcntl.LOCK_NB)
+                    fcntl.flock(lock_fd, operation | fcntl.LOCK_NB)
                     flock_acquired = True
                     break
                 except BlockingIOError:
@@ -643,12 +900,13 @@ class CapabilityStore:
         finally:
             if flock_acquired:
                 try:
-                    fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 except OSError:
                     pass
             self._thread_lock.release()
 
     def _ensure_initialized(self, *, create: bool, limits: StoreLimits | None) -> None:
+        self._revalidate_state_disjoint()
         names = set(
             _bounded_names(
                 self._state_fd, 2, overflow=StoreErrorCode.RECOVERY_REQUIRED
@@ -720,6 +978,7 @@ class CapabilityStore:
                     pass
 
     def _open_store(self) -> None:
+        self._revalidate_state_disjoint()
         self._store_fd = _open_directory_at(self._state_fd, _STORE_DIRECTORY)
         key = _read_named_file(self._store_fd, _KEY_NAME, 33)
         if len(key) != 32:
@@ -768,10 +1027,11 @@ class CapabilityStore:
 
     @staticmethod
     def _descriptor_identity(descriptor: int) -> tuple[int, int]:
-        status = os.fstat(descriptor)
+        status = _descriptor_status(descriptor)
         return status.st_dev, status.st_ino
 
     def _revalidate_anchors(self) -> None:
+        self._revalidate_state_disjoint()
         opened: list[int] = []
         try:
             state_fd = _open_absolute_state_directory(self._state_path, create=False)
@@ -802,18 +1062,38 @@ class CapabilityStore:
 
     @property
     def namespace_id(self) -> str:
-        self._require_open()
-        return self._namespace_id
+        with self._operation():
+            return self._namespace_id
 
     @property
     def limits(self) -> StoreLimits:
-        self._require_open()
-        return self._limits
+        with self._operation():
+            return self._limits
+
+    @contextmanager
+    def _operation(self) -> Iterator[None]:
+        self._require_opener_process()
+        with self._thread_lock:
+            if self._closed or self._close_requested:
+                _raise(StoreErrorCode.INVALID_ARGUMENT)
+            for name in ("_state_fd", "_store_fd", "_commits_fd", "_temp_fd"):
+                _require_directory_descriptor(getattr(self, name, None))
+            _require_private_file_descriptor(getattr(self, "_lock_fd", None))
+            self._active_operations += 1
+            try:
+                yield
+            finally:
+                self._active_operations -= 1
+                if self._active_operations == 0 and self._close_requested:
+                    self._close_descriptors()
+                    self._closed = True
+                    self._close_requested = False
 
     def _require_open(self) -> None:
         self._require_opener_process()
-        if self._closed:
-            _raise(StoreErrorCode.INVALID_ARGUMENT)
+        with self._thread_lock:
+            if self._closed or self._close_requested:
+                _raise(StoreErrorCode.INVALID_ARGUMENT)
 
     def _require_opener_process(self) -> None:
         if os.getpid() != self._opener_pid:
@@ -836,7 +1116,10 @@ class CapabilityStore:
         return self.issue_batch((request,))[0]
 
     def issue_batch(self, requests: tuple[ArtifactRequest, ...]) -> tuple[IssuedCapability, ...]:
-        self._require_open()
+        with self._operation():
+            return self._issue_batch(requests)
+
+    def _issue_batch(self, requests: tuple[ArtifactRequest, ...]) -> tuple[IssuedCapability, ...]:
         if type(requests) is not tuple or not requests:
             _raise(StoreErrorCode.INVALID_ARGUMENT)
         if len(requests) > self._limits.max_capabilities:
@@ -846,8 +1129,10 @@ class CapabilityStore:
         checked = tuple(_validate_request(request, self._limits) for request in requests)
         with self._locked(exclusive=True):
             self._revalidate_anchors()
+            temp_fd = _require_directory_descriptor(self._temp_fd)
+            commits_fd = _require_directory_descriptor(self._commits_fd)
             if _bounded_names(
-                self._temp_fd, 1, overflow=StoreErrorCode.RECOVERY_REQUIRED
+                temp_fd, 1, overflow=StoreErrorCode.RECOVERY_REQUIRED
             ):
                 _raise(StoreErrorCode.RECOVERY_REQUIRED)
             usage = self._scan()
@@ -902,8 +1187,8 @@ class CapabilityStore:
             batch_fd: int | None = None
             published = False
             try:
-                os.mkdir(temporary_id, 0o700, dir_fd=self._temp_fd)
-                batch_fd = os.open(temporary_id, _directory_flags(), dir_fd=self._temp_fd)
+                os.mkdir(temporary_id, 0o700, dir_fd=temp_fd)
+                batch_fd = os.open(temporary_id, _directory_flags(), dir_fd=temp_fd)
                 os.fchmod(batch_fd, 0o700)
                 lookup_ids: list[str] = []
                 for lookup_id, request, _record, record_raw in records:
@@ -939,11 +1224,18 @@ class CapabilityStore:
                 os.rename(
                     temporary_id,
                     commit_id,
-                    src_dir_fd=self._temp_fd,
-                    dst_dir_fd=self._commits_fd,
+                    src_dir_fd=temp_fd,
+                    dst_dir_fd=commits_fd,
                 )
                 published = True
-                os.fsync(self._commits_fd)
+                parent_sync_failed = False
+                for parent_fd in (temp_fd, commits_fd):
+                    try:
+                        os.fsync(parent_fd)
+                    except OSError:
+                        parent_sync_failed = True
+                if parent_sync_failed:
+                    _raise(StoreErrorCode.COMMIT_UNCERTAIN)
                 final_usage = self._scan()
                 if not set(lookup_ids).issubset(final_usage.lookup_ids):
                     _raise(StoreErrorCode.COMMIT_UNCERTAIN)
@@ -972,7 +1264,18 @@ class CapabilityStore:
     ) -> StoredArtifact:
         """Open a sealed artifact using only its capability and exact root binding."""
 
-        self._require_open()
+        with self._operation():
+            return self._resolve(
+                handle,
+                expected_root_identity_sha256=expected_root_identity_sha256,
+            )
+
+    def _resolve(
+        self,
+        handle: str,
+        *,
+        expected_root_identity_sha256: str,
+    ) -> StoredArtifact:
         capability_raw = _capability_bytes(handle)
         _validate_hash(expected_root_identity_sha256)
         lookup_id = _lookup_id(self._key, self._namespace_id, capability_raw)
@@ -997,7 +1300,24 @@ class CapabilityStore:
         expected_subject_identity_sha256: str,
         expected_artifact_type: ArtifactType,
     ) -> StoredArtifact:
-        self._require_open()
+        with self._operation():
+            return self._retrieve(
+                handle,
+                expected_namespace_id=expected_namespace_id,
+                expected_root_identity_sha256=expected_root_identity_sha256,
+                expected_subject_identity_sha256=expected_subject_identity_sha256,
+                expected_artifact_type=expected_artifact_type,
+            )
+
+    def _retrieve(
+        self,
+        handle: str,
+        *,
+        expected_namespace_id: str,
+        expected_root_identity_sha256: str,
+        expected_subject_identity_sha256: str,
+        expected_artifact_type: ArtifactType,
+    ) -> StoredArtifact:
         _capability_bytes(handle)
         for value in (
             expected_namespace_id,
@@ -1007,7 +1327,7 @@ class CapabilityStore:
             _validate_hash(value)
         if type(expected_artifact_type) is not ArtifactType:
             _raise(StoreErrorCode.INVALID_ARGUMENT)
-        artifact = self.resolve(
+        artifact = self._resolve(
             handle,
             expected_root_identity_sha256=expected_root_identity_sha256,
         )
@@ -1167,7 +1487,10 @@ class CapabilityStore:
         return usage
 
     def inspect_counts(self) -> StoreSummary:
-        self._require_open()
+        with self._operation():
+            return self._inspect_counts()
+
+    def _inspect_counts(self) -> StoreSummary:
         with self._locked(exclusive=False):
             self._revalidate_anchors()
             usage = self._scan()
@@ -1194,11 +1517,25 @@ class CapabilityStore:
                 except OSError:
                     pass
                 setattr(self, name, None)
+        exclusion_fds = getattr(self, "_exclusion_fds", ())
+        if type(exclusion_fds) is tuple:
+            _close_directory_descriptors(exclusion_fds)
+        self._exclusion_fds = ()
 
     def close(self) -> None:
-        if not self._closed:
+        if os.getpid() != self._opener_pid:
             self._close_descriptors()
             self._closed = True
+            self._close_requested = False
+            return
+        with self._thread_lock:
+            if not self._closed:
+                if self._active_operations > 0:
+                    self._close_requested = True
+                else:
+                    self._close_descriptors()
+                    self._closed = True
+                    self._close_requested = False
 
     def __enter__(self) -> "CapabilityStore":
         self._require_open()

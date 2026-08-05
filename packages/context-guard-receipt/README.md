@@ -29,5 +29,21 @@ boundary. `package-files.json`, the launcher's embedded payload digests, and
 the closed runtime tree provide a consistency and corruption check; they do
 not replace registry signatures, lockfile integrity, or a trusted install.
 
+The local capability store provides a runtime boundary against other OS
+principals. Every physical ancestor of its state directory and of each
+repository, worktree, Git, and common-Git exclusion must be a directory owned
+by root or the effective UID; group- or world-writable ancestors must also have
+the sticky bit. ACLs or platform-specific grants that give other principals
+equivalent access are forbidden deployment configurations. Unsupported
+filesystem primitives fail with `filesystem_unsupported`, and an ancestry
+violation fails with `state_dir_forbidden`.
+
+Processes with the same effective UID, UID 0/root, debug or tracing authority,
+backup authority, filesystem-administration authority, or equivalent access
+are trusted and out of scope: they can already read the integrity key or stored
+bytes and rename directories. Inode and path revalidation is therefore a
+best-effort diagnostic for accidental replacement and corruption, not a
+same-UID isolation boundary or an atomic defense against trusted actors.
+
 Use `context-guard-receipt --help` for the human-readable command summary.
 `context-guard-receipt-mcp --help` documents the unavailable MCP entry point.

@@ -465,6 +465,72 @@ class G003IdentityTests(unittest.TestCase):
             finally:
                 outside.unlink(missing_ok=True)
 
+    def test_opened_identity_descriptor_fstat_failures_are_stable_and_leak_free(
+        self,
+    ) -> None:
+        """Break caught: root or source post-open fstat leaks its fd or raw OSError."""
+
+        if not Path("/dev/fd").is_dir():
+            self.skipTest("descriptor inventory is unavailable")
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "source.py").write_bytes(b"x")
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+            def run_injected_failure(operation, target_name: str) -> tuple[str, int]:
+                before = len(os.listdir("/dev/fd"))
+                real_open = identity.os.open
+                real_fstat = identity.os.fstat
+                target_fds: set[int] = set()
+
+                def observe_open(path, *args, **kwargs):
+                    opened_fd = real_open(path, *args, **kwargs)
+                    if os.fspath(path) == target_name:
+                        target_fds.add(opened_fd)
+                    return opened_fd
+
+                def fail_target_fstat(opened_fd: int):
+                    if opened_fd in target_fds:
+                        raise OSError("HOSTILE-identity-fstat")
+                    return real_fstat(opened_fd)
+
+                outcome = "returned"
+                with mock.patch.object(
+                    identity.os, "open", side_effect=observe_open
+                ), mock.patch.object(
+                    identity.os, "fstat", side_effect=fail_target_fstat
+                ):
+                    try:
+                        result = operation()
+                    except identity.IdentityError:
+                        outcome = "identity_error"
+                    except OSError:
+                        outcome = "raw_os_error"
+                    else:
+                        os.close(result)
+                return outcome, len(os.listdir("/dev/fd")) - before
+
+            cases = (
+                ("root", lambda: identity._open_root(str(root)), str(root)),
+                (
+                    "regular-file",
+                    lambda: identity._open_regular_file(
+                        root_fd, "source.py", identity.IdentityLimits()
+                    ),
+                    "source.py",
+                ),
+            )
+            try:
+                for name, operation, target_name in cases:
+                    with self.subTest(case=name):
+                        self.assertEqual(
+                            run_injected_failure(operation, target_name),
+                            ("identity_error", 0),
+                        )
+            finally:
+                os.close(root_fd)
+
     def test_path_enumeration_rejects_case_and_nfc_aliases(self) -> None:
         """Break caught: filesystem folding resolves a different spelling than requested."""
         identity = identity_module()

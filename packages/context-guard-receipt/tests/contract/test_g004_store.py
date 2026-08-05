@@ -421,6 +421,255 @@ class G004CapabilityStoreTests(unittest.TestCase):
                 ),
             )
 
+    def test_case_alias_state_directory_inside_repository_is_forbidden(self) -> None:
+        """Break caught: case aliases bypass a lexical repository boundary check."""
+
+        module = store_module()
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "Repository-Case-Boundary"
+            root.mkdir(mode=0o700)
+            alias = base / "repository-case-boundary"
+            try:
+                same_directory = os.path.samefile(root, alias)
+            except FileNotFoundError:
+                same_directory = False
+            if not same_directory:
+                self.skipTest("filesystem is case-sensitive")
+            git = git_executable()
+            identity.snapshot_repository(root, git_executable=git)
+
+            def open_and_close_alias() -> None:
+                opened = module.CapabilityStore.open(
+                    state_dir=str(alias / "state"),
+                    repository_root=str(root),
+                    git_executable=git,
+                    create=True,
+                )
+                opened.close()
+
+            self.assert_store_error("state_dir_forbidden", open_and_close_alias)
+
+    def test_final_state_fd_check_best_effort_detects_accidental_parent_replacement(
+        self,
+    ) -> None:
+        """Best-effort diagnostic: accidental parent replacement crosses a boundary."""
+
+        module = store_module()
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "repository"
+            safe_parent = base / "safe-parent"
+            parked_parent = base / "parked-parent"
+            root.mkdir(mode=0o700)
+            safe_parent.mkdir(mode=0o700)
+            state_dir = safe_parent / "state"
+            git = git_executable()
+            identity.snapshot_repository(root, git_executable=git)
+            real_open_state = module._open_absolute_state_directory
+            swapped = False
+
+            def swap_parent_then_open(path: str, *, create: bool) -> int:
+                nonlocal swapped
+                if path == str(state_dir) and not swapped:
+                    os.rename(safe_parent, parked_parent)
+                    os.rename(root, safe_parent)
+                    swapped = True
+                return real_open_state(path, create=create)
+
+            outcome = "opened"
+            with mock.patch.object(
+                module,
+                "_open_absolute_state_directory",
+                side_effect=swap_parent_then_open,
+            ):
+                try:
+                    opened = module.CapabilityStore.open(
+                        state_dir=str(state_dir),
+                        repository_root=str(root),
+                        git_executable=git,
+                        create=True,
+                    )
+                except module.StoreError as error:
+                    outcome = error.code.value
+                else:
+                    opened.close()
+
+            self.assertTrue(swapped)
+            self.assertFalse((state_dir / "lock").exists())
+            self.assertFalse((state_dir / "store-v1").exists())
+            self.assertEqual(outcome, "state_dir_forbidden")
+
+    def test_exclusion_identity_best_effort_detects_accidental_path_replacement(
+        self,
+    ) -> None:
+        """Best-effort diagnostic: accidental exclusion replacement changes its inode."""
+
+        module = store_module()
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "repository"
+            relocated_root = base / "relocated-repository"
+            state_dir = relocated_root / "state"
+            root.mkdir(mode=0o700)
+            git = git_executable()
+            identity.snapshot_repository(root, git_executable=git)
+            real_open_exclusion = module._open_existing_absolute_directory
+            rebound = False
+
+            def rebound_before_exclusion_open(path: str) -> int:
+                nonlocal rebound
+                if path == str(root) and not rebound:
+                    os.rename(root, relocated_root)
+                    root.mkdir(mode=0o700)
+                    rebound = True
+                return real_open_exclusion(path)
+
+            outcome = "opened"
+            with mock.patch.object(
+                module,
+                "_open_existing_absolute_directory",
+                side_effect=rebound_before_exclusion_open,
+            ):
+                try:
+                    opened = module.CapabilityStore.open(
+                        state_dir=str(state_dir),
+                        repository_root=str(root),
+                        git_executable=git,
+                        create=True,
+                    )
+                except module.StoreError as error:
+                    outcome = error.code.value
+                except OSError:
+                    outcome = "raw_os_error"
+                else:
+                    opened.close()
+
+            self.assertTrue(rebound)
+            self.assertFalse((state_dir / "lock").exists())
+            self.assertFalse((state_dir / "store-v1").exists())
+            self.assertFalse((state_dir / "store-v1/integrity-key").exists())
+            self.assertEqual(outcome, "state_dir_forbidden")
+
+    def test_state_fd_best_effort_detects_accidental_move_before_lock(
+        self,
+    ) -> None:
+        """Best-effort diagnostic: accidental state move crosses the repository boundary."""
+
+        module = store_module()
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "repository"
+            state_dir = base / "private-state"
+            captured_state = root / "captured-state"
+            root.mkdir(mode=0o700)
+            git = git_executable()
+            identity.snapshot_repository(root, git_executable=git)
+            real_open_lock = module.CapabilityStore._open_lock
+            moved = False
+
+            def move_state_then_open_lock(store, *, create: bool) -> int:
+                nonlocal moved
+                if not moved:
+                    os.rename(state_dir, captured_state)
+                    moved = True
+                return real_open_lock(store, create=create)
+
+            outcome = "opened"
+            with mock.patch.object(
+                module.CapabilityStore,
+                "_open_lock",
+                new=move_state_then_open_lock,
+            ):
+                try:
+                    opened = module.CapabilityStore.open(
+                        state_dir=str(state_dir),
+                        repository_root=str(root),
+                        git_executable=git,
+                        create=True,
+                    )
+                except module.StoreError as error:
+                    outcome = error.code.value
+                except OSError:
+                    outcome = "raw_os_error"
+                else:
+                    opened.close()
+
+            self.assertTrue(moved)
+            self.assertFalse((captured_state / "lock").exists())
+            self.assertFalse((captured_state / "store-v1").exists())
+            self.assertFalse((captured_state / "store-v1/integrity-key").exists())
+            self.assertEqual(outcome, "state_dir_forbidden")
+
+    def test_physical_ancestry_enforces_principal_boundary(self) -> None:
+        """Break caught: writable or foreign ancestry grants another principal replacement."""
+
+        module = store_module()
+        identity = identity_module()
+        cases = (
+            ("nonsticky-state", "state", 0o777, False, False),
+            ("nonsticky-repository", "repository", 0o777, False, False),
+            ("sticky-state", "state", 0o1777, False, True),
+            ("foreign-state", "state", 0o700, True, False),
+        )
+        for name, placement, mode, foreign_owner, accepted in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory).resolve()
+                controlled_ancestor = base / "controlled-ancestor"
+                controlled_ancestor.mkdir(mode=0o700)
+                controlled_ancestor.chmod(mode)
+                if placement == "repository":
+                    root = controlled_ancestor / "repository"
+                    state_dir = base / "private-state"
+                else:
+                    root = base / "repository"
+                    state_dir = controlled_ancestor / "state"
+                root.mkdir(mode=0o700)
+                git = git_executable()
+                identity.snapshot_repository(root, git_executable=git)
+                target_status = controlled_ancestor.stat()
+                target_identity = target_status.st_dev, target_status.st_ino
+                real_fstat = module.os.fstat
+
+                def observed_fstat(descriptor: int):
+                    observed = real_fstat(descriptor)
+                    if not foreign_owner or (
+                        observed.st_dev,
+                        observed.st_ino,
+                    ) != target_identity:
+                        return observed
+                    fields = list(observed)
+                    fields[4] = 1 if os.geteuid() == 0 else os.geteuid() + 1
+                    return os.stat_result(fields)
+
+                outcome = "opened"
+                with mock.patch.object(
+                    module.os, "fstat", side_effect=observed_fstat
+                ):
+                    try:
+                        opened = module.CapabilityStore.open(
+                            state_dir=str(state_dir),
+                            repository_root=str(root),
+                            git_executable=git,
+                            create=True,
+                        )
+                    except module.StoreError as error:
+                        outcome = error.code.value
+                    except OSError:
+                        outcome = "raw_os_error"
+                    else:
+                        opened.close()
+
+                expected = ("opened", True) if accepted else (
+                    "state_dir_forbidden",
+                    False,
+                )
+                self.assertEqual((outcome, state_dir.exists()), expected)
+
     def test_existing_unsafe_hardlinked_lock_is_refused_without_mode_repair(self) -> None:
         """Break caught: opening a store mutates an unsafe pre-existing lock inode."""
 
@@ -446,8 +695,10 @@ class G004CapabilityStoreTests(unittest.TestCase):
             self.assertEqual(lock_path.stat().st_mode & 0o777, 0o640)
             self.assertEqual(alias_path.stat().st_mode & 0o777, 0o640)
 
-    def test_state_directory_replacement_is_detected_before_detached_commit(self) -> None:
-        """Break caught: a held fd publishes into a renamed store and returns a dead handle."""
+    def test_accidental_state_directory_replacement_is_detected_before_commit(
+        self,
+    ) -> None:
+        """Best-effort diagnostic: accidental replacement detaches the held state fd."""
 
         module = store_module()
         with StoreFixture(self) as fixture:
@@ -732,6 +983,175 @@ class G004CapabilityStoreTests(unittest.TestCase):
                 )
             self.assertEqual(len(os.listdir("/dev/fd")), before)
 
+    def test_opened_descriptor_fstat_failures_are_stable_and_leak_free(self) -> None:
+        """Break caught: post-open fstat failure leaks the adopted fd or raw OSError."""
+
+        if not Path("/dev/fd").is_dir():
+            self.skipTest("descriptor inventory is unavailable")
+        module = store_module()
+        with tempfile.TemporaryDirectory() as directory, StoreFixture(self) as fixture:
+            base = Path(directory).resolve()
+            (base / "child-directory").mkdir(mode=0o700)
+            child_file = base / "child-file"
+            child_file.write_bytes(b"x")
+            child_file.chmod(0o600)
+            parent_fd = os.open(base, module._directory_flags())
+            git = git_executable()
+            final_state = base / "state-final-fstat"
+            exclusion_root = base / "repository-exclusion-fstat"
+            exclusion_state = base / "state-exclusion-fstat"
+            exclusion_root.mkdir(mode=0o700)
+
+            def run_injected_fstat_failure(
+                operation, target_name: str, failure_occurrence: int
+            ) -> tuple[str, int]:
+                before = len(os.listdir("/dev/fd"))
+                real_open = module.os.open
+                real_fstat = module.os.fstat
+                target_fstats: dict[int, int] = {}
+
+                def observe_open(path, *args, **kwargs):
+                    opened_fd = real_open(path, *args, **kwargs)
+                    if path == target_name:
+                        target_fstats[opened_fd] = 0
+                    return opened_fd
+
+                def fail_target_fstat(opened_fd: int):
+                    if opened_fd in target_fstats:
+                        target_fstats[opened_fd] += 1
+                        if target_fstats[opened_fd] == failure_occurrence:
+                            raise OSError("HOSTILE-adopted-descriptor-fstat")
+                    return real_fstat(opened_fd)
+
+                outcome = "returned"
+                with mock.patch.object(
+                    module.os, "open", side_effect=observe_open
+                ), mock.patch.object(
+                    module.os, "fstat", side_effect=fail_target_fstat
+                ):
+                    try:
+                        result = operation()
+                    except module.StoreError as error:
+                        outcome = error.code.value
+                    except OSError:
+                        outcome = "raw_os_error"
+                    else:
+                        if type(result) is int:
+                            os.close(result)
+                        elif type(result) is tuple and all(
+                            type(item) is int for item in result
+                        ):
+                            for item in result:
+                                os.close(item)
+                        else:
+                            close = getattr(result, "close", None)
+                            if callable(close):
+                                close()
+                return outcome, len(os.listdir("/dev/fd")) - before
+
+            def no_store_files(path: Path) -> bool:
+                return (
+                    not (path / "lock").exists()
+                    and not (path / "store-v1").exists()
+                    and (not path.exists() or not any(path.iterdir()))
+                )
+
+            cases = (
+                (
+                    "directory",
+                    lambda: module._open_directory_at(parent_fd, "child-directory"),
+                    "child-directory",
+                    1,
+                    "unsafe_state",
+                    lambda: True,
+                ),
+                (
+                    "private-file",
+                    lambda: module._open_private_file(parent_fd, "child-file"),
+                    "child-file",
+                    1,
+                    "unsafe_state",
+                    lambda: True,
+                ),
+                (
+                    "lock",
+                    lambda: fixture.store._open_lock(create=False),
+                    module._LOCK_NAME,
+                    1,
+                    "unsafe_state",
+                    lambda: fixture.store.inspect_counts().artifact_count == 0,
+                ),
+                (
+                    "ancestry-parent",
+                    lambda: module._physical_directory_ancestry(parent_fd),
+                    "..",
+                    1,
+                    "state_dir_forbidden",
+                    lambda: True,
+                ),
+                (
+                    "absolute-state-final",
+                    lambda: module._open_absolute_state_directory(
+                        str(final_state), create=True
+                    ),
+                    final_state.name,
+                    1,
+                    "unsafe_state",
+                    lambda: no_store_files(final_state),
+                ),
+                (
+                    "exclusion-identity",
+                    lambda: module._check_disjoint(
+                        str(exclusion_state), str(exclusion_root), git
+                    ),
+                    exclusion_root.name,
+                    1,
+                    "state_dir_forbidden",
+                    lambda: not exclusion_state.exists(),
+                ),
+                (
+                    "named-read-before",
+                    lambda: module._read_named_file(
+                        fixture.store._store_fd, module._METADATA_NAME, 64 * 1024
+                    ),
+                    module._METADATA_NAME,
+                    2,
+                    "store_corrupt",
+                    lambda: fixture.store.inspect_counts().artifact_count == 0,
+                ),
+                (
+                    "named-read-after",
+                    lambda: module._read_named_file(
+                        fixture.store._store_fd, module._METADATA_NAME, 64 * 1024
+                    ),
+                    module._METADATA_NAME,
+                    3,
+                    "store_corrupt",
+                    lambda: fixture.store.inspect_counts().artifact_count == 0,
+                ),
+            )
+            try:
+                for (
+                    name,
+                    operation,
+                    target_name,
+                    failure_occurrence,
+                    expected_code,
+                    postcondition,
+                ) in cases:
+                    with self.subTest(case=name):
+                        self.assertEqual(
+                            (
+                                *run_injected_fstat_failure(
+                                    operation, target_name, failure_occurrence
+                                ),
+                                postcondition(),
+                            ),
+                            (expected_code, 0, True),
+                        )
+            finally:
+                os.close(parent_fd)
+
     def test_prepublication_fsync_failure_exposes_nothing_and_requires_recovery(self) -> None:
         """Break caught: failed batches leak a partial committed capability."""
 
@@ -804,36 +1224,42 @@ class G004CapabilityStoreTests(unittest.TestCase):
             fixture.close()
         self.assertEqual(len(os.listdir("/dev/fd")), before)
 
-    def test_postrename_fsync_failure_is_commit_uncertain_but_never_partial(self) -> None:
-        """Break caught: post-publication durability failure is reported as ordinary write loss."""
+    def test_postrename_parent_fsync_failure_is_commit_uncertain_but_never_partial(self) -> None:
+        """Break caught: either renamed directory parent lacks a durability barrier."""
 
         module = store_module()
-        with StoreFixture(self) as fixture:
-            real_fsync = module.os.fsync
+        for parent_name in ("_temp_fd", "_commits_fd"):
+            with self.subTest(parent=parent_name), StoreFixture(self) as fixture:
+                real_fsync = module.os.fsync
+                failed_parent = getattr(fixture.store, parent_name)
 
-            def fail_commit_directory(descriptor: int) -> None:
-                if descriptor == fixture.store._commits_fd:
-                    raise OSError("HOSTILE-post-rename-failure")
-                real_fsync(descriptor)
+                def fail_renamed_parent(descriptor: int) -> None:
+                    if descriptor == failed_parent:
+                        raise OSError("HOSTILE-post-rename-parent-failure")
+                    real_fsync(descriptor)
 
-            with mock.patch.object(
-                module.os, "fsync", side_effect=fail_commit_directory
-            ):
-                self.assert_store_error(
-                    "commit_uncertain",
-                    lambda: fixture.store.issue(
-                        payload=b"published-whole",
-                        root_identity_sha256=fixture.root_identity,
-                        subject_identity_sha256="1" * 64,
-                        artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+                with mock.patch.object(
+                    module.os, "fsync", side_effect=fail_renamed_parent
+                ):
+                    self.assert_store_error(
+                        "commit_uncertain",
+                        lambda: fixture.store.issue(
+                            payload=b"published-whole",
+                            root_identity_sha256=fixture.root_identity,
+                            subject_identity_sha256="1" * 64,
+                            artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+                        ),
+                    )
+                summary = fixture.store.inspect_counts()
+                self.assertEqual(
+                    (
+                        summary.artifact_count,
+                        summary.capability_count,
+                        summary.total_artifact_bytes,
                     ),
+                    (1, 1, len(b"published-whole")),
                 )
-            summary = fixture.store.inspect_counts()
-            self.assertEqual(
-                (summary.artifact_count, summary.capability_count, summary.total_artifact_bytes),
-                (1, 1, len(b"published-whole")),
-            )
-            self.assertFalse(summary.recovery_required)
+                self.assertFalse(summary.recovery_required)
 
     def test_concurrent_issuance_serializes_quota_without_duplicate_or_lost_commits(self) -> None:
         """Break caught: separate processes overrun quota or overwrite each other's commit."""
@@ -915,6 +1341,167 @@ class G004CapabilityStoreTests(unittest.TestCase):
             self.assertEqual(results.count("capability_count_quota_exceeded"), 1)
             summary = fixture.store.inspect_counts()
             self.assertEqual((summary.artifact_count, summary.capability_count), (1, 1))
+
+    def test_close_waits_for_in_flight_operation_before_closing_descriptors(self) -> None:
+        """Break caught: close turns an in-flight operation's dir_fd into a CWD fallback."""
+
+        module = store_module()
+        validation_entered = threading.Event()
+        release_validation = threading.Event()
+        close_started = threading.Event()
+        close_finished = threading.Event()
+        real_validate = module._validate_request
+
+        def pause_validation(request, limits):
+            validation_entered.set()
+            if not release_validation.wait(timeout=2):
+                raise AssertionError("validation release was not signaled")
+            return real_validate(request, limits)
+
+        with StoreFixture(self) as fixture:
+            def issue_one() -> str:
+                try:
+                    fixture.store.issue(
+                        payload=b"race-safe",
+                        root_identity_sha256=fixture.root_identity,
+                        subject_identity_sha256="7" * 64,
+                        artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+                    )
+                    return "issued"
+                except module.StoreError as error:
+                    return error.code.value
+                except (OSError, TypeError, ValueError):
+                    return "raw_descriptor_failure"
+
+            def close_store() -> None:
+                close_started.set()
+                fixture.store.close()
+                close_finished.set()
+
+            with mock.patch.object(
+                module, "_validate_request", side_effect=pause_validation
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                issue_future = executor.submit(issue_one)
+                self.assertTrue(validation_entered.wait(timeout=1))
+                close_future = executor.submit(close_store)
+                self.assertTrue(close_started.wait(timeout=1))
+                close_overtook_operation = close_finished.wait(timeout=0.25)
+                release_validation.set()
+                issue_result = issue_future.result(timeout=2)
+                close_future.result(timeout=2)
+
+            self.assertFalse(close_overtook_operation)
+            self.assertEqual(issue_result, "issued")
+
+    def test_reentrant_close_after_scan_is_deferred_without_cwd_writes(self) -> None:
+        """Break caught: same-thread close nulls dir_fds before issue publishes."""
+
+        module = store_module()
+
+        class CloseAfterScanStore(module.CapabilityStore):
+            def _scan(self, *, return_payload_for=None):
+                usage = super()._scan(return_payload_for=return_payload_for)
+                if return_payload_for is None and not getattr(
+                    self, "_closed_after_scan", False
+                ):
+                    self._closed_after_scan = True
+                    self.close()
+                return usage
+
+        with StoreFixture(self) as fixture, tempfile.TemporaryDirectory() as directory:
+            fixture.store.close()
+            fixture.store = CloseAfterScanStore.open(
+                state_dir=str(fixture.state_dir),
+                repository_root=str(fixture.root),
+                git_executable=fixture.git,
+            )
+            cwd = Path(directory).resolve()
+            original_cwd = os.getcwd()
+            outcome = "issued"
+            issued = None
+            os.chdir(cwd)
+            try:
+                try:
+                    issued = fixture.store.issue(
+                        payload=b"reentrant-close-safe",
+                        root_identity_sha256=fixture.root_identity,
+                        subject_identity_sha256="6" * 64,
+                        artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+                    )
+                except module.StoreError as error:
+                    outcome = error.code.value
+                except (OSError, TypeError, ValueError):
+                    outcome = "raw_descriptor_failure"
+                cwd_contains_payload = any(
+                    path.name == "payload.bin" for path in cwd.rglob("payload.bin")
+                )
+                cwd_is_empty = not any(cwd.iterdir())
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertFalse(cwd_contains_payload)
+            self.assertTrue(cwd_is_empty)
+            self.assertEqual(outcome, "issued")
+            self.assertIsNotNone(issued)
+            self.assert_store_error("invalid_argument", fixture.store.inspect_counts)
+
+            fixture.store = module.CapabilityStore.open(
+                state_dir=str(fixture.state_dir),
+                repository_root=str(fixture.root),
+                git_executable=fixture.git,
+            )
+            recovered = fixture.store.retrieve(
+                issued.handle,
+                expected_namespace_id=issued.namespace_id,
+                expected_root_identity_sha256=fixture.root_identity,
+                expected_subject_identity_sha256="6" * 64,
+                expected_artifact_type=module.ArtifactType.RAW_EVIDENCE_BYTES,
+            )
+            self.assertEqual(recovered.payload, b"reentrant-close-safe")
+
+    def test_dirfd_helpers_reject_invalid_descriptors_without_using_cwd(self) -> None:
+        """Break caught: None or a closed dir_fd silently addresses the process CWD."""
+
+        module = store_module()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            (base / "decoy-directory").mkdir(mode=0o700)
+            (base / "decoy-file").write_bytes(b"decoy")
+            (base / "decoy-file").chmod(0o600)
+            closed_descriptor = os.open(base, module._directory_flags())
+            os.close(closed_descriptor)
+            original_cwd = os.getcwd()
+            os.chdir(base)
+            try:
+                for descriptor in (None, True, closed_descriptor):
+                    with self.subTest(descriptor=repr(descriptor)):
+                        self.assert_store_error(
+                            "unsafe_state",
+                            lambda descriptor=descriptor: module._bounded_names(
+                                descriptor, 4
+                            ),
+                        )
+                        self.assert_store_error(
+                            "unsafe_state",
+                            lambda descriptor=descriptor: module._open_directory_at(
+                                descriptor, "decoy-directory"
+                            ),
+                        )
+                        self.assert_store_error(
+                            "unsafe_state",
+                            lambda descriptor=descriptor: module._open_private_file(
+                                descriptor, "decoy-file"
+                            ),
+                        )
+                        self.assert_store_error(
+                            "unsafe_state",
+                            lambda descriptor=descriptor: module._write_new_file(
+                                descriptor, "must-not-be-created", b"x"
+                            ),
+                        )
+            finally:
+                os.chdir(original_cwd)
+            self.assertFalse((base / "must-not-be-created").exists())
 
     def test_fork_inherited_store_instance_is_rejected_and_parent_remains_usable(self) -> None:
         """Break caught: a child reuses the parent's mutex and flock open-file description."""
