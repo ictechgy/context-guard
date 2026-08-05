@@ -112,6 +112,30 @@ class G001OfflineDistributionTests(unittest.TestCase):
             self.assertTrue(receipt_bin.is_file())
             self.assertTrue(mcp_bin.is_file())
 
+            foundation_smoke = run_command(
+                [
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import sys; sys.path.insert(0, sys.argv[1]); "
+                        "from context_guard_receipt.canonical import canonical_json_bytes; "
+                        "from context_guard_receipt.protection import decide_protection; "
+                        "assert canonical_json_bytes({'b': 2, 'a': 1}) == "
+                        "b'{\"a\":1,\"b\":2}\\n'; "
+                        "decision = decide_protection(b'raw\\x00\\xff', 'protected'); "
+                        "assert decision.exact_bytes == b'raw\\x00\\xff'"
+                    ),
+                    str(installed_root / "python"),
+                ],
+                cwd=install_directory,
+                environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            self.assertEqual(foundation_smoke.returncode, 0, foundation_smoke.stderr)
+            self.assertEqual(foundation_smoke.stdout, "")
+
             sentinel = temporary_root / "helper-was-executed"
             for helper_name in (
                 "context-guard",

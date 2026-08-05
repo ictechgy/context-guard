@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import py_compile
 import shutil
 import stat
 import subprocess
@@ -66,9 +67,9 @@ EXPECTED_PACKAGE = {
         "NOTICE",
         "README.md",
         "package-files.json",
-        "bin/**",
-        "python/**",
-        "schemas/**",
+        "bin/*.cjs",
+        "python/**/*.py",
+        "schemas/*.json",
     ],
     "engines": {"node": ">=18"},
     "os": ["darwin", "linux"],
@@ -96,9 +97,12 @@ EXPECTED_RUNTIME_MODES = {
     "package.json": 0o644,
     "python/context_guard_receipt/__init__.py": 0o644,
     "python/context_guard_receipt/bootstrap.py": 0o644,
+    "python/context_guard_receipt/canonical.py": 0o644,
     "python/context_guard_receipt/cli.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
+    "python/context_guard_receipt/protection.py": 0o644,
     "schemas/evidence-boundary.schema.json": 0o644,
+    "schemas/protection-decision.schema.json": 0o644,
 }
 EXPECTED_DEV_MODES = {
     "dev/package_check.py": 0o644,
@@ -448,6 +452,40 @@ class G001DistributionContractTests(unittest.TestCase):
                 status="error",
                 reason="integrity_failure",
             )
+
+            cached = temporary_root / "cached"
+            copy_runtime(cached)
+            cache_directory = cached / "python/context_guard_receipt/__pycache__"
+            cache_directory.mkdir()
+            cached_contracts = cached / "python/context_guard_receipt/contracts.py"
+            cache_tag = sys.implementation.cache_tag
+            self.assertIsNotNone(cache_tag)
+            cache_file = cache_directory / f"contracts.{cache_tag}.pyc"
+            cache_sentinel = temporary_root / "adjacent-bytecode-executed"
+            malicious_source = temporary_root / "contracts.py"
+            prefix = (
+                "from pathlib import Path\n"
+                f"Path({str(cache_sentinel)!r}).touch()\n"
+            ).encode("utf-8")
+            target_size = cached_contracts.stat().st_size
+            self.assertLess(len(prefix), target_size)
+            malicious_source.write_bytes(prefix + (b"#" * (target_size - len(prefix))))
+            target_stat = cached_contracts.stat()
+            os.utime(malicious_source, ns=(target_stat.st_atime_ns, target_stat.st_mtime_ns))
+            py_compile.compile(
+                str(malicious_source),
+                cfile=str(cache_file),
+                doraise=True,
+            )
+            cached_response = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                package_root=cached,
+            )
+            self.assertEqual(cached_response.returncode, 0, cached_response.stderr)
+            self.assertEqual(cached_response.stdout, canonical_json(EXPECTED_BOUNDARY_RESPONSE))
+            self.assertFalse(cache_sentinel.exists())
 
     def test_closed_cli_grammar_keeps_future_commands_inert_and_help_human_readable(self) -> None:
         """Break caught: executing a future command or echoing caller inputs in errors."""

@@ -8,6 +8,9 @@ const path = require('path');
 const PYTHON_ENV = 'CONTEXT_GUARD_RECEIPT_PYTHON';
 const PACKAGE_PROTOCOL = 'contextguard-receipt-launch/v1';
 const RESPONSE_SCHEMA_VERSION = 'contextguard-receipt-cli-response/v1';
+const PYTHON_ISOLATION_FLAGS = [
+  '-I', '-S', '-B', '-X', 'pycache_prefix=/dev/null/contextguard-receipt-pycache',
+];
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_PACKAGE_FILE_BYTES = 4 * 1024 * 1024;
 const RUNTIME_DIRECTORIES = new Set(['bin', 'python', 'schemas']);
@@ -22,9 +25,12 @@ const EXPECTED_FILES = [
   'package.json',
   'python/context_guard_receipt/__init__.py',
   'python/context_guard_receipt/bootstrap.py',
+  'python/context_guard_receipt/canonical.py',
   'python/context_guard_receipt/cli.py',
   'python/context_guard_receipt/contracts.py',
+  'python/context_guard_receipt/protection.py',
   'schemas/evidence-boundary.schema.json',
+  'schemas/protection-decision.schema.json',
 ];
 // The installed launcher is part of the caller's/package manager's trust
 // boundary. These embedded values prevent a mutable sidecar manifest alone
@@ -35,12 +41,15 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'README.md': 'cb4eb8bf9c497ee6f493fc7cd7026f6b549498219b8f06572acd8308c3ae3464',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
-  'package.json': '78a965c801d3d3407867111a6d3b935ccb53da67d9671cfa4372ad51e1dde4db',
+  'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
   'python/context_guard_receipt/__init__.py': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6',
   'python/context_guard_receipt/bootstrap.py': '334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211',
+  'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
   'python/context_guard_receipt/cli.py': '180d998a1942d57c5d92cd3e5451c67674e2f67fc48d4ab9b05af4d49fb1641d',
-  'python/context_guard_receipt/contracts.py': '9fc268af77390312f66e7183992e5c8ff9f1d87cbb2aac2508b91972d42cc0e0',
+  'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
+  'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'schemas/evidence-boundary.schema.json': 'b510303bd09adcaf7150415aab5cae3adbe4c99b8482c07a45bb978ad4e82ba7',
+  'schemas/protection-decision.schema.json': 'e7cf1b413d286347fda8f0f3a993676212e257f7e280757657032c23b5f9415f',
 };
 const EVIDENCE_BOUNDARY = {
   evidence_class: 'companion_local_receipt_only',
@@ -100,6 +109,34 @@ function boundedFile(filePath, maximumBytes) {
   }
 }
 
+function validateIgnoredBytecodeCache(packageRoot, cacheDirectory) {
+  const parentRelative = path.relative(packageRoot, path.dirname(cacheDirectory))
+    .split(path.sep).join('/');
+  if (!parentRelative.startsWith('python/')) return false;
+  let entries;
+  try {
+    entries = fs.readdirSync(cacheDirectory, { withFileTypes: true });
+  } catch (_) {
+    return false;
+  }
+  for (const entry of entries) {
+    const match = /^([A-Za-z0-9_]+)\.cpython-[0-9]+(?:\.opt-[0-9]+)?\.pyc$/.exec(entry.name);
+    const candidate = path.join(cacheDirectory, entry.name);
+    let metadata;
+    try {
+      metadata = fs.lstatSync(candidate);
+    } catch (_) {
+      return false;
+    }
+    if (!match || metadata.isSymbolicLink() || !metadata.isFile()
+        || metadata.size > MAX_PACKAGE_FILE_BYTES
+        || !EXPECTED_FILES.includes(`${parentRelative}/${match[1]}.py`)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function validateClosedRuntimeTree(packageRoot) {
   const expectedRuntimeFiles = new Set([...EXPECTED_FILES, 'package-files.json']);
   const expectedRootFiles = new Set(
@@ -148,7 +185,11 @@ function validateClosedRuntimeTree(packageRoot) {
       }
       if (metadata.isSymbolicLink()) return false;
       if (metadata.isDirectory()) {
-        pending.push(candidate);
+        if (entry.name === '__pycache__') {
+          if (!validateIgnoredBytecodeCache(packageRoot, candidate)) return false;
+        } else {
+          pending.push(candidate);
+        }
       } else if (metadata.isFile()) {
         actualRuntimeFiles.push(path.relative(packageRoot, candidate).split(path.sep).join('/'));
       } else {
@@ -270,11 +311,15 @@ function resolvePython() {
 }
 
 function compatibleProbe(python, bootstrap) {
-  const probe = childProcess.spawnSync(python, ['-I', '-S', '-B', bootstrap, '--launcher-probe'], {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024,
-    windowsHide: true,
-  });
+  const probe = childProcess.spawnSync(
+    python,
+    [...PYTHON_ISOLATION_FLAGS, bootstrap, '--launcher-probe'],
+    {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024,
+      windowsHide: true,
+    },
+  );
   if (probe.error || probe.status !== 0 || probe.stderr !== '') {
     return false;
   }
@@ -307,7 +352,7 @@ function launch(kind, argv, entryFilename) {
   if (!compatibleProbe(python, bootstrap)) {
     return launcherError('protocol_incompatible', 78);
   }
-  const child = childProcess.spawnSync(python, ['-I', '-S', '-B', bootstrap, kind, ...argv], {
+  const child = childProcess.spawnSync(python, [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv], {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
     windowsHide: true,

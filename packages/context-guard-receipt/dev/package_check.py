@@ -23,9 +23,12 @@ EXPECTED_PACKAGE_PATHS = {
     "package.json",
     "python/context_guard_receipt/__init__.py",
     "python/context_guard_receipt/bootstrap.py",
+    "python/context_guard_receipt/canonical.py",
     "python/context_guard_receipt/cli.py",
     "python/context_guard_receipt/contracts.py",
+    "python/context_guard_receipt/protection.py",
     "schemas/evidence-boundary.schema.json",
+    "schemas/protection-decision.schema.json",
 }
 EXPECTED_MODES = {
     path: "0755" if path.startswith("bin/context-guard-receipt") else "0644"
