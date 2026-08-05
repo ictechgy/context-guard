@@ -100,9 +100,11 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/canonical.py": 0o644,
     "python/context_guard_receipt/cli.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
+    "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
     "schemas/evidence-boundary.schema.json": 0o644,
     "schemas/protection-decision.schema.json": 0o644,
+    "schemas/source-identity.schema.json": 0o644,
 }
 EXPECTED_DEV_MODES = {
     "dev/package_check.py": 0o644,

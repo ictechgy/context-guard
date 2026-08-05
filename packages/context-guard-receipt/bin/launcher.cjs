@@ -28,9 +28,11 @@ const EXPECTED_FILES = [
   'python/context_guard_receipt/canonical.py',
   'python/context_guard_receipt/cli.py',
   'python/context_guard_receipt/contracts.py',
+  'python/context_guard_receipt/identity.py',
   'python/context_guard_receipt/protection.py',
   'schemas/evidence-boundary.schema.json',
   'schemas/protection-decision.schema.json',
+  'schemas/source-identity.schema.json',
 ];
 // The installed launcher is part of the caller's/package manager's trust
 // boundary. These embedded values prevent a mutable sidecar manifest alone
@@ -47,9 +49,11 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
   'python/context_guard_receipt/cli.py': '180d998a1942d57c5d92cd3e5451c67674e2f67fc48d4ab9b05af4d49fb1641d',
   'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
+  'python/context_guard_receipt/identity.py': 'c02686a71d552473ac1b2b1fc0c3319bd0c246d98379432bb9eaf4a567fca6b5',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'schemas/evidence-boundary.schema.json': 'b510303bd09adcaf7150415aab5cae3adbe4c99b8482c07a45bb978ad4e82ba7',
   'schemas/protection-decision.schema.json': 'e7cf1b413d286347fda8f0f3a993676212e257f7e280757657032c23b5f9415f',
+  'schemas/source-identity.schema.json': 'c20007a9a03e8168feb7b413e035e1d3ef2cdad23a7c404dc25014a03411b047',
 };
 const EVIDENCE_BOUNDARY = {
   evidence_class: 'companion_local_receipt_only',

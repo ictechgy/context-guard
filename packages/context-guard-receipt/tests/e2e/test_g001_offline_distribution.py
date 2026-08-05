@@ -122,11 +122,13 @@ class G001OfflineDistributionTests(unittest.TestCase):
                     (
                         "import sys; sys.path.insert(0, sys.argv[1]); "
                         "from context_guard_receipt.canonical import canonical_json_bytes; "
+                        "from context_guard_receipt.identity import IdentityLimits; "
                         "from context_guard_receipt.protection import decide_protection; "
                         "assert canonical_json_bytes({'b': 2, 'a': 1}) == "
                         "b'{\"a\":1,\"b\":2}\\n'; "
                         "decision = decide_protection(b'raw\\x00\\xff', 'protected'); "
-                        "assert decision.exact_bytes == b'raw\\x00\\xff'"
+                        "assert decision.exact_bytes == b'raw\\x00\\xff'; "
+                        "assert IdentityLimits().max_file_bytes == 1048576"
                     ),
                     str(installed_root / "python"),
                 ],
