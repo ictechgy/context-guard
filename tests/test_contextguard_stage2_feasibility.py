@@ -51,6 +51,21 @@ EXPECTED_STAGE2_BASELINE_PRODUCTION_INVENTORY_SHA256 = (
 )
 RECEIPT_PACKAGE_PREFIX = "packages/context-guard-receipt/"
 RECEIPT_COMPANION_INVENTORY = [
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/NOTICE", "sha256": "40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/README.md", "sha256": "cb4eb8bf9c497ee6f493fc7cd7026f6b549498219b8f06572acd8308c3ae3464"},
+    {"file_type": "regular", "mode": "0755", "path": "packages/context-guard-receipt/bin/context-guard-receipt-mcp.cjs", "sha256": "883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd"},
+    {"file_type": "regular", "mode": "0755", "path": "packages/context-guard-receipt/bin/context-guard-receipt.cjs", "sha256": "bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/bin/launcher.cjs", "sha256": "9797c3cd3ede51af5e742fc0ac5cfc3df3b51e9dff79d0fb581c77b41f313a8e"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/dev/package_check.py", "sha256": "4bc064e045ddfae865ea1039f0f4cc0066138ca433763336021c56d7ede4d321"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/dev/packaged_acceptance.py", "sha256": "a0ad95e236ac52559a176d9536ed08ddf1a18a29e095b6452fb8a3b0cd93bea2"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/package-files.json", "sha256": "d0090cd79cde06bee6be00b56d56e92922397f48426b9dbe665779104a993d4d"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/package.json", "sha256": "78a965c801d3d3407867111a6d3b935ccb53da67d9671cfa4372ad51e1dde4db"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/python/context_guard_receipt/__init__.py", "sha256": "1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/python/context_guard_receipt/bootstrap.py", "sha256": "334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/python/context_guard_receipt/cli.py", "sha256": "180d998a1942d57c5d92cd3e5451c67674e2f67fc48d4ab9b05af4d49fb1641d"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/python/context_guard_receipt/contracts.py", "sha256": "9fc268af77390312f66e7183992e5c8ff9f1d87cbb2aac2508b91972d42cc0e0"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/schemas/evidence-boundary.schema.json", "sha256": "b510303bd09adcaf7150415aab5cae3adbe4c99b8482c07a45bb978ad4e82ba7"},
     {
         "file_type": "regular",
         "mode": "0644",
@@ -68,7 +83,10 @@ RECEIPT_COMPANION_INVENTORY = [
         "mode": "0644",
         "path": "packages/context-guard-receipt/tests/contract/test_boundary.py",
         "sha256": "f7a175b8f639cb7b9c475137951f37431a457118b8b6952043c1eeaea4dbc952",
-    }
+    },
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py", "sha256": "fd9ff251e0cf31887ed2237df3213cf2a1fb7d987a3ae50cc309d9375c5cecff"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/tests/e2e/__init__.py", "sha256": "48a5ccfc49a840928c6de0ea2c978a12a0abd78e2f361ec96f6e9a0f15bddca0"},
+    {"file_type": "regular", "mode": "0644", "path": "packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py", "sha256": "9447773ce95b49bef87e4d55ba34a433b0c20193038fe1cb8e8d98f586cb4d18"},
 ]
 FORBIDDEN_TOP_LEVEL_FIELDS = {
     "host_id",
