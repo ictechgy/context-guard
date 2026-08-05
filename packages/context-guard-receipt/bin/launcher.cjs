@@ -40,6 +40,7 @@ const EXPECTED_FILES = [
   'python/context_guard_receipt/execution_twin.py',
   'python/context_guard_receipt/expansion.py',
   'python/context_guard_receipt/identity.py',
+  'python/context_guard_receipt/mcp.py',
   'python/context_guard_receipt/protection.py',
   'python/context_guard_receipt/receipts.py',
   'python/context_guard_receipt/reference_expiry.py',
@@ -103,7 +104,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',
   'python/context_guard_receipt/bootstrap.py': '334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211',
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
-  'python/context_guard_receipt/cli.py': '7141c0836e15ad659c0180ca88d5ae9e419366f99bd73c13cd0eeee6d33a3027',
+  'python/context_guard_receipt/cli.py': 'fecda41fb025152809dabbd884013da9f22f5acd1a576faf334b940425cadcf2',
   'python/context_guard_receipt/cli_io.py': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf',
   'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
   'python/context_guard_receipt/diagnostic_ledger.py': '3cc7865709c273b72136c48b1026ed5cd2830ea1bf76da4e424da08ccc13499d',
@@ -112,6 +113,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/execution_twin.py': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af',
   'python/context_guard_receipt/expansion.py': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444',
   'python/context_guard_receipt/identity.py': 'fc41f17612d75a4e9a37971e274d7e071bc144062ebb2011df4450ccac890a54',
+  'python/context_guard_receipt/mcp.py': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
   'python/context_guard_receipt/reference_expiry.py': 'ffe455b394750540ebe75cf4b907ac94c04393227e37cf355c24aaad2e3f4794',
@@ -208,6 +210,26 @@ function launcherError(reason, exitCode) {
     process.stderr.removeListener('error', ignoreWriteError);
   }
   return exitCode;
+}
+
+function mcpUsageError() {
+  const payload = Buffer.from(`${stableJson({
+    evidence_boundary: EVIDENCE_BOUNDARY,
+    operation: 'mcp',
+    reason: 'usage',
+    schema_version: RESPONSE_SCHEMA_VERSION,
+    status: 'error',
+  })}\n`, 'ascii');
+  const ignoreWriteError = () => {};
+  process.stderr.once('error', ignoreWriteError);
+  try {
+    process.stderr.write(payload, () => {
+      process.stderr.removeListener('error', ignoreWriteError);
+    });
+  } catch (_) {
+    process.stderr.removeListener('error', ignoreWriteError);
+  }
+  return 64;
 }
 
 function writeExact(stream, payload) {
@@ -512,6 +534,70 @@ function compatibleProbe(python, bootstrap) {
     && result.python_version[1] >= 11 && result.python_version[1] < 15;
 }
 
+function monitorStreamingMcp(child) {
+  if (child.stderr === null) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {
+      // The failed launch may already have terminated.
+    }
+    return launcherError('runtime_unavailable', 69);
+  }
+
+  let runtimeFailure = false;
+  let interrupted = null;
+  let childHasClosed = false;
+  let completed = false;
+
+  const failClosed = () => {
+    if (runtimeFailure || completed) return;
+    runtimeFailure = true;
+    void stopInterruptedChild(child, 'SIGTERM', () => childHasClosed);
+  };
+  child.stderr.on('data', failClosed);
+  child.on('error', failClosed);
+
+  const removeSignalHandlers = () => {
+    process.removeListener('SIGINT', handleSigint);
+    process.removeListener('SIGTERM', handleSigterm);
+  };
+  const interrupt = (signalName, signalNumber) => {
+    if (completed) return;
+    if (interrupted !== null) {
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {
+        // A repeated interrupt is only an escalation request.
+      }
+      return;
+    }
+    interrupted = { signalNumber };
+    void (async () => {
+      await stopInterruptedChild(child, signalName, () => childHasClosed);
+      completed = true;
+      removeSignalHandlers();
+      process.exitCode = 128 + interrupted.signalNumber;
+    })();
+  };
+  const handleSigint = () => interrupt('SIGINT', 2);
+  const handleSigterm = () => interrupt('SIGTERM', 15);
+  process.on('SIGINT', handleSigint);
+  process.on('SIGTERM', handleSigterm);
+
+  child.on('close', (status, childSignal) => {
+    childHasClosed = true;
+    if (interrupted !== null || completed) return;
+    completed = true;
+    removeSignalHandlers();
+    if (runtimeFailure || childSignal !== null || !Number.isInteger(status)) {
+      process.exitCode = launcherError('runtime_unavailable', 69);
+      return;
+    }
+    process.exitCode = status;
+  });
+  return undefined;
+}
+
 function launch(kind, argv, entryFilename) {
   const packageRoot = path.dirname(path.dirname(fs.realpathSync(entryFilename)));
   if (!validatePackage(packageRoot)) {
@@ -525,18 +611,35 @@ function launch(kind, argv, entryFilename) {
   if (!compatibleProbe(python, bootstrap)) {
     return launcherError('protocol_incompatible', 78);
   }
+  if (kind === 'mcp') {
+    const rootInvocation = argv.length === 2
+      && argv[0] === '--root'
+      && typeof argv[1] === 'string'
+      && argv[1].length > 0
+      && !argv[1].includes('\0')
+      && path.isAbsolute(argv[1])
+      && path.normalize(argv[1]) === argv[1];
+    if (!(argv.length === 1 && argv[0] === '--help') && !rootInvocation) {
+      return mcpUsageError();
+    }
+  }
   let child;
   try {
     child = childProcess.spawn(
       python,
       [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv],
       {
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: kind === 'mcp'
+          ? ['inherit', 'inherit', 'pipe']
+          : ['inherit', 'pipe', 'pipe'],
         windowsHide: true,
       },
     );
   } catch (_) {
     return launcherError('runtime_unavailable', 69);
+  }
+  if (kind === 'mcp') {
+    return monitorStreamingMcp(child);
   }
   if (child.stdout === null || child.stderr === null) {
     try {

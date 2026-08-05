@@ -140,7 +140,7 @@ def distribution() -> None:
             helper = poisoned_bin / name
             helper.write_text(f"#!/bin/sh\ntouch '{sentinel}'\nexit 99\n", encoding="utf-8")
             helper.chmod(0o755)
-        environment = {"LANG": "C", "PATH": str(poisoned_bin), "PYTHONDONTWRITEBYTECODE": "1", PYTHON_ENV: str(Path(sys.executable).resolve())}
+        environment = {"LANG": "C", "PATH": os.pathsep.join((str(poisoned_bin), str(Path(git).resolve().parent))), "PYTHONDONTWRITEBYTECODE": "1", PYTHON_ENV: str(Path(sys.executable).resolve())}
         response = run([str(Path(node).resolve()), str(receipt_bin), "inspect", "boundary"], cwd=install_directory, environment=environment)
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
@@ -613,14 +613,63 @@ def distribution() -> None:
             raise RuntimeError("installed tool-schema expansion failed its offline round trip")
 
         twin_directories_before_mcp = tuple(root.rglob("twin-v1"))
-        mcp = run([str(Path(node).resolve()), str(mcp_bin), "--root", str(install_directory)], cwd=install_directory, environment=environment)
+        mcp_input = b"".join(
+            canonical_json(message).encode("ascii")
+            for message in (
+                {
+                    "id": 1,
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {
+                        "capabilities": {},
+                        "clientInfo": {"name": "packaged-acceptance", "version": "1"},
+                        "protocolVersion": "2025-11-25",
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                },
+                {"id": 2, "jsonrpc": "2.0", "method": "tools/list", "params": {}},
+            )
+        )
+        mcp = run_binary(
+            [str(Path(node).resolve()), str(mcp_bin), "--root", str(repository_root)],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=mcp_input,
+        )
+        mcp_responses: list[dict[str, object]] = []
+        try:
+            mcp_responses = [json.loads(line) for line in mcp.stdout.splitlines()]
+            mcp_tools = [
+                tool["name"] for tool in mcp_responses[1]["result"]["tools"]
+            ]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+            mcp_tools = []
+        mcp_shape_valid = bool(
+            len(mcp_responses) == 2
+            and isinstance(mcp_responses[0], dict)
+            and mcp_responses[0].get("id") == 1
+            and isinstance(mcp_responses[1], dict)
+        )
         if (
             twin_directories_before_mcp
-            or mcp.returncode != 69
+            or mcp.returncode != 0
+            or mcp.stderr
+            or not mcp_shape_valid
+            or mcp_tools
+            != [
+                "receipt_assemble",
+                "receipt_expand",
+                "receipt_inspect",
+                "receipt_tool_select",
+            ]
             or tuple(root.rglob("twin-v1")) != twin_directories_before_mcp
             or sentinel.exists()
         ):
-            raise RuntimeError("installed MCP command did not remain unavailable")
+            raise RuntimeError("installed MCP command failed its closed stdio smoke test")
 
         twin_repository_root = (root / "twin-repository").resolve()
         twin_state_directory = (root / "twin-state").resolve()

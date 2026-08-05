@@ -35,6 +35,7 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/evidence_pack.py",
     "python/context_guard_receipt/expansion.py",
     "python/context_guard_receipt/identity.py",
+    "python/context_guard_receipt/mcp.py",
     "python/context_guard_receipt/protection.py",
     "python/context_guard_receipt/reference_expiry.py",
     "python/context_guard_receipt/receipts.py",

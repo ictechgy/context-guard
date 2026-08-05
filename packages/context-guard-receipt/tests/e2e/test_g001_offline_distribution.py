@@ -246,7 +246,9 @@ class G001OfflineDistributionTests(unittest.TestCase):
 
             environment = {
                 "LANG": "C",
-                "PATH": str(poisoned_bin),
+                "PATH": os.pathsep.join(
+                    (str(poisoned_bin), str(Path(GIT).resolve().parent))
+                ),
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONNOUSERSITE": "1",
                 PYTHON_ENV: str(Path(sys.executable).resolve()),
@@ -717,21 +719,51 @@ class G001OfflineDistributionTests(unittest.TestCase):
                 (),
                 "an ordinary installed surface created twin state",
             )
-            mcp_unavailable = run_command(
-                [str(Path(NODE).resolve()), str(mcp_bin), "--root", str(install_directory)],
+            mcp_input = b"".join(
+                canonical_json(message).encode("ascii")
+                for message in (
+                    {
+                        "id": 1,
+                        "jsonrpc": "2.0",
+                        "method": "initialize",
+                        "params": {
+                            "capabilities": {},
+                            "clientInfo": {"name": "g001-e2e", "version": "1"},
+                            "protocolVersion": "2025-11-25",
+                        },
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "params": {},
+                    },
+                    {
+                        "id": 2,
+                        "jsonrpc": "2.0",
+                        "method": "tools/list",
+                        "params": {},
+                    },
+                )
+            )
+            mcp_started = run_binary_command(
+                [str(Path(NODE).resolve()), str(mcp_bin), "--root", str(repository_root)],
                 cwd=install_directory,
                 environment=environment,
+                input_bytes=mcp_input,
             )
-            expected_mcp = {
-                "evidence_boundary": EVIDENCE_BOUNDARY,
-                "operation": "mcp",
-                "reason": "feature_not_available",
-                "schema_version": "contextguard-receipt-cli-response/v1",
-                "status": "unavailable",
-            }
-            self.assertEqual(mcp_unavailable.returncode, 69, mcp_unavailable.stderr)
-            self.assertEqual(mcp_unavailable.stdout, "")
-            self.assertEqual(mcp_unavailable.stderr, canonical_json(expected_mcp))
+            self.assertEqual(mcp_started.returncode, 0, mcp_started.stderr)
+            self.assertEqual(mcp_started.stderr, b"")
+            mcp_responses = [json.loads(line) for line in mcp_started.stdout.splitlines()]
+            self.assertEqual([response["id"] for response in mcp_responses], [1, 2])
+            self.assertEqual(
+                [tool["name"] for tool in mcp_responses[1]["result"]["tools"]],
+                [
+                    "receipt_assemble",
+                    "receipt_expand",
+                    "receipt_inspect",
+                    "receipt_tool_select",
+                ],
+            )
             self.assertEqual(
                 tuple(temporary_root.rglob("twin-v1")),
                 twin_directories_before_mcp,

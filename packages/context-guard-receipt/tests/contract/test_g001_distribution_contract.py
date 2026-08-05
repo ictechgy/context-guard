@@ -72,7 +72,9 @@ EXPECTED_HELP = (
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
-    "The MCP transport is intentionally unavailable in this local-only companion.\n"
+    "Run the bounded local stdio MCP surface for one fixed repository root. "
+    "Capabilities are process-local and expire when the process exits. No "
+    "registration, provider, model, credential, or network access is performed.\n"
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
@@ -131,6 +133,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/evidence_pack.py": 0o644,
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
+    "python/context_guard_receipt/mcp.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/reference_expiry.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,

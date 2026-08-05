@@ -45,7 +45,7 @@ from .tool_schemas import (
 
 
 HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
-MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
+MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nRun the bounded local stdio MCP surface for one fixed repository root. Capabilities are process-local and expire when the process exits. No registration, provider, model, credential, or network access is performed.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
 TOOL_SCHEMA_EXPANSION_REQUEST_VERSION = (
@@ -1082,5 +1082,7 @@ def mcp_main(arguments: Sequence[str]) -> int:
         print(MCP_HELP, end="")
         return 0
     if len(arguments) == 2 and arguments[0] == "--root" and _is_absolute(arguments[1]):
-        return emit_error("mcp", "unavailable", "feature_not_available", 69)
+        from .mcp import serve_stdio
+
+        return serve_stdio(arguments[1])
     return emit_error("mcp", "error", "usage", 64)
