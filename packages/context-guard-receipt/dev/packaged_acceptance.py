@@ -64,14 +64,24 @@ def capture_frame(sequence: int, channel: int, payload: bytes) -> bytes:
     )
 
 
-def twin_request(private_relative_path: str) -> bytes:
+def evidence_descriptor(payload: bytes, relative_path: str, selection: dict[str, object]) -> bytes:
+    return canonical_json(
+        {
+            "caller_classification": "eligible",
+            "detector_signals": [],
+            "payload_b64u": base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii"),
+            "schema_version": "contextguard-receipt-evidence-descriptor/v1",
+            "source": {"relative_path": relative_path, "selection": selection},
+        }
+    ).encode("ascii")
+
+
+def twin_request(predicates: list[dict[str, object]]) -> bytes:
     return canonical_json(
         {
             "declared_next_action_sha256": "a" * 64,
             "expected_tail": None,
-            "predicates": [
-                {"kind": "path_absent", "relative_path": private_relative_path}
-            ],
+            "predicates": predicates,
             "schema_version": "contextguard-receipt-twin-request/v1",
         }
     ).encode("ascii")
@@ -145,6 +155,30 @@ def distribution() -> None:
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
             raise RuntimeError("installed receipt command failed its closed-boundary smoke test")
+        missing_helper_environment = dict(environment)
+        missing_helper_environment.pop(PYTHON_ENV)
+        missing_helper_environment["PATH"] = str(root / "missing-runtime-helper")
+        missing_helper = run_binary(
+            [str(Path(node).resolve()), str(receipt_bin), "inspect", "boundary"],
+            cwd=install_directory,
+            environment=missing_helper_environment,
+        )
+        expected_missing_helper = canonical_json(
+            {
+                "evidence_boundary": EXPECTED_BOUNDARY,
+                "operation": "launcher",
+                "reason": "runtime_unavailable",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        ).encode("ascii")
+        if (
+            missing_helper.returncode != 69
+            or missing_helper.stdout
+            or missing_helper.stderr != expected_missing_helper
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed launcher did not fail closed when its runtime helper was missing")
         sanitizer_smoke = run(
             [
                 str(Path(sys.executable).resolve()), "-I", "-S", "-B", "-c",
@@ -345,6 +379,54 @@ def distribution() -> None:
         if frame_validator.returncode != 0 or frame_validator.stdout or frame_validator.stderr:
             raise RuntimeError("installed runner frame validator failed")
 
+        failing_private_argument = b"synthetic-private-failure-g013"
+        failed_command_state = (root / "failed-command-state").resolve()
+        failed_command = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "run", "--escrow", "--root",
+                str(command_repository_root), "--state-dir", str(failed_command_state),
+                "--", str(Path(sys.executable).resolve()), "-I", "-S", "-B", "-c",
+                "import sys; sys.exit(17)", failing_private_argument.decode("ascii"),
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        try:
+            failed_receipt = json.loads(failed_command.stdout)
+            failed_handle = failed_receipt["handle"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise RuntimeError("installed child failure did not emit a receipt") from None
+        failed_expansion = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "expand", failed_handle,
+                "--root", str(command_repository_root), "--state-dir",
+                str(failed_command_state), "--emit", "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        if (
+            failed_command.returncode != 17
+            or failed_command.stderr
+            or failed_command.stdout != canonical_json(failed_receipt).encode("ascii")
+            or failed_receipt.get("outcome") != {"exit_code": 17, "kind": "exited"}
+            or not isinstance(failed_handle, str)
+            or failed_expansion.returncode != 0
+            or failed_expansion.stdout != b"CGRF1\x00"
+            or failed_expansion.stderr
+            or any(
+                failing_private_argument in output
+                for output in (
+                    failed_command.stdout,
+                    failed_command.stderr,
+                    failed_expansion.stdout,
+                    failed_expansion.stderr,
+                )
+            )
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed child failure escaped its bounded expandable receipt")
+
         descriptor = json.dumps(
             {
                 "caller_classification": "eligible",
@@ -391,6 +473,135 @@ def distribution() -> None:
             or sentinel.exists()
         ):
             raise RuntimeError("installed receipt exact expansion failed its offline round trip")
+
+        (repository_root / "source.bin").write_bytes(b"drifted-installed-g013")
+        stale_expansion = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "expand", capability, "--root",
+                str(repository_root), "--state-dir", str(state_directory), "--emit", "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        (repository_root / "source.bin").write_bytes(payload)
+        reread_expansion = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "expand", capability, "--root",
+                str(repository_root), "--state-dir", str(state_directory), "--emit", "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        try:
+            stale_refusal = json.loads(stale_expansion.stderr)
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("installed stale expansion did not emit a refusal") from None
+        if (
+            stale_expansion.returncode != 65
+            or stale_expansion.stdout
+            or stale_refusal.get("status") != "stale"
+            or reread_expansion.returncode != 0
+            or reread_expansion.stdout != payload
+            or reread_expansion.stderr
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed source drift did not stale then reread exactly")
+
+        range_source = b"range-boundary-installed-g013"
+        (repository_root / "range.bin").write_bytes(range_source)
+        for start, end in ((0, len(range_source)), (len(range_source) - 1, len(range_source))):
+            selected = range_source[start:end]
+            range_assembled = run_binary(
+                [
+                    str(Path(node).resolve()), str(receipt_bin), "assemble", "--kind", "evidence",
+                    "--descriptor", "-", "--root", str(repository_root), "--emit", "json",
+                ],
+                cwd=install_directory,
+                environment=environment,
+                input_bytes=evidence_descriptor(
+                    selected,
+                    "range.bin",
+                    {"end_byte": end, "kind": "range", "start_byte": start},
+                ),
+            )
+            try:
+                range_result = json.loads(range_assembled.stdout)
+                range_output = base64.urlsafe_b64decode(
+                    range_result["output_b64u"] + "=" * 3
+                )
+                range_receipt = range_result["receipt"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                raise RuntimeError("installed range boundary emitted invalid JSON") from None
+            if (
+                range_assembled.returncode != 0
+                or range_assembled.stderr
+                or range_assembled.stdout != canonical_json(range_result).encode("ascii")
+                or range_output != selected
+                or range_receipt.get("disposition") != "pass_through"
+                or range_receipt.get("output", {}).get("form") != "exact_payload"
+                or sentinel.exists()
+            ):
+                raise RuntimeError("installed range boundary did not preserve exact bytes")
+
+        ambiguous_source = b"ambiguous-range-installed-g013"
+        (repository_root / "ambiguous.bin").write_bytes(ambiguous_source)
+        candidate = {
+            "end_byte": len(ambiguous_source),
+            "occurrence": 0,
+            "qualified_name": "module.value",
+            "raw_range_sha256": hashlib.sha256(ambiguous_source).hexdigest(),
+            "start_byte": 0,
+        }
+        ambiguous_evidence = {
+            "candidates": [candidate, candidate],
+            "capped": False,
+            "complete": True,
+            "deterministic": True,
+            "end_byte": len(ambiguous_source),
+            "evidence_kind": "caller_supplied_symbol_range",
+            "fallback_used": False,
+            "language_id": "python",
+            "occurrence": 0,
+            "parser_error": False,
+            "producer_id": "packaged-acceptance/1",
+            "qualified_name": "module.value",
+            "raw_range_sha256": hashlib.sha256(ambiguous_source).hexdigest(),
+            "scan_complete": True,
+            "schema_version": "contextguard-receipt-caller-symbol-evidence/v1",
+            "source_sha256": hashlib.sha256(ambiguous_source).hexdigest(),
+            "start_byte": 0,
+        }
+        ambiguous_assembled = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "assemble", "--kind", "evidence",
+                "--descriptor", "-", "--root", str(repository_root), "--emit", "json",
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=evidence_descriptor(
+                ambiguous_source,
+                "ambiguous.bin",
+                {"evidence": ambiguous_evidence, "kind": "symbol"},
+            ),
+        )
+        try:
+            ambiguous_result = json.loads(ambiguous_assembled.stdout)
+            ambiguous_output = base64.urlsafe_b64decode(
+                ambiguous_result["output_b64u"] + "=" * 3
+            )
+            ambiguous_receipt = ambiguous_result["receipt"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise RuntimeError("installed ambiguous range emitted invalid JSON") from None
+        if (
+            ambiguous_assembled.returncode != 0
+            or ambiguous_assembled.stderr
+            or ambiguous_assembled.stdout != canonical_json(ambiguous_result).encode("ascii")
+            or ambiguous_output != ambiguous_source
+            or ambiguous_receipt.get("disposition") != "pass_through"
+            or ambiguous_receipt.get("output", {}).get("form") != "exact_payload"
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed ambiguous range gained unsupported authority")
 
         store_before_expiry = tree_snapshot(state_directory / "store-v1")
         expiry_registered = run_binary(
@@ -691,7 +902,9 @@ def distribution() -> None:
             ],
             cwd=install_directory,
             environment=environment,
-            input_bytes=twin_request(private_relative_path),
+            input_bytes=twin_request(
+                [{"kind": "path_absent", "relative_path": private_relative_path}]
+            ),
         )
         twin_inspected = run_binary(
             [
@@ -748,6 +961,85 @@ def distribution() -> None:
             or sentinel.exists()
         ):
             raise RuntimeError("installed twin failed its closed offline smoke test")
+
+        unsafe_twin_state = twin_repository_root / "unsafe-state"
+        unsafe_twin = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "inspect", "twin",
+                "--experimental-twin", "--input", "-", "--root", str(twin_repository_root),
+                "--state-dir", str(unsafe_twin_state),
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=twin_request(
+                [{"kind": "path_absent", "relative_path": "never-created.txt"}]
+            ),
+        )
+        unknown_sibling = twin_state_directory / "unknown-sibling-g013"
+        unknown_sibling.write_text("untrusted", encoding="ascii")
+        unknown_twin = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "inspect", "twin",
+                "--experimental-twin", "--root", str(twin_repository_root),
+                "--state-dir", str(twin_state_directory), "--limit", "1",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        expected_twin_unavailable = canonical_json(
+            {
+                "evidence_boundary": EXPECTED_BOUNDARY,
+                "operation": "inspect_twin",
+                "reason": "twin_unavailable",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        ).encode("ascii")
+        if (
+            unsafe_twin.returncode != 74
+            or unsafe_twin.stdout
+            or unsafe_twin.stderr != expected_twin_unavailable
+            or unknown_twin.returncode != 74
+            or unknown_twin.stdout
+            or unknown_twin.stderr != expected_twin_unavailable
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed twin accepted an unsafe state or unknown sibling")
+
+        partial_twin_root = (root / "partial-twin-repository").resolve()
+        partial_twin_state = (root / "partial-twin-state").resolve()
+        partial_twin_root.mkdir(mode=0o700)
+        (partial_twin_root / "present.txt").write_text("present", encoding="ascii")
+        partial_twin = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "inspect", "twin",
+                "--experimental-twin", "--input", "-", "--root", str(partial_twin_root),
+                "--state-dir", str(partial_twin_state),
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=twin_request(
+                [
+                    {"kind": "path_absent", "relative_path": "absent.txt"},
+                    {"kind": "path_absent", "relative_path": "present.txt"},
+                ]
+            ),
+        )
+        try:
+            partial_result = json.loads(partial_twin.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("installed partial twin emitted invalid JSON") from None
+        if (
+            partial_twin.returncode != 0
+            or partial_twin.stderr
+            or partial_twin.stdout != canonical_json(partial_result).encode("ascii")
+            or partial_result.get("predicate_count") != 2
+            or partial_result.get("matched_predicate_count") != 1
+            or partial_result.get("verified") is not False
+            or any(partial_result.get(field) is not False for field in authority_fields)
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed twin granted authority for partial predicates")
 
 
 def main() -> int:

@@ -21,6 +21,22 @@ context-guard-receipt inspect reference-expiry --experimental-reference-expiry -
 context-guard-receipt inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <1..256>]
 ```
 
+Package and entry-point discovery are explicit and local. For a separate local
+install, pack this directory and install that resulting tarball in the target
+project, then invoke the two installed binaries directly:
+
+```text
+npm pack --ignore-scripts
+npm install --ignore-scripts ./ictechgy-context-guard-receipt-0.1.0.tgz
+./node_modules/.bin/context-guard-receipt --help
+./node_modules/.bin/context-guard-receipt-mcp --help
+./node_modules/.bin/context-guard-receipt-mcp --root /absolute/repository-root
+```
+
+The ordinary CLI and the stdio MCP binary are the only entry points. Neither
+installs a hook, reads or writes host settings, registers an MCP server, or
+changes a host request. A caller chooses when to launch either binary.
+
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read
 settings, contact a provider, or establish provider or host authority. It does
@@ -29,8 +45,22 @@ is a byte proxy for explicitly provided local bytes, not a token or
 provider-usage claim. `run --escrow` is provider-free local capture only;
 diagnostics, firewall results, and twin results are advisory and non-applying.
 Reference expiry is an explicit local capability-access control and does not
-delete retained artifacts. The remaining reserved `inspect` targets and the
-MCP transport stay intentionally unavailable.
+delete retained artifacts. Its fixed value is
+`companion_local_receipt_only`, `selected_branch: S2-UNSUPPORTED`,
+`selected_transport: NONE`, with no host-owned request, runtime observer,
+provider join, Stage 1/2 evidence, or provider-claim authority. The remaining
+reserved `inspect` targets, including `lease`, stay unavailable.
+
+The MCP binary is a bounded local stdio server for one explicit absolute
+`--root`. After normal MCP initialization it exposes only `receipt_assemble`,
+`receipt_expand`, `receipt_inspect`, and `receipt_tool_select`; it does not
+expose command capture, durable-state administration, twin, reference expiry,
+configuration, or registration tools. Its `cgr1m_` capabilities are random,
+process-local, limited to 300 seconds, and invalid after process exit or
+restart. MCP creates no durable state. If the pinned root instance or its
+logical state drifts, the server stops accepting work and must be restarted;
+durable CLI workflows likewise require a new explicit invocation when their
+root or chosen state directory changes.
 
 Process-scope diagnostics use a new random fingerprint key for every invocation
 and create no state. They report bounded byte accounting, a position-bound
@@ -49,6 +79,14 @@ whole ledger to 4 MiB, and never evicts history. It is separate from
 `store-v1`; removing the entire auxiliary compartment does not invalidate
 capability-store artifacts. A stdout failure after append returns exit `74` and
 cannot roll back the committed advisory row.
+
+There is no default durable location: every durable workflow names an absolute
+`--state-dir`. The local capability store is `store-v1` beneath that directory
+and permits at most 1,024 artifacts, 64 MiB total artifact bytes, and 1 MiB per
+artifact. Diagnostics, the experimental twin, and the experimental
+reference-expiry registry use separate `auxiliary-v1` compartments with their
+own quotas and never turn a local receipt into host, provider, or network
+evidence.
 
 If an unsupported top-level entry appears after the durable-state preflight but
 before a newly created lock can validate the directory, opening returns
@@ -70,6 +108,10 @@ replace paths and content with per-twin, per-event observation HMACs. `verified`
 means only that every declared predicate matched in two immediate local passes
 between stable local repository snapshots. It is not global completeness or
 execution authority.
+
+Treat twin output as an experimental local comparison only. It is advisory and
+non-applying, does not execute or replay a command, and does not observe a host
+or network.
 
 Twin state is an independently keyed, removable `auxiliary-v1/twin-v1`
 compartment. Its framed append log and authenticated metadata use explicit tail
@@ -111,6 +153,10 @@ accepting independently validated immutable tool-schema snapshots. Active
 lookups persist a per-reference clock high-water; a backward clock observation
 terminally expires that reference, and multi-reference inspection publishes
 due transitions as one bounded batch.
+
+Reference expiry is also experimental local administration, not deletion or
+provider enforcement. It changes only a compact registry record. The reserved
+`lease` inspection target remains unavailable and does not imply lease support.
 
 `run --escrow` executes only the explicitly supplied absolute executable and
 argument vector. It does not invoke a shell. The child runs with the requested
@@ -173,6 +219,11 @@ source identity are current. A changed source is stale and is refused without
 emitting payload bytes. The caller retains the original descriptor payload as
 the explicit baseline bypass; the companion does not claim that every emitted
 artifact embeds that baseline.
+
+In other words, evidence and blueprint expansion returns the original raw
+source bytes when its local capability remains current. This is distinct from
+`run --escrow` expansion: a command-capture capability returns only the
+canonical sanitized CGRF capture, never the raw command output.
 
 A command-capture handle is historical rather than `source_current`. While it
 remains bound to the same repository instance, later worktree changes do not
@@ -248,5 +299,5 @@ bytes and rename directories. Inode and path revalidation is therefore a
 best-effort diagnostic for accidental replacement and corruption, not a
 same-UID isolation boundary or an atomic defense against trusted actors.
 
-Use `context-guard-receipt --help` for the human-readable command summary.
-`context-guard-receipt-mcp --help` documents the unavailable MCP entry point.
+Use `context-guard-receipt --help` for the human-readable command summary and
+`context-guard-receipt-mcp --help` for the explicit bounded stdio MCP summary.

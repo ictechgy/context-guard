@@ -13,6 +13,7 @@ from pathlib import Path
 from tests.test_contextguard_stage2_feasibility import (
     RECEIPT_COMPANION_INVENTORY,
     REPO_ROOT,
+    provider_free_changed_paths,
     production_surface_inventory,
     receipt_companion_surface_inventory,
     validate_production_surface_inventory,
@@ -70,10 +71,216 @@ class ContextGuardReceiptBoundaryTests(unittest.TestCase):
             ".claude/hooks/contextguard-observer",
             "research/contextguard-stage2/host-observability.json",
             "research/contextguard-broker/fixtures/positive/decision-receipt.json",
+            "research/unrelated-user-notes.md",
+            "tests/unrelated_receipt_test.py",
         }
         for path in rejected_paths:
             with self.subTest(path=path), self.assertRaises(AssertionError):
                 validate_provider_free_changed_paths({path})
+
+    def test_changed_path_scan_uses_only_the_committed_merge_base_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            subprocess.run(
+                ["git", "init", "--quiet", "--initial-branch=main"],
+                cwd=repository,
+                check=True,
+            )
+            baseline = repository / "baseline.txt"
+            baseline.write_text("baseline\n", encoding="utf-8")
+            subprocess.run(["git", "add", "baseline.txt"], cwd=repository, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Context Guard Receipt Tests",
+                    "-c",
+                    "user.email=context-guard-receipt@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "baseline",
+                ],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "switch", "--quiet", "-c", "feature"],
+                cwd=repository,
+                check=True,
+            )
+            committed = repository / "packages/context-guard-receipt/README.md"
+            committed.parent.mkdir(parents=True)
+            committed.write_text("receipt\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "packages/context-guard-receipt/README.md"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Context Guard Receipt Tests",
+                    "-c",
+                    "user.email=context-guard-receipt@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "feature",
+                ],
+                cwd=repository,
+                check=True,
+            )
+            baseline.write_text("dirty worktree\n", encoding="utf-8")
+            (repository / "untracked.txt").write_text("user owned\n", encoding="utf-8")
+
+            self.assertEqual(
+                provider_free_changed_paths(repo_root=repository),
+                {"packages/context-guard-receipt/README.md"},
+            )
+
+    def test_changed_path_scan_rejects_ambiguous_criss_cross_merge_bases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+
+            def git_output(arguments: list[str], input_text: str = "") -> str:
+                return subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Context Guard Receipt Tests",
+                        "-c",
+                        "user.email=context-guard-receipt@example.invalid",
+                        *arguments,
+                    ],
+                    cwd=repository,
+                    check=True,
+                    input=input_text,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ).stdout.strip()
+
+            base_blob = git_output(["hash-object", "-w", "--stdin"], "base\n")
+            changed_blob = git_output(["hash-object", "-w", "--stdin"], "forbidden\n")
+            base_tree = git_output(
+                ["mktree"], f"100644 blob {base_blob}\tforbidden.txt\n"
+            )
+            changed_tree = git_output(
+                ["mktree"], f"100644 blob {changed_blob}\tforbidden.txt\n"
+            )
+
+            def commit(tree: str, parents: tuple[str, ...], message: str) -> str:
+                arguments = ["commit-tree", tree]
+                for parent in parents:
+                    arguments.extend(("-p", parent))
+                return git_output(arguments, f"{message}\n")
+
+            base = commit(base_tree, (), "base")
+            changed_parent = commit(changed_tree, (base,), "changed parent")
+            unchanged_parent = commit(base_tree, (base,), "unchanged parent")
+            head = commit(changed_tree, (changed_parent, unchanged_parent), "feature merge")
+            origin_main = commit(base_tree, (unchanged_parent, changed_parent), "main merge")
+            subprocess.run(
+                ["git", "update-ref", "refs/heads/feature", head],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "symbolic-ref", "HEAD", "refs/heads/feature"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", origin_main],
+                cwd=repository,
+                check=True,
+            )
+            merge_bases = git_output(
+                ["merge-base", "--all", "origin/main", "HEAD"]
+            ).splitlines()
+            self.assertEqual(len(merge_bases), 2)
+
+            with self.assertRaises(AssertionError):
+                provider_free_changed_paths(repo_root=repository)
+
+    def test_changed_path_scan_overrides_ignore_submodules_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+
+            def git_output(arguments: list[str], input_text: str = "") -> str:
+                return subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Context Guard Receipt Tests",
+                        "-c",
+                        "user.email=context-guard-receipt@example.invalid",
+                        *arguments,
+                    ],
+                    cwd=repository,
+                    check=True,
+                    input=input_text,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ).stdout.strip()
+
+            empty_tree = git_output(["mktree"])
+
+            def commit(tree: str, parents: tuple[str, ...], message: str) -> str:
+                arguments = ["commit-tree", tree]
+                for parent in parents:
+                    arguments.extend(("-p", parent))
+                return git_output(arguments, f"{message}\n")
+
+            submodule_base = commit(empty_tree, (), "submodule base")
+            submodule_changed = commit(
+                empty_tree, (submodule_base,), "submodule changed"
+            )
+            base_tree = git_output(
+                ["mktree"],
+                f"160000 commit {submodule_base}\tforbidden-submodule\n",
+            )
+            changed_tree = git_output(
+                ["mktree"],
+                f"160000 commit {submodule_changed}\tforbidden-submodule\n",
+            )
+            base = commit(base_tree, (), "base")
+            head = commit(changed_tree, (base,), "feature")
+            subprocess.run(
+                ["git", "update-ref", "refs/heads/feature", head],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "symbolic-ref", "HEAD", "refs/heads/feature"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", base],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "diff.ignoreSubmodules", "all"],
+                cwd=repository,
+                check=True,
+            )
+
+            self.assertEqual(
+                provider_free_changed_paths(repo_root=repository),
+                {"forbidden-submodule"},
+            )
 
     def test_protected_surface_guard_checks_live_manifest_and_unsupported_semantics(self) -> None:
         result = subprocess.run(
