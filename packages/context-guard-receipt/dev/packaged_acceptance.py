@@ -142,6 +142,113 @@ def distribution() -> None:
             or sentinel.exists()
         ):
             raise RuntimeError("installed receipt exact expansion failed its offline round trip")
+
+        tool_catalog = [
+            {
+                "description": "inline" * 800,
+                "input_schema": {"type": "object"},
+                "name": "inline",
+            },
+            {
+                "description": "deferred" * 800,
+                "input_schema": {"type": "object"},
+                "name": "deferred",
+            },
+        ]
+        tool_payload = canonical_json(tool_catalog).encode("utf-8")
+        tool_descriptor = canonical_json(
+            {
+                "catalog_format": "anthropic_tools/v1",
+                "items": [
+                    {
+                        "caller_classification": "eligible",
+                        "detector_signals": [],
+                        "priority": 2 - index,
+                        "required": False,
+                    }
+                    for index in range(2)
+                ],
+                "payload_b64u": base64.urlsafe_b64encode(tool_payload)
+                .rstrip(b"=")
+                .decode("ascii"),
+                "retain_count": 1,
+                "schema_version": "contextguard-receipt-tool-schema-descriptor/v1",
+            }
+        ).encode("utf-8")
+        tool_assembled = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "assemble",
+                "--kind",
+                "tool-schemas",
+                "--descriptor",
+                "-",
+                "--root",
+                str(repository_root),
+                "--state-dir",
+                str(state_directory),
+                "--persist",
+                "--emit",
+                "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=tool_descriptor,
+        )
+        if tool_assembled.returncode != 0 or tool_assembled.stderr or sentinel.exists():
+            raise RuntimeError("installed tool-schema assembly failed its offline smoke test")
+        try:
+            tool_bundle = json.loads(tool_assembled.stdout)
+            catalog_reference = tool_bundle["catalog_reference"]
+            item_reference = tool_bundle["deferred"][0]
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            raise RuntimeError("installed tool-schema assembly emitted an invalid bundle") from None
+        if tool_bundle.get("artifact_kind") != "tool_schema_bundle":
+            raise RuntimeError("installed tool-schema assembly emitted an invalid bundle")
+
+        def expand_tool_schema(reference: object) -> subprocess.CompletedProcess[bytes]:
+            request = canonical_json(
+                {
+                    "catalog_reference": catalog_reference,
+                    "item_reference": reference,
+                    "schema_version": "contextguard-receipt-tool-schema-expansion-request/v1",
+                }
+            ).encode("utf-8")
+            return run_binary(
+                [
+                    str(Path(node).resolve()),
+                    str(receipt_bin),
+                    "expand",
+                    "tool-schema",
+                    "--request",
+                    "-",
+                    "--root",
+                    str(repository_root),
+                    "--state-dir",
+                    str(state_directory),
+                    "--emit",
+                    "bytes",
+                ],
+                cwd=install_directory,
+                environment=environment,
+                input_bytes=request,
+            )
+
+        whole_catalog = expand_tool_schema(None)
+        deferred_schema = expand_tool_schema(item_reference)
+        expected_deferred_schema = canonical_json(tool_catalog[1]).encode("utf-8")[:-1]
+        if (
+            whole_catalog.returncode != 0
+            or whole_catalog.stdout != tool_payload
+            or whole_catalog.stderr
+            or deferred_schema.returncode != 0
+            or deferred_schema.stdout != expected_deferred_schema
+            or deferred_schema.stderr
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed tool-schema expansion failed its offline round trip")
+
         mcp = run([str(Path(node).resolve()), str(mcp_bin), "--root", str(install_directory)], cwd=install_directory, environment=environment)
         if mcp.returncode != 69 or sentinel.exists():
             raise RuntimeError("installed MCP command did not remain unavailable")

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "tool_schema_expansion_refusal"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "reason": {"enum": ["artifact_invalid", "reference_rejected", "store_unavailable"]},
+    "schema_version": {"const": "contextguard-receipt-tool-schema-expansion-refusal/v1"},
+    "status": {"const": "refused"}
+  },
+  "required": ["artifact_kind", "evidence_boundary", "reason", "schema_version", "status"],
+  "title": "Context Guard Receipt tool-schema expansion refusal",
+  "type": "object"
+}

@@ -15,17 +15,40 @@ from .assembly import (
     assemble_evidence,
     assemble_evidence_pack,
 )
-from .canonical import CanonicalJSONError, canonical_json_bytes, parse_canonical_json_bytes
+from .canonical import (
+    CanonicalJSONError,
+    JSONLimits,
+    canonical_json_bytes,
+    parse_canonical_json_bytes,
+)
 from .cli_io import CliIOError, read_descriptor, write_receipt, write_stdout
 from .contracts import canonical_json, evidence_boundary, response
 from .expansion import ExpansionDisposition, expand_capability
 from .store import CapabilityStore
+from .tool_schemas import (
+    ToolSchemaDisposition,
+    ToolSchemaError,
+    ToolSchemaExpansionDisposition,
+    assemble_tool_schemas,
+    expand_tool_schema_catalog,
+    expand_tool_schema_item,
+)
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> --receipt-out <file> -- <command>\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence/blueprint assembly and exact local expansion are available; other commands remain inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> --receipt-out <file> -- <command>\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available; other commands remain inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
+TOOL_SCHEMA_EXPANSION_REQUEST_VERSION = (
+    "contextguard-receipt-tool-schema-expansion-request/v1"
+)
+TOOL_SCHEMA_EXPANSION_REQUEST_LIMITS = JSONLimits(
+    max_document_bytes=256 * 1024,
+    max_depth=16,
+    max_total_values=512,
+    max_object_members=32,
+    max_string_bytes=1024,
+)
 INSPECT_TARGETS = frozenset(
     {"receipt", "diagnostics", "firewall", "diagnostic-ledger", "twin", "lease", "state"}
 )
@@ -125,6 +148,21 @@ def _valid_run(arguments: Sequence[str]) -> bool:
 
 
 def _valid_expand(arguments: Sequence[str]) -> bool:
+    if arguments and arguments[0] == "tool-schema":
+        seen = _parse_options(
+            arguments[1:],
+            values={
+                "--request": _is_file_argument,
+                "--state-dir": _is_absolute,
+                "--root": _is_absolute,
+                "--emit": lambda value: value in {"bytes", "json"},
+            },
+        )
+        return seen is not None and {
+            "--request",
+            "--root",
+            "--state-dir",
+        }.issubset(seen)
     if not arguments or not arguments[0].startswith("cgr1p_") or len(arguments[0]) <= len("cgr1p_"):
         return False
     seen = _parse_options(
@@ -200,6 +238,28 @@ class _LazyResolutionStore:
                 expected_root_identity_sha256=expected_root_identity_sha256,
             )
 
+    def retrieve(
+        self,
+        handle: str,
+        *,
+        expected_namespace_id: str,
+        expected_root_identity_sha256: str,
+        expected_subject_identity_sha256: str,
+        expected_artifact_type: object,
+    ) -> object:
+        with CapabilityStore.open(
+            state_dir=self.state_dir,
+            repository_root=self.repository_root,
+            create=False,
+        ) as store:
+            return store.retrieve(
+                handle,
+                expected_namespace_id=expected_namespace_id,
+                expected_root_identity_sha256=expected_root_identity_sha256,
+                expected_subject_identity_sha256=expected_subject_identity_sha256,
+                expected_artifact_type=expected_artifact_type,  # type: ignore[arg-type]
+            )
+
 
 def _emit_payload(
     payload: bytes,
@@ -233,8 +293,6 @@ def _assemble(arguments: Sequence[str]) -> int:
         return emit_error("assemble", "error", "usage", 64)
     if type(emit) is not str:
         return emit_error("assemble", "error", "usage", 64)
-    if kind == "tool-schemas":
-        return emit_error("assemble", "unavailable", "feature_not_available", 69)
     try:
         descriptor_raw = read_descriptor(descriptor_argument)
         store: object = None
@@ -244,7 +302,9 @@ def _assemble(arguments: Sequence[str]) -> int:
                 return emit_error("assemble", "error", "usage", 64)
             store = _LazyIssuanceStore(state_dir=state_dir, repository_root=root)
 
-        if kind == "blueprint":
+        if kind == "tool-schemas":
+            result = assemble_tool_schemas(descriptor_raw, store=store)
+        elif kind == "blueprint":
             result = assemble_blueprint(descriptor_raw, root=root, store=store)
         else:
             try:
@@ -262,7 +322,12 @@ def _assemble(arguments: Sequence[str]) -> int:
         receipt_path = options.get("--receipt-out")
         if receipt_path is not None and type(receipt_path) is not str:
             return emit_error("assemble", "error", "usage", 64)
-        if result.disposition is AssemblyDisposition.REFUSED:
+        refused = (
+            result.disposition is ToolSchemaDisposition.REFUSED
+            if kind == "tool-schemas"
+            else result.disposition is AssemblyDisposition.REFUSED
+        )
+        if refused:
             if type(receipt_path) is str:
                 write_receipt(receipt_path, canonical_json_bytes(result.receipt))
             reason = result.receipt.get("reason", "content_refused")
@@ -281,7 +346,7 @@ def _assemble(arguments: Sequence[str]) -> int:
             except CliIOError as error:
                 return emit_error("assemble", "error", error.code, 74)
         return 0
-    except AssemblyError:
+    except (AssemblyError, ToolSchemaError):
         return emit_error("assemble", "error", "invalid_descriptor", 65)
     except CliIOError as error:
         return emit_error("assemble", "error", error.code, 74)
@@ -290,6 +355,8 @@ def _assemble(arguments: Sequence[str]) -> int:
 
 
 def _expand(arguments: Sequence[str]) -> int:
+    if arguments[0] == "tool-schema":
+        return _expand_tool_schema(arguments[1:])
     handle = arguments[0]
     options = _option_values(arguments[1:], flags=frozenset({"--require-current"}))
     root = options["--root"]
@@ -320,6 +387,82 @@ def _expand(arguments: Sequence[str]) -> int:
         return emit_error("expand", "error", error.code, 74)
     except Exception:
         return emit_error("expand", "error", "internal_failure", 70)
+
+
+def _expand_tool_schema(arguments: Sequence[str]) -> int:
+    options = _option_values(arguments, flags=frozenset())
+    request_argument = options["--request"]
+    root = options["--root"]
+    state_dir = options["--state-dir"]
+    emit = options.get("--emit", "bytes")
+    if (
+        type(request_argument) is not str
+        or type(root) is not str
+        or type(state_dir) is not str
+        or type(emit) is not str
+    ):
+        return emit_error("expand_tool_schema", "error", "usage", 64)
+    try:
+        request_raw = read_descriptor(
+            request_argument,
+            maximum_bytes=TOOL_SCHEMA_EXPANSION_REQUEST_LIMITS.max_document_bytes,
+        )
+        try:
+            request = parse_canonical_json_bytes(
+                request_raw, limits=TOOL_SCHEMA_EXPANSION_REQUEST_LIMITS
+            )
+        except CanonicalJSONError:
+            raise ToolSchemaError("invalid_descriptor") from None
+        if (
+            type(request) is not dict
+            or frozenset(request)
+            != frozenset(
+                {"catalog_reference", "item_reference", "schema_version"}
+            )
+            or request["schema_version"] != TOOL_SCHEMA_EXPANSION_REQUEST_VERSION
+            or type(request["catalog_reference"]) is not dict
+            or (
+                request["item_reference"] is not None
+                and type(request["item_reference"]) is not dict
+            )
+        ):
+            raise ToolSchemaError("invalid_descriptor")
+        backend = _LazyResolutionStore(state_dir=state_dir, repository_root=root)
+        if request["item_reference"] is None:
+            result = expand_tool_schema_catalog(
+                request["catalog_reference"], store=backend
+            )
+        else:
+            result = expand_tool_schema_item(
+                request["catalog_reference"],
+                request["item_reference"],
+                store=backend,
+            )
+        if result.disposition is not ToolSchemaExpansionDisposition.EXACT:
+            refusal = result.refusal
+            if type(refusal) is not dict:
+                return emit_error(
+                    "expand_tool_schema", "refused", "artifact_invalid", 65
+                )
+            print(canonical_json(refusal), end="", file=sys.stderr)
+            return 65
+        _emit_payload(
+            result.output_bytes,
+            operation="expand_tool_schema",
+            emit=emit,
+            receipt=None,
+        )
+        return 0
+    except ToolSchemaError:
+        return emit_error(
+            "expand_tool_schema", "error", "invalid_descriptor", 65
+        )
+    except CliIOError as error:
+        return emit_error("expand_tool_schema", "error", error.code, 74)
+    except Exception:
+        return emit_error(
+            "expand_tool_schema", "error", "internal_failure", 70
+        )
 
 
 def receipt_main(arguments: Sequence[str]) -> int:

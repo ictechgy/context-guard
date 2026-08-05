@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "anthropic_tool": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string"},
+        "input_schema": {"$ref": "#/$defs/opaque_json_object"},
+        "name": {"maxLength": 256, "minLength": 1, "type": "string"}
+      },
+      "required": ["input_schema", "name"],
+      "type": "object"
+    },
+    "catalog_reference": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_kind": {"const": "tool_schema_catalog_reference"},
+        "byte_length": {"maximum": 900000, "minimum": 0, "type": "integer"},
+        "capability": {"pattern": "^cgr1p_[A-Za-z0-9_-]{43}$", "type": "string"},
+        "catalog_format": {"enum": ["anthropic_tools/v1", "openai_functions/v1"]},
+        "catalog_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "schema_version": {"const": "contextguard-receipt-tool-schema-catalog-reference/v1"},
+        "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["artifact_kind", "byte_length", "capability", "catalog_format", "catalog_identity_sha256", "content_sha256", "namespace_id", "schema_version", "subject_identity_sha256"],
+      "type": "object"
+    },
+    "item_reference": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_kind": {"const": "tool_schema_reference"},
+        "byte_length": {"maximum": 900000, "minimum": 0, "type": "integer"},
+        "capability": {"pattern": "^cgr1p_[A-Za-z0-9_-]{43}$", "type": "string"},
+        "catalog_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "input_index": {"maximum": 255, "minimum": 0, "type": "integer"},
+        "name": {"maxLength": 256, "minLength": 1, "type": "string"},
+        "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "raw_range": {
+          "additionalProperties": false,
+          "properties": {
+            "end_byte": {"maximum": 900000, "minimum": 2, "type": "integer"},
+            "start_byte": {"maximum": 899999, "minimum": 1, "type": "integer"}
+          },
+          "required": ["end_byte", "start_byte"],
+          "type": "object"
+        },
+        "schema_version": {"const": "contextguard-receipt-tool-schema-reference/v1"},
+        "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["artifact_kind", "byte_length", "capability", "catalog_identity_sha256", "content_sha256", "input_index", "name", "namespace_id", "raw_range", "schema_version", "subject_identity_sha256"],
+      "type": "object"
+    },
+    "opaque_json_object": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "openai_function": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string"},
+        "name": {"maxLength": 256, "minLength": 1, "type": "string"},
+        "parameters": {"$ref": "#/$defs/opaque_json_object"}
+      },
+      "required": ["name", "parameters"],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "catalog_format": {"const": "anthropic_tools/v1"}
+        },
+        "required": ["catalog_format"]
+      },
+      "then": {
+        "properties": {
+          "catalog_reference": {
+            "properties": {
+              "catalog_format": {"const": "anthropic_tools/v1"}
+            }
+          },
+          "inline": {"items": {"$ref": "#/$defs/anthropic_tool"}}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "catalog_format": {"const": "openai_functions/v1"}
+        },
+        "required": ["catalog_format"]
+      },
+      "then": {
+        "properties": {
+          "catalog_reference": {
+            "properties": {
+              "catalog_format": {"const": "openai_functions/v1"}
+            }
+          },
+          "inline": {"items": {"$ref": "#/$defs/openai_function"}}
+        }
+      }
+    }
+  ],
+  "properties": {
+    "artifact_kind": {"const": "tool_schema_bundle"},
+    "catalog_format": {"enum": ["anthropic_tools/v1", "openai_functions/v1"]},
+    "catalog_reference": {"$ref": "#/$defs/catalog_reference"},
+    "deferred": {"items": {"$ref": "#/$defs/item_reference"}, "maxItems": 256, "minItems": 1, "type": "array"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "inline": {"maxItems": 256, "type": "array"},
+    "schema_version": {"const": "contextguard-receipt-tool-schema-bundle/v1"}
+  },
+  "required": ["artifact_kind", "catalog_format", "catalog_reference", "deferred", "evidence_boundary", "inline", "schema_version"],
+  "title": "Context Guard Receipt tool-schema bundle",
+  "type": "object"
+}

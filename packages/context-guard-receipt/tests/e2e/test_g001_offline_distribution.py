@@ -259,6 +259,116 @@ class G001OfflineDistributionTests(unittest.TestCase):
             self.assertEqual(expanded.stderr, b"")
             self.assertFalse(sentinel.exists())
 
+            tool_catalog = [
+                {
+                    "description": "inline" * 800,
+                    "input_schema": {"type": "object"},
+                    "name": "inline",
+                },
+                {
+                    "description": "deferred" * 800,
+                    "input_schema": {"type": "object"},
+                    "name": "deferred",
+                },
+            ]
+            tool_payload = json.dumps(
+                tool_catalog,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8") + b"\n"
+            tool_descriptor = json.dumps(
+                {
+                    "catalog_format": "anthropic_tools/v1",
+                    "items": [
+                        {
+                            "caller_classification": "eligible",
+                            "detector_signals": [],
+                            "priority": 2 - index,
+                            "required": False,
+                        }
+                        for index in range(2)
+                    ],
+                    "payload_b64u": base64.urlsafe_b64encode(tool_payload)
+                    .rstrip(b"=")
+                    .decode("ascii"),
+                    "retain_count": 1,
+                    "schema_version": "contextguard-receipt-tool-schema-descriptor/v1",
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8") + b"\n"
+            tool_assembled = run_binary_command(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "assemble",
+                    "--kind",
+                    "tool-schemas",
+                    "--descriptor",
+                    "-",
+                    "--root",
+                    str(repository_root),
+                    "--state-dir",
+                    str(state_directory),
+                    "--persist",
+                    "--emit",
+                    "bytes",
+                ],
+                cwd=install_directory,
+                environment=environment,
+                input_bytes=tool_descriptor,
+            )
+            self.assertEqual(tool_assembled.returncode, 0, tool_assembled.stderr)
+            tool_bundle = json.loads(tool_assembled.stdout)
+            self.assertEqual(tool_bundle["artifact_kind"], "tool_schema_bundle")
+
+            def expand_tool(item_reference: object) -> subprocess.CompletedProcess[bytes]:
+                request = json.dumps(
+                    {
+                        "catalog_reference": tool_bundle["catalog_reference"],
+                        "item_reference": item_reference,
+                        "schema_version": "contextguard-receipt-tool-schema-expansion-request/v1",
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8") + b"\n"
+                return run_binary_command(
+                    [
+                        str(Path(NODE).resolve()),
+                        str(receipt_bin),
+                        "expand",
+                        "tool-schema",
+                        "--request",
+                        "-",
+                        "--root",
+                        str(repository_root),
+                        "--state-dir",
+                        str(state_directory),
+                        "--emit",
+                        "bytes",
+                    ],
+                    cwd=install_directory,
+                    environment=environment,
+                    input_bytes=request,
+                )
+
+            whole_catalog = expand_tool(None)
+            deferred_schema = expand_tool(tool_bundle["deferred"][0])
+            expected_schema = json.dumps(
+                tool_catalog[1],
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            self.assertEqual(whole_catalog.returncode, 0, whole_catalog.stderr)
+            self.assertEqual(whole_catalog.stdout, tool_payload)
+            self.assertEqual(deferred_schema.returncode, 0, deferred_schema.stderr)
+            self.assertEqual(deferred_schema.stdout, expected_schema)
+            self.assertFalse(sentinel.exists())
+
             mcp_help = run_command(
                 [str(Path(NODE).resolve()), str(mcp_bin), "--help"],
                 cwd=install_directory,

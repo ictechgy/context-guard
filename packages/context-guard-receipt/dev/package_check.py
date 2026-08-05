@@ -36,6 +36,7 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/receipts.py",
     "python/context_guard_receipt/router.py",
     "python/context_guard_receipt/store.py",
+    "python/context_guard_receipt/tool_schemas.py",
     "schemas/assembly-receipt.schema.json",
     "schemas/blueprint-descriptor.schema.json",
     "schemas/capability-record.schema.json",
@@ -50,6 +51,14 @@ EXPECTED_PACKAGE_PATHS = {
     "schemas/store-commit.schema.json",
     "schemas/store-metadata.schema.json",
     "schemas/typed-blueprint.schema.json",
+    "schemas/tool-schema-bundle.schema.json",
+    "schemas/tool-schema-catalog-reference.schema.json",
+    "schemas/tool-schema-descriptor.schema.json",
+    "schemas/tool-schema-expansion-envelope.schema.json",
+    "schemas/tool-schema-expansion-refusal.schema.json",
+    "schemas/tool-schema-expansion-request.schema.json",
+    "schemas/tool-schema-receipt.schema.json",
+    "schemas/tool-schema-reference.schema.json",
 }
 EXPECTED_MODES = {
     path: "0755" if path.startswith("bin/context-guard-receipt") else "0644"

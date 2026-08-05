@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "tool_schema_receipt"},
+    "disposition": {"enum": ["deferred", "pass_through", "refused"]},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "input": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["byte_length", "content_sha256"],
+      "type": "object"
+    },
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "form": {"enum": ["exact_catalog", "none", "tool_schema_bundle"]}
+      },
+      "required": ["byte_length", "content_sha256", "form"],
+      "type": "object"
+    },
+    "reason": {
+      "enum": ["ambiguous", "beneficial", "catalog_unsupported", "duplicate_name", "exact_required", "input_too_small", "no_deferred_schemas", "protected", "refuse", "savings_ratio_too_small", "savings_too_small", "secret", "security_sensitive", "store_unavailable", "unknown"]
+    },
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "handle_bytes": {"minimum": 0, "type": "integer"},
+        "input_bytes": {"minimum": 0, "type": "integer"},
+        "mandatory_expansion_bytes": {"const": 0},
+        "predicted_cost_bytes": {"minimum": 0, "type": "integer"},
+        "retained_wire_bytes": {"minimum": 0, "type": "integer"},
+        "wrapper_bytes": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["handle_bytes", "input_bytes", "mandatory_expansion_bytes", "predicted_cost_bytes", "retained_wire_bytes", "wrapper_bytes"],
+      "type": "object"
+    },
+    "schema_version": {"const": "contextguard-receipt-tool-schema-receipt/v1"},
+    "shifted_bytes": {
+      "additionalProperties": false,
+      "properties": {
+        "all_expansion_upper_bound_bytes": {"minimum": 0, "type": "integer"},
+        "catalog_stored_envelope_bytes": {"minimum": 0, "type": "integer"},
+        "deferred_raw_bytes": {"minimum": 0, "type": "integer"},
+        "deferred_stored_envelope_bytes": {"minimum": 0, "type": "integer"},
+        "single_expansion_upper_bound_bytes": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["all_expansion_upper_bound_bytes", "catalog_stored_envelope_bytes", "deferred_raw_bytes", "deferred_stored_envelope_bytes", "single_expansion_upper_bound_bytes"],
+      "type": "object"
+    }
+  },
+  "required": ["artifact_kind", "disposition", "evidence_boundary", "input", "output", "reason", "route", "schema_version", "shifted_bytes"],
+  "title": "Context Guard Receipt tool-schema receipt",
+  "type": "object"
+}

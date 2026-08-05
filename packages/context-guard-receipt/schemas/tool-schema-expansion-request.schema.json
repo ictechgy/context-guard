@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_reference": {
+      "$ref": "tool-schema-catalog-reference.schema.json"
+    },
+    "item_reference": {
+      "oneOf": [
+        {
+          "$ref": "tool-schema-reference.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "const": "contextguard-receipt-tool-schema-expansion-request/v1"
+    }
+  },
+  "required": [
+    "catalog_reference",
+    "item_reference",
+    "schema_version"
+  ],
+  "title": "Context Guard Receipt tool-schema expansion request",
+  "type": "object"
+}

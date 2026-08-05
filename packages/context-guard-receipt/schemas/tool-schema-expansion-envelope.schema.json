@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"artifact_type": {"const": "tool_schema_bytes"}}},
+      "then": {"required": ["input_index", "normalized_name_sha256", "raw_range"]}
+    },
+    {
+      "if": {"properties": {"artifact_type": {"const": "tool_schema_set_bytes"}}},
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["input_index"]},
+            {"required": ["normalized_name_sha256"]},
+            {"required": ["raw_range"]}
+          ]
+        }
+      }
+    }
+  ],
+  "properties": {
+    "artifact_kind": {"const": "tool_schema_expansion_envelope"},
+    "artifact_type": {"enum": ["tool_schema_set_bytes", "tool_schema_bytes"]},
+    "binding_kind": {"const": "catalog_snapshot"},
+    "catalog_format": {"enum": ["anthropic_tools/v1", "openai_functions/v1"]},
+    "catalog_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "input_index": {"maximum": 255, "minimum": 0, "type": "integer"},
+    "normalized_name_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "payload": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 900000, "minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["byte_length", "content_sha256"],
+      "type": "object"
+    },
+    "raw_range": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {"maximum": 900000, "minimum": 2, "type": "integer"},
+        "start_byte": {"maximum": 899999, "minimum": 1, "type": "integer"}
+      },
+      "required": ["end_byte", "start_byte"],
+      "type": "object"
+    },
+    "schema_version": {"const": "contextguard-receipt-tool-schema-envelope/v1"},
+    "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": ["artifact_kind", "artifact_type", "binding_kind", "catalog_format", "catalog_identity_sha256", "evidence_boundary", "payload", "schema_version", "subject_identity_sha256"],
+  "title": "Context Guard Receipt tool-schema expansion envelope metadata",
+  "type": "object"
+}

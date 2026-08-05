@@ -44,9 +44,12 @@ EXPECTED_HELP = (
     "  run --escrow --root <absolute> --state-dir <absolute> "
     "--receipt-out <file> -- <command>\n"
     "  expand <handle> --root <absolute> --state-dir <absolute> [options]\n"
+    "  expand tool-schema --request <file|-> --root <absolute> "
+    "--state-dir <absolute> [options]\n"
     "  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> "
     "[options]\n\n"
-    "Evidence/blueprint assembly and exact local expansion are available; other commands remain inert.\n"
+    "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available; "
+    "other commands remain inert.\n"
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
@@ -110,6 +113,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/receipts.py": 0o644,
     "python/context_guard_receipt/router.py": 0o644,
     "python/context_guard_receipt/store.py": 0o644,
+    "python/context_guard_receipt/tool_schemas.py": 0o644,
     "schemas/assembly-receipt.schema.json": 0o644,
     "schemas/blueprint-descriptor.schema.json": 0o644,
     "schemas/capability-record.schema.json": 0o644,
@@ -124,6 +128,14 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/store-commit.schema.json": 0o644,
     "schemas/store-metadata.schema.json": 0o644,
     "schemas/typed-blueprint.schema.json": 0o644,
+    "schemas/tool-schema-bundle.schema.json": 0o644,
+    "schemas/tool-schema-catalog-reference.schema.json": 0o644,
+    "schemas/tool-schema-descriptor.schema.json": 0o644,
+    "schemas/tool-schema-expansion-envelope.schema.json": 0o644,
+    "schemas/tool-schema-expansion-refusal.schema.json": 0o644,
+    "schemas/tool-schema-expansion-request.schema.json": 0o644,
+    "schemas/tool-schema-receipt.schema.json": 0o644,
+    "schemas/tool-schema-reference.schema.json": 0o644,
 }
 EXPECTED_DEV_MODES = {
     "dev/package_check.py": 0o644,
@@ -226,6 +238,7 @@ class G001DistributionContractTests(unittest.TestCase):
             "exact local expansion",
             "byte proxy",
             "source_current",
+            "catalog_snapshot",
             "stale",
             "bypass",
         ):
@@ -541,6 +554,34 @@ class G001DistributionContractTests(unittest.TestCase):
             ),
             ("expand", "not-a-handle", "--state-dir", "/tmp/state"),
             ("expand", "cgr1p_handle", "--state-dir", "relative"),
+            (
+                "expand",
+                "tool-schema",
+                "--request",
+                "-",
+                "--root",
+                "/tmp/repository",
+            ),
+            (
+                "expand",
+                "tool-schema",
+                "--request",
+                "-",
+                "--root",
+                ".",
+                "--state-dir",
+                "/tmp/state",
+            ),
+            (
+                "expand",
+                "tool-schema",
+                "--request",
+                "-",
+                "--root",
+                "/tmp/repository",
+                "--state-dir",
+                "relative",
+            ),
             ("unknown",),
         )
         for arguments in invalid_commands:
@@ -554,24 +595,6 @@ class G001DistributionContractTests(unittest.TestCase):
             root = Path(temporary_directory)
             sentinel = root / "command-executed"
             inactive = (
-                (
-                    "assemble",
-                    (
-                        "assemble",
-                        "--kind", "tool-schemas",
-                        "--descriptor",
-                        "descriptor.json",
-                        "--root",
-                        str(root),
-                        "--persist",
-                        "--state-dir",
-                        str(root / "state"),
-                        "--emit",
-                        "json",
-                        "--receipt-out",
-                        str(root / "receipt.json"),
-                    ),
-                ),
                 (
                     "run",
                     (
