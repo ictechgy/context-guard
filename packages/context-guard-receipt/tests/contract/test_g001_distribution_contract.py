@@ -59,10 +59,15 @@ EXPECTED_HELP = (
     "--state-dir <absolute>\n"
     "  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> "
     "[--limit <positive-decimal>]\n"
+    "  inspect reference-expiry --experimental-reference-expiry --input <file|-> "
+    "--root <absolute> --state-dir <absolute>\n"
+    "  inspect reference-expiry --experimental-reference-expiry --root <absolute> "
+    "--state-dir <absolute> [--limit <positive-decimal>]\n"
     "  inspect <receipt|lease|state> [options]\n\n"
     "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. "
     "Run is explicit local capture only. Diagnostics, firewall findings, and the experimental "
-    "twin are advisory and non-applying. The companion is provider-free and makes no "
+    "twin are advisory and non-applying. Experimental reference expiry revokes only compact "
+    "local references and retains artifacts. The companion is provider-free and makes no "
     "host-request, network, or token-saving claim. Remaining commands are inert.\n"
 )
 EXPECTED_MCP_HELP = (
@@ -127,6 +132,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
+    "python/context_guard_receipt/reference_expiry.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,
     "python/context_guard_receipt/router.py": 0o644,
     "python/context_guard_receipt/runner.py": 0o644,
@@ -149,6 +155,11 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/expansion-envelope.schema.json": 0o644,
     "schemas/expansion-refusal.schema.json": 0o644,
     "schemas/protection-decision.schema.json": 0o644,
+    "schemas/reference-expiry-inspection.schema.json": 0o644,
+    "schemas/reference-expiry-metadata.schema.json": 0o644,
+    "schemas/reference-expiry-record.schema.json": 0o644,
+    "schemas/reference-expiry-request.schema.json": 0o644,
+    "schemas/reference-expiry-result.schema.json": 0o644,
     "schemas/shadow-firewall-report.schema.json": 0o644,
     "schemas/source-identity.schema.json": 0o644,
     "schemas/store-commit.schema.json": 0o644,

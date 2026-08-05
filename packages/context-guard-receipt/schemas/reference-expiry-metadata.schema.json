@@ -1,0 +1,28 @@
+{
+  "$id": "https://context-guard.local/schemas/reference-expiry-metadata-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "evidence_boundary": {"const": {"evidence_class":"companion_local_receipt_only","host_request_owned":false,"provider_claim_authority":false,"provider_join_status":"missing","runtime_observer_present":false,"schema_version":"contextguard-receipt-evidence-boundary/v1","selected_branch":"S2-UNSUPPORTED","selected_transport":"NONE","stage1_evidence":false,"stage2_evidence":false}},
+    "integrity_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_record_bytes": {"maximum": 4096, "minimum": 1, "type": "integer"},
+        "max_references": {"maximum": 1024, "minimum": 1, "type": "integer"},
+        "max_total_record_bytes": {"maximum": 4194304, "minimum": 1, "type": "integer"}
+      },
+      "required": ["max_record_bytes", "max_references", "max_total_record_bytes"],
+      "type": "object"
+    },
+    "reference_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "registry_namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "registry_state_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-reference-expiry-metadata/v1"},
+    "store_namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "total_record_bytes": {"maximum": 4194304, "minimum": 0, "type": "integer"}
+  },
+  "required": ["evidence_boundary", "integrity_hmac_sha256", "limits", "reference_count", "registry_namespace_id", "registry_state_hmac_sha256", "schema_version", "store_namespace_id", "total_record_bytes"],
+  "title": "Context Guard Receipt reference expiry metadata",
+  "type": "object"
+}

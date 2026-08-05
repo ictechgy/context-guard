@@ -49,6 +49,7 @@ _AUXILIARY_DIRECTORY: Final = "auxiliary-v1"
 _AUXILIARY_METADATA_NAME: Final = "metadata.json"
 _DIAGNOSTICS_DIRECTORY: Final = "diagnostics-v1"
 _TWIN_DIRECTORY: Final = "twin-v1"
+_REFERENCE_EXPIRY_DIRECTORY: Final = "reference-expiry-v1"
 _KEY_NAME: Final = "integrity-key"
 _METADATA_NAME: Final = "metadata.json"
 _COMMITS_NAME: Final = "commits"
@@ -711,16 +712,18 @@ def _validate_auxiliary_compartment(state_fd: int, top_names: set[str]) -> None:
     auxiliary_fd = _open_directory_at(state_fd, _AUXILIARY_DIRECTORY)
     diagnostics_fd: int | None = None
     twin_fd: int | None = None
+    reference_expiry_fd: int | None = None
     try:
         names = set(
             _bounded_names(
-                auxiliary_fd, 3, overflow=StoreErrorCode.RECOVERY_REQUIRED
+                auxiliary_fd, 4, overflow=StoreErrorCode.RECOVERY_REQUIRED
             )
         )
         allowed = {
             _AUXILIARY_METADATA_NAME,
             _DIAGNOSTICS_DIRECTORY,
             _TWIN_DIRECTORY,
+            _REFERENCE_EXPIRY_DIRECTORY,
         }
         if _AUXILIARY_METADATA_NAME not in names or names - allowed:
             _raise(StoreErrorCode.RECOVERY_REQUIRED)
@@ -739,7 +742,13 @@ def _validate_auxiliary_compartment(state_fd: int, top_names: set[str]) -> None:
             )
         if _TWIN_DIRECTORY in names:
             twin_fd = _open_directory_at(auxiliary_fd, _TWIN_DIRECTORY)
+        if _REFERENCE_EXPIRY_DIRECTORY in names:
+            reference_expiry_fd = _open_directory_at(
+                auxiliary_fd, _REFERENCE_EXPIRY_DIRECTORY
+            )
     finally:
+        if reference_expiry_fd is not None:
+            os.close(reference_expiry_fd)
         if twin_fd is not None:
             os.close(twin_fd)
         if diagnostics_fd is not None:
@@ -1345,18 +1354,27 @@ class CapabilityStore:
         *,
         expected_root_identity_sha256: str,
     ) -> StoredArtifact:
-        capability_raw = _capability_bytes(handle)
         _validate_hash(expected_root_identity_sha256)
+        artifact = self._resolve_capability_record(handle)
+        if artifact.root_identity_sha256 != expected_root_identity_sha256:
+            _raise(StoreErrorCode.CAPABILITY_REJECTED)
+        return artifact
+
+    def _resolve_for_auxiliary_control(self, handle: str) -> StoredArtifact:
+        """Resolve existing authority for a same-package denial-only overlay."""
+
+        with self._operation():
+            return self._resolve_capability_record(handle)
+
+    def _resolve_capability_record(self, handle: str) -> StoredArtifact:
+        capability_raw = _capability_bytes(handle)
         lookup_id = _lookup_id(self._key, self._namespace_id, capability_raw)
         with self._locked(exclusive=False):
             self._revalidate_anchors()
             records = self._scan(return_payload_for=lookup_id)
             self._revalidate_anchors()
         artifact = records.selected
-        if (
-            artifact is None
-            or artifact.root_identity_sha256 != expected_root_identity_sha256
-        ):
+        if artifact is None:
             _raise(StoreErrorCode.CAPABILITY_REJECTED)
         return artifact
 

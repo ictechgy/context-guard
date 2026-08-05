@@ -1,0 +1,19 @@
+{
+  "$id": "https://context-guard.local/schemas/reference-expiry-record-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "evidence_boundary": {"const": {"evidence_class":"companion_local_receipt_only","host_request_owned":false,"provider_claim_authority":false,"provider_join_status":"missing","runtime_observer_present":false,"schema_version":"contextguard-receipt-evidence-boundary/v1","selected_branch":"S2-UNSUPPORTED","selected_transport":"NONE","stage1_evidence":false,"stage2_evidence":false}},
+    "expires_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+    "generation": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+    "integrity_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "reference_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "registered_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+    "schema_version": {"const": "contextguard-receipt-reference-expiry-record/v1"},
+    "status": {"enum": ["active", "expired", "revoked"]},
+    "updated_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"}
+  },
+  "required": ["evidence_boundary", "expires_at_unix_ms", "generation", "integrity_hmac_sha256", "reference_hmac_sha256", "registered_at_unix_ms", "schema_version", "status", "updated_at_unix_ms"],
+  "title": "Context Guard Receipt reference expiry record",
+  "type": "object"
+}

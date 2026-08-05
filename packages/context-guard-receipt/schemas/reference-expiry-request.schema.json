@@ -1,0 +1,27 @@
+{
+  "$id": "https://context-guard.local/schemas/reference-expiry-request-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "not": {"required": ["expected_generation"]},
+      "properties": {"operation": {"const": "register"}},
+      "required": ["expires_at_unix_ms"]
+    },
+    {
+      "not": {"required": ["expires_at_unix_ms"]},
+      "properties": {"operation": {"const": "revoke"}},
+      "required": ["expected_generation"]
+    }
+  ],
+  "properties": {
+    "capability": {"pattern": "^cgr1p_[A-Za-z0-9_-]{43}$", "type": "string"},
+    "expected_generation": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+    "expires_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+    "operation": {"enum": ["register", "revoke"]},
+    "schema_version": {"const": "contextguard-receipt-reference-expiry-request/v1"}
+  },
+  "required": ["capability", "operation", "schema_version"],
+  "title": "Context Guard Receipt reference expiry request",
+  "type": "object"
+}

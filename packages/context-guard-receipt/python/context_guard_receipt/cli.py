@@ -33,7 +33,7 @@ from .diagnostic_ledger import (
     DiagnosticLedgerErrorCode,
 )
 from .expansion import ExpansionDisposition, expand_capability
-from .store import CapabilityStore
+from .store import CapabilityStore, StoreError, StoreErrorCode
 from .tool_schemas import (
     ToolSchemaDisposition,
     ToolSchemaError,
@@ -44,7 +44,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. Experimental reference expiry revokes only compact local references and retains artifacts. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -59,11 +59,21 @@ TOOL_SCHEMA_EXPANSION_REQUEST_LIMITS = JSONLimits(
     max_string_bytes=1024,
 )
 INSPECT_TARGETS = frozenset(
-    {"receipt", "diagnostics", "firewall", "diagnostic-ledger", "twin", "lease", "state"}
+    {
+        "receipt",
+        "diagnostics",
+        "firewall",
+        "diagnostic-ledger",
+        "twin",
+        "reference-expiry",
+        "lease",
+        "state",
+    }
 )
 _RUN_MAX_TIMEOUT_SECONDS = 300
 _RUN_MAX_CAPTURE_BYTES = 900_000
 _TWIN_REQUEST_MAX_BYTES = 64 * 1024
+_REFERENCE_EXPIRY_REQUEST_MAX_BYTES = 4096
 
 
 def emit_error(operation: str, status: str, reason: str, code: int) -> int:
@@ -284,6 +294,33 @@ def _valid_inspect(arguments: Sequence[str]) -> bool:
             and twin_arguments[5] == "--state-dir"
             and _is_absolute(twin_arguments[6])
         )
+    if target == "reference-expiry":
+        expiry_arguments = tuple(arguments[1:])
+        if not expiry_arguments:
+            return True
+        if (
+            len(expiry_arguments) in {5, 7}
+            and expiry_arguments[0] == "--experimental-reference-expiry"
+            and expiry_arguments[1] == "--root"
+            and _is_absolute(expiry_arguments[2])
+            and expiry_arguments[3] == "--state-dir"
+            and _is_absolute(expiry_arguments[4])
+        ):
+            return len(expiry_arguments) == 5 or (
+                expiry_arguments[5] == "--limit"
+                and _is_positive_integer(expiry_arguments[6])
+                and int(expiry_arguments[6], 10) <= 256
+            )
+        return (
+            len(expiry_arguments) == 7
+            and expiry_arguments[0] == "--experimental-reference-expiry"
+            and expiry_arguments[1] == "--input"
+            and _is_file_argument(expiry_arguments[2])
+            and expiry_arguments[3] == "--root"
+            and _is_absolute(expiry_arguments[4])
+            and expiry_arguments[5] == "--state-dir"
+            and _is_absolute(expiry_arguments[6])
+        )
     return _parse_options(
         arguments[1:],
         values={"--state-dir": _is_absolute, "--input": _is_file_argument},
@@ -337,10 +374,19 @@ class _LazyResolutionStore:
             repository_root=self.repository_root,
             create=False,
         ) as store:
-            return store.resolve(
-                handle,
-                expected_root_identity_sha256=expected_root_identity_sha256,
-            )
+            try:
+                artifact = store.resolve(
+                    handle,
+                    expected_root_identity_sha256=expected_root_identity_sha256,
+                )
+            except StoreError as error:
+                if error.code is not StoreErrorCode.CAPABILITY_REJECTED:
+                    raise
+                artifact = None
+            inaccessible = self._reference_is_inaccessible(store.namespace_id, handle)
+            if artifact is None or inaccessible:
+                raise StoreError(StoreErrorCode.CAPABILITY_REJECTED)
+            return artifact
 
     def retrieve(
         self,
@@ -356,13 +402,50 @@ class _LazyResolutionStore:
             repository_root=self.repository_root,
             create=False,
         ) as store:
-            return store.retrieve(
-                handle,
-                expected_namespace_id=expected_namespace_id,
-                expected_root_identity_sha256=expected_root_identity_sha256,
-                expected_subject_identity_sha256=expected_subject_identity_sha256,
-                expected_artifact_type=expected_artifact_type,  # type: ignore[arg-type]
+            try:
+                artifact = store.retrieve(
+                    handle,
+                    expected_namespace_id=expected_namespace_id,
+                    expected_root_identity_sha256=expected_root_identity_sha256,
+                    expected_subject_identity_sha256=expected_subject_identity_sha256,
+                    expected_artifact_type=expected_artifact_type,  # type: ignore[arg-type]
+                )
+            except StoreError as error:
+                if error.code is not StoreErrorCode.CAPABILITY_REJECTED:
+                    raise
+                artifact = None
+            inaccessible = self._reference_is_inaccessible(store.namespace_id, handle)
+            if artifact is None or inaccessible:
+                raise StoreError(StoreErrorCode.CAPABILITY_REJECTED)
+            return artifact
+
+    def _reference_is_inaccessible(self, namespace_id: str, handle: str) -> bool:
+        try:
+            from .reference_expiry import (
+                ReferenceExpiryError,
+                ReferenceExpiryErrorCode,
+                ReferenceExpiryRegistry,
             )
+        except ModuleNotFoundError as error:
+            return error.name != "context_guard_receipt.reference_expiry"
+        except Exception:
+            return True
+        try:
+            with ReferenceExpiryRegistry.open(
+                state_dir=self.state_dir,
+                repository_root=self.repository_root,
+                store_namespace_id=namespace_id,
+                create=False,
+            ) as registry:
+                return registry.is_inaccessible(
+                    handle, observed_at_unix_ms=time.time_ns() // 1_000_000
+                )
+        except ReferenceExpiryError as error:
+            if error.code is ReferenceExpiryErrorCode.REGISTRY_UNINITIALIZED:
+                return False
+            return True
+        except Exception:
+            return True
 
 
 def _emit_payload(
@@ -819,6 +902,138 @@ def _inspect_twin(arguments: Sequence[str]) -> int:
     return _write_twin_payload(payload)
 
 
+def _write_reference_expiry_payload(payload: dict[str, object]) -> int:
+    operation = "inspect_reference_expiry"
+    try:
+        encoded = canonical_json_bytes(payload)
+    except Exception:
+        return emit_error(
+            operation, "error", "reference_expiry_internal_failure", 70
+        )
+    try:
+        write_stdout(encoded)
+    except Exception:
+        return emit_error(
+            operation, "error", "reference_expiry_delivery_failed", 74
+        )
+    return 0
+
+
+def _inspect_reference_expiry(arguments: Sequence[str]) -> int:
+    operation = "inspect_reference_expiry"
+    mutation_mode = len(arguments) == 7 and arguments[1] == "--input"
+    if mutation_mode:
+        input_argument = arguments[2]
+        root = arguments[4]
+        state_dir = arguments[6]
+    else:
+        input_argument = None
+        root = arguments[2]
+        state_dir = arguments[4]
+    try:
+        from .reference_expiry import (
+            ReferenceExpiryError,
+            ReferenceExpiryErrorCode,
+            ReferenceExpiryRegistry,
+            parse_reference_expiry_request,
+        )
+    except Exception:
+        return emit_error(
+            operation, "error", "reference_expiry_internal_failure", 70
+        )
+
+    try:
+        request = None
+        if mutation_mode:
+            raw = read_descriptor(
+                input_argument, maximum_bytes=_REFERENCE_EXPIRY_REQUEST_MAX_BYTES
+            )
+            request = parse_reference_expiry_request(raw)
+
+        with CapabilityStore.open(
+            state_dir=state_dir,
+            repository_root=root,
+            create=False,
+        ) as store:
+            namespace_id = store.namespace_id
+
+        if request is None:
+            limit = 256 if len(arguments) == 5 else int(arguments[6], 10)
+            with ReferenceExpiryRegistry.open(
+                state_dir=state_dir,
+                repository_root=root,
+                store_namespace_id=namespace_id,
+                create=False,
+            ) as registry:
+                payload = registry.inspect(
+                    observed_at_unix_ms=time.time_ns() // 1_000_000,
+                    limit=limit,
+                )
+        else:
+            create = request["operation"] == "register"
+            with ReferenceExpiryRegistry.open(
+                state_dir=state_dir,
+                repository_root=root,
+                store_namespace_id=namespace_id,
+                create=create,
+            ) as registry:
+                observed_at = time.time_ns() // 1_000_000
+                if request["operation"] == "register":
+                    payload = registry.register(
+                        request["capability"],
+                        expires_at_unix_ms=request["expires_at_unix_ms"],
+                        observed_at_unix_ms=observed_at,
+                    )
+                else:
+                    payload = registry.revoke(
+                        request["capability"],
+                        expected_generation=request["expected_generation"],
+                        observed_at_unix_ms=observed_at,
+                    )
+    except CliIOError:
+        return emit_error(
+            operation, "error", "reference_expiry_input_unavailable", 74
+        )
+    except (KeyError, TypeError):
+        return emit_error(
+            operation, "error", "reference_expiry_input_rejected", 65
+        )
+    except StoreError as error:
+        if error.code is StoreErrorCode.CAPABILITY_REJECTED:
+            return emit_error(
+                operation, "error", "reference_expiry_input_rejected", 65
+            )
+        return emit_error(
+            operation, "error", "reference_expiry_store_unavailable", 74
+        )
+    except ReferenceExpiryError as error:
+        if error.code is ReferenceExpiryErrorCode.REGISTRY_UNINITIALIZED:
+            return emit_error(
+                operation, "unavailable", "reference_expiry_uninitialized", 69
+            )
+        if error.code in {
+            ReferenceExpiryErrorCode.INVALID_REQUEST,
+            ReferenceExpiryErrorCode.INVALID_ARGUMENT,
+            ReferenceExpiryErrorCode.REFERENCE_ALREADY_REGISTERED,
+            ReferenceExpiryErrorCode.REFERENCE_NOT_REGISTERED,
+            ReferenceExpiryErrorCode.REFERENCE_INACCESSIBLE,
+            ReferenceExpiryErrorCode.CAS_MISMATCH,
+            ReferenceExpiryErrorCode.REFERENCE_COUNT_QUOTA_EXCEEDED,
+            ReferenceExpiryErrorCode.RECORD_BYTES_QUOTA_EXCEEDED,
+        }:
+            return emit_error(
+                operation, "error", "reference_expiry_input_rejected", 65
+            )
+        return emit_error(
+            operation, "error", "reference_expiry_unavailable", 74
+        )
+    except Exception:
+        return emit_error(
+            operation, "error", "reference_expiry_internal_failure", 70
+        )
+    return _write_reference_expiry_payload(payload)
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments == ("--help",):
@@ -847,6 +1062,15 @@ def receipt_main(arguments: Sequence[str]) -> int:
                     "inspect_twin", "unavailable", "feature_not_available", 69
                 )
             return _inspect_twin(arguments[2:])
+        if arguments[1] == "reference-expiry":
+            if len(arguments) == 2:
+                return emit_error(
+                    "inspect_reference_expiry",
+                    "unavailable",
+                    "feature_not_available",
+                    69,
+                )
+            return _inspect_reference_expiry(arguments[2:])
         operation = f"inspect_{arguments[1].replace('-', '_')}"
         return emit_error(operation, "unavailable", "feature_not_available", 69)
     return emit_error("cli", "error", "usage", 64)

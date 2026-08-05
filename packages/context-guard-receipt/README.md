@@ -17,6 +17,8 @@ context-guard-receipt inspect firewall --input <file|->
 context-guard-receipt inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <1..256>]
 context-guard-receipt inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>
 context-guard-receipt inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <1..256>]
+context-guard-receipt inspect reference-expiry --experimental-reference-expiry --input <file|-> --root <absolute> --state-dir <absolute>
+context-guard-receipt inspect reference-expiry --experimental-reference-expiry --root <absolute> --state-dir <absolute> [--limit <1..256>]
 ```
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
@@ -26,8 +28,9 @@ not report provider token, cost, cache, or percentage-savings claims. Assembly
 is a byte proxy for explicitly provided local bytes, not a token or
 provider-usage claim. `run --escrow` is provider-free local capture only;
 diagnostics, firewall results, and twin results are advisory and non-applying.
-The remaining reserved `inspect` targets and the MCP transport stay
-intentionally unavailable.
+Reference expiry is an explicit local capability-access control and does not
+delete retained artifacts. The remaining reserved `inspect` targets and the
+MCP transport stay intentionally unavailable.
 
 Process-scope diagnostics use a new random fingerprint key for every invocation
 and create no state. They report bounded byte accounting, a position-bound
@@ -78,6 +81,36 @@ an indeterminate commit. Read snapshots are derived, disposable, and
 non-authoritative. Removing `twin-v1` does not
 invalidate `store-v1` capabilities or `diagnostics-v1` entries; ordinary
 assembly, execution, diagnostics, and MCP startup never create it.
+
+Reference expiry is disabled unless every administrative invocation includes
+the exact `--experimental-reference-expiry`, absolute `--root`, and absolute
+`--state-dir` tuple. A canonical registration request names an already issued
+`cgr1p_` capability and an immutable Unix-millisecond deadline; a canonical
+revocation request names that capability and the expected current generation.
+The capability is validated against the current repository and the actual
+store namespace before registration. Expired, revoked, forged, cross-store,
+and corrupt-registry lookups all collapse to the existing non-oracular
+capability refusal.
+
+The independently keyed `auxiliary-v1/reference-expiry-v1` compartment stores
+only a keyed selector, bounded timestamps, a generation, and a closed status.
+It never stores the capability text, artifact path, payload, content digest,
+command output, prompt, or transcript. Due access atomically changes only that
+compact reference record to `expired`; explicit revocation changes only the
+same record. At most 1,024 references are retained, no entry is evicted
+automatically, and no source, `store-v1` artifact, diagnostic-ledger row, or
+twin event is deleted. Administrative inspection returns bounded counts and
+keyed hashes plus the constant compartment name, never the absolute state or
+artifact location. Artifact cleanup remains a separate, user-authorized
+operation that this package does not implement. Ordinary assembly, command
+capture, diagnostics, twin, and unregistered expansion flows do not create
+reference-expiry state.
+
+Registration revalidates source-current evidence and command captures while
+accepting independently validated immutable tool-schema snapshots. Active
+lookups persist a per-reference clock high-water; a backward clock observation
+terminally expires that reference, and multi-reference inspection publishes
+due transitions as one bounded batch.
 
 `run --escrow` executes only the explicitly supplied absolute executable and
 argument vector. It does not invoke a shell. The child runs with the requested

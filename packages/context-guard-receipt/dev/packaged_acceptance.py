@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -73,6 +75,35 @@ def twin_request(private_relative_path: str) -> bytes:
             "schema_version": "contextguard-receipt-twin-request/v1",
         }
     ).encode("ascii")
+
+
+def reference_expiry_request(capability: str, *, expires_at_unix_ms: int) -> bytes:
+    return canonical_json(
+        {
+            "capability": capability,
+            "expires_at_unix_ms": expires_at_unix_ms,
+            "operation": "register",
+            "schema_version": "contextguard-receipt-reference-expiry-request/v1",
+        }
+    ).encode("ascii")
+
+
+def tree_snapshot(root: Path) -> dict[str, tuple[str, int, str]]:
+    result: dict[str, tuple[str, int, str]] = {}
+    for path in sorted((root, *root.rglob("*"))):
+        metadata = path.lstat()
+        relative = path.relative_to(root).as_posix() or "."
+        if stat.S_ISDIR(metadata.st_mode):
+            result[relative] = ("directory", stat.S_IMODE(metadata.st_mode), "")
+        elif stat.S_ISREG(metadata.st_mode):
+            result[relative] = (
+                "regular",
+                stat.S_IMODE(metadata.st_mode),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        else:
+            result[relative] = ("other", stat.S_IMODE(metadata.st_mode), "")
+    return result
 
 
 def distribution() -> None:
@@ -360,6 +391,120 @@ def distribution() -> None:
             or sentinel.exists()
         ):
             raise RuntimeError("installed receipt exact expansion failed its offline round trip")
+
+        store_before_expiry = tree_snapshot(state_directory / "store-v1")
+        expiry_registered = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "inspect",
+                "reference-expiry",
+                "--experimental-reference-expiry",
+                "--input",
+                "-",
+                "--root",
+                str(repository_root),
+                "--state-dir",
+                str(state_directory),
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=reference_expiry_request(capability, expires_at_unix_ms=0),
+        )
+        expiry_denied = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "expand",
+                capability,
+                "--root",
+                str(repository_root),
+                "--state-dir",
+                str(state_directory),
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        expiry_inspected = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "inspect",
+                "reference-expiry",
+                "--experimental-reference-expiry",
+                "--root",
+                str(repository_root),
+                "--state-dir",
+                str(state_directory),
+                "--limit",
+                "1",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        try:
+            expiry_result = json.loads(expiry_registered.stdout)
+            expiry_snapshot = json.loads(expiry_inspected.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("installed reference expiry emitted invalid JSON") from None
+        private_expiry_values = (
+            capability.encode("ascii"),
+            str(repository_root).encode(),
+            str(state_directory).encode(),
+            payload,
+        )
+        if (
+            expiry_registered.returncode != 0
+            or expiry_registered.stderr
+            or expiry_denied.returncode != 65
+            or expiry_denied.stdout
+            or json.loads(expiry_denied.stderr).get("reason") != "capability_rejected"
+            or expiry_inspected.returncode != 0
+            or expiry_inspected.stderr
+            or expiry_result.get("evidence_boundary") != EXPECTED_BOUNDARY
+            or expiry_snapshot.get("evidence_boundary") != EXPECTED_BOUNDARY
+            or expiry_result.get("retained_artifacts") is not True
+            or expiry_result.get("artifact_cleanup_performed") is not False
+            or expiry_snapshot.get("expired_reference_count") != 1
+            or expiry_snapshot.get("state_location")
+            != {
+                "compartment": "auxiliary-v1/reference-expiry-v1",
+                "scope": "explicit_state_dir",
+            }
+            or tree_snapshot(state_directory / "store-v1") != store_before_expiry
+            or any(
+                private_value in output
+                for private_value in private_expiry_values
+                for output in (expiry_registered.stdout, expiry_inspected.stdout)
+            )
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed reference expiry failed its retained-artifact smoke test")
+
+        shutil.rmtree(state_directory / "auxiliary-v1/reference-expiry-v1")
+        restored_expansion = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "expand",
+                capability,
+                "--root",
+                str(repository_root),
+                "--state-dir",
+                str(state_directory),
+                "--emit",
+                "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        if (
+            restored_expansion.returncode != 0
+            or restored_expansion.stdout != payload
+            or restored_expansion.stderr
+            or tree_snapshot(state_directory / "store-v1") != store_before_expiry
+        ):
+            raise RuntimeError("removing expiry references did not restore retained artifact access")
 
         tool_catalog = [
             {

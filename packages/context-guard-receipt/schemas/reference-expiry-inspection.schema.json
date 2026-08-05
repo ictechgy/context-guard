@@ -1,0 +1,45 @@
+{
+  "$id": "https://context-guard.local/schemas/reference-expiry-inspection-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "active_reference_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "artifact_cleanup_performed": {"const": false},
+    "evidence_boundary": {"const": {"evidence_class":"companion_local_receipt_only","host_request_owned":false,"provider_claim_authority":false,"provider_join_status":"missing","runtime_observer_present":false,"schema_version":"contextguard-receipt-evidence-boundary/v1","selected_branch":"S2-UNSUPPORTED","selected_transport":"NONE","stage1_evidence":false,"stage2_evidence":false}},
+    "expired_reference_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "reference_summaries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+          "generation": {"maximum": 2147483647, "minimum": 1, "type": "integer"},
+          "reference_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+          "status": {"enum": ["active", "expired", "revoked"]},
+          "updated_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"}
+        },
+        "required": ["expires_at_unix_ms", "generation", "reference_hmac_sha256", "status", "updated_at_unix_ms"],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "registered_reference_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "registry_state_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "retained_artifacts": {"const": true},
+    "revoked_reference_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "schema_version": {"const": "contextguard-receipt-reference-expiry-inspection/v1"},
+    "state_location": {
+      "additionalProperties": false,
+      "properties": {
+        "compartment": {"const": "auxiliary-v1/reference-expiry-v1"},
+        "scope": {"const": "explicit_state_dir"}
+      },
+      "required": ["compartment", "scope"],
+      "type": "object"
+    },
+    "total_record_bytes": {"maximum": 4194304, "minimum": 0, "type": "integer"}
+  },
+  "required": ["active_reference_count", "artifact_cleanup_performed", "evidence_boundary", "expired_reference_count", "reference_summaries", "registered_reference_count", "registry_state_hmac_sha256", "retained_artifacts", "revoked_reference_count", "schema_version", "state_location", "total_record_bytes"],
+  "title": "Context Guard Receipt reference expiry inspection",
+  "type": "object"
+}
