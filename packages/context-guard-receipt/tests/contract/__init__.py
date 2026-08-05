@@ -1,0 +1,1 @@
+"""Receipt boundary contract tests."""
