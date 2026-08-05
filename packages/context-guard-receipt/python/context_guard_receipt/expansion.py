@@ -1,4 +1,4 @@
-"""Capability-only exact expansion with current local-state revalidation."""
+"""Capability-only exact expansion for source-current and historical artifacts."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .receipts import (
     raw_sha256,
     validate_source_recipe,
 )
+from .runner import validate_framed_capture
 from .store import ArtifactType, StoreError, StoreErrorCode
 
 
@@ -31,6 +32,7 @@ _CAPABILITY_PREFIX = "cgr1p_"
 _CAPABILITY_ALPHABET = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
+_COMMAND_CAPTURE_SUBJECT_DOMAIN = "contextguard-receipt/command-capture-subject/v1"
 
 
 class ExpansionDisposition(str, Enum):
@@ -339,6 +341,24 @@ def _revalidate(
     return whole_subject == metadata["subject_identity_sha256"]
 
 
+def _validated_command_capture(stored: object, current_root_identity: str) -> bytes:
+    payload = stored.payload  # type: ignore[attr-defined]
+    subject_identity = stored.subject_identity_sha256  # type: ignore[attr-defined]
+    if (
+        stored.artifact_type is not ArtifactType.COMMAND_CAPTURE_BYTES  # type: ignore[attr-defined]
+        or type(payload) is not bytes
+        or type(stored.byte_length) is not int  # type: ignore[attr-defined]
+        or stored.byte_length != len(payload)  # type: ignore[attr-defined]
+        or stored.root_identity_sha256 != current_root_identity  # type: ignore[attr-defined]
+        or type(subject_identity) is not str
+    ):
+        raise _EnvelopeError
+    validate_framed_capture(payload)
+    if framed_sha256_hex(_COMMAND_CAPTURE_SUBJECT_DOMAIN, payload) != subject_identity:
+        raise _EnvelopeError
+    return payload
+
+
 def expand_capability(
     handle: str,
     *,
@@ -346,7 +366,7 @@ def expand_capability(
     store: object,
     git_executable: object = None,
 ) -> ExpansionResult:
-    """Resolve only by capability, then revalidate every stored local binding."""
+    """Resolve only by capability, enforcing each artifact's sealed binding."""
 
     if not _valid_capability(handle):
         return _refused("capability_rejected")
@@ -371,6 +391,24 @@ def expand_capability(
         return _refused("store_unavailable")
 
     try:
+        if stored.artifact_type is ArtifactType.COMMAND_CAPTURE_BYTES:
+            payload = _validated_command_capture(stored, current_root_identity)
+            try:
+                final_snapshot = snapshot_repository(
+                    root, git_executable=git_executable
+                )
+                final_root_identity = final_snapshot["instance"][  # type: ignore[index]
+                    "identity_sha256"
+                ]
+            except Exception:
+                return _stale("root_unavailable")
+            if final_root_identity != current_root_identity:
+                return _stale("root_unavailable")
+            return ExpansionResult(
+                disposition=ExpansionDisposition.EXACT,
+                output_bytes=payload,
+                refusal=None,
+            )
         metadata, payload = _unpack_envelope(stored.payload)
         if (
             type(stored.byte_length) is not int

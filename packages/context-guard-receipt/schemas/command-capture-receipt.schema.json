@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "channel_summary": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "argument_derived_output_redacted": {"const": true}
+        },
+        "required": ["argument_derived_output_redacted"]
+      },
+      "properties": {
+        "argument_derived_output_redacted": {"type": "boolean"},
+        "excerpt": {
+          "anyOf": [
+            {"$ref": "#/$defs/redaction_marker"},
+            {
+              "maxLength": 256,
+              "not": {"$ref": "#/$defs/redaction_marker"},
+              "type": "string"
+            }
+          ]
+        },
+        "frame_count": {"maximum": 220, "minimum": 0, "type": "integer"},
+        "sanitized_bytes": {
+          "maximum": 900000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "argument_derived_output_redacted",
+        "excerpt",
+        "frame_count",
+        "sanitized_bytes"
+      ],
+      "then": {
+        "properties": {
+          "excerpt": {"const": ""},
+          "frame_count": {"const": 0},
+          "sanitized_bytes": {"const": 0}
+        }
+      },
+      "type": "object"
+    },
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {
+          "const": "contextguard-receipt-evidence-boundary/v1"
+        },
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": [
+        "evidence_class",
+        "host_request_owned",
+        "provider_claim_authority",
+        "provider_join_status",
+        "runtime_observer_present",
+        "schema_version",
+        "selected_branch",
+        "selected_transport",
+        "stage1_evidence",
+        "stage2_evidence"
+      ],
+      "type": "object"
+    },
+    "redaction_marker": {
+      "enum": [
+        "[REDACTED PATH]",
+        "[REDACTED PRIVATE KEY]",
+        "[REDACTED SECRET]"
+      ],
+      "type": "string"
+    },
+    "sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "$comment": "Cross-field byte, frame, and artifact-length arithmetic is enforced by runner.validate_command_capture_receipt at the emission boundary.",
+  "$id": "https://context-guard.local/schemas/command-capture-receipt-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_type": {"const": "command_capture_bytes"},
+        "byte_length": {
+          "maximum": 902879,
+          "minimum": 6,
+          "type": "integer"
+        },
+        "digest_sha256": {"$ref": "#/$defs/sha256"},
+        "subject_identity_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": [
+        "artifact_type",
+        "byte_length",
+        "digest_sha256",
+        "subject_identity_sha256"
+      ],
+      "type": "object"
+    },
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "handle": {
+      "maxLength": 49,
+      "minLength": 49,
+      "pattern": "^cgr1p_[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    },
+    "namespace_id": {"$ref": "#/$defs/sha256"},
+    "observation": {
+      "additionalProperties": false,
+      "properties": {
+        "after_sha256": {"$ref": "#/$defs/sha256"},
+        "before_sha256": {"$ref": "#/$defs/sha256"},
+        "scope": {"const": "worktree"}
+      },
+      "required": ["after_sha256", "before_sha256", "scope"],
+      "type": "object"
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "exit_code": {"maximum": 255, "minimum": 0, "type": "integer"},
+            "kind": {"const": "exited"}
+          },
+          "required": ["exit_code", "kind"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"const": "signaled"},
+            "signal": {"maximum": 127, "minimum": 1, "type": "integer"}
+          },
+          "required": ["kind", "signal"],
+          "type": "object"
+        }
+      ]
+    },
+    "schema_version": {
+      "const": "contextguard-receipt-command-capture/v1"
+    },
+    "status": {"const": "captured"},
+    "stderr": {"$ref": "#/$defs/channel_summary"},
+    "stdout": {"$ref": "#/$defs/channel_summary"}
+  },
+  "required": [
+    "artifact",
+    "evidence_boundary",
+    "handle",
+    "namespace_id",
+    "observation",
+    "outcome",
+    "schema_version",
+    "status",
+    "stderr",
+    "stdout"
+  ],
+  "title": "Context Guard Receipt command capture receipt",
+  "type": "object"
+}

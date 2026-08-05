@@ -4,11 +4,14 @@ import hashlib
 import json
 import os
 import py_compile
+import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -42,14 +45,16 @@ EXPECTED_HELP = (
     "  inspect boundary\n"
     "  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n"
     "  run --escrow --root <absolute> --state-dir <absolute> "
-    "--receipt-out <file> -- <command>\n"
+    "[--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> "
+    "--max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n"
     "  expand <handle> --root <absolute> --state-dir <absolute> [options]\n"
     "  expand tool-schema --request <file|-> --root <absolute> "
     "--state-dir <absolute> [options]\n"
     "  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> "
     "[options]\n\n"
-    "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available; "
-    "other commands remain inert.\n"
+    "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. "
+    "Run is explicit local capture only. It is provider-free and makes no host-request, "
+    "network, or token-saving claim. Other commands remain inert.\n"
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
@@ -112,12 +117,14 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,
     "python/context_guard_receipt/router.py": 0o644,
+    "python/context_guard_receipt/runner.py": 0o644,
     "python/context_guard_receipt/sanitizer.py": 0o644,
     "python/context_guard_receipt/store.py": 0o644,
     "python/context_guard_receipt/tool_schemas.py": 0o644,
     "schemas/assembly-receipt.schema.json": 0o644,
     "schemas/blueprint-descriptor.schema.json": 0o644,
     "schemas/capability-record.schema.json": 0o644,
+    "schemas/command-capture-receipt.schema.json": 0o644,
     "schemas/evidence-descriptor.schema.json": 0o644,
     "schemas/evidence-boundary.schema.json": 0o644,
     "schemas/evidence-pack.schema.json": 0o644,
@@ -196,6 +203,63 @@ def run_node(
     )
 
 
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not process_exists(pid):
+            return True
+        time.sleep(0.02)
+    return not process_exists(pid)
+
+
+def read_child_record(path: Path, timeout_seconds: float = 5.0) -> tuple[int, int]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            child_pid, parent_pid = path.read_text(encoding="ascii").split(":", 1)
+            return int(child_pid), int(parent_pid)
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.02)
+    raise AssertionError("timed out waiting for the observable child process")
+
+
+def copy_runtime_with_current_launcher(destination: Path) -> Path:
+    for relative_path in EXPECTED_RUNTIME_MODES:
+        source = PACKAGE_ROOT / relative_path
+        target = destination / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    launcher_path = destination / "bin/launcher.cjs"
+    launcher = launcher_path.read_text(encoding="utf-8")
+    for relative_path in EXPECTED_RUNTIME_MODES:
+        if relative_path in {"bin/launcher.cjs", "package-files.json"}:
+            continue
+        digest = hashlib.sha256((destination / relative_path).read_bytes()).hexdigest()
+        pattern = re.compile(
+            rf"(  {re.escape(repr(relative_path))}: ')[0-9a-f]{{64}}(',\n)"
+        )
+        launcher, replacements = pattern.subn(rf"\g<1>{digest}\g<2>", launcher)
+        if replacements != 1:
+            raise AssertionError(f"missing trusted runtime entry: {relative_path}")
+    launcher_path.write_text(launcher, encoding="utf-8")
+    manifest_path = destination / "package-files.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest["files"]:
+        entry["sha256"] = hashlib.sha256(
+            (destination / entry["path"]).read_bytes()
+        ).hexdigest()
+    manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
+    return destination
+
+
 def assert_json_error(
     testcase: unittest.TestCase,
     response: subprocess.CompletedProcess[str],
@@ -218,6 +282,234 @@ def assert_json_error(
 
 
 class G001DistributionContractTests(unittest.TestCase):
+    def test_launcher_reports_closed_stdout_as_bounded_delivery_failure(self) -> None:
+        """Break caught: final receipt delivery crashes with an unhandled EPIPE."""
+
+        private_marker = "synthetic-private-launcher-delivery-g008"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(root / "runtime")
+            state = root / "closed-consumer-state"
+            process = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(runtime / "bin/context-guard-receipt.cjs"),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(PACKAGE_ROOT.resolve()),
+                    "--state-dir",
+                    str(state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    "import time; time.sleep(0.2)",
+                    private_marker,
+                ],
+                cwd=PACKAGE_ROOT,
+                env=launcher_environment(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertIsNotNone(process.stdout)
+            self.assertIsNotNone(process.stderr)
+            process.stdout.close()
+            process.stdout = None
+            stderr = process.stderr.read()
+            process.stderr.close()
+            returncode = process.wait(timeout=8)
+
+        expected = canonical_json(
+            {
+                "evidence_boundary": EVIDENCE_BOUNDARY,
+                "operation": "launcher",
+                "reason": "delivery_failure",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        ).encode("ascii")
+        self.assertEqual(returncode, 74, stderr)
+        self.assertEqual(stderr, expected)
+        self.assertNotIn(private_marker.encode("ascii"), stderr)
+        self.assertNotIn(b"cgr1p_", stderr)
+
+    def test_launcher_forwards_interrupts_and_reaps_the_command_group(self) -> None:
+        """Break caught: an interrupted Node wrapper strands the captured command."""
+
+        for interrupt in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(interrupt=interrupt):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory).resolve()
+                    runtime = copy_runtime_with_current_launcher(root / "runtime")
+                    record = root / "child-record"
+                    state = root / "interrupt-state"
+                    process = subprocess.Popen(
+                        [
+                            str(Path(NODE).resolve()),
+                            str(runtime / "bin/context-guard-receipt.cjs"),
+                            "run",
+                            "--escrow",
+                            "--root",
+                            str(PACKAGE_ROOT.resolve()),
+                            "--state-dir",
+                            str(state),
+                            "--",
+                            str(Path(sys.executable).resolve()),
+                            "-I",
+                            "-S",
+                            "-B",
+                            "-c",
+                            (
+                                "import os,time; "
+                                f"open({str(record)!r},'w',encoding='ascii').write("
+                                "f'{os.getpid()}:{os.getppid()}'); "
+                                "time.sleep(60)"
+                            ),
+                        ],
+                        cwd=PACKAGE_ROOT,
+                        env=launcher_environment(),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    child_pid = 0
+                    python_pid = 0
+                    try:
+                        child_pid, python_pid = read_child_record(record)
+                        process.send_signal(interrupt)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, 128 + interrupt)
+                        self.assertEqual(stdout, b"")
+                        self.assertEqual(stderr, b"")
+                        self.assertTrue(wait_for_process_exit(child_pid))
+                        self.assertFalse(state.exists())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=3)
+                        for pid in (child_pid, python_pid):
+                            if pid > 0 and process_exists(pid):
+                                try:
+                                    os.kill(pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+
+    def test_launcher_never_signals_scanned_numeric_process_groups(self) -> None:
+        """Break caught: launcher ps data becomes numeric group signal authority."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(root / "runtime")
+            record = root / "child-record"
+            signal_audit = root / "negative-signal-audit"
+            preload = root / "audit-process-kill.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const fs = require('fs');\n"
+                "const originalKill = process.kill.bind(process);\n"
+                "process.kill = (pid, signalName) => {\n"
+                "  if (Number.isInteger(pid) && pid < 0) {\n"
+                "    fs.appendFileSync(process.env.CGR_SIGNAL_AUDIT, "
+                "`${pid}:${signalName}\\n`);\n"
+                "  }\n"
+                "  return originalKill(pid, signalName);\n"
+                "};\n",
+                encoding="ascii",
+            )
+            state = root / "interrupt-state"
+            process = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(runtime / "bin/context-guard-receipt.cjs"),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(PACKAGE_ROOT.resolve()),
+                    "--state-dir",
+                    str(state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import os,signal,time; "
+                        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                        f"open({str(record)!r},'w',encoding='ascii').write("
+                        "f'{os.getpid()}:{os.getppid()}'); "
+                        "time.sleep(60)"
+                    ),
+                ],
+                cwd=PACKAGE_ROOT,
+                env=launcher_environment(
+                    CGR_SIGNAL_AUDIT=str(signal_audit),
+                    NODE_OPTIONS=f"--require={preload}",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            child_pid = 0
+            python_pid = 0
+            try:
+                child_pid, python_pid = read_child_record(record)
+                process.send_signal(signal.SIGTERM)
+                stdout, stderr = process.communicate(timeout=8)
+                self.assertEqual(process.returncode, 128 + signal.SIGTERM)
+                self.assertEqual(stdout, b"")
+                self.assertEqual(stderr, b"")
+                self.assertTrue(wait_for_process_exit(child_pid))
+                self.assertEqual(
+                    signal_audit.read_bytes() if signal_audit.exists() else b"",
+                    b"",
+                )
+                self.assertFalse(state.exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=3)
+                for pid in (child_pid, python_pid):
+                    if pid > 0 and process_exists(pid):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    def test_active_run_executes_safe_absolute_command_and_emits_receipt(self) -> None:
+        """Break caught: a packaged launcher keeps the now-active run grammar inert."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state = Path(temporary_directory).resolve() / "active-state"
+            response = run_node(
+                "bin/context-guard-receipt.cjs",
+                "run",
+                "--escrow",
+                "--root",
+                str(PACKAGE_ROOT.resolve()),
+                "--state-dir",
+                str(state),
+                "--",
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                "import os; os.write(1,b'g001-safe-output')",
+            )
+            self.assertEqual(response.returncode, 0, response.stderr)
+            self.assertEqual(response.stderr, "")
+            receipt = json.loads(response.stdout)
+            self.assertEqual(response.stdout, canonical_json(receipt))
+            self.assertEqual(receipt["status"], "captured")
+            self.assertRegex(receipt["handle"], r"^cgr1p_[A-Za-z0-9_-]{43}$")
+            self.assertEqual(receipt["observation"]["scope"], "worktree")
+            self.assertTrue(state.is_dir())
+
     def test_license_and_readme_state_the_exact_distribution_trust_boundary(self) -> None:
         """Break caught: license truncation or claims beyond companion-local evidence."""
         require_distribution()
@@ -242,6 +534,14 @@ class G001DistributionContractTests(unittest.TestCase):
             "catalog_snapshot",
             "stale",
             "bypass",
+            "run --escrow --root <absolute> --state-dir <absolute>",
+            "does not invoke a shell",
+            "fixed environment",
+            "stdout only",
+            "historical command capture",
+            "worktree hashes",
+            "external-side-effect completeness",
+            "command_capture_failed",
         ):
             self.assertIn(statement, readme)
 
@@ -541,18 +841,6 @@ class G001DistributionContractTests(unittest.TestCase):
             ("assemble", "--kind", "unknown", "--descriptor", "-"),
             ("assemble", "--kind", "evidence", "--descriptor", "-", "--persist"),
             ("run", "anything"),
-            (
-                "run",
-                "--escrow",
-                "--root",
-                ".",
-                "--state-dir",
-                "/tmp/state",
-                "--receipt-out",
-                "receipt.json",
-                "--",
-                "/bin/true",
-            ),
             ("expand", "not-a-handle", "--state-dir", "/tmp/state"),
             ("expand", "cgr1p_handle", "--state-dir", "relative"),
             (
@@ -595,26 +883,39 @@ class G001DistributionContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             sentinel = root / "command-executed"
+            receipt_path = root / "legacy-receipt.json"
+            state_path = root / "state"
+            legacy_run = run_node(
+                "bin/context-guard-receipt.cjs",
+                "run",
+                "--escrow",
+                "--root",
+                str(PACKAGE_ROOT.resolve()),
+                "--state-dir",
+                str(state_path),
+                "--receipt-out",
+                str(receipt_path),
+                "--",
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                f"from pathlib import Path; Path({str(sentinel)!r}).touch()",
+            )
+            assert_json_error(
+                self,
+                legacy_run,
+                code=64,
+                operation="cli",
+                status="error",
+                reason="usage",
+            )
+            self.assertFalse(sentinel.exists())
+            self.assertFalse(state_path.exists())
+            self.assertFalse(receipt_path.exists())
+
             inactive = (
-                (
-                    "run",
-                    (
-                        "run",
-                        "--escrow",
-                        "--root",
-                        str(root),
-                        "--state-dir",
-                        str(root / "state"),
-                        "--receipt-out",
-                        str(root / "receipt.json"),
-                        "--",
-                        "/bin/sh",
-                        "-c",
-                        f"touch {sentinel}",
-                        "--",
-                        "opaque-command-argument",
-                    ),
-                ),
                 ("inspect_receipt", ("inspect", "receipt")),
                 (
                     "inspect_diagnostics",
@@ -640,8 +941,8 @@ class G001DistributionContractTests(unittest.TestCase):
                         reason="feature_not_available",
                     )
             self.assertFalse(sentinel.exists())
-            self.assertFalse((root / "state").exists())
-            self.assertFalse((root / "receipt.json").exists())
+            self.assertFalse(state_path.exists())
+            self.assertFalse(receipt_path.exists())
 
         help_response = run_node("bin/context-guard-receipt.cjs", "--help")
         self.assertEqual(help_response.returncode, 0, help_response.stderr)

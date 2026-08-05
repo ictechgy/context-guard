@@ -50,37 +50,40 @@ EXPECTED_STAGE2_BASELINE_PRODUCTION_INVENTORY_SHA256 = (
     "a9efec40b96e7778f62f552efc2c7ea049eb3a1fb564865f996ca47fd68858dc"
 )
 RECEIPT_PACKAGE_PREFIX = "packages/context-guard-receipt/"
+EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 74
 RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/NOTICE', 'sha256': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': 'f2484249c5261e19674739026470bd2ab7ba1c5e54f6a00d5603261910c58a80'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': '8b7e4edca15073df05fd9b2749e36602fba283a44898797294c89699ca5f70d9'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt-mcp.cjs', 'sha256': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt.cjs', 'sha256': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': 'b6002b66d45bdc7ae536e1318c7422a4cc39eaa0cd7099458542ee5a31123708'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': '8c129026594644132174b3dd4e62ec5aee99914061785085db699301cbc76f11'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': 'f4070ed358c5aea13e89b77396f7507e0f18c6848008e1f1850f5139025160c9'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': 'd522a62e367a338491980f1cc613e75efdef8ae3276a8057e14ec8e2d77291ae'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': 'b2b958733aafba895fa1a852eb5c38044cb00d9d02dc38c3a4b4a931e74f6ba6'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': 'fe015b5ae45fd15dd3d4295f900745e5135f3d33fa320b56c51403e09c8d5166'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': '7a6543837eb515466ae38a47d7011151715123fc4eb2e21f2feda1740a3dc69d'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': '47367e54f024c8778f826d77d6bb66e8fdca39929de2d778f0d631303465c9b1'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package.json', 'sha256': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/__init__.py', 'sha256': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/assembly.py', 'sha256': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/blueprint.py', 'sha256': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/bootstrap.py', 'sha256': '334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/canonical.py', 'sha256': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': 'c95d56a85ccc225705a7199ca064d1540a8c886fb8e0dbd09d12bcd6a163e7cc'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': '8e032c51092790145b8142bcacad073e9ef7617aec71b05621fe3b4418861380'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli_io.py', 'sha256': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/contracts.py', 'sha256': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/evidence_pack.py', 'sha256': '3fb5540dcee31cd6ded4883e4f4c99fb89ee17c2484f3e2ee33ebe741454d0f8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/expansion.py', 'sha256': '9d102a2534312f20543e54faa192fda367445271079aeeb65b55664692c75046'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/expansion.py', 'sha256': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/identity.py', 'sha256': 'fc41f17612d75a4e9a37971e274d7e071bc144062ebb2011df4450ccac890a54'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/protection.py', 'sha256': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/receipts.py', 'sha256': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/router.py', 'sha256': '22b395d0a8a0522fcc9b12c1b12493e90aafb9e374937725a2bdaf223188529c'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/runner.py', 'sha256': '533bd2aead6c026a026dff8bc1de46ebdf0296c5a38b229d6260a322b2d55611'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/sanitizer.py', 'sha256': 'ddf7d4d81dbb73156fa2274c7adf06475c4688b1e08341835aff4eeb81a72fc8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/store.py', 'sha256': 'bfd70b5afec188518fc6b3a568ba9eb30d5fb874f99f8c538e51a462201336ce'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/store.py', 'sha256': 'ec5d2a47c3bc60ba0d327e688e89f3e96369b510fe33c1b74599fdfb378fdb1e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/tool_schemas.py', 'sha256': 'f84a8bc2f2232250dfe0782aaddf35c9842720f4815c6d2d8e4bd95757546bbc'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/assembly-receipt.schema.json', 'sha256': '05ab76b261ca18ed8d165cb4e43395006e7196fdeccb53603c3ed77ca3bdfe88'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/blueprint-descriptor.schema.json', 'sha256': '4424c2c482dc8d4184f1bd7ac6e1e45ad4ee36ee97da13e75b0986b2da8c9b09'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/capability-record.schema.json', 'sha256': '2ad38d92d38effae26182fb698bae7b9e4a9435b0f7b142ac6efff4661bd4131'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/capability-record.schema.json', 'sha256': '86df8398c5199a0d4e3d58ee7d8e2a4171e0103a5ea05644f00f1c343889c114'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/command-capture-receipt.schema.json', 'sha256': '7bcdaeb52fdfa4cbb3dc57b8d4b3b1cfa318bb7d8af11574ae0e23126ffa954b'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/evidence-boundary.schema.json', 'sha256': 'b510303bd09adcaf7150415aab5cae3adbe4c99b8482c07a45bb978ad4e82ba7'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/evidence-descriptor.schema.json', 'sha256': '29fa127eeafb8c52c05c7cdc8b1b929919e47e8e94aa8a5e6cd81ea2cf973dff'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/evidence-pack.schema.json', 'sha256': '5ff6823d166b245a488e6d0f96512ae025b7836f7f46e5e14dc4508edfad6692'},
@@ -103,11 +106,11 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': '04f40bb6ccc6b1f060475011507b3621666d6953793a7504770bd9c5f010fc10'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/__init__.py', 'sha256': '5075760cded34ab259a764674a6620d857ab3eb623e037bf5066abe132de88bd'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': 'f7a175b8f639cb7b9c475137951f37431a457118b8b6952043c1eeaea4dbc952'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': '46a7b9a1f976e29f322ea4737375e64353d688436101d06419add495c7e8b64f'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': '38308faeb9a2e2ac38ca05f2cfb73357e08e3b7278530ec9c042611b5e48907d'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_canonical.py', 'sha256': '574a66140918d02765e5de7a1fa2e243843e32d464e438fe637c42aae41d7fe5'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_protection.py', 'sha256': 'b05064c39f88962a7b561532cfa2ef00b8a90605375cd06d9052ced8d0ef352e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g003_identity.py', 'sha256': 'f7303e4e99f0e0103a4aeef4b0439373bdf97e9527584f654fdc9c2982998a63'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g004_store.py', 'sha256': '7c30eddc2d228fd20369acb1a9e17e0839b02a2225914ca377f651c01c03da65'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g004_store.py', 'sha256': '9977ef4d050633146f5bc4c224f6a0a83b55fce7e321d4bb4ce8bf69a46c4c64'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g005_assembly.py', 'sha256': 'cd4f9085021f8140a8548abffe1b5e43d21e448a805af4655211bd3a52314dec'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g005_cli.py', 'sha256': '644615a87a30b78aff4b1853ce20e48c37cc7de57f50e3f3d13b7032adbaffd6'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g005_evidence_pack.py', 'sha256': '32103f3dac04d1030433277df8cbc29384c1a7018bb24fee1151a3b8188b3462'},
@@ -118,8 +121,11 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g006_schemas.py', 'sha256': 'a3ab27bf36dde335b2e4611381e8099f2a34c2e0ceed6cd05795d8ef0932114a'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g006_tool_schemas.py', 'sha256': '2f279112fb96e6b99085b34d22a80ee67d57f9204037614a337487c08a4ccbe3'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g007_sanitizer.py', 'sha256': 'fe7af163a9d271805fd4971441065245eda429b06dc57a9c09a42323836e46cd'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_cli.py', 'sha256': '541d9f1a3218b0225bee6015cd26b9d027d59663d1974b91dc51ba5c5f98e0ae'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_expansion.py', 'sha256': '4a3d1bbd3b5ee6fffde6eb4c523e55d749894807d991af083fc0cdae263605da'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g008_runner.py', 'sha256': 'aa15078c6fdfd962bc58a3ba8bbeadd47ee34760f55729de5cc1dc1c5b604746'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/__init__.py', 'sha256': '48a5ccfc49a840928c6de0ea2c978a12a0abd78e2f361ec96f6e9a0f15bddca0'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py', 'sha256': 'fad4ad7908df6d56370a575d81d8644ae933df6553570bb845e9355b8b34f271'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py', 'sha256': '7e0ea8cda62869a79c2c4266060c8797f95644701a1ab48f78abe124ea91d3ed'},
 ]
 FORBIDDEN_TOP_LEVEL_FIELDS = {
     "host_id",
@@ -337,6 +343,8 @@ def validate_production_surface_inventory(inventory: list[dict[str, str]]) -> No
 
 
 def validate_receipt_companion_surface_inventory(inventory: list[dict[str, str]]) -> None:
+    if len(inventory) != EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT:
+        raise AssertionError("receipt companion inventory path count drifted")
     if inventory != RECEIPT_COMPANION_INVENTORY:
         raise AssertionError("receipt companion inventory path/type/mode/hash drifted")
 

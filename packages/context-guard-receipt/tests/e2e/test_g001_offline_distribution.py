@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -20,10 +21,14 @@ from contract.test_g001_distribution_contract import (
     PACKAGE_ROOT,
     PYTHON_ENV,
     canonical_json,
+    process_exists,
+    read_child_record,
+    wait_for_process_exit,
 )
 
 
 NPM = shutil.which("npm")
+GIT = shutil.which("git")
 
 
 def run_command(
@@ -54,13 +59,24 @@ def run_binary_command(
     )
 
 
+def capture_frame(sequence: int, channel: int, payload: bytes) -> bytes:
+    return (
+        sequence.to_bytes(8, "big")
+        + channel.to_bytes(1, "big")
+        + len(payload).to_bytes(4, "big")
+        + payload
+    )
+
+
 class G001OfflineDistributionTests(unittest.TestCase):
     def test_tarball_installs_offline_and_ignores_poisoned_contextguard_helpers(self) -> None:
         """Break caught: checkout imports, registry/helper dependence, or unsafe tar contents."""
         if not (PACKAGE_ROOT / "package.json").is_file():
             raise AssertionError(f"G001 distribution is missing: {PACKAGE_ROOT / 'package.json'}")
-        if NODE is None or NPM is None:
-            raise AssertionError("Node.js and npm are required for offline distribution verification")
+        if NODE is None or NPM is None or GIT is None:
+            raise AssertionError(
+                "Node.js, npm, and Git are required for offline distribution verification"
+            )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -237,6 +253,269 @@ class G001OfflineDistributionTests(unittest.TestCase):
             payload = (b"expand\x00\xff" * 2_048) + b"done"
             (repository_root / "source.bin").write_bytes(payload)
             state_directory = (temporary_root / "private-state").resolve()
+
+            command_repository_root = (temporary_root / "command-repository").resolve()
+            command_repository_root.mkdir(mode=0o700)
+            initialized = run_command(
+                [str(Path(GIT).resolve()), "init", "--quiet", str(command_repository_root)],
+                cwd=temporary_root,
+                environment={
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "LANG": "C",
+                    "PATH": os.defpath,
+                },
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            command_state_directory = (temporary_root / "command-state").resolve()
+            command_stdout = b"SAFE_OUTPUT\n"
+            private_arguments = (
+                b"synthetic-private-secret-g008",
+                b"synthetic-private-argv-g008",
+                b"synthetic-private-path-g008",
+            )
+            command_program = (
+                "import os,sys; "
+                "os.write(1,bytes.fromhex('534146455f4f55545055540a')); "
+                "os.write(2,sys.argv[1].encode('ascii'))"
+            )
+            captured = run_binary_command(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(command_repository_root),
+                    "--state-dir",
+                    str(command_state_directory),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    command_program,
+                    *(value.decode("ascii") for value in private_arguments),
+                ],
+                cwd=install_directory,
+                environment=environment,
+            )
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            self.assertEqual(captured.stderr, b"")
+            receipt = json.loads(captured.stdout)
+            self.assertEqual(captured.stdout, canonical_json(receipt).encode("ascii"))
+            self.assertRegex(receipt["handle"], r"^cgr1p_[A-Za-z0-9_-]{43}$")
+            self.assertEqual(
+                set(receipt["observation"]),
+                {"after_sha256", "before_sha256", "scope"},
+            )
+            self.assertEqual(receipt["observation"]["scope"], "worktree")
+            self.assertEqual(
+                receipt["stderr"],
+                {
+                    "argument_derived_output_redacted": True,
+                    "excerpt": "",
+                    "frame_count": 0,
+                    "sanitized_bytes": 0,
+                },
+            )
+            self.assertTrue(
+                all(value not in captured.stdout for value in private_arguments),
+                "receipt reflected a private test input",
+            )
+            private_paths = (
+                str(command_repository_root).encode(),
+                str(command_state_directory).encode(),
+            )
+            self.assertTrue(
+                all(value not in captured.stdout for value in private_paths),
+                "receipt reflected a private test path",
+            )
+
+            receipt_validator = run_binary_command(
+                [
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import json,sys\n"
+                        "from pathlib import Path\n"
+                        "installed = Path(sys.argv[1]).resolve()\n"
+                        "sys.path.insert(0, str(installed))\n"
+                        "from context_guard_receipt import runner\n"
+                        "receipt = json.loads(sys.stdin.buffer.read())\n"
+                        "assert runner.validate_command_capture_receipt(receipt)\n"
+                        "assert Path(runner.__file__).resolve().is_relative_to(installed)\n"
+                    ),
+                    str(installed_root / "python"),
+                ],
+                cwd=install_directory,
+                environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+                input_bytes=captured.stdout,
+            )
+            self.assertEqual(receipt_validator.returncode, 0, receipt_validator.stderr)
+            self.assertEqual(receipt_validator.stdout, b"")
+
+            (command_repository_root / "after-capture.txt").write_text(
+                "worktree drift after capture\n", encoding="utf-8"
+            )
+            command_expanded = run_binary_command(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "expand",
+                    receipt["handle"],
+                    "--root",
+                    str(command_repository_root),
+                    "--state-dir",
+                    str(command_state_directory),
+                    "--emit",
+                    "bytes",
+                ],
+                cwd=install_directory,
+                environment=environment,
+            )
+            expected_capture = (
+                b"CGRF1\x00"
+                + capture_frame(0, 1, command_stdout)
+            )
+            self.assertEqual(command_expanded.returncode, 0, command_expanded.stderr)
+            self.assertEqual(command_expanded.stderr, b"")
+            self.assertEqual(command_expanded.stdout, expected_capture)
+            self.assertTrue(
+                all(value not in command_expanded.stdout for value in private_arguments),
+                "expanded capture reflected a private test input",
+            )
+            self.assertFalse(sentinel.exists())
+
+            frame_validator = run_binary_command(
+                [
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import sys\n"
+                        "from pathlib import Path\n"
+                        "installed = Path(sys.argv[1]).resolve()\n"
+                        "sys.path.insert(0, str(installed))\n"
+                        "from context_guard_receipt.runner import validate_framed_capture\n"
+                        "frames = validate_framed_capture(sys.stdin.buffer.read())\n"
+                        "assert tuple(frame.channel for frame in frames) == (1,)\n"
+                    ),
+                    str(installed_root / "python"),
+                ],
+                cwd=install_directory,
+                environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+                input_bytes=command_expanded.stdout,
+            )
+            self.assertEqual(frame_validator.returncode, 0, frame_validator.stderr)
+            self.assertEqual(frame_validator.stdout, b"")
+
+            delivery_marker = "synthetic-private-installed-delivery-g008"
+            delivery_state = (temporary_root / "delivery-state").resolve()
+            delivery_process = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(command_repository_root),
+                    "--state-dir",
+                    str(delivery_state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    "import time; time.sleep(0.2)",
+                    delivery_marker,
+                ],
+                cwd=install_directory,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertIsNotNone(delivery_process.stdout)
+            self.assertIsNotNone(delivery_process.stderr)
+            delivery_process.stdout.close()
+            delivery_process.stdout = None
+            delivery_stderr = delivery_process.stderr.read()
+            delivery_process.stderr.close()
+            self.assertEqual(delivery_process.wait(timeout=8), 74, delivery_stderr)
+            expected_delivery_failure = canonical_json(
+                {
+                    "evidence_boundary": EVIDENCE_BOUNDARY,
+                    "operation": "launcher",
+                    "reason": "delivery_failure",
+                    "schema_version": "contextguard-receipt-cli-response/v1",
+                    "status": "error",
+                }
+            ).encode("ascii")
+            self.assertEqual(delivery_stderr, expected_delivery_failure)
+            self.assertNotIn(delivery_marker.encode("ascii"), delivery_stderr)
+            self.assertNotIn(b"cgr1p_", delivery_stderr)
+
+            interrupt_record = temporary_root / "installed-interrupt-child"
+            interrupt_state = (temporary_root / "installed-interrupt-state").resolve()
+            interrupted = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(command_repository_root),
+                    "--state-dir",
+                    str(interrupt_state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import os,time; "
+                        f"open({str(interrupt_record)!r},'w',encoding='ascii').write("
+                        "f'{os.getpid()}:{os.getppid()}'); "
+                        "time.sleep(60)"
+                    ),
+                ],
+                cwd=install_directory,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            child_pid = 0
+            python_pid = 0
+            try:
+                child_pid, python_pid = read_child_record(interrupt_record)
+                interrupted.send_signal(signal.SIGTERM)
+                interrupted_stdout, interrupted_stderr = interrupted.communicate(timeout=8)
+                self.assertEqual(interrupted.returncode, 128 + signal.SIGTERM)
+                self.assertEqual(interrupted_stdout, b"")
+                self.assertEqual(interrupted_stderr, b"")
+                self.assertTrue(wait_for_process_exit(child_pid))
+                self.assertFalse(interrupt_state.exists())
+            finally:
+                if interrupted.poll() is None:
+                    interrupted.kill()
+                    interrupted.wait(timeout=3)
+                for pid in (child_pid, python_pid):
+                    if pid > 0 and process_exists(pid):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
             descriptor = json.dumps(
                 {
                     "caller_classification": "eligible",

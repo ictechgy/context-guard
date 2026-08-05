@@ -1672,6 +1672,7 @@ class G004CapabilityStoreTests(unittest.TestCase):
                 "blueprint_item_bytes",
                 "tool_schema_set_bytes",
                 "tool_schema_bytes",
+                "command_capture_bytes",
             ],
         )
 

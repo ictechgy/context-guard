@@ -53,11 +53,21 @@ def run_binary(
     )
 
 
+def capture_frame(sequence: int, channel: int, payload: bytes) -> bytes:
+    return (
+        sequence.to_bytes(8, "big")
+        + channel.to_bytes(1, "big")
+        + len(payload).to_bytes(4, "big")
+        + payload
+    )
+
+
 def distribution() -> None:
     npm = shutil.which("npm")
     node = shutil.which("node")
-    if npm is None or node is None:
-        raise RuntimeError("npm and node are required")
+    git = shutil.which("git")
+    if npm is None or node is None or git is None:
+        raise RuntimeError("npm, node, and Git are required")
     with tempfile.TemporaryDirectory() as temporary_directory:
         root = Path(temporary_directory)
         pack_directory, install_directory, poisoned_bin = root / "pack", root / "install", root / "poisoned-bin"
@@ -132,6 +142,165 @@ def distribution() -> None:
         payload = (b"expand\x00\xff" * 2_048) + b"done"
         (repository_root / "source.bin").write_bytes(payload)
         state_directory = (root / "private-state").resolve()
+
+        command_repository_root = (root / "command-repository").resolve()
+        command_repository_root.mkdir(mode=0o700)
+        initialized = run(
+            [str(Path(git).resolve()), "init", "--quiet", str(command_repository_root)],
+            cwd=root,
+            environment={
+                "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "LANG": "C",
+                "PATH": os.defpath,
+            },
+        )
+        if initialized.returncode != 0:
+            raise RuntimeError("local command-capture worktree initialization failed")
+        command_state_directory = (root / "command-state").resolve()
+        command_stdout = b"SAFE_OUTPUT\n"
+        private_arguments = (
+            b"synthetic-private-secret-g008",
+            b"synthetic-private-argv-g008",
+            b"synthetic-private-path-g008",
+        )
+        captured = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "run",
+                "--escrow",
+                "--root",
+                str(command_repository_root),
+                "--state-dir",
+                str(command_state_directory),
+                "--",
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import os,sys; "
+                    "os.write(1,bytes.fromhex('534146455f4f55545055540a')); "
+                    "os.write(2,sys.argv[1].encode('ascii'))"
+                ),
+                *(value.decode("ascii") for value in private_arguments),
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        if captured.returncode != 0 or captured.stderr or sentinel.exists():
+            raise RuntimeError("installed command capture failed its offline smoke test")
+        try:
+            receipt = json.loads(captured.stdout)
+            handle = receipt["handle"]
+            observation = receipt["observation"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise RuntimeError("installed command capture emitted an invalid receipt") from None
+        if (
+            captured.stdout != canonical_json(receipt).encode("ascii")
+            or not isinstance(handle, str)
+            or len(handle) != 49
+            or not handle.startswith("cgr1p_")
+            or set(observation) != {"after_sha256", "before_sha256", "scope"}
+            or observation["scope"] != "worktree"
+            or receipt.get("stderr")
+            != {
+                "argument_derived_output_redacted": True,
+                "excerpt": "",
+                "frame_count": 0,
+                "sanitized_bytes": 0,
+            }
+            or any(value in captured.stdout for value in private_arguments)
+            or str(command_repository_root).encode() in captured.stdout
+            or str(command_state_directory).encode() in captured.stdout
+        ):
+            raise RuntimeError("installed command receipt violated its closed privacy contract")
+
+        receipt_validator = run_binary(
+            [
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import json,sys\n"
+                    "from pathlib import Path\n"
+                    "installed = Path(sys.argv[1]).resolve()\n"
+                    "sys.path.insert(0, str(installed))\n"
+                    "from context_guard_receipt import runner\n"
+                    "receipt = json.loads(sys.stdin.buffer.read())\n"
+                    "assert runner.validate_command_capture_receipt(receipt)\n"
+                    "assert Path(runner.__file__).resolve().is_relative_to(installed)\n"
+                ),
+                str(installed_root / "python"),
+            ],
+            cwd=install_directory,
+            environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+            input_bytes=captured.stdout,
+        )
+        if receipt_validator.returncode != 0 or receipt_validator.stdout or receipt_validator.stderr:
+            raise RuntimeError("installed runner receipt validator failed")
+
+        (command_repository_root / "after-capture.txt").write_text(
+            "worktree drift after capture\n", encoding="utf-8"
+        )
+        command_expanded = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "expand",
+                handle,
+                "--root",
+                str(command_repository_root),
+                "--state-dir",
+                str(command_state_directory),
+                "--emit",
+                "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        expected_capture = (
+            b"CGRF1\x00"
+            + capture_frame(0, 1, command_stdout)
+        )
+        if (
+            command_expanded.returncode != 0
+            or command_expanded.stdout != expected_capture
+            or command_expanded.stderr
+            or any(value in command_expanded.stdout for value in private_arguments)
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed historical command capture did not expand exactly")
+
+        frame_validator = run_binary(
+            [
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import sys\n"
+                    "from pathlib import Path\n"
+                    "installed = Path(sys.argv[1]).resolve()\n"
+                    "sys.path.insert(0, str(installed))\n"
+                    "from context_guard_receipt.runner import validate_framed_capture\n"
+                    "frames = validate_framed_capture(sys.stdin.buffer.read())\n"
+                    "assert tuple(frame.channel for frame in frames) == (1,)\n"
+                ),
+                str(installed_root / "python"),
+            ],
+            cwd=install_directory,
+            environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+            input_bytes=command_expanded.stdout,
+        )
+        if frame_validator.returncode != 0 or frame_validator.stdout or frame_validator.stderr:
+            raise RuntimeError("installed runner frame validator failed")
+
         descriptor = json.dumps(
             {
                 "caller_classification": "eligible",

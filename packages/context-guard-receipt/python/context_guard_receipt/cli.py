@@ -7,6 +7,7 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 
+from . import runner
 from .assembly import (
     DESCRIPTOR_LIMITS,
     AssemblyDisposition,
@@ -35,7 +36,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> --receipt-out <file> -- <command>\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available; other commands remain inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. It is provider-free and makes no host-request, network, or token-saving claim. Other commands remain inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -52,6 +53,8 @@ TOOL_SCHEMA_EXPANSION_REQUEST_LIMITS = JSONLimits(
 INSPECT_TARGETS = frozenset(
     {"receipt", "diagnostics", "firewall", "diagnostic-ledger", "twin", "lease", "state"}
 )
+_RUN_MAX_TIMEOUT_SECONDS = 300
+_RUN_MAX_CAPTURE_BYTES = 900_000
 
 
 def emit_error(operation: str, status: str, reason: str, code: int) -> int:
@@ -60,7 +63,13 @@ def emit_error(operation: str, status: str, reason: str, code: int) -> int:
 
 
 def _is_absolute(value: str) -> bool:
-    return bool(value) and os.path.isabs(value)
+    return (
+        type(value) is str
+        and bool(value)
+        and "\x00" not in value
+        and os.path.isabs(value)
+        and os.path.normpath(value) == value
+    )
 
 
 def _is_file_argument(value: str) -> bool:
@@ -121,30 +130,54 @@ def _valid_assemble(arguments: Sequence[str]) -> bool:
     )
 
 
-def _valid_run(arguments: Sequence[str]) -> bool:
+def _parse_run_invocation(
+    arguments: Sequence[str],
+) -> tuple[dict[str, object], tuple[str, ...]] | None:
     try:
         separator = arguments.index("--")
     except ValueError:
-        return False
+        return None
     if separator + 1 >= len(arguments):
-        return False
-    command = arguments[separator + 1 :]
-    if not command[0]:
-        return False
+        return None
+    command = tuple(arguments[separator + 1 :])
+    if not _is_absolute(command[0]):
+        return None
     seen = _parse_options(
         arguments[:separator],
         values={
             "--root": _is_absolute,
             "--state-dir": _is_absolute,
-            "--receipt-out": _is_file_argument,
             "--timeout-seconds": _is_positive_integer,
             "--max-channel-bytes": _is_positive_integer,
             "--max-total-bytes": _is_positive_integer,
         },
         flags=frozenset({"--escrow"}),
     )
-    required = {"--escrow", "--root", "--state-dir", "--receipt-out"}
-    return seen is not None and required.issubset(seen)
+    required = {"--escrow", "--root", "--state-dir"}
+    if seen is None or not required.issubset(seen):
+        return None
+    options = _option_values(
+        arguments[:separator], flags=frozenset({"--escrow"})
+    )
+    timeout_seconds = int(str(options.get("--timeout-seconds", "30")), 10)
+    total_bytes = int(
+        str(options.get("--max-total-bytes", str(_RUN_MAX_CAPTURE_BYTES))), 10
+    )
+    channel_bytes = int(
+        str(options.get("--max-channel-bytes", str(total_bytes))), 10
+    )
+    if (
+        timeout_seconds > _RUN_MAX_TIMEOUT_SECONDS
+        or channel_bytes > _RUN_MAX_CAPTURE_BYTES
+        or total_bytes > _RUN_MAX_CAPTURE_BYTES
+        or channel_bytes > total_bytes
+    ):
+        return None
+    return options, command
+
+
+def _valid_run(arguments: Sequence[str]) -> bool:
+    return _parse_run_invocation(arguments) is not None
 
 
 def _valid_expand(arguments: Sequence[str]) -> bool:
@@ -465,6 +498,67 @@ def _expand_tool_schema(arguments: Sequence[str]) -> int:
         )
 
 
+def _emit_run_failure(code: int) -> int:
+    return emit_error("run", "error", "command_capture_failed", code)
+
+
+def _run(arguments: Sequence[str]) -> int:
+    invocation = _parse_run_invocation(arguments)
+    if invocation is None:
+        return emit_error("cli", "error", "usage", 64)
+    options, command = invocation
+    root = options["--root"]
+    state_dir = options["--state-dir"]
+    if type(root) is not str or type(state_dir) is not str:
+        return emit_error("cli", "error", "usage", 64)
+
+    timeout_seconds = int(str(options.get("--timeout-seconds", "30")), 10)
+    total_bytes = int(
+        str(options.get("--max-total-bytes", str(_RUN_MAX_CAPTURE_BYTES))), 10
+    )
+    channel_bytes = int(
+        str(options.get("--max-channel-bytes", str(total_bytes))), 10
+    )
+    limits = runner.RunnerLimits(
+        raw_per_channel_bytes=channel_bytes,
+        raw_total_bytes=total_bytes,
+        sanitized_per_channel_bytes=channel_bytes,
+        sanitized_total_bytes=total_bytes,
+        timeout_seconds=timeout_seconds,
+    )
+
+    def open_store() -> CapabilityStore:
+        return CapabilityStore.open(
+            state_dir=state_dir,
+            repository_root=root,
+            create=True,
+        )
+
+    try:
+        result = runner.run_command(
+            command,
+            root,
+            store_factory=open_store,
+            limits=limits,
+            private_roots=(root, state_dir),
+        )
+        exit_code = runner.map_cli_exit_code(result)
+        if not result.succeeded:
+            return _emit_run_failure(exit_code)
+        receipt = result.to_receipt()
+        if not runner.validate_command_capture_receipt(receipt):
+            return _emit_run_failure(74)
+        payload = canonical_json_bytes(receipt)
+    except Exception:
+        return _emit_run_failure(70)
+
+    try:
+        write_stdout(payload)
+    except Exception:
+        return _emit_run_failure(74)
+    return exit_code
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments == ("--help",):
@@ -476,7 +570,7 @@ def receipt_main(arguments: Sequence[str]) -> int:
     if arguments and arguments[0] == "assemble" and _valid_assemble(arguments[1:]):
         return _assemble(arguments[1:])
     if arguments and arguments[0] == "run" and _valid_run(arguments[1:]):
-        return emit_error("run", "unavailable", "feature_not_available", 69)
+        return _run(arguments[1:])
     if arguments and arguments[0] == "expand" and _valid_expand(arguments[1:]):
         return _expand(arguments[1:])
     if arguments and arguments[0] == "inspect" and _valid_inspect(arguments[1:]):

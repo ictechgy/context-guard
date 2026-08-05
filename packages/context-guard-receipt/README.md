@@ -3,22 +3,68 @@
 `@ictechgy/context-guard-receipt` is a small, provider-free receipt companion
 whose work is confined to explicitly supplied local inputs and state.
 
-It exposes the fixed boundary inspection plus local evidence, blueprint, and
-tool-schema assembly:
+It exposes the fixed boundary inspection, local evidence, blueprint, and
+tool-schema assembly, and explicit local command capture:
 
 ```text
 context-guard-receipt inspect boundary
 context-guard-receipt assemble --kind evidence|blueprint|tool-schemas --descriptor <file|-> --root <absolute>
+context-guard-receipt run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]
 ```
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read
-settings, contact a provider, execute requested commands, or establish provider
-or host authority. It does not report provider token, cost,
-cache, or percentage-savings claims. Assembly is a byte proxy for explicitly
-provided local bytes, not a token or provider-usage claim. The `run`, `inspect`
-targets other than `boundary`, and MCP transport remain intentionally
-unavailable.
+settings, contact a provider, or establish provider or host authority. It does
+not report provider token, cost, cache, or percentage-savings claims. Assembly
+is a byte proxy for explicitly provided local bytes, not a token or
+provider-usage claim. `run --escrow` is provider-free local capture only;
+`inspect` targets other than `boundary` and the MCP transport remain
+intentionally unavailable.
+
+`run --escrow` executes only the explicitly supplied absolute executable and
+argument vector. It does not invoke a shell. The child runs with the requested
+absolute `--root` as its working directory, standard input closed, and the
+fixed environment `LANG=C`, `LC_ALL=C`, and `PATH=/usr/bin:/bin`; caller
+environment variables are not forwarded. The command can still create local
+or external side effects, start descendants, or use networking on its own.
+The receipt makes no external-side-effect completeness claim and no
+host-request, host-runtime, provider, network-activity, or token-saving claim.
+The supervisor uses bounded local process-table observations to track ordinary
+descendants that change POSIX sessions or process groups, and it withholds a
+receipt when that observation is unavailable or uncertain. This is not an OS
+containment boundary: a deliberately daemonizing process can fork, detach,
+close inherited descriptors, and reparent entirely between observations. Such
+an unobserved process can survive success, timeout, cancellation, or refusal.
+Use `run --escrow` for capture, not as a security sandbox; fail-closed here means
+that uncertain authority is not published, not that all side effects or
+processes were rolled back.
+
+Cleanup signals are sent only through exact per-process kernel identities.
+There is no numeric PID or process-group signaling fallback. The runner probes
+the exact-signaling facility for itself and again for the gated trampoline
+before releasing the requested executable. A facility that later becomes
+unavailable still cannot be replaced with broader signaling; receipt authority
+is withheld, while the non-containment limitation above continues to apply.
+
+The CLI defaults to a 30-second timeout and 900,000 raw and sanitized bytes in
+total. Optional timeout values are positive decimal seconds up to 300. Optional
+per-channel and total byte limits are positive decimals up to 900,000, with the
+per-channel limit no greater than the total. Timeout, capture, snapshot,
+sanitization, framing, and pre-publication storage failures emit no receipt or
+handle on stdout. They collapse to the nonreflective stderr reason
+`command_capture_failed`, with exit `124` for a timeout, `74` for persistence or
+delivery uncertainty, and `70` for other closed failures. Command side effects
+are not rolled back. A child exit or signal is durably receipted and the CLI
+then returns that exit status (or `128 + signal`).
+
+After the sanitized canonical CGRF capture is durably committed, the receipt is
+emitted on stdout only; `run` has no receipt sidecar or `--receipt-out` option.
+The receipt omits command arguments and paths. Its observation contains only
+before and after worktree hashes and `scope: worktree`; those hashes are not a
+host observer, a filesystem diff, or proof about unobserved effects. If stdout
+delivery fails after commit, exit `74` cannot revoke the durable capability;
+its stdout publication may be partial or absent, so callers must not infer
+rollback.
 
 By default assembly is nonpersistent: it emits the exact original bytes on a
 safe bypass, or emits no bytes for a closed refusal, without creating state.
@@ -36,6 +82,13 @@ source identity are current. A changed source is stale and is refused without
 emitting payload bytes. The caller retains the original descriptor payload as
 the explicit baseline bypass; the companion does not claim that every emitted
 artifact embeds that baseline.
+
+A command-capture handle is historical rather than `source_current`. While it
+remains bound to the same repository instance, later worktree changes do not
+stale it: exact local expansion returns the original sanitized canonical CGRF
+bytes, including their stdout/stderr channel frames. This historical command
+capture is not a replay, a raw-output log, or a claim about current worktree
+contents.
 
 Tool-schema descriptors carry one exact canonical catalog in
 `anthropic_tools/v1` or `openai_functions/v1` format, one closed policy record
@@ -65,13 +118,23 @@ the complete artifact remains on stdout and the command exits `74`; callers
 must consume that output before retrying. `--emit json` carries both the receipt
 and emitted artifact in one stdout envelope.
 
-The package has no dependencies, lifecycle scripts, network behavior, or
-configuration files. It requires Node.js 18+ and a trusted CPython executable
-from 3.11 through 3.14. Set `CONTEXT_GUARD_RECEIPT_PYTHON` to an absolute path
-to the actual native CPython executable, or ensure an absolute `PATH` directory
-contains `python3`. Relative `PATH` entries and script-based interpreter shims
-are rejected. The selected executable remains part of the caller's trust
-boundary; the compatibility probe is not interpreter authentication.
+The package has no dependencies, lifecycle scripts, network client, or
+configuration files of its own. The explicitly launched child is outside that
+no-network statement. The package requires Node.js 18+ and a trusted CPython
+executable from 3.11 through 3.14. Set `CONTEXT_GUARD_RECEIPT_PYTHON` to an
+absolute path to the actual native CPython executable, or ensure an absolute
+`PATH` directory contains `python3`. Relative `PATH` entries and script-based
+interpreter shims are rejected. The selected executable remains part of the
+caller's trust boundary; the compatibility probe is not interpreter
+authentication.
+
+`run --escrow` also requires the root-owned `/bin/ps` process-table interface
+and an exact local process-identity and signaling backend. macOS brackets each
+`libproc` BSD-process record with two matching audit-token reads from one
+retained task-name port, then signals only through that audit token. Linux uses
+pidfds and probes `pidfd_send_signal` with signal zero. If those facilities are
+missing, incompatible, or unusable, the runner refuses before releasing the
+target command rather than silently weakening lifecycle observation.
 
 The package manager and installed launcher are the distribution authenticity
 boundary. `package-files.json`, the launcher's embedded payload digests, and

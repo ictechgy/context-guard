@@ -35,12 +35,14 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/protection.py",
     "python/context_guard_receipt/receipts.py",
     "python/context_guard_receipt/router.py",
+    "python/context_guard_receipt/runner.py",
     "python/context_guard_receipt/sanitizer.py",
     "python/context_guard_receipt/store.py",
     "python/context_guard_receipt/tool_schemas.py",
     "schemas/assembly-receipt.schema.json",
     "schemas/blueprint-descriptor.schema.json",
     "schemas/capability-record.schema.json",
+    "schemas/command-capture-receipt.schema.json",
     "schemas/evidence-boundary.schema.json",
     "schemas/evidence-descriptor.schema.json",
     "schemas/evidence-pack.schema.json",
@@ -136,7 +138,16 @@ def validate_npm_dry_run() -> None:
     if npm is None:
         raise PackageCheckError("npm is required for package validation")
     result = subprocess.run(
-        [npm, "pack", "--json", "--dry-run", "--ignore-scripts"],
+        [
+            npm,
+            "pack",
+            "--json",
+            "--dry-run",
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ],
         cwd=PACKAGE_ROOT,
         text=True,
         stdout=subprocess.PIPE,

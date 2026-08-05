@@ -115,6 +115,7 @@ class ArtifactType(str, Enum):
     BLUEPRINT_ITEM_BYTES = "blueprint_item_bytes"
     TOOL_SCHEMA_SET_BYTES = "tool_schema_set_bytes"
     TOOL_SCHEMA_BYTES = "tool_schema_bytes"
+    COMMAND_CAPTURE_BYTES = "command_capture_bytes"
 
 
 @dataclass(frozen=True, slots=True)

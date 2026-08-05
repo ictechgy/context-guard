@@ -13,6 +13,9 @@ const PYTHON_ISOLATION_FLAGS = [
 ];
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_PACKAGE_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_CHILD_STREAM_BYTES = 2 * 1024 * 1024;
+const INTERRUPT_GRACE_MILLISECONDS = 750;
+const INTERRUPT_KILL_WAIT_MILLISECONDS = 750;
 const RUNTIME_DIRECTORIES = new Set(['bin', 'python', 'schemas']);
 const SOURCE_ONLY_DIRECTORIES = new Set(['dev', 'scripts', 'tests']);
 const EXPECTED_FILES = [
@@ -37,12 +40,14 @@ const EXPECTED_FILES = [
   'python/context_guard_receipt/protection.py',
   'python/context_guard_receipt/receipts.py',
   'python/context_guard_receipt/router.py',
+  'python/context_guard_receipt/runner.py',
   'python/context_guard_receipt/sanitizer.py',
   'python/context_guard_receipt/store.py',
   'python/context_guard_receipt/tool_schemas.py',
   'schemas/assembly-receipt.schema.json',
   'schemas/blueprint-descriptor.schema.json',
   'schemas/capability-record.schema.json',
+  'schemas/command-capture-receipt.schema.json',
   'schemas/evidence-boundary.schema.json',
   'schemas/evidence-descriptor.schema.json',
   'schemas/evidence-pack.schema.json',
@@ -69,7 +74,7 @@ const EXPECTED_FILES = [
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': 'f2484249c5261e19674739026470bd2ab7ba1c5e54f6a00d5603261910c58a80',
+  'README.md': '8b7e4edca15073df05fd9b2749e36602fba283a44898797294c89699ca5f70d9',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
@@ -78,21 +83,23 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',
   'python/context_guard_receipt/bootstrap.py': '334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211',
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
-  'python/context_guard_receipt/cli.py': 'c95d56a85ccc225705a7199ca064d1540a8c886fb8e0dbd09d12bcd6a163e7cc',
+  'python/context_guard_receipt/cli.py': '8e032c51092790145b8142bcacad073e9ef7617aec71b05621fe3b4418861380',
   'python/context_guard_receipt/cli_io.py': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf',
   'python/context_guard_receipt/contracts.py': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e',
   'python/context_guard_receipt/evidence_pack.py': '3fb5540dcee31cd6ded4883e4f4c99fb89ee17c2484f3e2ee33ebe741454d0f8',
-  'python/context_guard_receipt/expansion.py': '9d102a2534312f20543e54faa192fda367445271079aeeb65b55664692c75046',
+  'python/context_guard_receipt/expansion.py': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444',
   'python/context_guard_receipt/identity.py': 'fc41f17612d75a4e9a37971e274d7e071bc144062ebb2011df4450ccac890a54',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
   'python/context_guard_receipt/router.py': '22b395d0a8a0522fcc9b12c1b12493e90aafb9e374937725a2bdaf223188529c',
+  'python/context_guard_receipt/runner.py': '533bd2aead6c026a026dff8bc1de46ebdf0296c5a38b229d6260a322b2d55611',
   'python/context_guard_receipt/sanitizer.py': 'ddf7d4d81dbb73156fa2274c7adf06475c4688b1e08341835aff4eeb81a72fc8',
-  'python/context_guard_receipt/store.py': 'bfd70b5afec188518fc6b3a568ba9eb30d5fb874f99f8c538e51a462201336ce',
+  'python/context_guard_receipt/store.py': 'ec5d2a47c3bc60ba0d327e688e89f3e96369b510fe33c1b74599fdfb378fdb1e',
   'python/context_guard_receipt/tool_schemas.py': 'f84a8bc2f2232250dfe0782aaddf35c9842720f4815c6d2d8e4bd95757546bbc',
   'schemas/assembly-receipt.schema.json': '05ab76b261ca18ed8d165cb4e43395006e7196fdeccb53603c3ed77ca3bdfe88',
   'schemas/blueprint-descriptor.schema.json': '4424c2c482dc8d4184f1bd7ac6e1e45ad4ee36ee97da13e75b0986b2da8c9b09',
-  'schemas/capability-record.schema.json': '2ad38d92d38effae26182fb698bae7b9e4a9435b0f7b142ac6efff4661bd4131',
+  'schemas/capability-record.schema.json': '86df8398c5199a0d4e3d58ee7d8e2a4171e0103a5ea05644f00f1c343889c114',
+  'schemas/command-capture-receipt.schema.json': '7bcdaeb52fdfa4cbb3dc57b8d4b3b1cfa318bb7d8af11574ae0e23126ffa954b',
   'schemas/evidence-boundary.schema.json': 'b510303bd09adcaf7150415aab5cae3adbe4c99b8482c07a45bb978ad4e82ba7',
   'schemas/evidence-descriptor.schema.json': '29fa127eeafb8c52c05c7cdc8b1b929919e47e8e94aa8a5e6cd81ea2cf973dff',
   'schemas/evidence-pack.schema.json': '5ff6823d166b245a488e6d0f96512ae025b7836f7f46e5e14dc4508edfad6692',
@@ -140,15 +147,51 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-function launcherError(reason, exitCode) {
-  process.stderr.write(`${stableJson({
+function launcherErrorBytes(reason) {
+  return Buffer.from(`${stableJson({
     evidence_boundary: EVIDENCE_BOUNDARY,
     operation: 'launcher',
     reason,
     schema_version: RESPONSE_SCHEMA_VERSION,
     status: 'error',
-  })}\n`);
+  })}\n`, 'ascii');
+}
+
+function launcherError(reason, exitCode) {
+  const ignoreWriteError = () => {};
+  process.stderr.once('error', ignoreWriteError);
+  try {
+    process.stderr.write(launcherErrorBytes(reason), () => {
+      process.stderr.removeListener('error', ignoreWriteError);
+    });
+  } catch (_) {
+    process.stderr.removeListener('error', ignoreWriteError);
+  }
   return exitCode;
+}
+
+function writeExact(stream, payload) {
+  if (payload.length === 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (succeeded) => {
+      if (settled) return;
+      settled = true;
+      setImmediate(() => stream.removeListener('error', onError));
+      resolve(succeeded);
+    };
+    const onError = () => finish(false);
+    stream.on('error', onError);
+    try {
+      stream.write(payload, (error) => finish(!error));
+    } catch (_) {
+      finish(false);
+    }
+  });
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function isRegularFile(filePath) {
@@ -344,6 +387,34 @@ function nativeExecutableRegularFile(candidate) {
   }
 }
 
+async function waitForShutdown(childClosed, milliseconds) {
+  const deadline = Date.now() + milliseconds;
+  do {
+    if (childClosed()) return true;
+    await delay(20);
+  } while (Date.now() < deadline);
+  return childClosed();
+}
+
+async function stopInterruptedChild(child, signalName, childClosed) {
+  try {
+    child.kill(signalName);
+  } catch (_) {
+    // The Python child may have completed immediately before the interrupt.
+  }
+  if (await waitForShutdown(childClosed, INTERRUPT_GRACE_MILLISECONDS)) {
+    return;
+  }
+  if (!childClosed()) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {
+      // The Python child may have completed during the grace interval.
+    }
+  }
+  await waitForShutdown(childClosed, INTERRUPT_KILL_WAIT_MILLISECONDS);
+}
+
 function resolveExecutable(candidate) {
   try {
     const resolved = fs.realpathSync(candidate);
@@ -414,17 +485,129 @@ function launch(kind, argv, entryFilename) {
   if (!compatibleProbe(python, bootstrap)) {
     return launcherError('protocol_incompatible', 78);
   }
-  const child = childProcess.spawnSync(python, [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv], {
-    maxBuffer: 2 * 1024 * 1024,
-    stdio: ['inherit', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  if (child.error || typeof child.status !== 'number') {
+  let child;
+  try {
+    child = childProcess.spawn(
+      python,
+      [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv],
+      {
+        stdio: ['inherit', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+  } catch (_) {
     return launcherError('runtime_unavailable', 69);
   }
-  if (child.stdout) process.stdout.write(child.stdout);
-  if (child.stderr) process.stderr.write(child.stderr);
-  return child.status;
+  if (child.stdout === null || child.stderr === null) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {
+      // The failed launch has no output channels to drain.
+    }
+    return launcherError('runtime_unavailable', 69);
+  }
+
+  let stdoutChunks = [];
+  let stderrChunks = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let runtimeFailure = false;
+  let interrupted = null;
+  let childHasClosed = false;
+  let completed = false;
+
+  const discardOutput = () => {
+    stdoutChunks = [];
+    stderrChunks = [];
+    stdoutBytes = 0;
+    stderrBytes = 0;
+  };
+  const capture = (channel, chunk) => {
+    if (interrupted !== null || runtimeFailure) return;
+    const currentBytes = channel === 'stdout' ? stdoutBytes : stderrBytes;
+    if (!Buffer.isBuffer(chunk) || currentBytes + chunk.length > MAX_CHILD_STREAM_BYTES) {
+      runtimeFailure = true;
+      discardOutput();
+      void stopInterruptedChild(child, 'SIGTERM', () => childHasClosed);
+      return;
+    }
+    if (channel === 'stdout') {
+      stdoutChunks.push(chunk);
+      stdoutBytes += chunk.length;
+    } else {
+      stderrChunks.push(chunk);
+      stderrBytes += chunk.length;
+    }
+  };
+  child.stdout.on('data', (chunk) => capture('stdout', chunk));
+  child.stderr.on('data', (chunk) => capture('stderr', chunk));
+  child.on('error', () => {
+    runtimeFailure = true;
+    discardOutput();
+  });
+
+  const removeSignalHandlers = () => {
+    process.removeListener('SIGINT', handleSigint);
+    process.removeListener('SIGTERM', handleSigterm);
+  };
+  const interrupt = (signalName, signalNumber) => {
+    if (completed) return;
+    if (interrupted !== null) {
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {
+        // A repeated interrupt is only an escalation request.
+      }
+      return;
+    }
+    interrupted = {
+      signalNumber,
+    };
+    discardOutput();
+    void (async () => {
+      await stopInterruptedChild(
+        child,
+        signalName,
+        () => childHasClosed,
+      );
+      completed = true;
+      discardOutput();
+      removeSignalHandlers();
+      process.exitCode = 128 + interrupted.signalNumber;
+    })();
+  };
+  const handleSigint = () => interrupt('SIGINT', 2);
+  const handleSigterm = () => interrupt('SIGTERM', 15);
+  process.on('SIGINT', handleSigint);
+  process.on('SIGTERM', handleSigterm);
+
+  child.on('close', (status, childSignal) => {
+    childHasClosed = true;
+    if (interrupted !== null || completed) return;
+    completed = true;
+    removeSignalHandlers();
+    void (async () => {
+      if (runtimeFailure || childSignal !== null || !Number.isInteger(status)) {
+        discardOutput();
+        process.exitCode = launcherError('runtime_unavailable', 69);
+        return;
+      }
+      const stdout = Buffer.concat(stdoutChunks, stdoutBytes);
+      const stderr = Buffer.concat(stderrChunks, stderrBytes);
+      discardOutput();
+      if (!(await writeExact(process.stdout, stdout))) {
+        await writeExact(process.stderr, launcherErrorBytes('delivery_failure'));
+        process.exitCode = 74;
+        return;
+      }
+      if (!(await writeExact(process.stderr, stderr))) {
+        process.exitCode = 74;
+        return;
+      }
+      process.exitCode = status;
+    })();
+  });
+  return undefined;
 }
 
 module.exports = { launch };
