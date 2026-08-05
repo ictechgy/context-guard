@@ -5,7 +5,7 @@
     {"mode": "0644", "path": "README.md", "sha256": "30c552c72c1f1cabed18b4b6fed67f92cef5a2e30e98dc67ae8a6d3a85ced0fd"},
     {"mode": "0755", "path": "bin/context-guard-receipt-mcp.cjs", "sha256": "883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd"},
     {"mode": "0755", "path": "bin/context-guard-receipt.cjs", "sha256": "bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8"},
-    {"mode": "0644", "path": "bin/launcher.cjs", "sha256": "33ac3f78f91d85d411c773c51bfec418af167f61a77fe7e8040fb5057a80793e"},
+    {"mode": "0644", "path": "bin/launcher.cjs", "sha256": "f12d08965e3e3e626428824207c999b944f7619d79fb9e2f8523db97a8212413"},
     {"mode": "0644", "path": "package.json", "sha256": "b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf"},
     {"mode": "0644", "path": "python/context_guard_receipt/__init__.py", "sha256": "1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6"},
     {"mode": "0644", "path": "python/context_guard_receipt/assembly.py", "sha256": "0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea"},

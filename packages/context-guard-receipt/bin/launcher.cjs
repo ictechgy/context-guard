@@ -89,6 +89,10 @@ const EXPECTED_FILES = [
   'schemas/twin-snapshot.schema.json',
   'schemas/typed-blueprint.schema.json',
 ];
+const TRUSTED_EXECUTABLE_FILES = new Set([
+  'bin/context-guard-receipt-mcp.cjs',
+  'bin/context-guard-receipt.cjs',
+]);
 // The installed launcher is part of the caller's/package manager's trust
 // boundary. These embedded values prevent a mutable sidecar manifest alone
 // from authorizing rewritten payloads; they are not a signature.
@@ -395,6 +399,7 @@ function validatePackage(packageRoot) {
         || typeof entry.path !== 'string' || typeof entry.mode !== 'string'
         || typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256)
         || !/^[0-7]{4}$/.test(entry.mode)
+        || entry.mode !== (TRUSTED_EXECUTABLE_FILES.has(entry.path) ? '0755' : '0644')
         || path.posix.normalize(entry.path) !== entry.path || entry.path.startsWith('/')
         || entry.path.split('/').includes('..')) {
       return false;
@@ -405,9 +410,9 @@ function validatePackage(packageRoot) {
     if (fileBytes === null) {
       return false;
     }
-    const mode = (fs.statSync(candidate).mode & 0o777).toString(8).padStart(4, '0');
+    const mode = (fs.statSync(candidate).mode & 0o7777).toString(8).padStart(4, '0');
     const digest = crypto.createHash('sha256').update(fileBytes).digest('hex');
-    if (mode !== entry.mode || digest !== entry.sha256) {
+    if (!isPortablePackageMode(mode, entry.mode) || digest !== entry.sha256) {
       return false;
     }
     if (entry.path !== 'bin/launcher.cjs'
@@ -418,6 +423,16 @@ function validatePackage(packageRoot) {
   return paths.join('\n') === EXPECTED_FILES.join('\n')
     && Object.keys(TRUSTED_PAYLOAD_DIGESTS).sort().join('\n')
       === EXPECTED_FILES.filter((entry) => entry !== 'bin/launcher.cjs').sort().join('\n');
+}
+
+function isPortablePackageMode(observedMode, archiveMode) {
+  if (archiveMode === '0644') {
+    return observedMode === '0600' || observedMode === '0640' || observedMode === '0644';
+  }
+  if (archiveMode === '0755') {
+    return observedMode === '0700' || observedMode === '0750' || observedMode === '0755';
+  }
+  return false;
 }
 
 function nativeExecutableRegularFile(candidate) {

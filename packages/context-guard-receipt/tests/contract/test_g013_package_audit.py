@@ -4,8 +4,11 @@ import gzip
 import importlib.util
 import hashlib
 import io
+import json
+import os
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -249,7 +252,11 @@ class G013PackageAuditTests(unittest.TestCase):
             data_file.write_text("data\n", encoding="utf-8")
             command_file.write_text("command\n", encoding="utf-8")
 
-            for data_mode, command_mode in ((0o644, 0o755), (0o600, 0o700)):
+            for data_mode, command_mode in (
+                (0o644, 0o755),
+                (0o640, 0o750),
+                (0o600, 0o700),
+            ):
                 data_file.chmod(data_mode)
                 command_file.chmod(command_mode)
                 self.assertEqual(PACKAGE_CHECK.portable_source_mode(data_file, "0644"), f"{data_mode:04o}")
@@ -274,6 +281,137 @@ class G013PackageAuditTests(unittest.TestCase):
 
             snapshot = PACKAGE_CHECK.validate_source(package_root=restricted_root)
             PACKAGE_CHECK.validate_npm_tarball(snapshot)
+
+    def test_restricted_source_modes_pass_launcher_integrity(self) -> None:
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            restricted_root = Path(temporary_directory) / "restricted-package"
+            for relative_path, archive_mode in PACKAGE_CHECK.EXPECTED_MODES.items():
+                source = PACKAGE_ROOT / relative_path
+                destination = restricted_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                destination.chmod(int(archive_mode, 8))
+            environment = dict(os.environ)
+            environment["CONTEXT_GUARD_RECEIPT_PYTHON"] = str(Path(sys.executable).resolve())
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+
+            for data_mode, command_mode in (
+                (0o644, 0o755),
+                (0o640, 0o750),
+                (0o600, 0o700),
+            ):
+                for relative_path, archive_mode in PACKAGE_CHECK.EXPECTED_MODES.items():
+                    (restricted_root / relative_path).chmod(
+                        command_mode if archive_mode == "0755" else data_mode
+                    )
+                for entry_point in (
+                    "bin/context-guard-receipt.cjs",
+                    "bin/context-guard-receipt-mcp.cjs",
+                ):
+                    with self.subTest(
+                        data_mode=f"{data_mode:04o}",
+                        command_mode=f"{command_mode:04o}",
+                        entry_point=entry_point,
+                    ):
+                        result = subprocess.run(
+                            [str(Path(node).resolve()), str(restricted_root / entry_point), "--help"],
+                            cwd=restricted_root,
+                            env=environment,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_launcher_rejects_writable_or_role_inverted_source_modes(self) -> None:
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            package_root = Path(temporary_directory) / "package"
+            for relative_path, archive_mode in PACKAGE_CHECK.EXPECTED_MODES.items():
+                source = PACKAGE_ROOT / relative_path
+                destination = package_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                destination.chmod(int(archive_mode, 8))
+            environment = dict(os.environ)
+            environment["CONTEXT_GUARD_RECEIPT_PYTHON"] = str(Path(sys.executable).resolve())
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            entry_point = package_root / "bin/context-guard-receipt.cjs"
+
+            for relative_path, unsafe_mode in (
+                ("README.md", 0o664),
+                ("README.md", 0o755),
+                ("README.md", 0o1644),
+                ("README.md", 0o4644),
+                ("bin/context-guard-receipt.cjs", 0o775),
+                ("bin/context-guard-receipt.cjs", 0o644),
+                ("bin/context-guard-receipt.cjs", 0o2755),
+            ):
+                candidate = package_root / relative_path
+                expected_mode = int(PACKAGE_CHECK.EXPECTED_MODES[relative_path], 8)
+                with self.subTest(relative_path=relative_path, unsafe_mode=f"{unsafe_mode:04o}"):
+                    candidate.chmod(unsafe_mode)
+                    result = subprocess.run(
+                        [str(Path(node).resolve()), str(entry_point), "--help"],
+                        cwd=package_root,
+                        env=environment,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    candidate.chmod(expected_mode)
+                    self.assertEqual(result.returncode, 70)
+                    self.assertIn(b'"reason":"integrity_failure"', result.stderr)
+
+    def test_launcher_rejects_manifest_and_file_role_flip(self) -> None:
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            package_root = Path(temporary_directory) / "package"
+            for relative_path, archive_mode in PACKAGE_CHECK.EXPECTED_MODES.items():
+                source = PACKAGE_ROOT / relative_path
+                destination = package_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                destination.chmod(int(archive_mode, 8))
+            environment = dict(os.environ)
+            environment["CONTEXT_GUARD_RECEIPT_PYTHON"] = str(Path(sys.executable).resolve())
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            entry_point = package_root / "bin/context-guard-receipt.cjs"
+            manifest_path = package_root / "package-files.json"
+
+            for relative_path, flipped_mode in (
+                ("README.md", "0755"),
+                ("bin/context-guard-receipt.cjs", "0644"),
+            ):
+                with self.subTest(relative_path=relative_path, flipped_mode=flipped_mode):
+                    manifest = json.loads(
+                        (PACKAGE_ROOT / "package-files.json").read_text(encoding="utf-8")
+                    )
+                    manifest_entry = next(
+                        entry for entry in manifest["files"] if entry["path"] == relative_path
+                    )
+                    manifest_entry["mode"] = flipped_mode
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+                        encoding="utf-8",
+                    )
+                    candidate = package_root / relative_path
+                    candidate.chmod(int(flipped_mode, 8))
+                    result = subprocess.run(
+                        [str(Path(node).resolve()), str(entry_point), "--help"],
+                        cwd=package_root,
+                        env=environment,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                    candidate.chmod(int(PACKAGE_CHECK.EXPECTED_MODES[relative_path], 8))
+                    self.assertEqual(result.returncode, 70)
+                    self.assertIn(b'"reason":"integrity_failure"', result.stderr)
 
     def test_pack_subprocess_is_stopped_on_output_overflow_or_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
