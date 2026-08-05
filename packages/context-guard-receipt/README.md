@@ -15,6 +15,8 @@ context-guard-receipt inspect diagnostics --input <file|->
 context-guard-receipt inspect diagnostics --input <file|-> --state-scope durable --root <absolute> --state-dir <absolute>
 context-guard-receipt inspect firewall --input <file|->
 context-guard-receipt inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <1..256>]
+context-guard-receipt inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>
+context-guard-receipt inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <1..256>]
 ```
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
@@ -23,9 +25,9 @@ settings, contact a provider, or establish provider or host authority. It does
 not report provider token, cost, cache, or percentage-savings claims. Assembly
 is a byte proxy for explicitly provided local bytes, not a token or
 provider-usage claim. `run --escrow` is provider-free local capture only;
-diagnostics and firewall results are advisory and non-applying. The remaining
-reserved `inspect` targets and the MCP transport stay intentionally
-unavailable.
+diagnostics, firewall results, and twin results are advisory and non-applying.
+The remaining reserved `inspect` targets and the MCP transport stay
+intentionally unavailable.
 
 Process-scope diagnostics use a new random fingerprint key for every invocation
 and create no state. They report bounded byte accounting, a position-bound
@@ -50,6 +52,32 @@ before a newly created lock can validate the directory, opening returns
 `commit_uncertain` and preserves every name, including the lock residue. Portable
 POSIX APIs cannot conditionally unlink a pathname by inode, so recovery never
 risks deleting a concurrent same-UID replacement.
+
+The execution twin is disabled unless every invocation includes the exact
+`--experimental-twin`, absolute `--root`, and absolute `--state-dir` tuple. It
+does not run a command, replay an action, alter a request, or inspect the
+network. An append re-evaluates only 1–32 declared local predicates: repository
+instance equality, Git logical-state equality, exact regular-file equality, or
+exact path absence. Git logical state covers bounded Git metadata, tracked
+diffs, and untracked names; it deliberately does not claim that untracked file
+bytes are equal, so callers must declare `regular_file_equals` for those bytes.
+Non-Git and unresolved snapshots never match that predicate. File paths are
+exact-case, frozen-NFC, relative, no-follow, and bounded; persisted results
+replace paths and content with per-twin, per-event observation HMACs. `verified`
+means only that every declared predicate matched in two immediate local passes
+between stable local repository snapshots. It is not global completeness or
+execution authority.
+
+Twin state is an independently keyed, removable `auxiliary-v1/twin-v1`
+compartment. Its framed append log and authenticated metadata use explicit tail
+compare-and-swap, allow at most 1,024 events and 8 MiB, and never evict history.
+Invalid partial bytes beyond the authenticated committed offset can be removed
+as crash residue; a suffix beginning with a valid authenticated next event is
+preserved and returns `commit_uncertain` because it may be replayed metadata or
+an indeterminate commit. Read snapshots are derived, disposable, and
+non-authoritative. Removing `twin-v1` does not
+invalidate `store-v1` capabilities or `diagnostics-v1` entries; ordinary
+assembly, execution, diagnostics, and MCP startup never create it.
 
 `run --escrow` executes only the explicitly supplied absolute executable and
 argument vector. It does not invoke a shell. The child runs with the requested

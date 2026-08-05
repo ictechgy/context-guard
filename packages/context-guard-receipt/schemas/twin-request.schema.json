@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "expected_tail": {
+      "additionalProperties": false,
+      "properties": {
+        "event_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "event_sequence": {"maximum": 1024, "minimum": 1, "type": "integer"},
+        "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["event_hmac_sha256", "event_sequence", "namespace_id"],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "declared_next_action_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "expected_tail": {
+      "oneOf": [
+        {"$ref": "#/$defs/expected_tail"},
+        {"type": "null"}
+      ]
+    },
+    "predicates": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expected_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "kind": {"const": "repository_instance_equals"}
+            },
+            "required": ["expected_sha256", "kind"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expected_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "kind": {"const": "git_logical_state_equals"}
+            },
+            "required": ["expected_sha256", "kind"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expected_content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "expected_length_bytes": {"maximum": 1048576, "minimum": 0, "type": "integer"},
+              "expected_mode": {"pattern": "^[0-7]{4}$", "type": "string"},
+              "kind": {"const": "regular_file_equals"},
+              "relative_path": {"maxLength": 4096, "minLength": 1, "type": "string", "x-contextguard-maxUtf8Bytes": 4096}
+            },
+            "required": ["expected_content_sha256", "expected_length_bytes", "expected_mode", "kind", "relative_path"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {"const": "path_absent"},
+              "relative_path": {"maxLength": 4096, "minLength": 1, "type": "string", "x-contextguard-maxUtf8Bytes": 4096}
+            },
+            "required": ["kind", "relative_path"],
+            "type": "object"
+          }
+        ]
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {"const": "contextguard-receipt-twin-request/v1"}
+  },
+  "required": ["declared_next_action_sha256", "expected_tail", "predicates", "schema_version"],
+  "title": "Context Guard Receipt execution twin request",
+  "type": "object"
+}

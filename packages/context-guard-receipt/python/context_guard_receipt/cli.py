@@ -44,7 +44,7 @@ from .tool_schemas import (
 )
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|twin|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics and firewall findings are advisory and non-applying. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> [--timeout-seconds <positive-decimal> --max-channel-bytes <positive-decimal> --max-total-bytes <positive-decimal>] -- <absolute-command> [args...]\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  expand tool-schema --request <file|-> --root <absolute> --state-dir <absolute> [options]\n  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> --state-dir <absolute>]\n  inspect firewall --input <file|->\n  inspect diagnostic-ledger --state-scope durable --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect twin --experimental-twin --input <file|-> --root <absolute> --state-dir <absolute>\n  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> [--limit <positive-decimal>]\n  inspect <receipt|lease|state> [options]\n\nEvidence, blueprint, and tool-schema assembly plus exact local expansion are available. Run is explicit local capture only. Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. The companion is provider-free and makes no host-request, network, or token-saving claim. Remaining commands are inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -63,6 +63,7 @@ INSPECT_TARGETS = frozenset(
 )
 _RUN_MAX_TIMEOUT_SECONDS = 300
 _RUN_MAX_CAPTURE_BYTES = 900_000
+_TWIN_REQUEST_MAX_BYTES = 64 * 1024
 
 
 def emit_error(operation: str, status: str, reason: str, code: int) -> int:
@@ -256,6 +257,33 @@ def _valid_inspect(arguments: Sequence[str]) -> bool:
             frozenset({"--root", "--state-dir", "--state-scope"}),
             frozenset({"--limit", "--root", "--state-dir", "--state-scope"}),
         }
+    if target == "twin":
+        twin_arguments = tuple(arguments[1:])
+        if not twin_arguments:
+            return True
+        if (
+            len(twin_arguments) in {5, 7}
+            and twin_arguments[0] == "--experimental-twin"
+            and twin_arguments[1] == "--root"
+            and _is_absolute(twin_arguments[2])
+            and twin_arguments[3] == "--state-dir"
+            and _is_absolute(twin_arguments[4])
+        ):
+            return len(twin_arguments) == 5 or (
+                twin_arguments[5] == "--limit"
+                and _is_positive_integer(twin_arguments[6])
+                and int(twin_arguments[6], 10) <= 256
+            )
+        return (
+            len(twin_arguments) == 7
+            and twin_arguments[0] == "--experimental-twin"
+            and twin_arguments[1] == "--input"
+            and _is_file_argument(twin_arguments[2])
+            and twin_arguments[3] == "--root"
+            and _is_absolute(twin_arguments[4])
+            and twin_arguments[5] == "--state-dir"
+            and _is_absolute(twin_arguments[6])
+        )
     return _parse_options(
         arguments[1:],
         values={"--state-dir": _is_absolute, "--input": _is_file_argument},
@@ -721,6 +749,76 @@ def _inspect_diagnostic_ledger(arguments: Sequence[str]) -> int:
     return _write_diagnostic_payload(payload, operation=operation)
 
 
+def _write_twin_payload(payload: dict[str, object]) -> int:
+    operation = "inspect_twin"
+    try:
+        encoded = canonical_json_bytes(payload)
+    except Exception:
+        return emit_error(operation, "error", "twin_internal_failure", 70)
+    try:
+        write_stdout(encoded)
+    except Exception:
+        return emit_error(operation, "error", "twin_delivery_failed", 74)
+    return 0
+
+
+def _inspect_twin(arguments: Sequence[str]) -> int:
+    operation = "inspect_twin"
+    append_mode = len(arguments) == 7 and arguments[1] == "--input"
+    if append_mode:
+        input_argument = arguments[2]
+        root = arguments[4]
+        state_dir = arguments[6]
+    else:
+        input_argument = None
+        root = arguments[2]
+        state_dir = arguments[4]
+    try:
+        from .execution_twin import (
+            ExecutionTwin,
+            ExecutionTwinError,
+            parse_twin_request,
+        )
+    except Exception:
+        return emit_error(operation, "error", "twin_internal_failure", 70)
+
+    try:
+        if append_mode:
+            raw = read_descriptor(
+                input_argument, maximum_bytes=_TWIN_REQUEST_MAX_BYTES
+            )
+            request = parse_twin_request(raw)
+            with ExecutionTwin.open(
+                state_dir=state_dir,
+                repository_root=root,
+                create=True,
+            ) as twin:
+                payload = twin.append(
+                    request,
+                    observed_at_unix_ms=time.time_ns() // 1_000_000,
+                )
+        else:
+            limit = 256 if len(arguments) == 5 else int(arguments[6], 10)
+            with ExecutionTwin.open(
+                state_dir=state_dir,
+                repository_root=root,
+                create=False,
+            ) as twin:
+                payload = twin.inspect(limit=limit)
+    except CliIOError:
+        return emit_error(operation, "error", "twin_input_unavailable", 74)
+    except ExecutionTwinError as error:
+        code = getattr(error.code, "value", "")
+        if code == "invalid_request":
+            return emit_error(operation, "error", "twin_input_rejected", 65)
+        if code == "twin_uninitialized":
+            return emit_error(operation, "unavailable", "twin_uninitialized", 69)
+        return emit_error(operation, "error", "twin_unavailable", 74)
+    except Exception:
+        return emit_error(operation, "error", "twin_internal_failure", 70)
+    return _write_twin_payload(payload)
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments == ("--help",):
@@ -743,6 +841,12 @@ def receipt_main(arguments: Sequence[str]) -> int:
             return _inspect_durable_diagnostics(arguments[2:])
         if arguments[1] == "diagnostic-ledger":
             return _inspect_diagnostic_ledger(arguments[2:])
+        if arguments[1] == "twin":
+            if len(arguments) == 2:
+                return emit_error(
+                    "inspect_twin", "unavailable", "feature_not_available", 69
+                )
+            return _inspect_twin(arguments[2:])
         operation = f"inspect_{arguments[1].replace('-', '_')}"
         return emit_error(operation, "unavailable", "feature_not_available", 69)
     return emit_error("cli", "error", "usage", 64)

@@ -62,6 +62,19 @@ def capture_frame(sequence: int, channel: int, payload: bytes) -> bytes:
     )
 
 
+def twin_request(private_relative_path: str) -> bytes:
+    return canonical_json(
+        {
+            "declared_next_action_sha256": "a" * 64,
+            "expected_tail": None,
+            "predicates": [
+                {"kind": "path_absent", "relative_path": private_relative_path}
+            ],
+            "schema_version": "contextguard-receipt-twin-request/v1",
+        }
+    ).encode("ascii")
+
+
 def distribution() -> None:
     npm = shutil.which("npm")
     node = shutil.which("node")
@@ -454,9 +467,93 @@ def distribution() -> None:
         ):
             raise RuntimeError("installed tool-schema expansion failed its offline round trip")
 
+        twin_directories_before_mcp = tuple(root.rglob("twin-v1"))
         mcp = run([str(Path(node).resolve()), str(mcp_bin), "--root", str(install_directory)], cwd=install_directory, environment=environment)
-        if mcp.returncode != 69 or sentinel.exists():
+        if (
+            twin_directories_before_mcp
+            or mcp.returncode != 69
+            or tuple(root.rglob("twin-v1")) != twin_directories_before_mcp
+            or sentinel.exists()
+        ):
             raise RuntimeError("installed MCP command did not remain unavailable")
+
+        twin_repository_root = (root / "twin-repository").resolve()
+        twin_state_directory = (root / "twin-state").resolve()
+        twin_repository_root.mkdir(mode=0o700)
+        private_relative_path = "synthetic-private-installed-twin-g010.txt"
+        twin_appended = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "inspect",
+                "twin",
+                "--experimental-twin",
+                "--input",
+                "-",
+                "--root",
+                str(twin_repository_root),
+                "--state-dir",
+                str(twin_state_directory),
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=twin_request(private_relative_path),
+        )
+        twin_inspected = run_binary(
+            [
+                str(Path(node).resolve()),
+                str(receipt_bin),
+                "inspect",
+                "twin",
+                "--experimental-twin",
+                "--root",
+                str(twin_repository_root),
+                "--state-dir",
+                str(twin_state_directory),
+                "--limit",
+                "1",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        try:
+            twin_result = json.loads(twin_appended.stdout)
+            twin_snapshot = json.loads(twin_inspected.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RuntimeError("installed twin emitted invalid JSON") from None
+        private_values = (
+            private_relative_path.encode("ascii"),
+            str(twin_repository_root).encode(),
+            str(twin_state_directory).encode(),
+        )
+        authority_fields = (
+            "applied",
+            "execution_authority",
+            "global_completeness_authority",
+            "provider_claim_authority",
+        )
+        if (
+            twin_appended.returncode != 0
+            or twin_inspected.returncode != 0
+            or twin_appended.stderr
+            or twin_inspected.stderr
+            or twin_appended.stdout != canonical_json(twin_result).encode("ascii")
+            or twin_inspected.stdout != canonical_json(twin_snapshot).encode("ascii")
+            or twin_result.get("evidence_boundary") != EXPECTED_BOUNDARY
+            or twin_snapshot.get("evidence_boundary") != EXPECTED_BOUNDARY
+            or twin_result.get("event_sequence") != 1
+            or twin_snapshot.get("committed_event_count") != 1
+            or len(twin_snapshot.get("latest_events", ())) != 1
+            or any(twin_result.get(field) is not False for field in authority_fields)
+            or any(twin_snapshot.get(field) is not False for field in authority_fields)
+            or any(
+                private_value in output
+                for private_value in private_values
+                for output in (twin_appended.stdout, twin_inspected.stdout)
+            )
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed twin failed its closed offline smoke test")
 
 
 def main() -> int:

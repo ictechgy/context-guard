@@ -55,11 +55,15 @@ EXPECTED_HELP = (
     "  inspect firewall --input <file|->\n"
     "  inspect diagnostic-ledger --state-scope durable --root <absolute> "
     "--state-dir <absolute> [--limit <positive-decimal>]\n"
-    "  inspect <receipt|twin|lease|state> [options]\n\n"
+    "  inspect twin --experimental-twin --input <file|-> --root <absolute> "
+    "--state-dir <absolute>\n"
+    "  inspect twin --experimental-twin --root <absolute> --state-dir <absolute> "
+    "[--limit <positive-decimal>]\n"
+    "  inspect <receipt|lease|state> [options]\n\n"
     "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. "
-    "Run is explicit local capture only. Diagnostics and firewall findings are advisory and "
-    "non-applying. The companion is provider-free and makes no host-request, network, or "
-    "token-saving claim. Remaining commands are inert.\n"
+    "Run is explicit local capture only. Diagnostics, firewall findings, and the experimental "
+    "twin are advisory and non-applying. The companion is provider-free and makes no "
+    "host-request, network, or token-saving claim. Remaining commands are inert.\n"
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
@@ -118,6 +122,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/contracts.py": 0o644,
     "python/context_guard_receipt/diagnostic_ledger.py": 0o644,
     "python/context_guard_receipt/diagnostics.py": 0o644,
+    "python/context_guard_receipt/execution_twin.py": 0o644,
     "python/context_guard_receipt/evidence_pack.py": 0o644,
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
@@ -148,6 +153,11 @@ EXPECTED_RUNTIME_MODES = {
     "schemas/source-identity.schema.json": 0o644,
     "schemas/store-commit.schema.json": 0o644,
     "schemas/store-metadata.schema.json": 0o644,
+    "schemas/twin-event.schema.json": 0o644,
+    "schemas/twin-metadata.schema.json": 0o644,
+    "schemas/twin-request.schema.json": 0o644,
+    "schemas/twin-result.schema.json": 0o644,
+    "schemas/twin-snapshot.schema.json": 0o644,
     "schemas/typed-blueprint.schema.json": 0o644,
     "schemas/tool-schema-bundle.schema.json": 0o644,
     "schemas/tool-schema-catalog-reference.schema.json": 0o644,

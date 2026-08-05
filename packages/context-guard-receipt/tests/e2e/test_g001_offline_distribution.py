@@ -68,6 +68,19 @@ def capture_frame(sequence: int, channel: int, payload: bytes) -> bytes:
     )
 
 
+def twin_request(private_relative_path: str) -> bytes:
+    return canonical_json(
+        {
+            "declared_next_action_sha256": "a" * 64,
+            "expected_tail": None,
+            "predicates": [
+                {"kind": "path_absent", "relative_path": private_relative_path}
+            ],
+            "schema_version": "contextguard-receipt-twin-request/v1",
+        }
+    ).encode("ascii")
+
+
 class G001OfflineDistributionTests(unittest.TestCase):
     def test_tarball_installs_offline_and_ignores_poisoned_contextguard_helpers(self) -> None:
         """Break caught: checkout imports, registry/helper dependence, or unsafe tar contents."""
@@ -698,6 +711,12 @@ class G001OfflineDistributionTests(unittest.TestCase):
             self.assertIn("--root", mcp_help.stdout)
             self.assertEqual(mcp_help.stderr, "")
 
+            twin_directories_before_mcp = tuple(temporary_root.rglob("twin-v1"))
+            self.assertEqual(
+                twin_directories_before_mcp,
+                (),
+                "an ordinary installed surface created twin state",
+            )
             mcp_unavailable = run_command(
                 [str(Path(NODE).resolve()), str(mcp_bin), "--root", str(install_directory)],
                 cwd=install_directory,
@@ -713,6 +732,84 @@ class G001OfflineDistributionTests(unittest.TestCase):
             self.assertEqual(mcp_unavailable.returncode, 69, mcp_unavailable.stderr)
             self.assertEqual(mcp_unavailable.stdout, "")
             self.assertEqual(mcp_unavailable.stderr, canonical_json(expected_mcp))
+            self.assertEqual(
+                tuple(temporary_root.rglob("twin-v1")),
+                twin_directories_before_mcp,
+                "ordinary MCP startup created twin state",
+            )
+            self.assertFalse(sentinel.exists())
+
+            twin_repository_root = (temporary_root / "twin-repository").resolve()
+            twin_state_directory = (temporary_root / "twin-state").resolve()
+            twin_repository_root.mkdir(mode=0o700)
+            private_relative_path = "synthetic-private-installed-twin-g010.txt"
+            twin_appended = run_binary_command(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "inspect",
+                    "twin",
+                    "--experimental-twin",
+                    "--input",
+                    "-",
+                    "--root",
+                    str(twin_repository_root),
+                    "--state-dir",
+                    str(twin_state_directory),
+                ],
+                cwd=install_directory,
+                environment=environment,
+                input_bytes=twin_request(private_relative_path),
+            )
+            self.assertEqual(twin_appended.returncode, 0, twin_appended.stderr)
+            self.assertEqual(twin_appended.stderr, b"")
+            twin_result = json.loads(twin_appended.stdout)
+            self.assertEqual(
+                twin_appended.stdout, canonical_json(twin_result).encode("ascii")
+            )
+            self.assertEqual(twin_result["event_sequence"], 1)
+
+            twin_inspected = run_binary_command(
+                [
+                    str(Path(NODE).resolve()),
+                    str(receipt_bin),
+                    "inspect",
+                    "twin",
+                    "--experimental-twin",
+                    "--root",
+                    str(twin_repository_root),
+                    "--state-dir",
+                    str(twin_state_directory),
+                    "--limit",
+                    "1",
+                ],
+                cwd=install_directory,
+                environment=environment,
+            )
+            self.assertEqual(twin_inspected.returncode, 0, twin_inspected.stderr)
+            self.assertEqual(twin_inspected.stderr, b"")
+            twin_snapshot = json.loads(twin_inspected.stdout)
+            self.assertEqual(
+                twin_inspected.stdout, canonical_json(twin_snapshot).encode("ascii")
+            )
+            self.assertEqual(twin_snapshot["committed_event_count"], 1)
+            self.assertEqual(len(twin_snapshot["latest_events"]), 1)
+            for payload in (twin_result, twin_snapshot):
+                self.assertEqual(payload["evidence_boundary"], EVIDENCE_BOUNDARY)
+                for authority_field in (
+                    "applied",
+                    "execution_authority",
+                    "global_completeness_authority",
+                    "provider_claim_authority",
+                ):
+                    self.assertIs(payload[authority_field], False)
+            for private_value in (
+                private_relative_path.encode("ascii"),
+                str(twin_repository_root).encode(),
+                str(twin_state_directory).encode(),
+            ):
+                self.assertNotIn(private_value, twin_appended.stdout)
+                self.assertNotIn(private_value, twin_inspected.stdout)
             self.assertFalse(sentinel.exists())
 
 

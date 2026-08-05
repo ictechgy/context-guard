@@ -41,6 +41,7 @@ _TOP_LOCK_NAME: Final = "lock"
 _AUXILIARY_NAME: Final = "auxiliary-v1"
 _AUXILIARY_METADATA_NAME: Final = "metadata.json"
 _DIAGNOSTICS_NAME: Final = "diagnostics-v1"
+_TWIN_NAME: Final = "twin-v1"
 _DIAGNOSTIC_LOCK_NAME: Final = "lock"
 _KEY_NAME: Final = "key"
 _METADATA_NAME: Final = "metadata.json"
@@ -1055,7 +1056,11 @@ class DiagnosticLedger:
                     overflow=DiagnosticLedgerErrorCode.RECOVERY_REQUIRED,
                 )
             )
-            unknown = names - {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME}
+            unknown = names - {
+                _AUXILIARY_METADATA_NAME,
+                _DIAGNOSTICS_NAME,
+                _TWIN_NAME,
+            }
             temporary_names = {
                 name for name in unknown if _DIAGNOSTICS_TEMP_NAME.fullmatch(name)
             }
@@ -1063,12 +1068,21 @@ class DiagnosticLedger:
                 _raise(DiagnosticLedgerErrorCode.LEDGER_CORRUPT)
             if temporary_names:
                 _raise(DiagnosticLedgerErrorCode.RECOVERY_REQUIRED)
+            if _TWIN_NAME in names:
+                twin_fd = _open_directory_at(auxiliary_fd, _TWIN_NAME)
+                os.close(twin_fd)
             if _DIAGNOSTICS_NAME in names:
-                if names != {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME}:
+                if names not in (
+                    {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME},
+                    {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME, _TWIN_NAME},
+                ):
                     _raise(DiagnosticLedgerErrorCode.LEDGER_CORRUPT)
                 self._validate_diagnostics_topology(auxiliary_fd)
                 return
-            if names != {_AUXILIARY_METADATA_NAME}:
+            if names not in (
+                {_AUXILIARY_METADATA_NAME},
+                {_AUXILIARY_METADATA_NAME, _TWIN_NAME},
+            ):
                 _raise(DiagnosticLedgerErrorCode.LEDGER_CORRUPT)
             if not create:
                 _raise(DiagnosticLedgerErrorCode.LEDGER_UNINITIALIZED)
@@ -1229,14 +1243,18 @@ class DiagnosticLedger:
             opened.append(auxiliary_fd)
             if self._descriptor_identity(auxiliary_fd) != self._auxiliary_anchor:
                 _raise(DiagnosticLedgerErrorCode.UNSAFE_STATE)
-            if set(_bounded_names(auxiliary_fd, 2)) != {
-                _AUXILIARY_METADATA_NAME,
-                _DIAGNOSTICS_NAME,
-            }:
+            auxiliary_names = set(_bounded_names(auxiliary_fd, 3))
+            if auxiliary_names not in (
+                {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME},
+                {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_NAME, _TWIN_NAME},
+            ):
                 _raise(DiagnosticLedgerErrorCode.LEDGER_CORRUPT)
             _validate_auxiliary_metadata(
                 _read_named_file(auxiliary_fd, _AUXILIARY_METADATA_NAME, 4096)
             )
+            if _TWIN_NAME in auxiliary_names:
+                twin_fd = _open_directory_at(auxiliary_fd, _TWIN_NAME)
+                opened.append(twin_fd)
             diagnostics_fd = _open_directory_at(auxiliary_fd, _DIAGNOSTICS_NAME)
             opened.append(diagnostics_fd)
             if self._descriptor_identity(diagnostics_fd) != self._diagnostics_anchor:

@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "predicate_result": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["git_logical_state_equals", "path_absent", "regular_file_equals", "repository_instance_equals"]},
+        "matched": {"type": "boolean"},
+        "observation_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "ordinal": {"maximum": 31, "minimum": 0, "type": "integer"}
+      },
+      "required": ["kind", "matched", "observation_hmac_sha256", "ordinal"],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "advisory_only": {"const": true},
+    "applied": {"const": false},
+    "declared_next_action_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_sequence": {"maximum": 1024, "minimum": 1, "type": "integer"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "execution_authority": {"const": false},
+    "global_completeness_authority": {"const": false},
+    "matched_predicate_count": {"maximum": 32, "minimum": 0, "type": "integer"},
+    "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "predicate_count": {"maximum": 32, "minimum": 1, "type": "integer"},
+    "predicate_results": {"items": {"$ref": "#/$defs/predicate_result"}, "maxItems": 32, "minItems": 1, "type": "array"},
+    "previous_event_hmac_sha256": {
+      "oneOf": [
+        {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "provider_claim_authority": {"const": false},
+    "result_kind": {"const": "revalidated_declared_next_action_delta"},
+    "schema_version": {"const": "contextguard-receipt-twin-result/v1"},
+    "verified": {"type": "boolean"}
+  },
+  "required": ["advisory_only", "applied", "declared_next_action_sha256", "event_hmac_sha256", "event_id", "event_sequence", "evidence_boundary", "execution_authority", "global_completeness_authority", "matched_predicate_count", "namespace_id", "predicate_count", "predicate_results", "previous_event_hmac_sha256", "provider_claim_authority", "result_kind", "schema_version", "verified"],
+  "title": "Context Guard Receipt execution twin result",
+  "type": "object"
+}

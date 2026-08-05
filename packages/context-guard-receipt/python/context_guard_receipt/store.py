@@ -48,6 +48,7 @@ _LOCK_NAME: Final = "lock"
 _AUXILIARY_DIRECTORY: Final = "auxiliary-v1"
 _AUXILIARY_METADATA_NAME: Final = "metadata.json"
 _DIAGNOSTICS_DIRECTORY: Final = "diagnostics-v1"
+_TWIN_DIRECTORY: Final = "twin-v1"
 _KEY_NAME: Final = "integrity-key"
 _METADATA_NAME: Final = "metadata.json"
 _COMMITS_NAME: Final = "commits"
@@ -709,16 +710,19 @@ def _validate_auxiliary_compartment(state_fd: int, top_names: set[str]) -> None:
         return
     auxiliary_fd = _open_directory_at(state_fd, _AUXILIARY_DIRECTORY)
     diagnostics_fd: int | None = None
+    twin_fd: int | None = None
     try:
         names = set(
             _bounded_names(
-                auxiliary_fd, 2, overflow=StoreErrorCode.RECOVERY_REQUIRED
+                auxiliary_fd, 3, overflow=StoreErrorCode.RECOVERY_REQUIRED
             )
         )
-        if names not in (
-            {_AUXILIARY_METADATA_NAME},
-            {_AUXILIARY_METADATA_NAME, _DIAGNOSTICS_DIRECTORY},
-        ):
+        allowed = {
+            _AUXILIARY_METADATA_NAME,
+            _DIAGNOSTICS_DIRECTORY,
+            _TWIN_DIRECTORY,
+        }
+        if _AUXILIARY_METADATA_NAME not in names or names - allowed:
             _raise(StoreErrorCode.RECOVERY_REQUIRED)
         metadata = _parse_document(
             _read_named_file(auxiliary_fd, _AUXILIARY_METADATA_NAME, 4096),
@@ -733,7 +737,11 @@ def _validate_auxiliary_compartment(state_fd: int, top_names: set[str]) -> None:
             diagnostics_fd = _open_directory_at(
                 auxiliary_fd, _DIAGNOSTICS_DIRECTORY
             )
+        if _TWIN_DIRECTORY in names:
+            twin_fd = _open_directory_at(auxiliary_fd, _TWIN_DIRECTORY)
     finally:
+        if twin_fd is not None:
+            os.close(twin_fd)
         if diagnostics_fd is not None:
             os.close(diagnostics_fd)
         os.close(auxiliary_fd)
