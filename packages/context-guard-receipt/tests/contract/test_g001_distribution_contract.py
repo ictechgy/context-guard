@@ -112,6 +112,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,
     "python/context_guard_receipt/router.py": 0o644,
+    "python/context_guard_receipt/sanitizer.py": 0o644,
     "python/context_guard_receipt/store.py": 0o644,
     "python/context_guard_receipt/tool_schemas.py": 0o644,
     "schemas/assembly-receipt.schema.json": 0o644,

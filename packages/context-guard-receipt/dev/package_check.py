@@ -35,6 +35,7 @@ EXPECTED_PACKAGE_PATHS = {
     "python/context_guard_receipt/protection.py",
     "python/context_guard_receipt/receipts.py",
     "python/context_guard_receipt/router.py",
+    "python/context_guard_receipt/sanitizer.py",
     "python/context_guard_receipt/store.py",
     "python/context_guard_receipt/tool_schemas.py",
     "schemas/assembly-receipt.schema.json",

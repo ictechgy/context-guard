@@ -91,6 +91,42 @@ def distribution() -> None:
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
             raise RuntimeError("installed receipt command failed its closed-boundary smoke test")
+        sanitizer_smoke = run(
+            [
+                str(Path(sys.executable).resolve()), "-I", "-S", "-B", "-c",
+                (
+                    "import sys\n"
+                    "from pathlib import Path\n"
+                    "installed = Path(sys.argv[1]).resolve()\n"
+                    "sys.path.insert(0, str(installed))\n"
+                    "from context_guard_receipt import sanitizer\n"
+                    "candidate = b'api_key=synthetic-test-value'\n"
+                    "whole = sanitizer.sanitize_bytes(candidate)\n"
+                    "stream = sanitizer.StreamingSanitizer()\n"
+                    "stream.feed(candidate[:7])\n"
+                    "stream.feed(candidate[7:])\n"
+                    "split = stream.finish()\n"
+                    "bytewise = sanitizer.StreamingSanitizer()\n"
+                    "for byte in candidate:\n"
+                    " bytewise.feed(bytes((byte,)))\n"
+                    "assert whole.payload == split.payload == bytewise.finish().payload == b'[REDACTED SECRET]'\n"
+                    "try:\n"
+                    " sanitizer.sanitize_bytes(b'opaque-probe', limits=sanitizer.SanitizerLimits(max_input_bytes=0))\n"
+                    "except sanitizer.SanitizationError as error:\n"
+                    " assert error.code is sanitizer.SanitizationErrorCode.INPUT_LIMIT_EXCEEDED\n"
+                    " assert 'opaque-probe' not in str(error)\n"
+                    " assert 'opaque-probe' not in repr(error)\n"
+                    "else:\n"
+                    " raise AssertionError('expected sanitizer input failure')\n"
+                    "assert Path(sanitizer.__file__).resolve().is_relative_to(installed)"
+                ),
+                str(installed_root / "python"),
+            ],
+            cwd=install_directory,
+            environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        if sanitizer_smoke.returncode != 0 or sanitizer_smoke.stdout or sanitizer_smoke.stderr:
+            raise RuntimeError("installed sanitizer direct-import smoke test failed")
         repository_root = (root / "repository").resolve()
         repository_root.mkdir(mode=0o700)
         payload = (b"expand\x00\xff" * 2_048) + b"done"

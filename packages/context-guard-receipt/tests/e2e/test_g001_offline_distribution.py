@@ -157,6 +157,47 @@ class G001OfflineDistributionTests(unittest.TestCase):
             self.assertEqual(foundation_smoke.returncode, 0, foundation_smoke.stderr)
             self.assertEqual(foundation_smoke.stdout, "")
 
+            sanitizer_smoke = run_command(
+                [
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import sys\n"
+                        "from pathlib import Path\n"
+                        "installed = Path(sys.argv[1]).resolve()\n"
+                        "sys.path.insert(0, str(installed))\n"
+                        "from context_guard_receipt import sanitizer\n"
+                        "candidate = b'api_key=synthetic-test-value'\n"
+                        "whole = sanitizer.sanitize_bytes(candidate)\n"
+                        "stream = sanitizer.StreamingSanitizer()\n"
+                        "stream.feed(candidate[:7])\n"
+                        "stream.feed(candidate[7:])\n"
+                        "split = stream.finish()\n"
+                        "bytewise = sanitizer.StreamingSanitizer()\n"
+                        "for byte in candidate:\n"
+                        " bytewise.feed(bytes((byte,)))\n"
+                        "assert whole.payload == split.payload == bytewise.finish().payload == b'[REDACTED SECRET]'\n"
+                        "try:\n"
+                        " sanitizer.sanitize_bytes(b'opaque-probe', limits=sanitizer.SanitizerLimits(max_input_bytes=0))\n"
+                        "except sanitizer.SanitizationError as error:\n"
+                        " assert error.code is sanitizer.SanitizationErrorCode.INPUT_LIMIT_EXCEEDED\n"
+                        " assert 'opaque-probe' not in str(error)\n"
+                        " assert 'opaque-probe' not in repr(error)\n"
+                        "else:\n"
+                        " raise AssertionError('expected sanitizer input failure')\n"
+                        "assert Path(sanitizer.__file__).resolve().is_relative_to(installed)"
+                    ),
+                    str(installed_root / "python"),
+                ],
+                cwd=install_directory,
+                environment={"LANG": "C", "PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            self.assertEqual(sanitizer_smoke.returncode, 0, sanitizer_smoke.stderr)
+            self.assertEqual(sanitizer_smoke.stdout, "")
+
             sentinel = temporary_root / "helper-was-executed"
             for helper_name in (
                 "context-guard",
