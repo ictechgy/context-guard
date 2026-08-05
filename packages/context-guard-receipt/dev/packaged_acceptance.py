@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -38,6 +39,20 @@ def run(command: list[str], *, cwd: Path, environment: dict[str, str] | None = N
     return subprocess.run(command, cwd=cwd, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
 
+def run_binary(
+    command: list[str], *, cwd: Path, environment: dict[str, str], input_bytes: bytes = b""
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        env=environment,
+        input=input_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
 def distribution() -> None:
     npm = shutil.which("npm")
     node = shutil.which("node")
@@ -61,6 +76,9 @@ def distribution() -> None:
         if installed.returncode != 0:
             raise RuntimeError("offline npm install failed")
         installed_root = install_directory / "node_modules" / PACKAGE_NAME
+        if installed_root.is_symlink():
+            raise RuntimeError("installed package root must not be a symlink")
+        installed_root = installed_root.resolve()
         receipt_bin = installed_root / "bin/context-guard-receipt.cjs"
         mcp_bin = installed_root / "bin/context-guard-receipt-mcp.cjs"
         sentinel = root / "poisoned-helper-used"
@@ -73,6 +91,57 @@ def distribution() -> None:
         expected = {"evidence_boundary": EXPECTED_BOUNDARY, "operation": "inspect_boundary", "schema_version": "contextguard-receipt-cli-response/v1", "status": "ok"}
         if response.returncode != 0 or response.stdout != canonical_json(expected) or response.stderr or sentinel.exists():
             raise RuntimeError("installed receipt command failed its closed-boundary smoke test")
+        repository_root = (root / "repository").resolve()
+        repository_root.mkdir(mode=0o700)
+        payload = (b"expand\x00\xff" * 2_048) + b"done"
+        (repository_root / "source.bin").write_bytes(payload)
+        state_directory = (root / "private-state").resolve()
+        descriptor = json.dumps(
+            {
+                "caller_classification": "eligible",
+                "detector_signals": [],
+                "payload_b64u": base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii"),
+                "schema_version": "contextguard-receipt-evidence-descriptor/v1",
+                "source": {"relative_path": "source.bin", "selection": {"kind": "file"}},
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8") + b"\n"
+        assembled = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "assemble", "--kind", "evidence",
+                "--descriptor", "-", "--root", str(repository_root), "--state-dir",
+                str(state_directory), "--persist", "--emit", "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+            input_bytes=descriptor,
+        )
+        if assembled.returncode != 0 or assembled.stderr or sentinel.exists():
+            raise RuntimeError("installed receipt assembly failed its binary stdin smoke test")
+        try:
+            artifact = json.loads(assembled.stdout)
+            capability = artifact["capability"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise RuntimeError("installed receipt assembly did not emit a capability reference") from None
+        if artifact.get("artifact_kind") != "evidence_reference" or not isinstance(capability, str):
+            raise RuntimeError("installed receipt assembly emitted an invalid capability reference")
+        expanded = run_binary(
+            [
+                str(Path(node).resolve()), str(receipt_bin), "expand", capability, "--root",
+                str(repository_root), "--state-dir", str(state_directory), "--emit", "bytes",
+            ],
+            cwd=install_directory,
+            environment=environment,
+        )
+        if (
+            expanded.returncode != 0
+            or expanded.stdout != payload
+            or expanded.stderr
+            or sentinel.exists()
+        ):
+            raise RuntimeError("installed receipt exact expansion failed its offline round trip")
         mcp = run([str(Path(node).resolve()), str(mcp_bin), "--root", str(install_directory)], cwd=install_directory, environment=environment)
         if mcp.returncode != 69 or sentinel.exists():
             raise RuntimeError("installed MCP command did not remain unavailable")

@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    },
+    "payload": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 2097152, "minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["byte_length", "content_sha256"],
+      "type": "object"
+    }
+  },
+  "$id": "https://context-guard.local/schemas/assembly-receipt-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "assembly_receipt"},
+    "assembly_kind": {"enum": ["evidence", "evidence_pack", "blueprint"], "type": "string"},
+    "disposition": {"enum": ["deferred", "pass_through", "refused"], "type": "string"},
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "input": {"$ref": "#/$defs/payload"},
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 2097152, "minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "form": {"enum": ["exact_payload", "evidence_reference", "evidence_pack", "typed_blueprint", "none"], "type": "string"}
+      },
+      "required": ["byte_length", "content_sha256", "form"],
+      "type": "object"
+    },
+    "reason": {
+      "enum": ["beneficial", "input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "refuse", "secret", "identity_mismatch", "store_unavailable"],
+      "type": "string"
+    },
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "blueprint_bytes": {"minimum": 0, "type": "integer"},
+        "handle_bytes": {"minimum": 0, "type": "integer"},
+        "input_bytes": {"minimum": 0, "type": "integer"},
+        "mandatory_expansion_bytes": {"minimum": 0, "type": "integer"},
+        "policy_version": {"const": "contextguard-receipt-router/v1"},
+        "predicted_cost_bytes": {"minimum": 0, "type": "integer"},
+        "predicted_savings_bytes": {"type": "integer"},
+        "retained_wire_bytes": {"minimum": 0, "type": "integer"},
+        "savings_basis_points": {"type": "integer"},
+        "wrapper_bytes": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["blueprint_bytes", "handle_bytes", "input_bytes", "mandatory_expansion_bytes", "policy_version", "predicted_cost_bytes", "predicted_savings_bytes", "retained_wire_bytes", "savings_basis_points", "wrapper_bytes"],
+      "type": "object"
+    },
+    "schema_version": {"const": "contextguard-receipt-assembly-receipt/v1"}
+  },
+  "required": ["artifact_kind", "assembly_kind", "disposition", "evidence_boundary", "input", "output", "reason", "route", "schema_version"],
+  "title": "Context Guard Receipt assembly receipt",
+  "type": "object"
+}

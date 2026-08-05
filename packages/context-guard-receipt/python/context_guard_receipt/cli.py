@@ -1,15 +1,28 @@
-"""Inert receipt-companion command grammar."""
+"""Closed receipt-companion command grammar and local exact expansion."""
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 from collections.abc import Callable, Sequence
 
-from .contracts import EVIDENCE_BOUNDARY, canonical_json, response
+from .assembly import (
+    DESCRIPTOR_LIMITS,
+    AssemblyDisposition,
+    AssemblyError,
+    assemble_blueprint,
+    assemble_evidence,
+    assemble_evidence_pack,
+)
+from .canonical import CanonicalJSONError, canonical_json_bytes, parse_canonical_json_bytes
+from .cli_io import CliIOError, read_descriptor, write_receipt, write_stdout
+from .contracts import canonical_json, evidence_boundary, response
+from .expansion import ExpansionDisposition, expand_capability
+from .store import CapabilityStore
 
 
-HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> [options]\n  run --escrow --root <absolute> --state-dir <absolute> --receipt-out <file> -- <command>\n  expand <handle> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nOnly inspect boundary is available in this release.\n"""
+HELP = """usage: context-guard-receipt <command>\n\nCommands:\n  inspect boundary\n  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n  run --escrow --root <absolute> --state-dir <absolute> --receipt-out <file> -- <command>\n  expand <handle> --root <absolute> --state-dir <absolute> [options]\n  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> [options]\n\nEvidence/blueprint assembly and exact local expansion are available; other commands remain inert.\n"""
 MCP_HELP = """usage: context-guard-receipt-mcp --root <absolute-directory>\n\nThe MCP transport is intentionally unavailable in this local-only companion.\n"""
 
 ASSEMBLY_KINDS = frozenset({"evidence", "blueprint", "tool-schemas"})
@@ -74,13 +87,13 @@ def _valid_assemble(arguments: Sequence[str]) -> bool:
             "--root": _is_absolute,
             "--state-dir": _is_absolute,
             "--emit": lambda value: value in {"bytes", "json"},
-            "--receipt-out": _is_file_argument,
+            "--receipt-out": _is_absolute,
         },
         flags=frozenset({"--persist"}),
     )
     return (
         seen is not None
-        and {"--kind", "--descriptor"}.issubset(seen)
+        and {"--kind", "--descriptor", "--root"}.issubset(seen)
         and (("--persist" in seen) == ("--state-dir" in seen))
     )
 
@@ -123,7 +136,7 @@ def _valid_expand(arguments: Sequence[str]) -> bool:
         },
         flags=frozenset({"--require-current"}),
     )
-    return seen is not None and "--state-dir" in seen
+    return seen is not None and {"--root", "--state-dir"}.issubset(seen)
 
 
 def _valid_inspect(arguments: Sequence[str]) -> bool:
@@ -135,6 +148,180 @@ def _valid_inspect(arguments: Sequence[str]) -> bool:
     ) is not None
 
 
+def _option_values(arguments: Sequence[str], *, flags: frozenset[str]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    index = 0
+    while index < len(arguments):
+        option = arguments[index]
+        if option in flags:
+            values[option] = True
+            index += 1
+        else:
+            values[option] = arguments[index + 1]
+            index += 2
+    return values
+
+
+class _LazyIssuanceStore:
+    """Delay all state creation until the core has passed every pre-store gate."""
+
+    __slots__ = ("repository_root", "state_dir")
+
+    def __init__(self, *, state_dir: str, repository_root: str) -> None:
+        self.state_dir = state_dir
+        self.repository_root = repository_root
+
+    def issue_batch(self, requests: tuple[object, ...]) -> tuple[object, ...]:
+        with CapabilityStore.open(
+            state_dir=self.state_dir,
+            repository_root=self.repository_root,
+            create=True,
+        ) as store:
+            return store.issue_batch(requests)  # type: ignore[arg-type]
+
+
+class _LazyResolutionStore:
+    """Open an existing private store only for one closed capability lookup."""
+
+    __slots__ = ("repository_root", "state_dir")
+
+    def __init__(self, *, state_dir: str, repository_root: str) -> None:
+        self.state_dir = state_dir
+        self.repository_root = repository_root
+
+    def resolve(self, handle: str, *, expected_root_identity_sha256: str) -> object:
+        with CapabilityStore.open(
+            state_dir=self.state_dir,
+            repository_root=self.repository_root,
+            create=False,
+        ) as store:
+            return store.resolve(
+                handle,
+                expected_root_identity_sha256=expected_root_identity_sha256,
+            )
+
+
+def _emit_payload(
+    payload: bytes,
+    *,
+    operation: str,
+    emit: str,
+    receipt: dict[str, object] | None,
+) -> None:
+    if emit == "bytes":
+        write_stdout(payload)
+        return
+    envelope = {
+        "artifact_kind": "cli_output",
+        "evidence_boundary": evidence_boundary(),
+        "operation": operation,
+        "output_b64u": base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii"),
+        "receipt": receipt,
+        "schema_version": "contextguard-receipt-cli-output/v1",
+        "status": "ok",
+    }
+    write_stdout(canonical_json_bytes(envelope, limits=DESCRIPTOR_LIMITS))
+
+
+def _assemble(arguments: Sequence[str]) -> int:
+    options = _option_values(arguments, flags=frozenset({"--persist"}))
+    kind = options["--kind"]
+    descriptor_argument = options["--descriptor"]
+    root = options["--root"]
+    emit = options.get("--emit", "bytes")
+    if type(kind) is not str or type(descriptor_argument) is not str or type(root) is not str:
+        return emit_error("assemble", "error", "usage", 64)
+    if type(emit) is not str:
+        return emit_error("assemble", "error", "usage", 64)
+    if kind == "tool-schemas":
+        return emit_error("assemble", "unavailable", "feature_not_available", 69)
+    try:
+        descriptor_raw = read_descriptor(descriptor_argument)
+        store: object = None
+        if options.get("--persist") is True:
+            state_dir = options["--state-dir"]
+            if type(state_dir) is not str:
+                return emit_error("assemble", "error", "usage", 64)
+            store = _LazyIssuanceStore(state_dir=state_dir, repository_root=root)
+
+        if kind == "blueprint":
+            result = assemble_blueprint(descriptor_raw, root=root, store=store)
+        else:
+            try:
+                document = parse_canonical_json_bytes(
+                    descriptor_raw, limits=DESCRIPTOR_LIMITS
+                )
+            except CanonicalJSONError:
+                raise AssemblyError("invalid_descriptor") from None
+            version = document.get("schema_version") if type(document) is dict else None
+            if version == "contextguard-receipt-evidence-pack-descriptor/v1":
+                result = assemble_evidence_pack(descriptor_raw, root=root, store=store)
+            else:
+                result = assemble_evidence(descriptor_raw, root=root, store=store)
+
+        receipt_path = options.get("--receipt-out")
+        if receipt_path is not None and type(receipt_path) is not str:
+            return emit_error("assemble", "error", "usage", 64)
+        if result.disposition is AssemblyDisposition.REFUSED:
+            if type(receipt_path) is str:
+                write_receipt(receipt_path, canonical_json_bytes(result.receipt))
+            reason = result.receipt.get("reason", "content_refused")
+            if type(reason) is not str:
+                reason = "content_refused"
+            return emit_error("assemble", "refused", reason, 65)
+        _emit_payload(
+            result.output_bytes,
+            operation="assemble",
+            emit=emit,
+            receipt=result.receipt,
+        )
+        if type(receipt_path) is str:
+            try:
+                write_receipt(receipt_path, canonical_json_bytes(result.receipt))
+            except CliIOError as error:
+                return emit_error("assemble", "error", error.code, 74)
+        return 0
+    except AssemblyError:
+        return emit_error("assemble", "error", "invalid_descriptor", 65)
+    except CliIOError as error:
+        return emit_error("assemble", "error", error.code, 74)
+    except Exception:
+        return emit_error("assemble", "error", "internal_failure", 70)
+
+
+def _expand(arguments: Sequence[str]) -> int:
+    handle = arguments[0]
+    options = _option_values(arguments[1:], flags=frozenset({"--require-current"}))
+    root = options["--root"]
+    state_dir = options["--state-dir"]
+    emit = options.get("--emit", "bytes")
+    if type(root) is not str or type(state_dir) is not str or type(emit) is not str:
+        return emit_error("expand", "error", "usage", 64)
+    try:
+        result = expand_capability(
+            handle,
+            root=root,
+            store=_LazyResolutionStore(state_dir=state_dir, repository_root=root),
+        )
+        if result.disposition is not ExpansionDisposition.EXACT:
+            refusal = result.refusal
+            if type(refusal) is not dict:
+                return emit_error("expand", "refused", "artifact_invalid", 65)
+            print(canonical_json(refusal), end="", file=sys.stderr)
+            return 65
+        _emit_payload(
+            result.output_bytes,
+            operation="expand",
+            emit=emit,
+            receipt=None,
+        )
+        return 0
+    except CliIOError as error:
+        return emit_error("expand", "error", error.code, 74)
+    except Exception:
+        return emit_error("expand", "error", "internal_failure", 70)
+
+
 def receipt_main(arguments: Sequence[str]) -> int:
     arguments = tuple(arguments)
     if arguments == ("--help",):
@@ -144,11 +331,11 @@ def receipt_main(arguments: Sequence[str]) -> int:
         print(canonical_json(response(operation="inspect_boundary", status="ok")), end="")
         return 0
     if arguments and arguments[0] == "assemble" and _valid_assemble(arguments[1:]):
-        return emit_error("assemble", "unavailable", "feature_not_available", 69)
+        return _assemble(arguments[1:])
     if arguments and arguments[0] == "run" and _valid_run(arguments[1:]):
         return emit_error("run", "unavailable", "feature_not_available", 69)
     if arguments and arguments[0] == "expand" and _valid_expand(arguments[1:]):
-        return emit_error("expand", "unavailable", "feature_not_available", 69)
+        return _expand(arguments[1:])
     if arguments and arguments[0] == "inspect" and _valid_inspect(arguments[1:]):
         operation = f"inspect_{arguments[1].replace('-', '_')}"
         return emit_error(operation, "unavailable", "feature_not_available", 69)

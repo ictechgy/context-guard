@@ -3,18 +3,41 @@
 `@ictechgy/context-guard-receipt` is a small, provider-free receipt companion
 whose work is confined to explicitly supplied local inputs and state.
 
-It exposes one implemented command:
+It exposes the fixed boundary inspection plus local evidence/blueprint assembly:
 
 ```text
 context-guard-receipt inspect boundary
+context-guard-receipt assemble --kind evidence|blueprint --descriptor <file|-> --root <absolute>
 ```
 
 The result describes a fixed evidence boundary. It is neither Stage 1 nor Stage 2
 evidence and cannot close the provider join. It does not observe a host, read
-settings, contact a provider, execute requested commands, create receipts, or
-establish provider or host authority. It does not report provider token, cost,
-cache, or percentage-savings claims. The listed future workflow verbs are
-intentionally unavailable.
+settings, contact a provider, execute requested commands, or establish provider
+or host authority. It does not report provider token, cost,
+cache, or percentage-savings claims. Assembly is a byte proxy for explicitly
+provided local bytes, not a token or provider-usage claim. The `run`, `inspect`
+targets other than `boundary`, `assemble --kind tool-schemas`, and MCP transport
+remain intentionally unavailable.
+
+By default assembly is nonpersistent: it emits the exact original bytes on a
+safe bypass, or emits no bytes for a closed refusal, without creating state.
+Local opt-in persistence requires both `--persist` and an absolute
+`--state-dir`; when the byte-benefit gates pass, it can issue a local `cgr1p_`
+capability that can later be used with exact local expansion:
+
+```text
+context-guard-receipt expand cgr1p_<handle> --root <absolute> --state-dir <absolute>
+```
+
+Expansion is capability-only and bound to `source_current`: it returns the
+original bytes only while the repository and source identity are current. A
+changed source is stale and is refused without emitting payload bytes. The
+caller retains the original descriptor payload as the explicit baseline bypass;
+the companion does not claim that every emitted artifact embeds that baseline.
+If a requested `--receipt-out` cannot be published after a successful assembly,
+the complete artifact remains on stdout and the command exits `74`; callers
+must consume that output before retrying. `--emit json` carries both the receipt
+and emitted artifact in one stdout envelope.
 
 The package has no dependencies, lifecycle scripts, network behavior, or
 configuration files. It requires Node.js 18+ and a trusted CPython executable

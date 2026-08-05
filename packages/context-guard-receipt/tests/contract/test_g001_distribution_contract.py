@@ -40,13 +40,13 @@ EXPECTED_HELP = (
     "usage: context-guard-receipt <command>\n\n"
     "Commands:\n"
     "  inspect boundary\n"
-    "  assemble --kind <kind> --descriptor <file|-> [options]\n"
+    "  assemble --kind <kind> --descriptor <file|-> --root <absolute> [options]\n"
     "  run --escrow --root <absolute> --state-dir <absolute> "
     "--receipt-out <file> -- <command>\n"
-    "  expand <handle> --state-dir <absolute> [options]\n"
+    "  expand <handle> --root <absolute> --state-dir <absolute> [options]\n"
     "  inspect <receipt|diagnostics|firewall|diagnostic-ledger|twin|lease|state> "
     "[options]\n\n"
-    "Only inspect boundary is available in this release.\n"
+    "Evidence/blueprint assembly and exact local expansion are available; other commands remain inert.\n"
 )
 EXPECTED_MCP_HELP = (
     "usage: context-guard-receipt-mcp --root <absolute-directory>\n\n"
@@ -97,18 +97,33 @@ EXPECTED_RUNTIME_MODES = {
     "package.json": 0o644,
     "python/context_guard_receipt/__init__.py": 0o644,
     "python/context_guard_receipt/bootstrap.py": 0o644,
+    "python/context_guard_receipt/assembly.py": 0o644,
+    "python/context_guard_receipt/blueprint.py": 0o644,
     "python/context_guard_receipt/canonical.py": 0o644,
     "python/context_guard_receipt/cli.py": 0o644,
+    "python/context_guard_receipt/cli_io.py": 0o644,
     "python/context_guard_receipt/contracts.py": 0o644,
+    "python/context_guard_receipt/evidence_pack.py": 0o644,
+    "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
+    "python/context_guard_receipt/receipts.py": 0o644,
+    "python/context_guard_receipt/router.py": 0o644,
     "python/context_guard_receipt/store.py": 0o644,
+    "schemas/assembly-receipt.schema.json": 0o644,
+    "schemas/blueprint-descriptor.schema.json": 0o644,
     "schemas/capability-record.schema.json": 0o644,
+    "schemas/evidence-descriptor.schema.json": 0o644,
     "schemas/evidence-boundary.schema.json": 0o644,
+    "schemas/evidence-pack.schema.json": 0o644,
+    "schemas/evidence-reference.schema.json": 0o644,
+    "schemas/expansion-envelope.schema.json": 0o644,
+    "schemas/expansion-refusal.schema.json": 0o644,
     "schemas/protection-decision.schema.json": 0o644,
     "schemas/source-identity.schema.json": 0o644,
     "schemas/store-commit.schema.json": 0o644,
     "schemas/store-metadata.schema.json": 0o644,
+    "schemas/typed-blueprint.schema.json": 0o644,
 }
 EXPECTED_DEV_MODES = {
     "dev/package_check.py": 0o644,
@@ -207,6 +222,12 @@ class G001DistributionContractTests(unittest.TestCase):
             "trusted cpython executable",
             "package manager",
             "consistency and corruption check",
+            "local opt-in persistence",
+            "exact local expansion",
+            "byte proxy",
+            "source_current",
+            "stale",
+            "bypass",
         ):
             self.assertIn(statement, readme)
 
@@ -535,14 +556,9 @@ class G001DistributionContractTests(unittest.TestCase):
             inactive = (
                 (
                     "assemble",
-                    ("assemble", "--kind", "evidence", "--descriptor", "-"),
-                ),
-                (
-                    "assemble",
                     (
                         "assemble",
-                        "--kind",
-                        "blueprint",
+                        "--kind", "tool-schemas",
                         "--descriptor",
                         "descriptor.json",
                         "--root",
@@ -574,10 +590,6 @@ class G001DistributionContractTests(unittest.TestCase):
                         "--",
                         "opaque-command-argument",
                     ),
-                ),
-                (
-                    "expand",
-                    ("expand", "cgr1p_not-issued", "--state-dir", str(root / "state")),
                 ),
                 ("inspect_receipt", ("inspect", "receipt")),
                 (
