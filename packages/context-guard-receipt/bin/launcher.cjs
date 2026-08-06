@@ -944,12 +944,20 @@ function compatibleProbe(python, bootstrap, signalController) {
         finishProbe(false);
         return;
       }
-      finishProbe(stableJson(result) === stableJson({
-        implementation: 'CPython',
-        package_protocol: PACKAGE_PROTOCOL,
-        python_version: [3, result && result.python_version && result.python_version[1]],
-      }) && Array.isArray(result.python_version)
+      const exactObject = result !== null
+        && typeof result === 'object'
+        && !Array.isArray(result);
+      const resultKeys = exactObject ? Object.keys(result).sort() : [];
+      finishProbe(exactObject
+        && resultKeys.length === 3
+        && resultKeys[0] === 'implementation'
+        && resultKeys[1] === 'package_protocol'
+        && resultKeys[2] === 'python_version'
+        && result.implementation === 'CPython'
+        && result.package_protocol === PACKAGE_PROTOCOL
+        && Array.isArray(result.python_version)
         && result.python_version.length === 2
+        && result.python_version[0] === 3
         && Number.isInteger(result.python_version[1])
         && result.python_version[1] >= 11 && result.python_version[1] < 15);
     };

@@ -2527,6 +2527,68 @@ setImmediate(() => setImmediate(() => process.stdout.write(JSON.stringify({
             self.assertGreater(elapsed, 4.5)
             self.assertLess(elapsed, 8.0)
 
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_deep_valid_probe_json_is_canonical_protocol_incompatible(self) -> None:
+        """Break caught: bounded deep JSON escapes as a Node stack trace."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(
+                temporary_root / "distribution"
+            )
+            source = temporary_root / "deep-probe.c"
+            runtime = temporary_root / "deep-probe"
+            source.write_text(
+                "#include <stdio.h>\n"
+                "#include <string.h>\n"
+                "int main(int argc, char **argv) {\n"
+                "  int probe = 0;\n"
+                "  for (int index = 1; index < argc; ++index) {\n"
+                "    if (strcmp(argv[index], \"--launcher-probe\") == 0) probe = 1;\n"
+                "  }\n"
+                "  if (!probe) return 0;\n"
+                "  for (int depth = 0; depth < 8000; ++depth) putchar('[');\n"
+                "  putchar('0');\n"
+                "  for (int depth = 0; depth < 8000; ++depth) putchar(']');\n"
+                "  putchar('\\n');\n"
+                "  return ferror(stdout) ? 1 : 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compilation = subprocess.run(
+                [str(shutil.which("cc")), str(source), "-o", str(runtime)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=8.0,
+            )
+            self.assertEqual(compilation.returncode, 0, compilation.stderr)
+            runtime.chmod(0o755)
+            response = subprocess.run(
+                [
+                    str(Path(NODE).resolve()),
+                    str(distribution / "bin/context-guard-receipt.cjs"),
+                    "inspect",
+                    "boundary",
+                ],
+                cwd=distribution,
+                env=launcher_environment(**{PYTHON_ENV: str(runtime)}),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=8.0,
+            )
+            assert_json_error(
+                self,
+                response,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
+
     def test_runtime_checks_reject_rewritten_payload_manifest_and_extra_files(self) -> None:
         """Break caught: treating a mutable manifest or an open tree as authenticity."""
         require_distribution()
