@@ -96,6 +96,10 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("python3 scripts/prepublish_check.py", workflow)
         self.assertIn("python3 scripts/release_smoke.py", workflow)
         self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python3 scripts/prepublish_check.py", publish_job)
+        self.assertIn(
+            "name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python3 scripts/release_smoke.py",
+            publish_job,
+        )
         self.assertIn('npm publish --dry-run --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn('npm publish --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn("confirm_publish=true", workflow)
