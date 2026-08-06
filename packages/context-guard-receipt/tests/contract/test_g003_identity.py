@@ -246,6 +246,31 @@ class G003IdentityTests(unittest.TestCase):
         self.assertEqual(snapshot["reason"], "non_git_directory")
         self.assertEqual(snapshot["logical_state"]["kind"], "non_git")
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin ABI regression")
+    def test_search_only_ancestor_survives_unexported_darwin_open_flags(self) -> None:
+        """Break caught: setup-python omits Darwin search-only constants."""
+
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            ancestor = Path(directory) / "search-only"
+            root = ancestor / "root"
+            root.mkdir(parents=True)
+            ancestor.chmod(0o111)
+            try:
+                with (
+                    mock.patch.object(identity.os, "O_SEARCH", None, create=True),
+                    mock.patch.object(identity.os, "O_EXEC", None, create=True),
+                ):
+                    snapshot = identity.snapshot_repository(
+                        root, git_executable=find_git()
+                    )
+            finally:
+                ancestor.chmod(0o700)
+
+        self.assertEqual(snapshot["disposition"], "pass_through")
+        self.assertEqual(snapshot["reason"], "non_git_directory")
+        self.assertEqual(snapshot["logical_state"]["kind"], "non_git")
+
     def test_raw_range_uses_half_open_bytes_and_never_claims_symbol_authority(self) -> None:
         """Break caught: character offsets, inclusive ends, or inferred parser authority."""
         identity = identity_module()

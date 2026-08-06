@@ -39,6 +39,7 @@ __all__ = [
 
 _LOGGER = logging.getLogger(__name__)
 
+_DARWIN_O_EXEC: Final = 0x40000000
 _SOURCE_SCHEMA_VERSION: Final = "contextguard-receipt-source-identity/v1"
 _REPOSITORY_SCHEMA_VERSION: Final = "contextguard-receipt-repository-snapshot/v1"
 _SYMBOL_EVIDENCE_SCHEMA_VERSION: Final = (
@@ -292,14 +293,27 @@ def _root_is_unchanged(root_path: str, expected: os.stat_result) -> None:
         raise IdentityError("root_changed")
 
 
+def _directory_search_access() -> int:
+    search_access = getattr(os, "O_SEARCH", None)
+    if type(search_access) is int:
+        return search_access
+    path_access = getattr(os, "O_PATH", None)
+    if type(path_access) is int:
+        return path_access
+    if sys.platform == "darwin":
+        execute_access = getattr(os, "O_EXEC", None)
+        if type(execute_access) is not int:
+            # Darwin's stable ABI defines O_SEARCH as O_EXEC | O_DIRECTORY,
+            # but some setup-python builds do not export either Python name.
+            execute_access = _DARWIN_O_EXEC
+        return execute_access | getattr(os, "O_DIRECTORY", 0)
+    return os.O_RDONLY
+
+
 def _has_structural_git_marker(root_descriptor: int) -> bool:
     """Conservatively inspect Git markers without reopening the root path."""
 
-    directory_access = getattr(
-        os,
-        "O_SEARCH",
-        getattr(os, "O_PATH", os.O_RDONLY),
-    )
+    directory_access = _directory_search_access()
     directory_flags = (
         directory_access
         | getattr(os, "O_DIRECTORY", 0)
