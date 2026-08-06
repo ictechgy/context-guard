@@ -15,6 +15,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -278,6 +279,8 @@ def wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
 def wait_for_process_state(
     pid: int, expected_prefix: str, timeout_seconds: float = 3.0
 ) -> None:
+    if not Path("/bin/ps").is_file():
+        raise unittest.SkipTest("/bin/ps is required to observe process state")
     deadline = time.monotonic() + timeout_seconds
     state = ""
     while time.monotonic() < deadline:
@@ -340,6 +343,75 @@ def copy_runtime_with_current_launcher(destination: Path) -> Path:
         ).hexdigest()
     manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
     return destination
+
+
+def compile_signal_probe_runtime(root: Path, behavior: str = "cooperative") -> Path:
+    source = root / f"{behavior}-probe.c"
+    runtime = root / f"{behavior}-probe"
+    if behavior == "cooperative":
+        signal_setup = (
+            "      signal(SIGINT, stop);\n"
+            "      signal(SIGTERM, stop);\n"
+        )
+        probe_action = "      for (;;) pause();\n"
+    elif behavior == "stubborn":
+        signal_setup = (
+            "      signal(SIGINT, SIG_IGN);\n"
+            "      signal(SIGTERM, SIG_IGN);\n"
+        )
+        probe_action = "      for (;;) pause();\n"
+    elif behavior == "success":
+        signal_setup = ""
+        probe_action = (
+            '      fputs("{\\\"implementation\\\":\\\"CPython\\\",'
+            '\\\"package_protocol\\\":\\\"contextguard-receipt-launch/v1\\\",'
+            '\\\"python_version\\\":[3,11]}\\n", stdout);\n'
+            "      return 0;\n"
+        )
+    else:
+        raise AssertionError(f"unsupported probe behavior: {behavior}")
+    source.write_text(
+        "#include <signal.h>\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "static void stop(int signal_number) { _exit(128 + signal_number); }\n"
+        "int main(int argc, char **argv) {\n"
+        "  for (int index = 1; index < argc; ++index) {\n"
+        "    if (strcmp(argv[index], \"--launcher-probe\") == 0) {\n"
+        + signal_setup
+        + "      const char *record_path = getenv(\"CGR_PROBE_RECORD\");\n"
+        "      if (record_path != NULL) {\n"
+        "        FILE *record = fopen(record_path, \"w\");\n"
+        "        if (record == NULL) return 1;\n"
+        "        fprintf(record, \"%ld:%ld\", (long)getpid(), (long)getppid());\n"
+        "        fclose(record);\n"
+        "      }\n"
+        + probe_action
+        + "    }\n"
+        "  }\n"
+        "  const char *marker_path = getenv(\"CGR_MAIN_MARKER\");\n"
+        "  if (marker_path != NULL) {\n"
+        "    FILE *marker = fopen(marker_path, \"w\");\n"
+        "    if (marker != NULL) fclose(marker);\n"
+        "  }\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compilation = subprocess.run(
+        [str(shutil.which("cc")), str(source), "-o", str(runtime)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        timeout=15.0,
+    )
+    if compilation.returncode != 0:
+        raise AssertionError(compilation.stderr)
+    runtime.chmod(0o755)
+    return runtime
 
 
 def assert_json_error(
@@ -497,6 +569,7 @@ class G001DistributionContractTests(unittest.TestCase):
                 "let firstSpawn = true;\n"
                 "childProcess.spawn = (...arguments_) => {\n"
                 "  const child = originalSpawn(...arguments_);\n"
+                "  if (arguments_[1].includes('--launcher-probe')) return child;\n"
                 "  if (!firstSpawn) return child;\n"
                 "  firstSpawn = false;\n"
                 "  const deadline = Date.now() + 5000;\n"
@@ -584,6 +657,543 @@ class G001DistributionContractTests(unittest.TestCase):
                         except ProcessLookupError:
                             pass
 
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_signals_during_probe_are_forwarded_and_reap_probe_before_main(self) -> None:
+        """Break caught: SIGINT or SIGTERM during a compatibility probe orphans it."""
+
+        invocations = (
+            ("bin/context-guard-receipt.cjs", ("inspect", "boundary")),
+            ("bin/context-guard-receipt-mcp.cjs", ("--root", str(PACKAGE_ROOT.resolve()))),
+        )
+        for entrypoint, arguments in invocations:
+            for interrupt in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(entrypoint=entrypoint, interrupt=interrupt):
+                    with tempfile.TemporaryDirectory() as temporary_directory:
+                        root = Path(temporary_directory).resolve()
+                        distribution = copy_runtime_with_current_launcher(
+                            root / "distribution"
+                        )
+                        runtime = compile_signal_probe_runtime(root)
+                        probe_record = root / "probe-record"
+                        main_marker = root / "main-marker"
+                        process = subprocess.Popen(
+                            [
+                                str(Path(NODE).resolve()),
+                                str(distribution / entrypoint),
+                                *arguments,
+                            ],
+                            cwd=distribution,
+                            env=launcher_environment(
+                                CGR_MAIN_MARKER=str(main_marker),
+                                CGR_PROBE_RECORD=str(probe_record),
+                                **{PYTHON_ENV: str(runtime)},
+                            ),
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        probe_pid = 0
+                        try:
+                            probe_pid, parent_pid = read_child_record(probe_record)
+                            self.assertEqual(parent_pid, process.pid)
+                            process.send_signal(interrupt)
+                            stdout, stderr = process.communicate(timeout=8)
+                            self.assertEqual(process.returncode, 128 + interrupt, stderr)
+                            self.assertEqual(stdout, b"")
+                            self.assertEqual(stderr, b"")
+                            self.assertTrue(wait_for_process_exit(probe_pid))
+                            self.assertFalse(main_marker.exists())
+                        finally:
+                            if process.poll() is None:
+                                process.kill()
+                                process.wait(timeout=3)
+                            if probe_pid > 0 and process_exists(probe_pid):
+                                try:
+                                    os.kill(probe_pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_probe_signal_escalation_is_canonical_and_reaps_stubborn_probe(self) -> None:
+        """Break caught: forced probe cleanup is reported as a graceful interrupt."""
+
+        expected_error = canonical_json(
+            {
+                "evidence_boundary": EVIDENCE_BOUNDARY,
+                "operation": "launcher",
+                "reason": "cleanup_unconfirmed",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        ).encode("ascii")
+        for repeat_interrupt in (False, True):
+            with self.subTest(repeat_interrupt=repeat_interrupt):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory).resolve()
+                    distribution = copy_runtime_with_current_launcher(
+                        root / "distribution"
+                    )
+                    runtime = compile_signal_probe_runtime(root, "stubborn")
+                    probe_record = root / "probe-record"
+                    main_marker = root / "main-marker"
+                    process = subprocess.Popen(
+                        [
+                            str(Path(NODE).resolve()),
+                            str(distribution / "bin/context-guard-receipt.cjs"),
+                            "inspect",
+                            "boundary",
+                        ],
+                        cwd=distribution,
+                        env=launcher_environment(
+                            CGR_MAIN_MARKER=str(main_marker),
+                            CGR_PROBE_RECORD=str(probe_record),
+                            **{PYTHON_ENV: str(runtime)},
+                        ),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    probe_pid = 0
+                    try:
+                        probe_pid, parent_pid = read_child_record(probe_record)
+                        self.assertEqual(parent_pid, process.pid)
+                        process.send_signal(signal.SIGTERM)
+                        if repeat_interrupt:
+                            time.sleep(0.05)
+                            process.send_signal(signal.SIGINT)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, 69, stderr)
+                        self.assertEqual(stdout, b"")
+                        self.assertEqual(stderr, expected_error)
+                        self.assertTrue(wait_for_process_exit(probe_pid))
+                        self.assertFalse(main_marker.exists())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=3)
+                        if probe_pid > 0 and process_exists(probe_pid):
+                            try:
+                                os.kill(probe_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_probe_spawn_and_main_handoff_signal_races_never_launch_main(self) -> None:
+        """Break caught: a queued probe or handoff signal still launches the runtime."""
+
+        cleanup_error = canonical_json(
+            {
+                "evidence_boundary": EVIDENCE_BOUNDARY,
+                "operation": "launcher",
+                "reason": "cleanup_unconfirmed",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        ).encode("ascii")
+        for scenario, behavior, expected_code in (
+            ("before-spawn-return", "cooperative", 143),
+            ("probe-main-handoff", "success", 69),
+        ):
+            with self.subTest(scenario=scenario):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory).resolve()
+                    distribution = copy_runtime_with_current_launcher(
+                        root / "distribution"
+                    )
+                    runtime = compile_signal_probe_runtime(root, behavior)
+                    spawn_record = root / "spawn-record"
+                    probe_record = root / "probe-record"
+                    main_marker = root / "main-marker"
+                    preload = root / "probe-signal-race.cjs"
+                    signal_action = (
+                        "  process.emit('SIGTERM');\n"
+                        if scenario == "before-spawn-return"
+                        else "  child.once('close', () => process.emit('SIGTERM'));\n"
+                    )
+                    preload.write_text(
+                        "'use strict';\n"
+                        "const childProcess = require('child_process');\n"
+                        "const fs = require('fs');\n"
+                        "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                        "childProcess.spawn = (...arguments_) => {\n"
+                        "  const child = originalSpawn(...arguments_);\n"
+                        "  if (!arguments_[1].includes('--launcher-probe')) return child;\n"
+                        "  fs.writeFileSync(process.env.CGR_SPAWN_RECORD, "
+                        "`${child.pid}:${process.pid}`);\n"
+                        + signal_action
+                        + "  return child;\n"
+                        "};\n",
+                        encoding="ascii",
+                    )
+                    process = subprocess.Popen(
+                        [
+                            str(Path(NODE).resolve()),
+                            str(distribution / "bin/context-guard-receipt.cjs"),
+                            "inspect",
+                            "boundary",
+                        ],
+                        cwd=distribution,
+                        env=launcher_environment(
+                            CGR_MAIN_MARKER=str(main_marker),
+                            CGR_PROBE_RECORD=str(probe_record),
+                            CGR_SPAWN_RECORD=str(spawn_record),
+                            NODE_OPTIONS=f"--require={preload}",
+                            **{PYTHON_ENV: str(runtime)},
+                        ),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    probe_pid = 0
+                    try:
+                        probe_pid, parent_pid = read_child_record(spawn_record)
+                        self.assertEqual(parent_pid, process.pid)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, expected_code, stderr)
+                        self.assertEqual(stdout, b"")
+                        self.assertEqual(
+                            stderr,
+                            b"" if expected_code == 143 else cleanup_error,
+                        )
+                        self.assertTrue(wait_for_process_exit(probe_pid))
+                        self.assertFalse(main_marker.exists())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait(timeout=3)
+                        if probe_pid > 0 and process_exists(probe_pid):
+                            try:
+                                os.kill(probe_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_signal_after_probe_unbind_never_spawns_main_runtime(self) -> None:
+        """Break caught: a post-close queued signal launches the main runtime."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(root / "distribution")
+            runtime = compile_signal_probe_runtime(root, "success")
+            preload = root / "post-unbind-signal.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const fs = require('fs');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  const child = originalSpawn(...arguments_);\n"
+                "  if (!arguments_[1].includes('--launcher-probe')) {\n"
+                "    fs.writeFileSync(process.env.CGR_MAIN_SPAWN_MARKER, 'spawned');\n"
+                "    return child;\n"
+                "  }\n"
+                "  const originalOnce = child.once.bind(child);\n"
+                "  let closeHooked = false;\n"
+                "  child.once = (eventName, listener) => {\n"
+                "    if (eventName !== 'close' || closeHooked) {\n"
+                "      return originalOnce(eventName, listener);\n"
+                "    }\n"
+                "    closeHooked = true;\n"
+                "    originalOnce(eventName, listener);\n"
+                "    originalOnce(eventName, () => {\n"
+                "      process.emit('SIGTERM');\n"
+                "      if (process.env.CGR_REPEAT_SIGNAL === '1') process.emit('SIGINT');\n"
+                "    });\n"
+                "    return child;\n"
+                "  };\n"
+                "  return child;\n"
+                "};\n",
+                encoding="ascii",
+            )
+            cleanup_error = canonical_json(
+                {
+                    "evidence_boundary": EVIDENCE_BOUNDARY,
+                    "operation": "launcher",
+                    "reason": "cleanup_unconfirmed",
+                    "schema_version": "contextguard-receipt-cli-response/v1",
+                    "status": "error",
+                }
+            )
+            for repeat_signal in (False, True):
+                with self.subTest(repeat_signal=repeat_signal):
+                    suffix = "repeat" if repeat_signal else "single"
+                    main_marker = root / f"main-marker-{suffix}"
+                    main_spawn_marker = root / f"main-spawn-marker-{suffix}"
+                    response = run_node(
+                        "bin/context-guard-receipt.cjs",
+                        "inspect",
+                        "boundary",
+                        environment=launcher_environment(
+                            CGR_MAIN_MARKER=str(main_marker),
+                            CGR_MAIN_SPAWN_MARKER=str(main_spawn_marker),
+                            CGR_REPEAT_SIGNAL="1" if repeat_signal else "0",
+                            NODE_OPTIONS=f"--require={preload}",
+                            **{PYTHON_ENV: str(runtime)},
+                        ),
+                        package_root=distribution,
+                    )
+                    self.assertEqual(
+                        response.returncode,
+                        69 if repeat_signal else 128 + signal.SIGTERM,
+                        response.stderr,
+                    )
+                    self.assertEqual(response.stdout, "")
+                    self.assertEqual(response.stderr, cleanup_error if repeat_signal else "")
+                    self.assertFalse(main_spawn_marker.exists())
+                    self.assertFalse(main_marker.exists())
+
+    def test_probe_sigkill_without_close_has_bounded_unconfirmed_cleanup(self) -> None:
+        """Break caught: a SIGKILLed probe without close keeps the launcher pending."""
+
+        launcher_path = PACKAGE_ROOT / "bin/launcher.cjs"
+        script = r"""
+const fs = require('fs');
+const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
+const vm = require('vm');
+const launcherPath = process.argv[1];
+const mode = process.argv[2];
+const source = fs.readFileSync(launcherPath, 'utf8')
+  .replace(
+    'const PROBE_TIMEOUT_MILLISECONDS = 5000;',
+    'const PROBE_TIMEOUT_MILLISECONDS = 10;',
+  )
+  .replace(
+    'const INTERRUPT_KILL_WAIT_MILLISECONDS = 750;',
+    'const INTERRUPT_KILL_WAIT_MILLISECONDS = 25;',
+  )
+  .replace(
+    'module.exports = { launch };',
+    'module.exports = { compatibleProbe };',
+  );
+let childUnrefs = 0;
+const kills = [];
+let observedChild;
+const fakeChildProcess = {
+  spawn: () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = (signalName) => { kills.push(signalName); return true; };
+    child.unref = () => { childUnrefs += 1; };
+    observedChild = child;
+    if (mode !== 'timeout') {
+      setImmediate(() => child.stdout.write(Buffer.alloc((16 * 1024) + 1, 120)));
+    }
+    if (mode === 'late-close') {
+      child.kill = (signalName) => {
+        kills.push(signalName);
+        setTimeout(() => child.emit('close', null, signalName), 60);
+        return true;
+      };
+    }
+    return child;
+  },
+};
+let removeCalls = 0;
+const signalController = {
+  bind: () => true,
+  pending: () => 0,
+  remove: () => { removeCalls += 1; },
+  unbind: () => undefined,
+};
+const context = {
+  Buffer,
+  clearTimeout,
+  console,
+  module: { exports: {} },
+  process,
+  Promise,
+  require: (identifier) => identifier === 'child_process'
+    ? fakeChildProcess
+    : require(identifier),
+  setImmediate,
+  setTimeout,
+};
+vm.runInNewContext(source, context, { filename: launcherPath });
+let reported = false;
+const report = (timedOut, outcome) => {
+  if (reported) return;
+  reported = true;
+  process.stdout.write(JSON.stringify({
+    childCloseListeners: observedChild.listenerCount('close'),
+    childErrorListeners: observedChild.listenerCount('error'),
+    childUnrefs,
+    kills,
+    outcome,
+    removeCalls,
+    stderrDestroyed: observedChild.stderr.destroyed,
+    stderrListeners: observedChild.stderr.listenerCount('data') +
+      observedChild.stderr.listenerCount('error'),
+    stdoutDestroyed: observedChild.stdout.destroyed,
+    stdoutListeners: observedChild.stdout.listenerCount('data') +
+      observedChild.stdout.listenerCount('error'),
+    timedOut,
+  }));
+};
+const watchdog = setTimeout(() => report(true, 'pending'), 250);
+void (async () => {
+  const outcome = await context.module.exports.compatibleProbe(
+    '/runtime/python3', '/package/bootstrap.py', signalController,
+  );
+  clearTimeout(watchdog);
+  report(false, outcome);
+})();
+"""
+        expected_error = canonical_json(
+            {
+                "evidence_boundary": EVIDENCE_BOUNDARY,
+                "operation": "launcher",
+                "reason": "cleanup_unconfirmed",
+                "schema_version": "contextguard-receipt-cli-response/v1",
+                "status": "error",
+            }
+        )
+        for mode in ("overflow", "timeout", "late-close"):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    [str(Path(NODE).resolve()), "-e", script, str(launcher_path), mode],
+                    cwd=PACKAGE_ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=2.0,
+                )
+                self.assertEqual(result.returncode, 69, result.stderr)
+                self.assertEqual(result.stderr, expected_error)
+                observed = json.loads(result.stdout)
+                self.assertFalse(observed["timedOut"])
+                self.assertIsNone(observed["outcome"])
+                self.assertEqual(observed["kills"], ["SIGKILL"])
+                self.assertEqual(observed["removeCalls"], 1)
+                self.assertEqual(observed["childUnrefs"], 1)
+                self.assertEqual(observed["childCloseListeners"], 0)
+                self.assertEqual(observed["childErrorListeners"], 0)
+                self.assertTrue(observed["stdoutDestroyed"])
+                self.assertTrue(observed["stderrDestroyed"])
+                self.assertEqual(observed["stdoutListeners"], 0)
+                self.assertEqual(observed["stderrListeners"], 0)
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_main_spawn_error_removes_lifecycle_signal_listeners(self) -> None:
+        """Break caught: a post-probe spawn error leaks lifecycle signal listeners."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(root / "distribution")
+            runtime = compile_signal_probe_runtime(root, "success")
+            listener_record = root / "listener-record"
+            main_marker = root / "main-marker"
+            preload = root / "spawn-error.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const fs = require('fs');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  if (arguments_[1].includes('--launcher-probe')) {\n"
+                "    return originalSpawn(...arguments_);\n"
+                "  }\n"
+                "  throw new Error('synthetic spawn failure');\n"
+                "};\n"
+                "process.on('exit', () => {\n"
+                "  fs.writeFileSync(process.env.CGR_LISTENER_RECORD, "
+                "`${process.listenerCount('SIGINT')}:` + "
+                "`${process.listenerCount('SIGTERM')}`);\n"
+                "});\n",
+                encoding="ascii",
+            )
+            response = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=launcher_environment(
+                    CGR_LISTENER_RECORD=str(listener_record),
+                    CGR_MAIN_MARKER=str(main_marker),
+                    NODE_OPTIONS=f"--require={preload}",
+                    **{PYTHON_ENV: str(runtime)},
+                ),
+                package_root=distribution,
+            )
+            assert_json_error(
+                self,
+                response,
+                code=69,
+                operation="launcher",
+                status="error",
+                reason="runtime_unavailable",
+            )
+            self.assertEqual(listener_record.read_text(encoding="ascii"), "0:0")
+            self.assertFalse(main_marker.exists())
+
+    def test_probe_spawn_error_reaps_child_handle_and_removes_signal_listeners(self) -> None:
+        """Break caught: an asynchronous probe spawn error retains launcher listeners."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(root / "distribution")
+            listener_record = root / "listener-record"
+            missing_runtime = root / "missing-probe-runtime"
+            preload = root / "probe-spawn-error.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const fs = require('fs');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  if (!arguments_[1].includes('--launcher-probe')) {\n"
+                "    return originalSpawn(...arguments_);\n"
+                "  }\n"
+                "  return originalSpawn(process.env.CGR_MISSING_RUNTIME, "
+                "arguments_[1], arguments_[2]);\n"
+                "};\n"
+                "process.on('exit', () => {\n"
+                "  fs.writeFileSync(process.env.CGR_LISTENER_RECORD, "
+                "`${process.listenerCount('SIGINT')}:` + "
+                "`${process.listenerCount('SIGTERM')}`);\n"
+                "});\n",
+                encoding="ascii",
+            )
+            response = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=launcher_environment(
+                    CGR_LISTENER_RECORD=str(listener_record),
+                    CGR_MISSING_RUNTIME=str(missing_runtime),
+                    NODE_OPTIONS=f"--require={preload}",
+                ),
+                package_root=distribution,
+            )
+            assert_json_error(
+                self,
+                response,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
+            self.assertEqual(listener_record.read_text(encoding="ascii"), "0:0")
+
+    def test_process_state_helper_skips_when_ps_is_unavailable(self) -> None:
+        """Break caught: a missing ps binary becomes a delayed assertion failure."""
+
+        with mock.patch.object(Path, "is_file", return_value=False):
+            with self.assertRaisesRegex(unittest.SkipTest, "/bin/ps is required"):
+                wait_for_process_state(1, "T", timeout_seconds=0.01)
+
+    def test_unconfirmed_cleanup_helper_skips_before_launch_without_ps(self) -> None:
+        """Break caught: unsupported cleanup tests launch before their ps guard."""
+
+        with (
+            mock.patch.object(Path, "is_file", return_value=False),
+            mock.patch.object(subprocess, "Popen") as popen,
+        ):
+            with self.assertRaisesRegex(unittest.SkipTest, "/bin/ps is required"):
+                self._assert_launcher_reports_unconfirmed_cleanup()
+        popen.assert_not_called()
+
     @unittest.skipUnless(Path("/bin/ps").is_file(), "/bin/ps is required")
     def test_process_exit_helper_treats_a_zombie_as_exited(self) -> None:
         """Break caught: a reaped-but-unwaited child is reported as live."""
@@ -604,6 +1214,7 @@ class G001DistributionContractTests(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                     text=True,
                     check=False,
+                    timeout=1.0,
                 )
                 state = observed.stdout.strip()
                 if state.startswith("Z"):
@@ -617,6 +1228,8 @@ class G001DistributionContractTests(unittest.TestCase):
     def _assert_launcher_reports_unconfirmed_cleanup(
         self, *, external_supervisor_kill: bool = False, repeat_interrupt: bool = False
     ) -> None:
+        if not Path("/bin/ps").is_file():
+            self.skipTest("/bin/ps is required to observe process state")
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
             runtime = copy_runtime_with_current_launcher(root / "runtime")
@@ -722,6 +1335,7 @@ class G001DistributionContractTests(unittest.TestCase):
                         "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
                         "childProcess.spawn = (...arguments_) => {\n"
                         "  const child = originalSpawn(...arguments_);\n"
+                        "  if (arguments_[1].includes('--launcher-probe')) return child;\n"
                         "  fs.writeFileSync(\n"
                         "    process.env.CGR_MCP_CHILD_RECORD,\n"
                         "    `${child.pid}:${process.pid}`\n"
@@ -811,6 +1425,7 @@ class G001DistributionContractTests(unittest.TestCase):
                 "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
                 "childProcess.spawn = (...arguments_) => {\n"
                 "  const child = originalSpawn(...arguments_);\n"
+                "  if (arguments_[1].includes('--launcher-probe')) return child;\n"
                 "  const originalKill = child.kill.bind(child);\n"
                 "  child.kill = (signalName) => {\n"
                 "    const delivered = originalKill(signalName);\n"
@@ -1632,11 +2247,13 @@ process.stdout.write(JSON.stringify({{
             self.assertEqual(response.stdout, canonical_json(EXPECTED_BOUNDARY_RESPONSE))
 
     def test_probe_is_bounded_with_sigkill_and_retains_its_output_limit(self) -> None:
-        """Break caught: a selected native runtime can block the synchronous probe indefinitely."""
+        """Break caught: asynchronous probe capture loses its 16 KiB fail-closed bound."""
 
         launcher_path = PACKAGE_ROOT / "bin/launcher.cjs"
         script = r"""
 const fs = require('fs');
+const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
 const vm = require('vm');
 const launcherPath = process.argv[1];
 const source = fs.readFileSync(launcherPath, 'utf8').replace(
@@ -1644,16 +2261,35 @@ const source = fs.readFileSync(launcherPath, 'utf8').replace(
   'module.exports = { compatibleProbe };',
 );
 let captured;
+let spawnCalls = 0;
+const kills = [];
 const fakeChildProcess = {
-  spawnSync: (...arguments_) => {
+  spawn: (...arguments_) => {
     captured = arguments_;
-    return {
-      error: undefined,
-      status: 0,
-      stderr: '',
-      stdout: '{"implementation":"CPython","package_protocol":' +
-        '"contextguard-receipt-launch/v1","python_version":[3,11]}\n',
+    spawnCalls += 1;
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let closed = false;
+    child.kill = (signalName) => {
+      kills.push(signalName);
+      if (!closed) {
+        closed = true;
+        setImmediate(() => child.emit('close', null, signalName));
+      }
+      return true;
     };
+    setImmediate(() => {
+      if (spawnCalls === 1) {
+        child.stdout.write('{"implementation":"CPython","package_protocol":' +
+          '"contextguard-receipt-launch/v1","python_version":[3,11]}\n');
+        closed = true;
+        child.emit('close', 0, null);
+      } else {
+        child.stdout.write(Buffer.alloc((16 * 1024) + 1, 120));
+      }
+    });
+    return child;
   },
 };
 const context = {
@@ -1669,8 +2305,20 @@ const context = {
   setTimeout,
 };
 vm.runInNewContext(source, context, { filename: launcherPath });
-const compatible = context.module.exports.compatibleProbe('/runtime/python3', '/package/bootstrap.py');
-process.stdout.write(JSON.stringify({ compatible, options: captured[2] }));
+const signalController = () => ({
+  bind: () => true,
+  remove: () => undefined,
+  unbind: () => undefined,
+});
+void (async () => {
+  const compatible = await context.module.exports.compatibleProbe(
+    '/runtime/python3', '/package/bootstrap.py', signalController(),
+  );
+  const overLimit = await context.module.exports.compatibleProbe(
+    '/runtime/python3', '/package/bootstrap.py', signalController(),
+  );
+  process.stdout.write(JSON.stringify({ compatible, kills, options: captured[2], overLimit }));
+})();
 """
         result = subprocess.run(
             [str(Path(NODE).resolve()), "-e", script, str(launcher_path)],
@@ -1686,13 +2334,12 @@ process.stdout.write(JSON.stringify({ compatible, options: captured[2] }));
         self.assertEqual(
             captured["options"],
             {
-                "encoding": "utf8",
-                "killSignal": "SIGKILL",
-                "maxBuffer": 16 * 1024,
-                "timeout": 5000,
+                "stdio": ["ignore", "pipe", "pipe"],
                 "windowsHide": True,
             },
         )
+        self.assertFalse(captured["overLimit"])
+        self.assertEqual(captured["kills"], ["SIGKILL"])
 
     def test_runtime_identity_replacement_after_probe_is_rejected_before_launch(self) -> None:
         """Break caught: probe success authorizes a different pathname identity for launch."""
@@ -1700,6 +2347,8 @@ process.stdout.write(JSON.stringify({ compatible, options: captured[2] }));
         launcher_path = PACKAGE_ROOT / "bin/launcher.cjs"
         script = r"""
 const fs = require('fs');
+const { EventEmitter } = require('events');
+const { PassThrough } = require('stream');
 const vm = require('vm');
 const launcherPath = process.argv[1];
 const source = fs.readFileSync(launcherPath, 'utf8').replace(
@@ -1734,22 +2383,24 @@ const fakeFs = {
 };
 let spawnCalls = 0;
 const fakeChildProcess = {
-  spawnSync: () => ({
-    error: undefined,
-    status: 0,
-    stderr: '',
-    stdout: '{"implementation":"CPython","package_protocol":' +
-      '"contextguard-receipt-launch/v1","python_version":[3,11]}\n',
-  }),
   spawn: () => {
     spawnCalls += 1;
-    const stream = { on: () => undefined };
-    return { kill: () => undefined, on: () => undefined, stderr: stream, stdout: stream };
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    setImmediate(() => {
+      child.stdout.write('{"implementation":"CPython","package_protocol":' +
+        '"contextguard-receipt-launch/v1","python_version":[3,11]}\n');
+      child.emit('close', 0, null);
+    });
+    return child;
   },
 };
 let stderr = '';
 const fakeProcess = {
   env: { CONTEXT_GUARD_RECEIPT_PYTHON: '/runtime/python3' },
+  exitCode: undefined,
   geteuid: () => 2000,
   getegid: () => 2000,
   getgroups: () => [2000],
@@ -1782,7 +2433,13 @@ const result = context.module.exports.launch(
   ['inspect', 'boundary'],
   '/package/bin/context-guard-receipt.cjs',
 );
-process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
+setImmediate(() => setImmediate(() => process.stdout.write(JSON.stringify({
+  exitCode: fakeProcess.exitCode,
+  openFlags,
+  resultIsUndefined: result === undefined,
+  spawnCalls,
+  stderr,
+}))));
 """
         result = subprocess.run(
             [str(Path(NODE).resolve()), "-e", script, str(launcher_path)],
@@ -1795,8 +2452,9 @@ process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
         self.assertEqual(result.returncode, 0, result.stderr)
         observed = json.loads(result.stdout)
         self.assertEqual(observed["openFlags"], [0x100, 0x100, 0x100])
-        self.assertEqual(observed["result"], 69)
-        self.assertEqual(observed["spawnCalls"], 0)
+        self.assertTrue(observed["resultIsUndefined"])
+        self.assertEqual(observed["exitCode"], 69)
+        self.assertEqual(observed["spawnCalls"], 1)
         self.assertEqual(
             observed["stderr"],
             canonical_json(
@@ -1866,7 +2524,8 @@ process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
                 status="error",
                 reason="protocol_incompatible",
             )
-            self.assertLess(elapsed, 20.0)
+            self.assertGreater(elapsed, 4.5)
+            self.assertLess(elapsed, 8.0)
 
     def test_runtime_checks_reject_rewritten_payload_manifest_and_extra_files(self) -> None:
         """Break caught: treating a mutable manifest or an open tree as authenticity."""

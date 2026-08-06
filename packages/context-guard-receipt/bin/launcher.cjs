@@ -621,13 +621,27 @@ function createSignalController() {
 
   return {
     bind(nextDispatch) {
-      if (removed || dispatch !== null) return;
+      if (removed || dispatch !== null) return false;
       dispatch = nextDispatch;
       const queuedSignals = pendingSignals;
       pendingSignals = [];
       for (const pending of queuedSignals) {
         dispatch(pending.signalName, pending.signalNumber);
       }
+      return true;
+    },
+    unbind(currentDispatch) {
+      if (removed || dispatch !== currentDispatch) return;
+      dispatch = null;
+    },
+    pending() {
+      return removed ? 0 : pendingSignals.length;
+    },
+    takePending() {
+      if (removed) return [];
+      const queuedSignals = pendingSignals;
+      pendingSignals = [];
+      return queuedSignals;
     },
     remove() {
       if (removed) return;
@@ -638,6 +652,16 @@ function createSignalController() {
       process.removeListener('SIGTERM', handleSigterm);
     },
   };
+}
+
+function finishQueuedSignals(signalController) {
+  const queuedSignals = signalController.takePending();
+  if (queuedSignals.length === 0) return false;
+  signalController.remove();
+  process.exitCode = queuedSignals.length === 1
+    ? 128 + queuedSignals[0].signalNumber
+    : launcherError('cleanup_unconfirmed', 69);
+  return true;
 }
 
 function resolveExecutable(candidate, allowCallerSelectedMetadata = false) {
@@ -708,35 +732,243 @@ function resolvePython() {
   return null;
 }
 
-function compatibleProbe(python, bootstrap) {
-  const probe = childProcess.spawnSync(
-    python,
-    [...PYTHON_ISOLATION_FLAGS, bootstrap, '--launcher-probe'],
-    {
-      encoding: 'utf8',
-      killSignal: 'SIGKILL',
-      maxBuffer: 16 * 1024,
-      timeout: PROBE_TIMEOUT_MILLISECONDS,
-      windowsHide: true,
-    },
-  );
-  if (probe.error || probe.status !== 0 || probe.stderr !== '') {
-    return false;
-  }
-  let result;
-  try {
-    result = JSON.parse(probe.stdout);
-  } catch (_) {
-    return false;
-  }
-  return stableJson(result) === stableJson({
-    implementation: 'CPython',
-    package_protocol: PACKAGE_PROTOCOL,
-    python_version: [3, result && result.python_version && result.python_version[1]],
-  }) && Array.isArray(result.python_version)
-    && result.python_version.length === 2
-    && Number.isInteger(result.python_version[1])
-    && result.python_version[1] >= 11 && result.python_version[1] < 15;
+function compatibleProbe(python, bootstrap, signalController) {
+  return new Promise((resolve) => {
+    let child = null;
+    let childCloseOutcome = null;
+    let completed = false;
+    let interrupted = null;
+    let interruptCleanup = null;
+    let invalid = false;
+    let killWaitTimer = null;
+    let timer = null;
+    let stdoutChunks = [];
+    let stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+
+    const discardOutput = () => {
+      stdoutChunks = [];
+      stderrChunks = [];
+      stdoutBytes = 0;
+      stderrBytes = 0;
+    };
+    const startInterruptCleanup = () => {
+      if (child === null || interrupted === null || interruptCleanup !== null) return;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (killWaitTimer !== null) {
+        clearTimeout(killWaitTimer);
+        killWaitTimer = null;
+      }
+      interruptCleanup = stopInterruptedChild(
+        child,
+        interrupted.signalName,
+        () => childCloseOutcome !== null,
+      );
+      if (interrupted.escalationRequired) {
+        try {
+          child.kill('SIGKILL');
+        } catch (_) {
+          // The probe may have honored the first queued signal immediately.
+        }
+      }
+      void (async () => {
+        const escalationRequired = await interruptCleanup;
+        finishProbe(null, {
+          detachHandles: childCloseOutcome === null,
+          unbindSignal: false,
+        });
+        signalController.remove();
+        const expectedStatus = 128 + interrupted.signalNumber;
+        const confirmedCleanup = !escalationRequired
+          && !interrupted.escalationRequired
+          && childCloseOutcome !== null
+          && ((childCloseOutcome.status === expectedStatus
+            && childCloseOutcome.signal === null)
+            || (childCloseOutcome.status === null
+              && childCloseOutcome.signal === interrupted.signalName));
+        process.exitCode = confirmedCleanup
+          ? expectedStatus
+          : launcherError('cleanup_unconfirmed', 69);
+      })();
+    };
+    const interrupt = (signalName, signalNumber) => {
+      if (interrupted !== null) {
+        interrupted.escalationRequired = true;
+        if (child !== null) {
+          try {
+            child.kill('SIGKILL');
+          } catch (_) {
+            // A repeated interrupt is only an escalation request.
+          }
+        }
+        return;
+      }
+      interrupted = { escalationRequired: invalid, signalName, signalNumber };
+      discardOutput();
+      startInterruptCleanup();
+    };
+    signalController.bind(interrupt);
+
+    try {
+      child = childProcess.spawn(
+        python,
+        [...PYTHON_ISOLATION_FLAGS, bootstrap, '--launcher-probe'],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+    } catch (_) {
+      if (interrupted === null) {
+        signalController.unbind(interrupt);
+        resolve(false);
+      } else {
+        signalController.remove();
+        void Promise.resolve().then(() => {
+          process.exitCode = launcherError('cleanup_unconfirmed', 69);
+        });
+        resolve(null);
+      }
+      return;
+    }
+
+    const failProbe = () => {
+      if (completed || invalid || interrupted !== null) return;
+      invalid = true;
+      discardOutput();
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      try {
+        child.kill('SIGKILL');
+      } catch (_) {
+        // A failed spawn may not have produced a process to stop.
+      }
+      if (completed) return;
+      killWaitTimer = setTimeout(() => {
+        if (completed) return;
+        signalController.remove();
+        process.exitCode = launcherError('cleanup_unconfirmed', 69);
+        finishProbe(null, { detachHandles: true, unbindSignal: false });
+      }, INTERRUPT_KILL_WAIT_MILLISECONDS);
+    };
+    const capture = (channel, chunk) => {
+      if (invalid || interrupted !== null) return;
+      const currentBytes = channel === 'stdout' ? stdoutBytes : stderrBytes;
+      if (!Buffer.isBuffer(chunk) || currentBytes + chunk.length > 16 * 1024) {
+        failProbe();
+        return;
+      }
+      if (channel === 'stdout') {
+        stdoutChunks.push(chunk);
+        stdoutBytes += chunk.length;
+      } else {
+        stderrChunks.push(chunk);
+        stderrBytes += chunk.length;
+      }
+    };
+    const captureStdout = (chunk) => capture('stdout', chunk);
+    const captureStderr = (chunk) => capture('stderr', chunk);
+    const removeProbeListeners = () => {
+      child.removeListener('error', failProbe);
+      child.removeListener('close', handleClose);
+      if (child.stdout !== null) {
+        child.stdout.removeListener('data', captureStdout);
+        child.stdout.removeListener('error', failProbe);
+      }
+      if (child.stderr !== null) {
+        child.stderr.removeListener('data', captureStderr);
+        child.stderr.removeListener('error', failProbe);
+      }
+    };
+    const detachProbeHandles = () => {
+      for (const stream of [child.stdout, child.stderr]) {
+        if (stream !== null && typeof stream.destroy === 'function') {
+          try {
+            stream.destroy();
+          } catch (_) {
+            // The stream may already be detached from a failed child.
+          }
+        }
+      }
+      if (typeof child.unref === 'function') {
+        try {
+          child.unref();
+        } catch (_) {
+          // An already-closed child may reject a redundant unref.
+        }
+      }
+    };
+    const finishProbe = (
+      outcome,
+      { detachHandles = false, unbindSignal = true } = {},
+    ) => {
+      if (completed) return false;
+      completed = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (killWaitTimer !== null) {
+        clearTimeout(killWaitTimer);
+        killWaitTimer = null;
+      }
+      removeProbeListeners();
+      if (detachHandles) detachProbeHandles();
+      if (unbindSignal) signalController.unbind(interrupt);
+      discardOutput();
+      resolve(outcome);
+      return true;
+    };
+    const handleClose = (status, childSignal) => {
+      if (completed) return;
+      childCloseOutcome = { signal: childSignal, status };
+      if (interrupted !== null) {
+        finishProbe(null, { unbindSignal: false });
+        return;
+      }
+      if (invalid || status !== 0 || childSignal !== null || stderrBytes !== 0) {
+        finishProbe(false);
+        return;
+      }
+      const stdout = Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8');
+      let result;
+      try {
+        result = JSON.parse(stdout);
+      } catch (_) {
+        finishProbe(false);
+        return;
+      }
+      finishProbe(stableJson(result) === stableJson({
+        implementation: 'CPython',
+        package_protocol: PACKAGE_PROTOCOL,
+        python_version: [3, result && result.python_version && result.python_version[1]],
+      }) && Array.isArray(result.python_version)
+        && result.python_version.length === 2
+        && Number.isInteger(result.python_version[1])
+        && result.python_version[1] >= 11 && result.python_version[1] < 15);
+    };
+    if (child.stdout === null || child.stderr === null) {
+      failProbe();
+    } else {
+      child.stdout.on('data', captureStdout);
+      child.stderr.on('data', captureStderr);
+      child.stdout.on('error', failProbe);
+      child.stderr.on('error', failProbe);
+    }
+    child.on('error', failProbe);
+    child.once('close', handleClose);
+    if (interrupted === null) {
+      timer = setTimeout(failProbe, PROBE_TIMEOUT_MILLISECONDS);
+    } else {
+      startInterruptCleanup();
+    }
+  });
 }
 
 function monitorStreamingMcp(child, signalController) {
@@ -822,11 +1054,30 @@ function launch(kind, argv, entryFilename) {
     return launcherError('runtime_unavailable', 69);
   }
   const bootstrap = path.join(packageRoot, 'python', 'context_guard_receipt', 'bootstrap.py');
-  if (!compatibleProbe(runtime.executablePath, bootstrap)) {
-    return launcherError('protocol_incompatible', 78);
+  const signalController = createSignalController();
+  void continueLaunch(kind, argv, runtime, bootstrap, signalController);
+  return undefined;
+}
+
+async function continueLaunch(kind, argv, runtime, bootstrap, signalController) {
+  const probeCompatible = await compatibleProbe(
+    runtime.executablePath,
+    bootstrap,
+    signalController,
+  );
+  if (probeCompatible === null) return;
+  if (finishQueuedSignals(signalController)) return;
+  if (!probeCompatible) {
+    signalController.remove();
+    process.exitCode = launcherError('protocol_incompatible', 78);
+    return;
   }
-  if (!runtimeSelectionCurrent(runtime)) {
-    return launcherError('runtime_unavailable', 69);
+  const currentAfterProbe = runtimeSelectionCurrent(runtime);
+  if (finishQueuedSignals(signalController)) return;
+  if (!currentAfterProbe) {
+    signalController.remove();
+    process.exitCode = launcherError('runtime_unavailable', 69);
+    return;
   }
   if (kind === 'mcp') {
     const rootInvocation = argv.length === 2
@@ -837,13 +1088,20 @@ function launch(kind, argv, entryFilename) {
       && path.isAbsolute(argv[1])
       && path.normalize(argv[1]) === argv[1];
     if (!(argv.length === 1 && argv[0] === '--help') && !rootInvocation) {
-      return mcpUsageError();
+      if (finishQueuedSignals(signalController)) return;
+      signalController.remove();
+      process.exitCode = mcpUsageError();
+      return;
     }
   }
-  if (!runtimeSelectionCurrent(runtime)) {
-    return launcherError('runtime_unavailable', 69);
+  const currentBeforeSpawn = runtimeSelectionCurrent(runtime);
+  if (finishQueuedSignals(signalController)) return;
+  if (!currentBeforeSpawn) {
+    signalController.remove();
+    process.exitCode = launcherError('runtime_unavailable', 69);
+    return;
   }
-  const signalController = createSignalController();
+  if (finishQueuedSignals(signalController)) return;
   let child;
   try {
     child = childProcess.spawn(
@@ -857,11 +1115,17 @@ function launch(kind, argv, entryFilename) {
       },
     );
   } catch (_) {
+    const signalPending = signalController.pending() > 0;
     signalController.remove();
-    return launcherError('runtime_unavailable', 69);
+    process.exitCode = signalPending
+      ? launcherError('cleanup_unconfirmed', 69)
+      : launcherError('runtime_unavailable', 69);
+    return;
   }
   if (kind === 'mcp') {
-    return monitorStreamingMcp(child, signalController);
+    const immediateExitCode = monitorStreamingMcp(child, signalController);
+    if (Number.isInteger(immediateExitCode)) process.exitCode = immediateExitCode;
+    return;
   }
   if (child.stdout === null || child.stderr === null) {
     try {
@@ -870,7 +1134,8 @@ function launch(kind, argv, entryFilename) {
       // The failed launch has no output channels to drain.
     }
     signalController.remove();
-    return launcherError('runtime_unavailable', 69);
+    process.exitCode = launcherError('runtime_unavailable', 69);
+    return;
   }
 
   let stdoutChunks = [];
@@ -941,8 +1206,10 @@ function launch(kind, argv, entryFilename) {
       const confirmedCleanup = !escalationRequired
         && !interrupted.escalationRequired
         && childCloseOutcome !== null
-        && childCloseOutcome.status === expectedStatus
-        && childCloseOutcome.signal === null;
+        && ((childCloseOutcome.status === expectedStatus
+          && childCloseOutcome.signal === null)
+          || (childCloseOutcome.status === null
+            && childCloseOutcome.signal === signalName));
       process.exitCode = confirmedCleanup
         ? expectedStatus
         : launcherError('cleanup_unconfirmed', 69);
@@ -976,7 +1243,6 @@ function launch(kind, argv, entryFilename) {
     })();
   });
   signalController.bind(interrupt);
-  return undefined;
 }
 
 module.exports = { launch };
