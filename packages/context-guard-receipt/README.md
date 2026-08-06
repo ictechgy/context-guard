@@ -183,6 +183,14 @@ before releasing the requested executable. A facility that later becomes
 unavailable still cannot be replaced with broader signaling; receipt authority
 is withheld, while the non-containment limitation above continues to apply.
 
+When the launcher itself receives `SIGINT` or `SIGTERM`, it forwards that signal
+and allows a 2.5-second graceful-cleanup window. Confirmed cleanup returns
+`128 + signal`. If child shutdown cannot be confirmed, including when cleanup
+requires `SIGKILL` or a repeated interrupt requests escalation, the buffered CLI
+child output is withheld and the launcher instead emits `cleanup_unconfirmed`
+with exit `69`. This refusal does not claim that detached or otherwise
+unobserved descendants were terminated.
+
 The CLI defaults to a 30-second timeout and 900,000 raw and sanitized bytes in
 total. Optional timeout values are positive decimal seconds up to 300. Optional
 per-channel and total byte limits are positive decimals up to 900,000, with the

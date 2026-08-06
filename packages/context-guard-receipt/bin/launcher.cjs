@@ -15,7 +15,7 @@ const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_PACKAGE_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_CHILD_STREAM_BYTES = 2 * 1024 * 1024;
 const PROBE_TIMEOUT_MILLISECONDS = 5000;
-const INTERRUPT_GRACE_MILLISECONDS = 750;
+const INTERRUPT_GRACE_MILLISECONDS = 2500;
 const INTERRUPT_KILL_WAIT_MILLISECONDS = 750;
 const RUNTIME_DIRECTORIES = new Set(['bin', 'python', 'schemas']);
 const SOURCE_ONLY_DIRECTORIES = new Set(['dev', 'scripts', 'tests']);
@@ -100,14 +100,14 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': 'ce7e19bbab4097262d19a307e44c69ad64053a4792f9b6bbdbd6b1ac7399a649',
+  'README.md': 'c81eb58dd370b4e4e3a80f4201c4b5d5fea00760e73b9d4c12c1a80074102256',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
   'python/context_guard_receipt/__init__.py': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6',
   'python/context_guard_receipt/assembly.py': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea',
   'python/context_guard_receipt/blueprint.py': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0',
-  'python/context_guard_receipt/bootstrap.py': '334787a36bcb7a7441817e33c2dd7641bccac504b83e5117309a69acc87ad211',
+  'python/context_guard_receipt/bootstrap.py': 'fa846a8968c5199618ab68a86424c0cb88c32250291faf3ac37f26d14d4b018e',
   'python/context_guard_receipt/canonical.py': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7',
   'python/context_guard_receipt/cli.py': 'fecda41fb025152809dabbd884013da9f22f5acd1a576faf334b940425cadcf2',
   'python/context_guard_receipt/cli_io.py': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf',
@@ -586,7 +586,7 @@ async function stopInterruptedChild(child, signalName, childClosed) {
     // The Python child may have completed immediately before the interrupt.
   }
   if (await waitForShutdown(childClosed, INTERRUPT_GRACE_MILLISECONDS)) {
-    return;
+    return false;
   }
   if (!childClosed()) {
     try {
@@ -596,6 +596,48 @@ async function stopInterruptedChild(child, signalName, childClosed) {
     }
   }
   await waitForShutdown(childClosed, INTERRUPT_KILL_WAIT_MILLISECONDS);
+  return true;
+}
+
+function createSignalController() {
+  let dispatch = null;
+  let pendingSignals = [];
+  let removed = false;
+
+  const receive = (signalName, signalNumber) => {
+    if (removed) return;
+    if (dispatch !== null) {
+      dispatch(signalName, signalNumber);
+      return;
+    }
+    if (pendingSignals.length < 2) {
+      pendingSignals.push({ signalName, signalNumber });
+    }
+  };
+  const handleSigint = () => receive('SIGINT', 2);
+  const handleSigterm = () => receive('SIGTERM', 15);
+  process.on('SIGINT', handleSigint);
+  process.on('SIGTERM', handleSigterm);
+
+  return {
+    bind(nextDispatch) {
+      if (removed || dispatch !== null) return;
+      dispatch = nextDispatch;
+      const queuedSignals = pendingSignals;
+      pendingSignals = [];
+      for (const pending of queuedSignals) {
+        dispatch(pending.signalName, pending.signalNumber);
+      }
+    },
+    remove() {
+      if (removed) return;
+      removed = true;
+      dispatch = null;
+      pendingSignals = [];
+      process.removeListener('SIGINT', handleSigint);
+      process.removeListener('SIGTERM', handleSigterm);
+    },
+  };
 }
 
 function resolveExecutable(candidate, allowCallerSelectedMetadata = false) {
@@ -697,36 +739,34 @@ function compatibleProbe(python, bootstrap) {
     && result.python_version[1] >= 11 && result.python_version[1] < 15;
 }
 
-function monitorStreamingMcp(child) {
+function monitorStreamingMcp(child, signalController) {
   if (child.stderr === null) {
     try {
       child.kill('SIGKILL');
     } catch (_) {
       // The failed launch may already have terminated.
     }
+    signalController.remove();
     return launcherError('runtime_unavailable', 69);
   }
 
   let runtimeFailure = false;
   let interrupted = null;
-  let childHasClosed = false;
+  let childCloseOutcome = null;
   let completed = false;
 
   const failClosed = () => {
     if (runtimeFailure || completed) return;
     runtimeFailure = true;
-    void stopInterruptedChild(child, 'SIGTERM', () => childHasClosed);
+    void stopInterruptedChild(child, 'SIGTERM', () => childCloseOutcome !== null);
   };
   child.stderr.on('data', failClosed);
   child.on('error', failClosed);
 
-  const removeSignalHandlers = () => {
-    process.removeListener('SIGINT', handleSigint);
-    process.removeListener('SIGTERM', handleSigterm);
-  };
   const interrupt = (signalName, signalNumber) => {
     if (completed) return;
     if (interrupted !== null) {
+      interrupted.escalationRequired = true;
       try {
         child.kill('SIGKILL');
       } catch (_) {
@@ -734,30 +774,41 @@ function monitorStreamingMcp(child) {
       }
       return;
     }
-    interrupted = { signalNumber };
+    interrupted = { escalationRequired: false, signalNumber };
     void (async () => {
-      await stopInterruptedChild(child, signalName, () => childHasClosed);
+      const escalationRequired = await stopInterruptedChild(
+        child,
+        signalName,
+        () => childCloseOutcome !== null,
+      );
       completed = true;
-      removeSignalHandlers();
-      process.exitCode = 128 + interrupted.signalNumber;
+      signalController.remove();
+      const expectedStatus = 128 + interrupted.signalNumber;
+      const confirmedCleanup = !escalationRequired
+        && !interrupted.escalationRequired
+        && childCloseOutcome !== null
+        && ((childCloseOutcome.status === expectedStatus
+          && childCloseOutcome.signal === null)
+          || (childCloseOutcome.status === null
+            && childCloseOutcome.signal === signalName));
+      process.exitCode = confirmedCleanup
+        ? expectedStatus
+        : launcherError('cleanup_unconfirmed', 69);
     })();
   };
-  const handleSigint = () => interrupt('SIGINT', 2);
-  const handleSigterm = () => interrupt('SIGTERM', 15);
-  process.on('SIGINT', handleSigint);
-  process.on('SIGTERM', handleSigterm);
 
   child.on('close', (status, childSignal) => {
-    childHasClosed = true;
+    childCloseOutcome = { signal: childSignal, status };
     if (interrupted !== null || completed) return;
     completed = true;
-    removeSignalHandlers();
+    signalController.remove();
     if (runtimeFailure || childSignal !== null || !Number.isInteger(status)) {
       process.exitCode = launcherError('runtime_unavailable', 69);
       return;
     }
     process.exitCode = status;
   });
+  signalController.bind(interrupt);
   return undefined;
 }
 
@@ -792,6 +843,7 @@ function launch(kind, argv, entryFilename) {
   if (!runtimeSelectionCurrent(runtime)) {
     return launcherError('runtime_unavailable', 69);
   }
+  const signalController = createSignalController();
   let child;
   try {
     child = childProcess.spawn(
@@ -805,10 +857,11 @@ function launch(kind, argv, entryFilename) {
       },
     );
   } catch (_) {
+    signalController.remove();
     return launcherError('runtime_unavailable', 69);
   }
   if (kind === 'mcp') {
-    return monitorStreamingMcp(child);
+    return monitorStreamingMcp(child, signalController);
   }
   if (child.stdout === null || child.stderr === null) {
     try {
@@ -816,6 +869,7 @@ function launch(kind, argv, entryFilename) {
     } catch (_) {
       // The failed launch has no output channels to drain.
     }
+    signalController.remove();
     return launcherError('runtime_unavailable', 69);
   }
 
@@ -825,7 +879,7 @@ function launch(kind, argv, entryFilename) {
   let stderrBytes = 0;
   let runtimeFailure = false;
   let interrupted = null;
-  let childHasClosed = false;
+  let childCloseOutcome = null;
   let completed = false;
 
   const discardOutput = () => {
@@ -840,7 +894,7 @@ function launch(kind, argv, entryFilename) {
     if (!Buffer.isBuffer(chunk) || currentBytes + chunk.length > MAX_CHILD_STREAM_BYTES) {
       runtimeFailure = true;
       discardOutput();
-      void stopInterruptedChild(child, 'SIGTERM', () => childHasClosed);
+      void stopInterruptedChild(child, 'SIGTERM', () => childCloseOutcome !== null);
       return;
     }
     if (channel === 'stdout') {
@@ -858,13 +912,10 @@ function launch(kind, argv, entryFilename) {
     discardOutput();
   });
 
-  const removeSignalHandlers = () => {
-    process.removeListener('SIGINT', handleSigint);
-    process.removeListener('SIGTERM', handleSigterm);
-  };
   const interrupt = (signalName, signalNumber) => {
     if (completed) return;
     if (interrupted !== null) {
+      interrupted.escalationRequired = true;
       try {
         child.kill('SIGKILL');
       } catch (_) {
@@ -873,31 +924,36 @@ function launch(kind, argv, entryFilename) {
       return;
     }
     interrupted = {
+      escalationRequired: false,
       signalNumber,
     };
     discardOutput();
     void (async () => {
-      await stopInterruptedChild(
+      const escalationRequired = await stopInterruptedChild(
         child,
         signalName,
-        () => childHasClosed,
+        () => childCloseOutcome !== null,
       );
       completed = true;
       discardOutput();
-      removeSignalHandlers();
-      process.exitCode = 128 + interrupted.signalNumber;
+      signalController.remove();
+      const expectedStatus = 128 + interrupted.signalNumber;
+      const confirmedCleanup = !escalationRequired
+        && !interrupted.escalationRequired
+        && childCloseOutcome !== null
+        && childCloseOutcome.status === expectedStatus
+        && childCloseOutcome.signal === null;
+      process.exitCode = confirmedCleanup
+        ? expectedStatus
+        : launcherError('cleanup_unconfirmed', 69);
     })();
   };
-  const handleSigint = () => interrupt('SIGINT', 2);
-  const handleSigterm = () => interrupt('SIGTERM', 15);
-  process.on('SIGINT', handleSigint);
-  process.on('SIGTERM', handleSigterm);
 
   child.on('close', (status, childSignal) => {
-    childHasClosed = true;
+    childCloseOutcome = { signal: childSignal, status };
     if (interrupted !== null || completed) return;
     completed = true;
-    removeSignalHandlers();
+    signalController.remove();
     void (async () => {
       if (runtimeFailure || childSignal !== null || !Number.isInteger(status)) {
         discardOutput();
@@ -919,6 +975,7 @@ function launch(kind, argv, entryFilename) {
       process.exitCode = status;
     })();
   });
+  signalController.bind(interrupt);
   return undefined;
 }
 

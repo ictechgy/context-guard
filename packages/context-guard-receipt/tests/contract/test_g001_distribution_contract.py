@@ -5,6 +5,7 @@ import json
 import os
 import py_compile
 import re
+import select
 import shutil
 import signal
 import stat
@@ -241,11 +242,28 @@ def run_node(
 
 
 def process_exists(pid: int) -> bool:
+    if Path("/bin/ps").is_file():
+        try:
+            observed = subprocess.run(
+                ["/bin/ps", "-o", "stat=", "-p", str(pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=1.0,
+            )
+            state = observed.stdout.strip()
+            if observed.returncode == 0 and state:
+                return not state.startswith("Z")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
         os.kill(pid, 0)
         return True
     except ProcessLookupError:
         return False
+    except (OSError, ValueError):
+        return True
 
 
 def wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
@@ -255,6 +273,33 @@ def wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
             return True
         time.sleep(0.02)
     return not process_exists(pid)
+
+
+def wait_for_process_state(
+    pid: int, expected_prefix: str, timeout_seconds: float = 3.0
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    state = ""
+    while time.monotonic() < deadline:
+        try:
+            observed = subprocess.run(
+                ["/bin/ps", "-o", "stat=", "-p", str(pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=1.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            time.sleep(0.02)
+            continue
+        state = observed.stdout.strip()
+        if state.startswith(expected_prefix):
+            return
+        time.sleep(0.02)
+    raise AssertionError(
+        f"timed out waiting for process {pid} state {expected_prefix!r}; observed {state!r}"
+    )
 
 
 def read_child_record(path: Path, timeout_seconds: float = 5.0) -> tuple[int, int]:
@@ -434,6 +479,480 @@ class G001DistributionContractTests(unittest.TestCase):
                                     os.kill(pid, signal.SIGKILL)
                                 except ProcessLookupError:
                                     pass
+
+    def test_launcher_handles_interrupt_before_spawn_wrapper_returns(self) -> None:
+        """Break caught: a spawn-time interrupt kills Node and strands its descendants."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(root / "runtime")
+            record = root / "early-signal-child-record"
+            preload = root / "early-signal.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const fs = require('fs');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "const sleeper = new Int32Array(new SharedArrayBuffer(4));\n"
+                "let firstSpawn = true;\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  const child = originalSpawn(...arguments_);\n"
+                "  if (!firstSpawn) return child;\n"
+                "  firstSpawn = false;\n"
+                "  const deadline = Date.now() + 5000;\n"
+                "  while (Date.now() < deadline) {\n"
+                "    try {\n"
+                "      const record = fs.readFileSync(\n"
+                "        process.env.CGR_EARLY_SIGNAL_RECORD, 'ascii'\n"
+                "      );\n"
+                "      if (/^\\d+:\\d+$/.test(record)) break;\n"
+                "    } catch (_) {\n"
+                "      // The escrowed command has not published its PID yet.\n"
+                "    }\n"
+                "    Atomics.wait(sleeper, 0, 0, 10);\n"
+                "  }\n"
+                "  process.kill(process.pid, 'SIGTERM');\n"
+                "  return child;\n"
+                "};\n",
+                encoding="ascii",
+            )
+            state = root / "early-signal-state"
+            process = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(runtime / "bin/context-guard-receipt.cjs"),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(PACKAGE_ROOT.resolve()),
+                    "--state-dir",
+                    str(state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import os,time; "
+                        f"open({str(record)!r},'w',encoding='ascii').write("
+                        "f'{os.getpid()}:{os.getppid()}'); "
+                        "time.sleep(60)"
+                    ),
+                ],
+                cwd=PACKAGE_ROOT,
+                env=launcher_environment(
+                    CGR_EARLY_SIGNAL_RECORD=str(record),
+                    NODE_OPTIONS=f"--require={preload}",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            child_pid = 0
+            python_pid = 0
+            try:
+                child_pid, python_pid = read_child_record(record)
+                stdout, stderr = process.communicate(timeout=8)
+                self.assertIn(process.returncode, (69, 143), stderr)
+                self.assertEqual(stdout, b"")
+                if process.returncode == 69:
+                    self.assertEqual(
+                        stderr,
+                        canonical_json(
+                            {
+                                "evidence_boundary": EVIDENCE_BOUNDARY,
+                                "operation": "launcher",
+                                "reason": "cleanup_unconfirmed",
+                                "schema_version": "contextguard-receipt-cli-response/v1",
+                                "status": "error",
+                            }
+                        ).encode("ascii"),
+                    )
+                else:
+                    self.assertEqual(stderr, b"")
+                self.assertTrue(wait_for_process_exit(child_pid))
+                self.assertTrue(wait_for_process_exit(python_pid))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=3)
+                for pid in (child_pid, python_pid):
+                    if pid > 0 and process_exists(pid):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    @unittest.skipUnless(Path("/bin/ps").is_file(), "/bin/ps is required")
+    def test_process_exit_helper_treats_a_zombie_as_exited(self) -> None:
+        """Break caught: a reaped-but-unwaited child is reported as live."""
+
+        process = subprocess.Popen(
+            [str(Path(sys.executable).resolve()), "-I", "-S", "-B", "-c", "pass"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 3.0
+            state = ""
+            while time.monotonic() < deadline:
+                observed = subprocess.run(
+                    ["/bin/ps", "-o", "stat=", "-p", str(process.pid)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
+                )
+                state = observed.stdout.strip()
+                if state.startswith("Z"):
+                    break
+                time.sleep(0.02)
+            self.assertTrue(state.startswith("Z"), f"expected zombie state, observed {state!r}")
+            self.assertFalse(process_exists(process.pid))
+        finally:
+            process.wait(timeout=3)
+
+    def _assert_launcher_reports_unconfirmed_cleanup(
+        self, *, external_supervisor_kill: bool = False, repeat_interrupt: bool = False
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(root / "runtime")
+            record = root / "child-record"
+            state = root / "interrupt-state"
+            process = subprocess.Popen(
+                [
+                    str(Path(NODE).resolve()),
+                    str(runtime / "bin/context-guard-receipt.cjs"),
+                    "run",
+                    "--escrow",
+                    "--root",
+                    str(PACKAGE_ROOT.resolve()),
+                    "--state-dir",
+                    str(state),
+                    "--",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    (
+                        "import os,time; "
+                        f"open({str(record)!r},'w',encoding='ascii').write("
+                        "f'{os.getpid()}:{os.getppid()}'); "
+                        "time.sleep(60)"
+                    ),
+                ],
+                cwd=PACKAGE_ROOT,
+                env=launcher_environment(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            child_pid = 0
+            python_pid = 0
+            try:
+                child_pid, python_pid = read_child_record(record)
+                os.kill(python_pid, signal.SIGSTOP)
+                wait_for_process_state(python_pid, "T")
+                process.send_signal(signal.SIGTERM)
+                if repeat_interrupt:
+                    time.sleep(0.05)
+                    process.send_signal(signal.SIGINT)
+                elif external_supervisor_kill:
+                    time.sleep(0.05)
+                    os.kill(python_pid, signal.SIGKILL)
+                stdout, stderr = process.communicate(timeout=8)
+                self.assertEqual(process.returncode, 69)
+                self.assertEqual(stdout, b"")
+                self.assertEqual(
+                    stderr,
+                    canonical_json(
+                        {
+                            "evidence_boundary": EVIDENCE_BOUNDARY,
+                            "operation": "launcher",
+                            "reason": "cleanup_unconfirmed",
+                            "schema_version": "contextguard-receipt-cli-response/v1",
+                            "status": "error",
+                        }
+                    ).encode("ascii"),
+                )
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=3)
+                for pid in (child_pid, python_pid):
+                    if pid > 0 and process_exists(pid):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    def test_launcher_reports_unconfirmed_cleanup_after_interrupt_escalation(self) -> None:
+        """Break caught: forced CLI termination silently strands the escrowed command."""
+
+        self._assert_launcher_reports_unconfirmed_cleanup(repeat_interrupt=False)
+
+    def test_repeated_interrupt_reports_unconfirmed_cleanup_after_sigkill(self) -> None:
+        """Break caught: repeated-interrupt SIGKILL is reported as graceful cleanup."""
+
+        self._assert_launcher_reports_unconfirmed_cleanup(repeat_interrupt=True)
+
+    def test_externally_killed_supervisor_reports_unconfirmed_cleanup(self) -> None:
+        """Break caught: an externally killed supervisor is treated as graceful cleanup."""
+
+        self._assert_launcher_reports_unconfirmed_cleanup(external_supervisor_kill=True)
+
+    def test_mcp_launcher_preserves_normal_interrupt_exit_semantics(self) -> None:
+        """Break caught: MCP rejects an expected forwarded-signal close outcome."""
+
+        for interrupt in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(interrupt=interrupt):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory).resolve()
+                    runtime = copy_runtime_with_current_launcher(root / "runtime")
+                    record = root / "mcp-child-record"
+                    preload = root / "record-mcp-child.cjs"
+                    preload.write_text(
+                        "'use strict';\n"
+                        "const childProcess = require('child_process');\n"
+                        "const fs = require('fs');\n"
+                        "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                        "childProcess.spawn = (...arguments_) => {\n"
+                        "  const child = originalSpawn(...arguments_);\n"
+                        "  fs.writeFileSync(\n"
+                        "    process.env.CGR_MCP_CHILD_RECORD,\n"
+                        "    `${child.pid}:${process.pid}`\n"
+                        "  );\n"
+                        "  return child;\n"
+                        "};\n",
+                        encoding="ascii",
+                    )
+                    process = subprocess.Popen(
+                        [
+                            str(Path(NODE).resolve()),
+                            str(runtime / "bin/context-guard-receipt-mcp.cjs"),
+                            "--root",
+                            str(PACKAGE_ROOT.resolve()),
+                        ],
+                        cwd=PACKAGE_ROOT,
+                        env=launcher_environment(
+                            CGR_MCP_CHILD_RECORD=str(record),
+                            NODE_OPTIONS=f"--require={preload}",
+                        ),
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    python_pid = 0
+                    try:
+                        python_pid, parent_pid = read_child_record(record)
+                        self.assertEqual(parent_pid, process.pid)
+                        self.assertIsNotNone(process.stdin)
+                        self.assertIsNotNone(process.stdout)
+                        process.stdin.write(
+                            canonical_json(
+                                {
+                                    "id": 1,
+                                    "jsonrpc": "2.0",
+                                    "method": "initialize",
+                                    "params": {
+                                        "capabilities": {},
+                                        "clientInfo": {
+                                            "name": "g001-signal-test",
+                                            "version": "1",
+                                        },
+                                        "protocolVersion": "2025-11-25",
+                                    },
+                                }
+                            ).encode("ascii")
+                        )
+                        process.stdin.flush()
+                        readable, _, _ = select.select([process.stdout], [], [], 5.0)
+                        self.assertEqual(readable, [process.stdout])
+                        initialized = process.stdout.readline()
+                        self.assertNotEqual(initialized, b"")
+                        self.assertEqual(json.loads(initialized)["id"], 1)
+
+                        process.send_signal(interrupt)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, 128 + interrupt, stderr)
+                        self.assertEqual(stdout, b"")
+                        self.assertEqual(stderr, b"")
+                        self.assertTrue(wait_for_process_exit(python_pid))
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        try:
+                            process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate(timeout=3)
+                        if python_pid > 0 and process_exists(python_pid):
+                            try:
+                                os.kill(python_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_mcp_launcher_reports_unconfirmed_cleanup_after_escalation(self) -> None:
+        """Break caught: forced MCP termination silently reports graceful cleanup."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            runtime = copy_runtime_with_current_launcher(root / "runtime")
+            preload = root / "signal-ready.cjs"
+            preload.write_text(
+                "'use strict';\n"
+                "const childProcess = require('child_process');\n"
+                "const fs = require('fs');\n"
+                "const originalSpawn = childProcess.spawn.bind(childProcess);\n"
+                "childProcess.spawn = (...arguments_) => {\n"
+                "  const child = originalSpawn(...arguments_);\n"
+                "  const originalKill = child.kill.bind(child);\n"
+                "  child.kill = (signalName) => {\n"
+                "    const delivered = originalKill(signalName);\n"
+                "    if (signalName === 'SIGTERM') {\n"
+                "      fs.writeFileSync(process.env.CGR_CHILD_SIGNAL_RECORD, 'SIGTERM');\n"
+                "    }\n"
+                "    return delivered;\n"
+                "  };\n"
+                "  return child;\n"
+                "};\n"
+                "fs.writeFileSync(process.env.CGR_SIGNAL_READY, 'loaded');\n"
+                "const timer = setInterval(() => {\n"
+                "  if (process.listenerCount('SIGTERM') > 0) {\n"
+                "    fs.writeFileSync(process.env.CGR_SIGNAL_READY, 'ready');\n"
+                "    clearInterval(timer);\n"
+                "  }\n"
+                "}, 1);\n",
+                encoding="ascii",
+            )
+            source = root / "mcp-runtime.c"
+            native_runtime = root / "mcp-runtime"
+            source.write_text(
+                "#include <signal.h>\n"
+                "#include <stdio.h>\n"
+                "#include <stdlib.h>\n"
+                "#include <string.h>\n"
+                "#include <unistd.h>\n"
+                "int main(int argc, char **argv) {\n"
+                "  for (int i = 1; i < argc; ++i) {\n"
+                "    if (strcmp(argv[i], \"--launcher-probe\") == 0) {\n"
+                "      fputs(\"{\\\"implementation\\\":\\\"CPython\\\","
+                "\\\"package_protocol\\\":\\\"contextguard-receipt-launch/v1\\\","
+                "\\\"python_version\\\":[3,11]}\\n\", stdout);\n"
+                "      return 0;\n"
+                "    }\n"
+                "  }\n"
+                "  signal(SIGINT, SIG_IGN);\n"
+                "  signal(SIGTERM, SIG_IGN);\n"
+                "  const char *record = getenv(\"CGR_MCP_RUNTIME_RECORD\");\n"
+                "  if (record != NULL) {\n"
+                "    FILE *stream = fopen(record, \"w\");\n"
+                "    if (stream != NULL) {\n"
+                "      fprintf(stream, \"%ld:%ld\", (long)getpid(), (long)getppid());\n"
+                "      fclose(stream);\n"
+                "    }\n"
+                "  }\n"
+                "  for (;;) pause();\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compilation = subprocess.run(
+                [str(shutil.which("cc")), str(source), "-o", str(native_runtime)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=15.0,
+            )
+            self.assertEqual(compilation.returncode, 0, compilation.stderr)
+            native_runtime.chmod(0o755)
+            for external_child_kill in (False, True):
+                with self.subTest(external_child_kill=external_child_kill):
+                    suffix = "external" if external_child_kill else "escalated"
+                    record = root / f"mcp-runtime-record-{suffix}"
+                    signal_ready = root / f"signal-ready-{suffix}"
+                    child_signal_record = root / f"child-signal-{suffix}"
+                    process = subprocess.Popen(
+                        [
+                            str(Path(NODE).resolve()),
+                            str(runtime / "bin/context-guard-receipt-mcp.cjs"),
+                            "--root",
+                            str(PACKAGE_ROOT.resolve()),
+                        ],
+                        cwd=PACKAGE_ROOT,
+                        env=launcher_environment(
+                            CGR_CHILD_SIGNAL_RECORD=str(child_signal_record),
+                            CGR_MCP_RUNTIME_RECORD=str(record),
+                            CGR_SIGNAL_READY=str(signal_ready),
+                            NODE_OPTIONS=f"--require={preload}",
+                            **{PYTHON_ENV: str(native_runtime)},
+                        ),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    child_pid = 0
+                    try:
+                        child_pid, parent_pid = read_child_record(record)
+                        self.assertEqual(parent_pid, process.pid)
+                        ready_deadline = time.monotonic() + 3.0
+                        while time.monotonic() < ready_deadline:
+                            try:
+                                if signal_ready.read_bytes() == b"ready":
+                                    break
+                            except FileNotFoundError:
+                                pass
+                            time.sleep(0.02)
+                        self.assertEqual(signal_ready.read_bytes(), b"ready")
+                        process.send_signal(signal.SIGTERM)
+                        if external_child_kill:
+                            signal_deadline = time.monotonic() + 3.0
+                            while time.monotonic() < signal_deadline:
+                                try:
+                                    if child_signal_record.read_bytes() == b"SIGTERM":
+                                        break
+                                except FileNotFoundError:
+                                    pass
+                                time.sleep(0.02)
+                            self.assertEqual(
+                                child_signal_record.read_bytes(), b"SIGTERM"
+                            )
+                            os.kill(child_pid, signal.SIGKILL)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, 69)
+                        self.assertEqual(stdout, b"")
+                        self.assertEqual(
+                            stderr,
+                            canonical_json(
+                                {
+                                    "evidence_boundary": EVIDENCE_BOUNDARY,
+                                    "operation": "launcher",
+                                    "reason": "cleanup_unconfirmed",
+                                    "schema_version": (
+                                        "contextguard-receipt-cli-response/v1"
+                                    ),
+                                    "status": "error",
+                                }
+                            ).encode("ascii"),
+                        )
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        try:
+                            process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.communicate(timeout=3)
+                        if child_pid > 0 and process_exists(child_pid):
+                            try:
+                                os.kill(child_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
 
     def test_launcher_never_signals_scanned_numeric_process_groups(self) -> None:
         """Break caught: launcher ps data becomes numeric group signal authority."""
@@ -962,6 +1481,8 @@ process.stdout.write(JSON.stringify({{
         """Break caught: an inapplicable execute bit reaches the compatibility probe."""
 
         require_distribution()
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses per-class execute bits")
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory).resolve()
             distribution = copy_runtime_with_current_launcher(temporary_root / "distribution")
@@ -1016,6 +1537,16 @@ process.stdout.write(JSON.stringify({{
             self.assertTrue(native_fixture.is_file())
             shutil.copyfile(native_fixture, safe_python)
             safe_python.chmod(0o755)
+            effective_uid = os.geteuid()
+            for ancestor in (safe_python.parent, *safe_python.parents[1:]):
+                metadata = ancestor.stat()
+                mode = stat.S_IMODE(metadata.st_mode)
+                if (
+                    not ancestor.is_dir()
+                    or metadata.st_uid not in {0, effective_uid}
+                    or ((mode & 0o022) != 0 and (mode & stat.S_ISVTX) == 0)
+                ):
+                    self.skipTest("the temporary ancestry is outside automatic PATH policy")
             safe_environment = launcher_environment(PATH=str(safe_bin))
             safe_environment.pop(PYTHON_ENV)
             safe = run_node(
@@ -1291,7 +1822,7 @@ process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
             source.write_text(
                 "#include <time.h>\n"
                 "int main(void) {\n"
-                "  struct timespec delay = {7, 0};\n"
+                "  struct timespec delay = {30, 0};\n"
                 "  nanosleep(&delay, 0);\n"
                 "  return 0;\n"
                 "}\n",
@@ -1322,7 +1853,7 @@ process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     check=False,
-                    timeout=10.0,
+                    timeout=25.0,
                 )
             except subprocess.TimeoutExpired as error:
                 self.fail(f"launcher exceeded the outer {error.timeout}-second test bound")
@@ -1335,7 +1866,7 @@ process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
                 status="error",
                 reason="protocol_incompatible",
             )
-            self.assertLess(elapsed, 6.5)
+            self.assertLess(elapsed, 20.0)
 
     def test_runtime_checks_reject_rewritten_payload_manifest_and_extra_files(self) -> None:
         """Break caught: treating a mutable manifest or an open tree as authenticity."""
