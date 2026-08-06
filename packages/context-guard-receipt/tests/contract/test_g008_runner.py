@@ -462,6 +462,55 @@ class G008RunnerContractTests(unittest.TestCase):
             self.assertTrue(result.succeeded)
             self.assertEqual(calls, [harness.root, harness.root])
 
+    def test_kwargs_only_snapshotter_stays_on_legacy_contract(self) -> None:
+        """Break caught: generic kwargs falsely advertise FD-aware provenance."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def kwargs_snapshotter(root, **kwargs):
+                calls.append((root, kwargs))
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=kwargs_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(
+                calls,
+                [(harness.root, {}), (harness.root, {})],
+            )
+
+    def test_root_fd_named_legacy_snapshotter_stays_on_one_argument_contract(
+        self,
+    ) -> None:
+        """Break caught: a legacy argument name masquerades as FD capability."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def legacy_snapshotter(root_fd):
+                calls.append(root_fd)
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=legacy_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(calls, [harness.root, harness.root])
+
     def test_unrestored_root_replacement_refuses_before_store(self) -> None:
         """Break caught: a pinned run publishes after the pathname stays replaced."""
 

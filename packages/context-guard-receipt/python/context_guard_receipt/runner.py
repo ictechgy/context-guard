@@ -560,8 +560,17 @@ def _snapshotter_accepts_root_fd(snapshotter: Callable[..., object]) -> bool:
         return True
     try:
         signature = inspect.signature(snapshotter)
-        signature.bind(object(), root_fd=0)
     except (TypeError, ValueError):
+        return False
+    parameter = signature.parameters.get("root_fd")
+    if parameter is None or parameter.kind not in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        return False
+    try:
+        signature.bind(object(), root_fd=0)
+    except TypeError:
         return False
     return True
 

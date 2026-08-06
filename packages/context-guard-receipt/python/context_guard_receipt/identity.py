@@ -295,8 +295,13 @@ def _root_is_unchanged(root_path: str, expected: os.stat_result) -> None:
 def _has_structural_git_marker(root_descriptor: int) -> bool:
     """Conservatively inspect Git markers without reopening the root path."""
 
+    directory_access = getattr(
+        os,
+        "O_SEARCH",
+        getattr(os, "O_PATH", os.O_RDONLY),
+    )
     directory_flags = (
-        os.O_RDONLY
+        directory_access
         | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
