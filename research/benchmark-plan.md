@@ -174,3 +174,66 @@ sample size/promotion 정책은 별도 consensus 결정이 필요하다.
 ## 8. Experimental radar 연계
 
 `experimental-token-reduction-radar.md`의 learned, multimodal, self-hosted lane은 이 문서의 matched successful task, failure-rate guardrail, human-correction tracking, shifted-cost accounting 원칙을 통과하기 전까지 hosted API token/cost 절감 주장으로 승격하지 않는다. image-context 평가 프로파일이 `ready_for_bounded_pilot_review`에 도달하더라도 이 승격 게이트는 그대로 유지된다.
+
+## 9. Additive v2 three-arm study surface
+
+`bench/token-savings-12task/study-plan-v2.json` is a separate, versioned plan;
+the frozen v1 plan and report remain unchanged. Its three arms are exactly
+`host_unmodified`, `legacy_trim`, and `bash_reference_v1`. For every task and
+repetition, a frozen SplitMix64 seed creates a complete three-arm block order.
+The task, not an individual attempt, is the sampling unit. Valid unfavorable
+attempts remain in the accounting history; retries do not replace them. Token,
+human-correction, and retrieval burdens are each summed across every retained
+attempt in an arm-unit. If any attempt lacks a finite non-negative correction
+or retrieval value, that effect is unavailable and its gate fails closed.
+
+The only preregistered product contrast is `host_unmodified` versus
+`bash_reference_v1`. `legacy_trim` versus `bash_reference_v1` is diagnostic and
+cannot grant or block that product result. Binary outcomes use exact
+task-cluster sign-permutation inference; token, correction, and retrieval
+effects use task-cluster intervals. A run-level analysis or an all-success
+degenerate bootstrap is not sufficient for a non-inferiority result.
+
+The plan fixes its NI margin, task count, corpus/checker/task-order bindings,
+retry/missing-data/exclusion/contamination/stopping rules, model and CLI version
+fields, and quality/failure/correction/retrieval/shifted-cost gates before data
+collection. The fixed 12-task corpus has no independent effect-size/variance
+model, so it makes no 80% power claim and is always descriptive rather than
+claim-ready. Claim readiness also requires complete provider-export
+provenance for every relevant record. Offline, fake, and manual rehearsal data
+are not provider-export evidence; unavailable backend/model revisions remain
+unavailable. The corpus binding remains the SHA-256 of the exact canonical
+`tasks.json` bytes. The checker binding is the domain-separated
+`contextguard.bench.v2.checker-binding.v1` hash of the ordered list of relative
+filename, byte size, and per-file SHA-256 records, so names and file boundaries
+cannot be exchanged while preserving the binding. The ordered IDs derived from that
+corpus are additionally bound by
+`contextguard.bench.v2.corpus-task-order.v1`, preventing a manifest from
+retaining the real corpus hash while substituting fabricated task identities.
+
+Provider-export rows use an exact key allowlist. Public evidence metadata
+excludes prompts, outputs, commands, command hashes, paths, project identifiers,
+capabilities, credentials, artifact-handle-like values, and recognized secret
+shapes. `backend_revision`, `model_revision`, and `cli_version` are identifiers,
+not free-form notes: each must match
+`[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,127}`. Violations are rejected before a report
+path is written.
+
+### Operator-export execution surface
+
+The additive v2 surface is executable without becoming a provider runtime. Its
+`prepare` action binds the canonical plan, exact corpus bytes, domain-separated
+checker inventory, candidate SHA-256, deterministic blocked schedule, and all
+216 initial/retry run IDs into a private manifest. Its `analyze` action imports canonical JSONL that the
+operator exported from an approved provider run. It has no provider client,
+network request, credential read, or `claude` subprocess path.
+
+Before any private report is written, analysis requires every initial slot,
+exactly the retries made necessary by unsuccessful initials, one exact manifest
+and candidate binding per row, and one backend/model/CLI revision across the
+export. It rejects malformed, unknown, duplicate, partial, mixed-version, and
+sensitive evidence. The report recomputes primary binary inference and
+task-cluster effects from the retained records; legacy-trim effects remain
+diagnostic only. Because the frozen 12-task corpus has no independent power
+model, every resulting report is descriptive-only and cannot authorize an
+80%-power or public token-savings claim.

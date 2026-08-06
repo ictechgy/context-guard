@@ -234,6 +234,66 @@ npm exec @ictechgy/context-guard -- --version
 
 Use `--scope project` for repository files such as `AGENTS.md` and `.agents/skills/...`. Use `--scope user` only when you intentionally want a user-level path; applying user scope requires `--yes` plus an explicit `--agent`, and supported writes record rollback metadata.
 
+### Opt-in Bash references for Claude Code
+
+The `bash_reference_v1` route is available only from an exact, project-local npm
+installation. The root package pins `@ictechgy/context-guard-receipt@0.2.0`; a
+global, `npx`, source-checkout, Homebrew, or Claude marketplace-plugin layout
+keeps the existing Bash trim behavior and setup reports the reference route as
+unavailable.
+
+```bash
+npm install --save-exact @ictechgy/context-guard@0.5.0
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
+```
+
+This default-off `PreToolUse:Bash` mode keeps strongly sanitized long command
+output in the private project-local Receipt store and puts only a compact
+retrieval handle in the digest. The handle is bearer-like and can be visible to
+Claude/the provider; it expires exactly seven days after issuance. Before Bash
+starts, the wrapper creates an anonymous owner-only capture descriptor and one
+verified Receipt broker, which preloads code and retains the repository, store,
+expiry, and journal boundaries. Even output below the 8,192-byte disclosure
+threshold can therefore initialize those local axes; it sends `ABORT` and emits
+no handle. If strong sanitization, the exact package pin, the absolute Node
+runtime, broker preparation, or final registration is unavailable, execution
+falls back to legacy trimming without changing the wrapped command's exit
+status. The mode is mutually exclusive with legacy `--artifact-receipt`
+capture.
+
+The digest renders the handle as an executable, project-local retrieval command:
+
+```bash
+./node_modules/.bin/context-guard reference <cgr1p-handle>
+```
+
+Run it from the same physical project root that issued the handle. It derives
+the private sibling state location internally and returns one exact sanitized
+UTF-8 page, capped at 20,000 bytes. When more bytes remain, its diagnostic gives
+the next continuation `--offset`; each page stays bounded, so retrieval cannot dump
+the full retained output into the transcript in one step. Invalid, expired,
+wrong-root, stale-source, changed-package, and malformed references return no
+payload.
+
+Disable the route before uninstalling:
+
+```bash
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --no-bash-reference-v1 --yes --no-diet-scan
+npm uninstall @ictechgy/context-guard
+```
+
+Receipt state is kept outside the repository in a private sibling directory
+named `.context-guard-receipt-state-<root-selector-sha256>`. The selector binds
+the normalized root path and its device/inode identity so sibling repositories
+do not share authority. Disablement and package removal preserve that directory
+for a later exact reinstall or separately authorized artifact cleanup. `npm
+uninstall` removes the verified package-local code and
+`node_modules/.bin/context-guard`, so reference retrieval is unavailable until
+the exact project-local pair is reinstalled. This mechanism can reduce
+transcript input for large Bash output, but it does not guarantee a fixed
+provider-token or cost reduction.
+
 ## Homebrew release path
 
 Homebrew is available through the shared `ictechgy/tap` tap:

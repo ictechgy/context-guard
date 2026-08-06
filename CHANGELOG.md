@@ -9,6 +9,32 @@ All notable changes for the ContextGuard plugin are documented here.
   no favorable subset or correction assessment was analyzed, and no token or
   cost savings claim is allowed.
 
+## [0.5.0] - 2026-08-06
+
+- Added the default-off Claude Code `PreToolUse:Bash` reference route. After
+  strong local sanitization, long merged command output can stay in a private
+  project-local Receipt store while the transcript receives a compact,
+  exact-retrieval handle and an executable `context-guard reference` command.
+  Retrieval derives private state internally and pages exact UTF-8 output in
+  fixed 20,000-byte-or-smaller chunks, so resolving a handle cannot replay the
+  complete 10 MB capture in one turn. The legacy trim route and unchanged route
+  remain deterministic fallbacks; source/plugin-only installs cannot enable
+  this npm-only mode.
+- Added the independently versioned `@ictechgy/context-guard-receipt@0.2.0`
+  exact dependency, fixed seven-day reference expiry, bounded authenticated
+  import recovery journal, 10,000,000-byte merged capture ceiling, and
+  expired/revoked reference refusal. Installation and disablement never erase
+  stored artifacts automatically.
+- Added an executable, provider-free three-arm study workflow for importing
+  operator-owned provider exports across `host_unmodified`, `legacy_trim`, and
+  `bash_reference_v1`. It binds a fixed 12-task corpus and reports the legacy
+  contrast diagnostically; without an independent power model the result is
+  explicitly descriptive-only and cannot authorize a savings claim.
+- Added build-once npm candidate manifests, exact cross-package hashes/SRI,
+  paired clean-install discovery smoke, separate trusted publication to
+  `next`, and preflight/rollback-aware promotion to `latest`. No package is
+  published or promoted automatically by this release.
+
 ## [0.4.16] - 2026-08-01
 
 - Sanitizer output-scanning is now one monotonic left-to-right pass. All nine location-prefix consumers previously re-parsed the same optional `path:line:` fragment at every offset, which made lines with few colons quadratic: a single 82,015-byte line took 2.62 s and a 100,014-byte line took 3.98 s. The leading prefix is identified once and the seven unanchored consumers run as fragment-free twins, while the two `^`-anchored header consumers keep their original patterns because they were never a per-offset cost. The same lines now take 64.3 ms and 0.078 s, with doubling ratios of 1.84 to 2.01. Redaction output is byte-identical to the previous implementation, pinned by a differential oracle against a hash-frozen baseline across eleven corpora, three sanitization contexts, both path-display modes, and both shared-state and per-line runs.

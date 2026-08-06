@@ -46,6 +46,15 @@ context-guard setup --agent codex --scope project --brief-mode standard --plan
 npx @ictechgy/context-guard --version
 ```
 
+짧은 `bash_reference_v1` Bash 출력 경로는 이 marketplace plugin/소스 배치에서
+의도적으로 활성화되지 않습니다. 정확한 프로젝트 로컬
+`@ictechgy/context-guard@0.5.0` npm 설치와
+`@ictechgy/context-guard-receipt@0.2.0` 의존성이 필요하며, 그 뒤
+`setup --agent claude --scope project --bash-reference-v1`로 명시적으로
+활성화해야 합니다. Plugin setup은 동작하지 않는 reference flag를 설치하지 않고
+legacy trim을 유지하며 경고합니다. 활성화·비활성화, 7일 handle, 상태 보존은
+저장소의 배포 문서를 참고하세요.
+
 이 저장소 루트에서는 경로를 직접 지정해 실행하세요.
 
 ```bash

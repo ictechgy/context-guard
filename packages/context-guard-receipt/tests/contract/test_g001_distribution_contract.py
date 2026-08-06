@@ -52,6 +52,11 @@ EXPECTED_HELP = (
     "  expand <handle> --root <absolute> --state-dir <absolute> [options]\n"
     "  expand tool-schema --request <file|-> --root <absolute> "
     "--state-dir <absolute> [options]\n"
+    "  import merged-capture --spool <absolute> --transaction-id <64hex> "
+    "--root <absolute> --state-dir <absolute> [--disclosure-days 7]\n"
+    "  recover merged-capture --transaction-id <64hex> --root <absolute> "
+    "--state-dir <absolute>\n"
+    "  inspect merged-capture-import --root <absolute> --state-dir <absolute>\n"
     "  inspect diagnostics --input <file|-> [--state-scope durable --root <absolute> "
     "--state-dir <absolute>]\n"
     "  inspect firewall --input <file|->\n"
@@ -67,9 +72,11 @@ EXPECTED_HELP = (
     "--state-dir <absolute> [--limit <positive-decimal>]\n"
     "  inspect <receipt|lease|state> [options]\n\n"
     "Evidence, blueprint, and tool-schema assembly plus exact local expansion are available. "
-    "Run is explicit local capture only. Diagnostics, firewall findings, and the experimental "
-    "twin are advisory and non-applying. Experimental reference expiry revokes only compact "
-    "local references and retains artifacts. The companion is provider-free and makes no "
+    "Run is explicit local capture only. Merged-capture import accepts only a completed private "
+    "canonical sanitized UTF-8 spool and applies a fixed seven-day reference deadline. "
+    "Diagnostics, firewall findings, and the experimental twin are advisory and non-applying. "
+    "Experimental reference expiry revokes only compact local references and retains artifacts. "
+    "The companion is provider-free and makes no "
     "host-request, network, or token-saving claim. Remaining commands are inert.\n"
 )
 EXPECTED_MCP_HELP = (
@@ -80,7 +87,7 @@ EXPECTED_MCP_HELP = (
 )
 EXPECTED_PACKAGE = {
     "name": "@ictechgy/context-guard-receipt",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
     "license": "Apache-2.0",
     "type": "commonjs",
@@ -136,6 +143,7 @@ EXPECTED_RUNTIME_MODES = {
     "python/context_guard_receipt/expansion.py": 0o644,
     "python/context_guard_receipt/identity.py": 0o644,
     "python/context_guard_receipt/mcp.py": 0o644,
+    "python/context_guard_receipt/merged_capture.py": 0o644,
     "python/context_guard_receipt/protection.py": 0o644,
     "python/context_guard_receipt/reference_expiry.py": 0o644,
     "python/context_guard_receipt/receipts.py": 0o644,
@@ -436,6 +444,80 @@ def assert_json_error(
 
 
 class G001DistributionContractTests(unittest.TestCase):
+    def test_launcher_maps_only_private_broker_capture_to_python_fd_three(self) -> None:
+        """Break caught: launcher buffers the broker or exposes a generic fd option."""
+
+        require_distribution()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(base / "distribution")
+            repository = base / "repository"
+            repository.mkdir(mode=0o700)
+            state = base / "state"
+            with tempfile.TemporaryFile("w+b", buffering=0) as capture:
+                os.fchmod(capture.fileno(), 0o600)
+                process = subprocess.Popen(
+                    [
+                        str(Path(NODE).resolve()),
+                        str(distribution / "bin/context-guard-receipt.cjs"),
+                        "--private-bash-reference-broker-v1",
+                        "--capture-fd",
+                        str(capture.fileno()),
+                        "--transaction-id",
+                        "f" * 64,
+                        "--root",
+                        str(repository),
+                        "--state-dir",
+                        str(state),
+                        "--disclosure-days",
+                        "7",
+                    ],
+                    cwd=repository,
+                    env=launcher_environment(),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    pass_fds=(capture.fileno(),),
+                    close_fds=True,
+                )
+                try:
+                    self.assertIsNotNone(process.stdout)
+                    self.assertEqual(
+                        process.stdout.readline(),
+                        b"READY contextguard-bash-reference-broker/v1\n",
+                    )
+                    for relative in (
+                        "bin/launcher.cjs",
+                        "python/context_guard_receipt/bootstrap.py",
+                        "python/context_guard_receipt/cli.py",
+                        "python/context_guard_receipt/merged_capture.py",
+                    ):
+                        (distribution / relative).write_text(
+                            "throw new Error('late mutation');\n"
+                            if relative.endswith(".cjs")
+                            else "raise RuntimeError('late mutation')\n",
+                            encoding="utf-8",
+                        )
+                    capture.write(b"exact packed launcher path\n")
+                    self.assertIsNotNone(process.stdin)
+                    process.stdin.write(b"COMMIT\n")
+                    process.stdin.close()
+                    final = process.stdout.readline()
+                    stderr = process.stderr.read() if process.stderr else b""
+                    self.assertEqual(process.wait(timeout=10), 0, stderr)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=3)
+                    for stream in (process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+                self.assertTrue(final.startswith(b"FINAL "))
+                payload = json.loads(final[len(b"FINAL ") :])
+                self.assertEqual(payload["transaction_id"], "f" * 64)
+                self.assertIs(payload["actionable"], True)
+                self.assertEqual(stderr, b"")
+
     def test_launcher_reports_closed_stdout_as_bounded_delivery_failure(self) -> None:
         """Break caught: final receipt delivery crashes with an unhandled EPIPE."""
 

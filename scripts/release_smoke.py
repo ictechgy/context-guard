@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import importlib.util
 import json
 import os
 import queue
 import re
+import shlex
 import signal
 import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -155,6 +159,14 @@ STATUSLINE_MAX_CHARS = 1_000
 COMMAND_OUTPUT_MAX_BYTES = 64_000
 COMMAND_READ_CHUNK_BYTES = 65_536
 PROCESS_TERMINATE_GRACE_SECONDS = 2.0
+REFERENCE_PAGE_MAX_BYTES = 20_000
+REFERENCE_HANDLE_RE = re.compile(r"^cgr1p_[A-Za-z0-9_-]{43}$")
+# The first byte of π lands at the final byte of a nominal 20,000-byte page.
+# A valid response must therefore end before it and resume with the complete
+# UTF-8 codepoint on the next page.
+REFERENCE_SMOKE_PAYLOAD = (
+    b"prefix:" + (b"x" * 19_992) + "π".encode("utf-8") + b":suffix\n" + (b"z" * 20_010)
+)
 PROCESS_SELECT_TIMEOUT_SECONDS = 0.05
 ENTRYPOINT_SHEBANG_MAX_BYTES = 512
 TRUSTED_PATH_CANDIDATES = (
@@ -184,6 +196,13 @@ PRESERVED_ENV_KEYS = (
     "LC_CTYPE",
 )
 NPM_PACKAGE_JSON = ROOT / "package.json"
+RECEIPT_PACKAGE_ROOT = ROOT / "packages" / "context-guard-receipt"
+MAX_CANDIDATE_TARBALL_BYTES = 50 * 1024 * 1024
+MAX_CANDIDATE_ARCHIVE_MEMBERS = 4096
+MAX_CANDIDATE_DECLARED_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
+MAX_CANDIDATE_DECOMPRESSED_ARCHIVE_BYTES = 128 * 1024 * 1024
+MAX_CANDIDATE_DECOMPRESSED_READ_BYTES = 64 * 1024
+MAX_CANDIDATE_PACKAGE_JSON_BYTES = 128 * 1024
 FORBIDDEN_NPM_LIFECYCLE_SCRIPTS = {
     "dependencies",
     "preinstall",
@@ -210,6 +229,350 @@ def running_in_ci() -> bool:
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"release smoke failed: {message}")
+
+
+class _ArchiveLimitExceeded(OSError):
+    pass
+
+
+class _BoundedDecompressedReader:
+    """Expose bounded gzip output to tarfile without an unbounded read mode."""
+
+    def __init__(self, source: object, *, maximum_bytes: int) -> None:
+        self._source = source
+        self._maximum_bytes = maximum_bytes
+        self._total = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if (
+            type(size) is not int
+            or size < 0
+            or size > MAX_CANDIDATE_DECOMPRESSED_READ_BYTES
+        ):
+            raise _ArchiveLimitExceeded("unbounded decompressed archive read")
+        remaining = self._maximum_bytes - self._total
+        if remaining < 0:
+            raise _ArchiveLimitExceeded("decompressed archive limit exceeded")
+        request = min(size, remaining + 1)
+        try:
+            chunk = self._source.read(request)  # type: ignore[attr-defined]
+        except AttributeError:
+            raise _ArchiveLimitExceeded("decompressed archive read failed") from None
+        if type(chunk) is not bytes or len(chunk) > remaining:
+            raise _ArchiveLimitExceeded("decompressed archive limit exceeded")
+        self._total += len(chunk)
+        return chunk
+
+
+def _candidate_package_document(tarball: Path) -> tuple[Path, dict[str, object]]:
+    try:
+        metadata = tarball.lstat()
+    except OSError as exc:
+        fail(f"candidate tarball is unavailable: {exc.__class__.__name__}")
+    if (
+        tarball.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_size < 1
+        or metadata.st_size > MAX_CANDIDATE_TARBALL_BYTES
+    ):
+        fail("candidate tarball must be a bounded regular file")
+    resolved = tarball.resolve()
+    package_json_raw: bytes | None = None
+    package_json_matches = 0
+    try:
+        with resolved.open("rb", buffering=0) as compressed_source:
+            with gzip.GzipFile(fileobj=compressed_source, mode="rb") as decompressed:
+                bounded_source = _BoundedDecompressedReader(
+                    decompressed,
+                    maximum_bytes=MAX_CANDIDATE_DECOMPRESSED_ARCHIVE_BYTES,
+                )
+                with tarfile.open(fileobj=bounded_source, mode="r|") as archive:
+                    member_count = 0
+                    declared_bytes = 0
+                    while True:
+                        member = archive.next()
+                        if member is None:
+                            break
+                        member_count += 1
+                        if (
+                            member_count > MAX_CANDIDATE_ARCHIVE_MEMBERS
+                            or type(member.size) is not int
+                            or member.size < 0
+                        ):
+                            fail("candidate archive limits exceeded")
+                        declared_bytes += member.size
+                        if declared_bytes > MAX_CANDIDATE_DECLARED_UNCOMPRESSED_BYTES:
+                            fail("candidate archive limits exceeded")
+                        if member.name != "package/package.json":
+                            continue
+                        package_json_matches += 1
+                        if (
+                            package_json_matches != 1
+                            or not member.isreg()
+                            or member.size > MAX_CANDIDATE_PACKAGE_JSON_BYTES
+                        ):
+                            fail(
+                                "candidate package manifest is missing, ambiguous, or oversized"
+                            )
+                        source = archive.extractfile(member)
+                        if source is None:
+                            fail("candidate package manifest is missing, ambiguous, or oversized")
+                        package_json_raw = source.read(
+                            MAX_CANDIDATE_PACKAGE_JSON_BYTES + 1
+                        )
+                        if len(package_json_raw) > MAX_CANDIDATE_PACKAGE_JSON_BYTES:
+                            fail(
+                                "candidate package manifest is missing, ambiguous, or oversized"
+                            )
+        if package_json_matches != 1 or package_json_raw is None:
+            fail("candidate package manifest is missing, ambiguous, or oversized")
+        document = json.loads(package_json_raw.decode("utf-8", errors="strict"))
+    except _ArchiveLimitExceeded:
+        fail("candidate archive limits exceeded")
+    except (EOFError, OSError, UnicodeDecodeError, tarfile.TarError, json.JSONDecodeError) as exc:
+        fail(f"candidate tarball is invalid: {exc.__class__.__name__}")
+    if not isinstance(document, dict):
+        fail("candidate package manifest is invalid")
+    return resolved, document
+
+
+def validate_candidate_tarball_pair(root_tarball: Path, receipt_tarball: Path) -> tuple[Path, Path]:
+    """Bind an already-built root candidate to its exact Receipt candidate."""
+    resolved_root, root_package = _candidate_package_document(root_tarball)
+    resolved_receipt, receipt_package = _candidate_package_document(receipt_tarball)
+    if resolved_root == resolved_receipt:
+        fail("candidate root and Receipt tarballs must be distinct")
+    if root_package.get("name") != "@ictechgy/context-guard":
+        fail("candidate root package identity is invalid")
+    if receipt_package.get("name") != "@ictechgy/context-guard-receipt":
+        fail("candidate Receipt package identity is invalid")
+    receipt_version = receipt_package.get("version")
+    dependencies = root_package.get("dependencies")
+    if (
+        not isinstance(receipt_version, str)
+        or not isinstance(dependencies, dict)
+        or dependencies.get("@ictechgy/context-guard-receipt") != receipt_version
+    ):
+        fail("candidate root package must declare the exact Receipt dependency")
+    return resolved_root, resolved_receipt
+
+
+def verify_installed_reference_adapter(
+    *,
+    package_root: Path,
+    project_root: Path,
+    context_guard: Path,
+    env: dict[str, str],
+    timeout: float,
+) -> None:
+    """Exercise installed-package discovery with the exact paired Receipt bytes."""
+    try:
+        if package_root.is_symlink() or project_root.is_symlink():
+            fail("installed reference roots must not be symlinks")
+        package_root = package_root.resolve(strict=True)
+        project_root = project_root.resolve(strict=True)
+    except OSError as exc:
+        fail(f"installed reference roots are unavailable: {exc.__class__.__name__}")
+    policy_path = package_root / "plugins" / "context-guard" / "bin" / "bash_reference_policy.py"
+    require_path_inside(policy_path, project_root, label="installed reference policy")
+    try:
+        metadata = policy_path.lstat()
+    except OSError as exc:
+        fail(f"installed reference policy is unavailable: {exc.__class__.__name__}")
+    if policy_path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 512 * 1024:
+        fail("installed reference policy must be a bounded regular file")
+    module_name = "_context_guard_release_smoke_reference_policy"
+    spec = importlib.util.spec_from_file_location(module_name, policy_path)
+    if spec is None or spec.loader is None:
+        fail("installed reference policy could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        discover = getattr(module, "discover_adapter", None)
+        if not callable(discover):
+            fail("installed reference policy is missing adapter discovery")
+        adapter, reason = discover(project_root)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        fail(f"installed reference adapter discovery failed: {exc.__class__.__name__}")
+    finally:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+    if adapter is None or reason != "receipt_adapter_available":
+        fail("installed reference adapter discovery did not accept the exact candidate pair")
+    broker: object | None = None
+    committed = False
+    try:
+        with tempfile.TemporaryFile("w+b", buffering=0) as capture:
+            os.fchmod(capture.fileno(), 0o600)
+            broker, broker_reason = adapter.start_broker(
+                capture.fileno(),
+                root=str(project_root),
+                transaction_id=os.urandom(32).hex(),
+                disclosure_days=7,
+                timeout_seconds=8,
+            )
+            if broker is None or broker_reason != "receipt_broker_ready":
+                fail("installed reference broker did not reach READY")
+            capture.write(REFERENCE_SMOKE_PAYLOAD)
+            result = broker.commit()
+            committed = True
+            if (
+                getattr(result, "status", None) != "success"
+                or getattr(result, "actionable", False) is not True
+                or not isinstance(getattr(result, "reference", None), str)
+                or REFERENCE_HANDLE_RE.fullmatch(result.reference) is None
+            ):
+                fail("installed reference broker did not return actionable authority")
+            reference = result.reference
+
+            rewrite_hook = (
+                package_root
+                / "plugins"
+                / "context-guard"
+                / "bin"
+                / "context-guard-rewrite-bash"
+            )
+            trim_helper = rewrite_hook.with_name("context-guard-trim-output")
+            for entrypoint, label in (
+                (rewrite_hook, "installed reference rewrite hook"),
+                (trim_helper, "installed reference trim helper"),
+            ):
+                require_path_inside(entrypoint, project_root, label=label)
+                try:
+                    metadata = entrypoint.lstat()
+                except OSError as exc:
+                    fail(f"{label} is unavailable: {exc.__class__.__name__}")
+                if (
+                    entrypoint.is_symlink()
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or not (stat.S_IMODE(metadata.st_mode) & stat.S_IXUSR)
+                ):
+                    fail(f"{label} must be an executable regular file")
+
+            hook_input = json.dumps(
+                {
+                    "tool_input": {
+                        "command": (
+                            "./node_modules/.bin/context-guard reference "
+                            f"{reference}"
+                        )
+                    }
+                },
+                separators=(",", ":"),
+            )
+            hook_command = run_bounded_command(
+                entrypoint_launch_argv(
+                    rewrite_hook,
+                    ["--bash-reference-v1"],
+                    trusted_root=project_root,
+                ),
+                cwd=project_root,
+                env=env,
+                timeout=timeout,
+                input_text=hook_input,
+                max_output_bytes=16_384,
+            )
+            if hook_command.timed_out:
+                fail("installed reference rewrite hook timed out")
+            if hook_command.output_truncated or hook_command.proc.returncode != 0:
+                fail("installed reference rewrite hook did not return a bounded successful response")
+            if (
+                "PATH-SHADOWED-CONTEXT-GUARD" in hook_command.proc.stdout
+                or "PATH-SHADOWED-CONTEXT-GUARD" in hook_command.proc.stderr
+            ):
+                fail("installed reference rewrite hook used the PATH shadow")
+            hook_response = load_json(hook_command.proc.stdout, "installed reference rewrite hook")
+            try:
+                updated_input = hook_response["hookSpecificOutput"]["updatedInput"]
+                rewritten = updated_input["command"]
+            except (KeyError, TypeError):
+                fail("installed reference rewrite hook did not return updatedInput.command")
+            if not isinstance(rewritten, str) or len(rewritten) > 8_192:
+                fail("installed reference rewrite hook returned an invalid command")
+            try:
+                rewritten_argv = shlex.split(rewritten, posix=True)
+            except ValueError:
+                fail("installed reference rewrite hook returned an unparsable command")
+            if rewritten_argv != [
+                str(trim_helper),
+                "--expand-bash-reference",
+                reference,
+            ]:
+                fail("installed reference rewrite hook did not rebind to the package-local trim helper")
+
+            reconstructed = bytearray()
+            offset = 0
+            # The bounded payload must fit in this many pages; keep a fixed
+            # guard so a compromised candidate cannot spin the release gate.
+            max_pages = (
+                (len(REFERENCE_SMOKE_PAYLOAD) + REFERENCE_PAGE_MAX_BYTES - 1)
+                // REFERENCE_PAGE_MAX_BYTES
+            ) + 1
+            for _ in range(max_pages):
+                args = ["reference", reference]
+                if offset:
+                    args.extend(["--offset", str(offset)])
+                command = run_bounded_command(
+                    entrypoint_launch_argv(context_guard, args, trusted_root=project_root),
+                    cwd=project_root,
+                    env=env,
+                    timeout=timeout,
+                    max_output_bytes=REFERENCE_PAGE_MAX_BYTES + 4_096,
+                )
+                if command.timed_out:
+                    fail("installed reference command timed out")
+                if command.output_truncated or command.proc.returncode != 0:
+                    fail("installed reference command did not return a bounded successful page")
+                if "PATH-SHADOWED-CONTEXT-GUARD" in command.proc.stdout or "PATH-SHADOWED-CONTEXT-GUARD" in command.proc.stderr:
+                    fail("installed reference command used the PATH shadow")
+                try:
+                    page = command.proc.stdout.encode("utf-8", errors="strict")
+                except UnicodeEncodeError:
+                    fail("installed reference command returned non-UTF-8 output")
+                if not page or len(page) > REFERENCE_PAGE_MAX_BYTES:
+                    fail("installed reference command returned an invalid page size")
+                expected = REFERENCE_SMOKE_PAYLOAD[offset : offset + len(page)]
+                if page != expected:
+                    fail("installed reference command did not return exact capture bytes")
+                next_offset = offset + len(page)
+                if next_offset < len(REFERENCE_SMOKE_PAYLOAD):
+                    expected_stderr = (
+                        "context-guard: more bytes available; "
+                        f"continue with --offset {next_offset}\n"
+                    )
+                else:
+                    expected_stderr = f"context-guard: reference complete at offset {next_offset}\n"
+                if command.proc.stderr != expected_stderr:
+                    fail("installed reference command returned an invalid progress response")
+                reconstructed.extend(page)
+                offset = next_offset
+                if offset == len(REFERENCE_SMOKE_PAYLOAD):
+                    break
+            if bytes(reconstructed) != REFERENCE_SMOKE_PAYLOAD:
+                fail("installed reference command did not reconstruct the exact capture")
+            if offset != len(REFERENCE_SMOKE_PAYLOAD):
+                fail("installed reference command did not complete within bounded pages")
+    except SystemExit:
+        raise
+    except Exception as exc:
+        fail(f"installed reference broker smoke failed: {exc.__class__.__name__}")
+    finally:
+        if broker is not None:
+            try:
+                if not committed:
+                    broker.abort()
+            except Exception:
+                pass
+            try:
+                broker.close()
+            except Exception:
+                pass
 
 
 class BoundedCommandResult(NamedTuple):
@@ -437,7 +800,11 @@ def command_path(plugin_bin: Path, name: str) -> Path:
 
 
 def entrypoint_smoke_plan(plugin_bin: Path) -> dict[str, dict[str, Any]]:
-    files = {path.name for path in plugin_bin.iterdir() if path.is_file()}
+    files = {
+        path.name
+        for path in plugin_bin.iterdir()
+        if path.is_file() and stat.S_IMODE(path.stat().st_mode) & stat.S_IXUSR
+    }
     unexpected = sorted(files - set(ENTRYPOINT_SMOKE_COMMANDS))
     if unexpected:
         fail(f"release smoke has no launch plan for plugin entrypoints: {', '.join(unexpected)}")
@@ -1468,7 +1835,46 @@ def run_smoke(plugin_bin: Path, timeout: float) -> None:
         )
 
 
-def run_npm_package_smoke(timeout: float) -> None:
+def _npm_pack_tarball(
+    npm: str,
+    *,
+    package_root: Path,
+    pack_dir: Path,
+    environment: dict[str, str],
+    timeout: float,
+) -> Path:
+    before = set(pack_dir.iterdir())
+    pack = run_bounded_command(
+        [npm, "pack", "--json", "--offline", "--ignore-scripts", "--no-audit", "--fund=false", "--pack-destination", str(pack_dir)],
+        cwd=package_root,
+        env=environment,
+        timeout=timeout,
+    )
+    if pack.timed_out:
+        fail(f"npm pack timed out after {timeout:g}s")
+    if pack.output_truncated:
+        fail("npm pack output exceeded smoke bounds")
+    if pack.proc.returncode != 0:
+        fail(f"npm pack exited {pack.proc.returncode}: {(pack.proc.stderr or pack.proc.stdout).strip()[:500]}")
+    try:
+        parsed = json.loads(pack.proc.stdout)
+        filename = parsed[0]["filename"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        fail(f"npm pack did not emit one valid package object: {exc.__class__.__name__}")
+    if not isinstance(parsed, list) or len(parsed) != 1 or not isinstance(filename, str) or Path(filename).name != filename:
+        fail("npm pack JSON contains an unsafe package filename")
+    tarball = pack_dir / filename
+    if set(pack_dir.iterdir()) - before != {tarball} or not tarball.is_file() or tarball.is_symlink():
+        fail("npm pack produced an unexpected artifact set")
+    return tarball
+
+
+def run_npm_package_smoke(
+    timeout: float,
+    *,
+    root_tarball: Path | None = None,
+    receipt_tarball: Path | None = None,
+) -> None:
     if not NPM_PACKAGE_JSON.is_file():
         print("npm package smoke: skipped (package.json not found)")
         return
@@ -1497,40 +1903,38 @@ def run_npm_package_smoke(timeout: float) -> None:
         write_fake_context_guard_shadow(fake_bin)
         env = smoke_environment(home, tmp)
         env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
-        pack = run_bounded_command(
-            [npm, "pack", "--json", "--ignore-scripts", "--pack-destination", str(pack_dir)],
-            cwd=ROOT,
-            env=env,
-            timeout=timeout,
-        )
-        if pack.timed_out:
-            fail(f"npm pack timed out after {timeout:g}s")
-        if pack.output_truncated:
-            fail("npm pack output exceeded smoke bounds")
-        if pack.proc.returncode != 0:
-            fail(f"npm pack exited {pack.proc.returncode}: {(pack.proc.stderr or pack.proc.stdout).strip()[:500]}")
-        try:
-            parsed = json.loads(pack.proc.stdout)
-        except json.JSONDecodeError as exc:
-            fail(f"npm pack did not emit valid JSON: line {exc.lineno}: {exc.msg}")
-        if not isinstance(parsed, list) or not parsed or not isinstance(parsed[0], dict):
-            fail("npm pack JSON must contain one package object")
-        filename = parsed[0].get("filename")
-        if not isinstance(filename, str) or not filename:
-            fail("npm pack JSON missing filename")
-        tarball = pack_dir / filename
-        if not tarball.is_file():
-            fail(f"npm pack tarball missing: {tarball}")
+        if (root_tarball is None) != (receipt_tarball is None):
+            fail("exact candidate smoke requires both root and Receipt tarballs")
+        if root_tarball is not None and receipt_tarball is not None:
+            tarball, receipt_candidate = validate_candidate_tarball_pair(root_tarball, receipt_tarball)
+        else:
+            receipt_candidate = _npm_pack_tarball(
+                npm,
+                package_root=RECEIPT_PACKAGE_ROOT,
+                pack_dir=pack_dir,
+                environment=env,
+                timeout=timeout,
+            )
+            tarball = _npm_pack_tarball(
+                npm,
+                package_root=ROOT,
+                pack_dir=pack_dir,
+                environment=env,
+                timeout=timeout,
+            )
+            tarball, receipt_candidate = validate_candidate_tarball_pair(tarball, receipt_candidate)
 
         install = run_bounded_command(
             [
                 npm,
                 "install",
+                "--offline",
                 "--ignore-scripts",
                 "--no-audit",
                 "--fund=false",
                 "--prefix",
                 str(install_prefix),
+                str(receipt_candidate),
                 str(tarball),
             ],
             cwd=project,
@@ -1550,6 +1954,13 @@ def run_npm_package_smoke(timeout: float) -> None:
         if not context_guard.is_file():
             fail(f"isolated npm install missing context-guard bin: {context_guard}")
         require_path_inside(context_guard, install_prefix, label="context-guard npm bin")
+        verify_installed_reference_adapter(
+            package_root=package_root,
+            project_root=install_prefix,
+            context_guard=context_guard,
+            env=env,
+            timeout=timeout,
+        )
         npm_mcp = isolated_bin / "context-guard-mcp"
         if not npm_mcp.is_file():
             fail("isolated npm install missing context-guard-mcp bin")
@@ -1700,18 +2111,38 @@ def main() -> int:
         default=None,
         help="test an already-staged plugin bin directory without package copy validation",
     )
+    parser.add_argument(
+        "--npm-root-tarball",
+        type=Path,
+        default=None,
+        help="exercise this already-built root npm candidate without repacking it",
+    )
+    parser.add_argument(
+        "--npm-receipt-tarball",
+        type=Path,
+        default=None,
+        help="exact Receipt candidate paired with --npm-root-tarball",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     args = parser.parse_args()
 
     if args.timeout <= 0:
         fail("--timeout must be positive")
+    if (args.npm_root_tarball is None) != (args.npm_receipt_tarball is None):
+        parser.error("--npm-root-tarball and --npm-receipt-tarball must be supplied together")
+    if args.plugin_bin is not None and args.npm_root_tarball is not None:
+        parser.error("exact npm candidates cannot be combined with --plugin-bin")
     if args.plugin_bin is not None:
         run_smoke(args.plugin_bin, args.timeout)
     else:
         with tempfile.TemporaryDirectory(prefix="context-guard-package-smoke-") as td:
             staged = copy_plugin_package_for_smoke(args.plugin_dir, Path(td) / "context-guard")
             run_smoke(staged / "bin", args.timeout)
-        run_npm_package_smoke(args.timeout)
+        run_npm_package_smoke(
+            args.timeout,
+            root_tarball=args.npm_root_tarball,
+            receipt_tarball=args.npm_receipt_tarball,
+        )
     print("release smoke: OK")
     return 0
 

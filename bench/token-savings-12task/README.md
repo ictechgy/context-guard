@@ -16,6 +16,7 @@ are not used here.
 | `settings/treatment.settings.json` | Treatment arm settings with the registered ContextGuard hook bindings. |
 | `variants.template.json` | Arm template. `{{CANDIDATE_HASH}}`, `{{NAMESPACE}}`, and `{{ARTIFACT_ROOT}}` are substituted per run so the concrete variants file always binds the exact candidate under measurement. |
 | `study-plan.json` | Canonical `contextguard.bench.study-plan.v1` plan: 12 tasks x 2 arms x 3 repetitions = 72 initial attempts, with `one_retry_after_valid_task_failure_v1`. |
+| `study-plan-v2.json` | Additive `contextguard.bench.study-plan.v2` preregistration: 12 tasks x 3 arms x 3 repetitions, a frozen blocked-order seed, task-level inference, raw corpus SHA-256, and a domain-separated ordered checker-inventory binding. The fixed corpus is explicitly descriptive-only because no independent effect model supports an 80% power claim. It does not replace the v1 plan. |
 | `hook-event-evidence.json` | External evidence that every registered hook event exists in the provider CLI, with its collection method and boundary. |
 | `rehearsal/solutions.json` | Rehearsal-only scripted workspace writes for the fake provider. Never part of any fixture tree and never used by a real provider run. |
 
@@ -82,6 +83,68 @@ proof.
 ```bash
 python3 scripts/rehearse_measurement_study.py --output-root /tmp/s003-rehearsal
 ```
+
+The additive v2 planning rehearsal does not invoke the fake CLI or any provider:
+
+```bash
+python3 scripts/rehearse_measurement_study.py --study-version v2 --output-root /tmp/contextguard-v2-rehearsal
+```
+
+It writes only schedule/identity metadata for `host_unmodified`, `legacy_trim`,
+and `bash_reference_v1`. The report is explicitly descriptive (`claim_ready:
+false`); missing provider-export provenance and backend/model revisions are
+recorded as unavailable rather than inferred.
+
+## v2 provider-export workflow
+
+The v2 runner deliberately has no provider client, credential reader, network
+path, or `claude` invocation. An operator runs the frozen slots with their own
+approved provider procedure, then imports only canonical JSONL summary records.
+First create the private, immutable manifest (12 tasks × 3 arms × 3 repetitions
+× initial/retry identities = 216 slots):
+
+```bash
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action prepare \
+  --study-v2-plan bench/token-savings-12task/study-plan-v2.json \
+  --study-v2-tasks bench/token-savings-12task/tasks.json \
+  --study-v2-checkers-dir bench/token-savings-12task/checkers \
+  --study-v2-candidate-hash <exact-candidate-sha256> \
+  --study-v2-manifest /private/location/v2-provider-manifest.json
+```
+
+Then analyze the operator's canonical provider-export JSONL locally:
+
+```bash
+python3 context-guard-kit/benchmark_runner.py \
+  --study-v2-action analyze \
+  --study-v2-manifest /private/location/v2-provider-manifest.json \
+  --study-v2-evidence-jsonl /private/location/provider-export.jsonl \
+  --study-v2-report /private/location/v2-provider-report.json
+```
+
+Every row binds the manifest hash, deterministic `run_id`, task/repetition/arm,
+attempt, candidate hash, terminal outcome, aggregate token/correction/retrieval
+metrics, and backend/model/CLI revisions. Initial slots must be complete; a
+retry is present exactly when its initial slot failed. Unknown, duplicate,
+partial, mixed-revision, non-canonical, or sensitive evidence is rejected before
+the report path is created. Each revision is a 1-128 character ASCII identifier
+matching `[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,127}`; free-form text, artifact
+handles, and recognized secret shapes are forbidden. The primary result is only host versus
+`bash_reference_v1`; legacy-trim effects are separately labelled diagnostics and
+cannot affect primary gates. The fixed corpus remains descriptive-only, so this
+report cannot turn into an 80%-power or public savings claim.
+
+For every arm-unit, token, correction, and retrieval burdens sum all retained
+attempts, including an unsuccessful initial attempt followed by its fixed retry.
+A missing, non-finite, negative, or Boolean correction/retrieval value on any
+attempt makes that effect unavailable and its claim gate fail closed. The v2
+corpus hash remains the SHA-256 of exact `tasks.json` bytes. Its checker hash is
+domain-separated as `contextguard.bench.v2.checker-binding.v1` over the ordered
+relative filename, byte size, and per-file SHA-256 inventory; concatenated
+checker contents alone are not the binding. The ordered task IDs are separately
+bound with `contextguard.bench.v2.corpus-task-order.v1`, so a manifest cannot
+reuse the real corpus hash with a fabricated schedule/task projection.
 
 The harness generates an official-shaped fake Claude CLI, materializes cold
 local/session roots, executes all 72 scheduled initial attempts plus the scripted

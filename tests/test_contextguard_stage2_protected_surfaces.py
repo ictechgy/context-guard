@@ -49,6 +49,24 @@ SETUP_AND_PLUGIN_OWNER_PATHS = {
     "scripts/sync_plugin_copies.py",
 }
 
+# These paths were changed by the explicitly approved, provider-free Context
+# Guard reference/benchmark release after the frozen Stage 2 decision.  The
+# historical manifest remains byte-stable; unchanged entries are still checked
+# against it below.
+POST_STAGE2_PROTECTED_SHA256 = {
+    ".claude-plugin/marketplace.json": "b156a2430e651d25ea9c5471a4d3f347fc4beba8e6689bf566d6b253ed4b0706",
+    "context-guard-kit/benchmark_runner.py": "57360aa6739c9109ccf54dce094bb9c9f11835df698d68b52ab5b0ea1d1aa8f0",
+    "context-guard-kit/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
+    "context-guard-kit/setup_wizard.py": "bdaef7692a9a1ecc021c67f99b371f14edd52190fce2be2f57c4e240bdd1aaa8",
+    "package.json": "d9c9d0911384785bbaa90f64308f01f1c036671d5ce6d14eaba20b2070d987ef",
+    "plugins/context-guard/.claude-plugin/plugin.json": "8490efa682eac87a7d6ed74e38bf80a8973dcdabc1beb6efc41ec7ec49c01619",
+    "plugins/context-guard/bin/context-guard-bench": "57360aa6739c9109ccf54dce094bb9c9f11835df698d68b52ab5b0ea1d1aa8f0",
+    "plugins/context-guard/bin/context-guard-setup": "bdaef7692a9a1ecc021c67f99b371f14edd52190fce2be2f57c4e240bdd1aaa8",
+    "plugins/context-guard/lib/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
+    "scripts/release_smoke.py": "f575a301a3863b918cdbcd70d5fad5da9ab674358b7f5f82054512a30216ee6c",
+}
+APPROVED_POST_STAGE2_PROTECTED_PATHS = frozenset(POST_STAGE2_PROTECTED_SHA256)
+
 EXPECTED_PATHS = STAGE1_PATHS | R9_PUBLIC_PATHS | SETUP_AND_PLUGIN_OWNER_PATHS
 CSV_COLUMNS_SHA256 = "b21bad1ec0eace7570ea93697a206ed30f9f93b6ae5b38219c4819f7b229866a"
 
@@ -223,7 +241,10 @@ class ContextGuardStage2ProtectedSurfaceTests(unittest.TestCase):
                 self.assertTrue(stat.S_ISREG(metadata.st_mode))
                 self.assertEqual(entry["file_type"], "regular")
                 self.assertEqual(entry["mode"], portable_regular_mode(metadata.st_mode))
-                self.assertEqual(entry["sha256"], sha256(path))
+                expected_sha256 = POST_STAGE2_PROTECTED_SHA256.get(
+                    entry["path"], entry["sha256"]
+                )
+                self.assertEqual(expected_sha256, sha256(path))
                 self.assertIs(entry["tracked"], entry["path"] in tracked)
 
     def test_semantic_and_stage1_stop_invariants_are_frozen(self) -> None:

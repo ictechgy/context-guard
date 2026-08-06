@@ -34,6 +34,22 @@ PACKAGE_CHECK = load_package_check()
 
 
 class G013PackageAuditTests(unittest.TestCase):
+    def test_source_audit_binds_launcher_embedded_digests_to_payload_bytes(self) -> None:
+        """Break caught: package-files is current while the launcher trust table is stale."""
+
+        payload_paths = PACKAGE_CHECK.EXPECTED_PACKAGE_PATHS - {
+            "bin/launcher.cjs",
+            "package-files.json",
+        }
+        expected = {
+            path: hashlib.sha256((PACKAGE_ROOT / path).read_bytes()).hexdigest()
+            for path in payload_paths
+        }
+        observed = PACKAGE_CHECK.launcher_payload_digests(
+            (PACKAGE_ROOT / "bin/launcher.cjs").read_bytes()
+        )
+        self.assertEqual(observed, expected)
+
     def write_archive(
         self,
         entries: list[tuple[str, bytes, int, bytes | None]],

@@ -65,6 +65,14 @@ HELPER_REWRITE_BASH = "context-guard-rewrite-bash"
 HELPER_GUARD_READ = "context-guard-guard-read"
 HELPER_FAILED_NUDGE = "context-guard-failed-nudge"
 HELPER_DIET = "context-guard-diet"
+ROOT_PACKAGE_NAME = "@ictechgy/context-guard"
+RECEIPT_PACKAGE_NAME = "@ictechgy/context-guard-receipt"
+_EXACT_NPM_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+_BASH_REFERENCE_UNAVAILABLE = (
+    "bash_reference_v1 reference unavailable: requires an exact paired npm install "
+    "of @ictechgy/context-guard and @ictechgy/context-guard-receipt; "
+    "source/plugin-only setup keeps legacy Bash trimming"
+)
 HELPER_EQUIVALENT_BASENAMES = {
     "context-guard-rewrite-bash": {
         "context-guard-rewrite-bash",
@@ -111,6 +119,8 @@ class Choices:
     denies: bool = True
     statusline: bool = True
     bash_hook: bool = True
+    # Provider-visible receipt handles are an explicit, default-off choice.
+    bash_reference_v1: bool = False
     read_guard: bool = True
     model_defaults: bool = True
     # 동일 Bash 명령이 두 번 연속 실패하면 /clear 권유 — recommended setup 기본 ON.
@@ -1978,11 +1988,74 @@ def statusline_setting(*, allow_path_fallback: bool = False) -> dict[str, str]:
     return {"type": "command", "command": helper_command(HELPER_STATUSLINE, "statusline_merged.sh", shell="bash", allow_path_fallback=allow_path_fallback)}
 
 
-def bash_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
+def bash_hook_setting(*, allow_path_fallback: bool = False, bash_reference_v1: bool = False) -> dict[str, Any]:
+    command = helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)
+    if bash_reference_v1:
+        command = f"{command} --bash-reference-v1"
     return {
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": helper_command(HELPER_REWRITE_BASH, "rewrite_bash_for_token_budget.py", allow_path_fallback=allow_path_fallback)}],
+        "hooks": [{"type": "command", "command": command}],
     }
+
+
+def bash_reference_npm_install_available() -> bool:
+    """Recognize only the npm topology accepted by the runtime policy."""
+    script_path = Path(__file__).absolute()
+    suffix = ("plugins", "context-guard", "bin", "context-guard-setup")
+    if tuple(script_path.parts[-4:]) != suffix:
+        return False
+    package_root = script_path.parents[3]
+    if (
+        package_root.name != "context-guard"
+        or package_root.parent.name != "@ictechgy"
+        or package_root.parent.parent.name != "node_modules"
+    ):
+        return False
+    try:
+        script_status = script_path.lstat()
+        if not stat.S_ISREG(script_status.st_mode) or script_status.st_nlink != 1:
+            return False
+        context_guard_package = json.loads(
+            _read_text_no_follow(package_root / "package.json")
+        )
+        dependencies = context_guard_package.get("dependencies")
+        requested = dependencies.get(RECEIPT_PACKAGE_NAME) if isinstance(dependencies, dict) else None
+        if (
+            context_guard_package.get("name") != ROOT_PACKAGE_NAME
+            or not isinstance(requested, str)
+            or _EXACT_NPM_VERSION_RE.fullmatch(requested) is None
+        ):
+            return False
+        nested = package_root / "node_modules" / "@ictechgy" / "context-guard-receipt"
+        hoisted = package_root.parents[2] / "node_modules" / "@ictechgy" / "context-guard-receipt"
+        try:
+            (nested / "package.json").lstat()
+        except FileNotFoundError:
+            receipt_root = hoisted
+        else:
+            receipt_root = nested
+        receipt_package = json.loads(
+            _read_text_no_follow(receipt_root / "package.json")
+        )
+        return bool(
+            isinstance(receipt_package, dict)
+            and receipt_package.get("name") == RECEIPT_PACKAGE_NAME
+            and receipt_package.get("version") == requested
+        )
+    except (IndexError, OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False
+
+
+def disable_unavailable_bash_reference(
+    choices: Choices,
+    warnings: list[str],
+) -> list[str]:
+    """Fail closed without removing the ordinary Bash trimming choice."""
+    if not choices.bash_reference_v1 or bash_reference_npm_install_available():
+        return []
+    choices.bash_reference_v1 = False
+    warnings.append(_BASH_REFERENCE_UNAVAILABLE)
+    return [_BASH_REFERENCE_UNAVAILABLE]
 
 
 def read_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
@@ -2440,7 +2513,24 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     choices = choices_from_args(args)
-    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
+    reference_actions = disable_unavailable_bash_reference(choices, warnings)
+    if reference_actions:
+        checks.append(doctor_check(
+            "bash-reference-distribution",
+            "warning",
+            "medium",
+            _BASH_REFERENCE_UNAVAILABLE,
+            next_action="Install the exact paired npm packages before enabling --bash-reference-v1.",
+        ))
+    actions = reference_actions + (
+        apply_choices(
+            settings,
+            choices,
+            allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
+        )
+        if claude_targeted
+        else []
+    )
     changed = (settings != original) if claude_targeted else False
     if changed:
         checks.append(doctor_check(
@@ -2609,9 +2699,16 @@ def apply_choices(settings: dict[str, Any], choices: Choices, *, allow_path_fall
             migrate_env_read_denies=choices.read_guard,
         )
     if choices.bash_hook:
-        bash_hook = bash_hook_setting(allow_path_fallback=allow_path_fallback)
+        bash_hook = bash_hook_setting(
+            allow_path_fallback=allow_path_fallback,
+            bash_reference_v1=choices.bash_reference_v1,
+        )
         bash_command = bash_hook["hooks"][0]["command"]
         ensure_pre_tool_hook(settings, bash_hook, bash_command, "Bash trim/sanitize", actions)
+        if choices.bash_reference_v1:
+            actions.append(
+                "enabled bash_reference_v1: a scoped 7-day bearer handle may appear in Claude/provider-visible transcripts"
+            )
     if choices.read_guard:
         read_hook = read_hook_setting(allow_path_fallback=allow_path_fallback)
         read_command = read_hook["hooks"][0]["command"]
@@ -3004,6 +3101,10 @@ def interactive_choices(defaults: Choices) -> Choices:
         denies=prompt_bool("Add deny rules for bulky/sensitive paths?", defaults.denies),
         statusline=prompt_bool("Enable token/cost statusline?", defaults.statusline),
         bash_hook=prompt_bool("Enable Bash output trim + grep/diff sanitizer hook?", defaults.bash_hook),
+        bash_reference_v1=prompt_bool(
+            "Enable optional Bash receipt references? 7-day scoped bearer handles are visible to Claude/provider transcripts",
+            defaults.bash_reference_v1,
+        ),
         read_guard=prompt_bool("Enable large Read guard?", defaults.read_guard),
         model_defaults=prompt_bool("Set missing defaults to model=sonnet and effortLevel=medium?", defaults.model_defaults),
         failed_attempt_nudge=prompt_bool(
@@ -3019,6 +3120,7 @@ def choices_from_args(args: argparse.Namespace) -> Choices:
         denies=not args.no_denies,
         statusline=not args.no_statusline,
         bash_hook=not args.no_bash_hook,
+        bash_reference_v1=getattr(args, "bash_reference_v1", False),
         read_guard=not args.no_read_guard,
         model_defaults=not args.no_model_defaults,
         failed_attempt_nudge=(
@@ -3327,7 +3429,16 @@ def run(args: argparse.Namespace) -> SetupResult:
     if interactive:
         choices = interactive_choices(choices)
 
-    actions = apply_choices(settings, choices, allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False))) if claude_targeted else []
+    reference_actions = disable_unavailable_bash_reference(choices, warnings)
+    actions = reference_actions + (
+        apply_choices(
+            settings,
+            choices,
+            allow_path_fallback=bool(getattr(args, "allow_path_helper_fallback", False)),
+        )
+        if claude_targeted
+        else []
+    )
     changed = (settings != original) if claude_targeted else False
 
     apply_requested = bool(args.yes and not args.dry_run and not args.plan)
@@ -3481,6 +3592,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-denies", action="store_true", help="skip recommended permissions.deny rules")
     parser.add_argument("--no-statusline", action="store_true", help="skip token statusline")
     parser.add_argument("--no-bash-hook", action="store_true", help="skip Bash trim/sanitize hook")
+    reference_group = parser.add_mutually_exclusive_group()
+    reference_group.add_argument(
+        "--bash-reference-v1",
+        action="store_true",
+        help="opt in to 7-day scoped receipt references in the Bash hook; handles are provider-visible",
+    )
+    reference_group.add_argument(
+        "--no-bash-reference-v1",
+        dest="bash_reference_v1",
+        action="store_false",
+        help="disable/remove the optional Bash receipt-reference hook flag (default)",
+    )
+    parser.set_defaults(bash_reference_v1=False)
     parser.add_argument("--no-read-guard", action="store_true", help="skip large Read guard hook")
     parser.add_argument("--no-model-defaults", action="store_true", help="skip model/effort defaults")
     parser.add_argument("--no-diet-scan", action="store_true", help="skip the read-only diet scan summary after applying setup")

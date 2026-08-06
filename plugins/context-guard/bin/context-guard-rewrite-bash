@@ -122,6 +122,9 @@ CGW1_MAX_LINES = "220"
 CGW1_SHELL_ARGV = ("bash", "-c")
 CGW1_SENTINEL = "--context-guard-wrapper-v1"
 CGW1_COMMAND_SEARCH_DIFF = "command_search_diff"
+BASH_REFERENCE_FLAG = "--bash-reference-v1"
+BASH_REFERENCE_PUBLIC_COMMAND = "./node_modules/.bin/context-guard"
+BASH_REFERENCE_HANDLE_RE = re.compile(r"^cgr1p_[A-Za-z0-9_-]{43}$", re.ASCII)
 FAIL_OPEN_ENV = "CONTEXT_GUARD_SANITIZER_FAIL_OPEN"
 LEGACY_FAIL_OPEN_ENV = "CLAUDE_TOKEN_SANITIZER_FAIL_OPEN"
 FAIL_OPEN_VALUES = {"1", "true", "yes", "on"}
@@ -2528,6 +2531,43 @@ def _forbidden_command_basename(argv: tuple[str, ...]) -> bool:
     )
 
 
+def _reference_route_argv(parsed: MiniShellParse) -> tuple[str, ...] | None:
+    """Recognize only the static standalone command emitted by the digest."""
+
+    if (
+        parsed.heredoc_delimiter is not None
+        or len(parsed.segments) != 1
+        or len(parsed.segments[0]) not in {3, 5}
+    ):
+        return None
+    words = parsed.segments[0]
+    if any(
+        word.source_value != word.value
+        or not all(word.active)
+        or word.barriers
+        or word.assignment_index is not None
+        for word in words
+    ):
+        return None
+    argv = tuple(word.value for word in words)
+    if (
+        argv[0] != BASH_REFERENCE_PUBLIC_COMMAND
+        or argv[1] != "reference"
+        or BASH_REFERENCE_HANDLE_RE.fullmatch(argv[2]) is None
+    ):
+        return None
+    if len(argv) == 3:
+        return argv
+    offset = argv[4]
+    if (
+        argv[3] != "--offset"
+        or len(offset) > 20
+        or re.fullmatch(r"(?:0|[1-9][0-9]*)", offset, re.ASCII) is None
+    ):
+        return None
+    return argv
+
+
 def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecision:
     """Make a side-effect-free shell-boundary and routing decision."""
     parsed = parse_minishell(command)
@@ -2544,6 +2584,13 @@ def classify_command(command: str, *, allow_cgw1: bool = True) -> CommandDecisio
             parsed=parsed,
             reason="MiniShell-v1 denied active shell expansion (active_shell_expansion_denied).",
             reason_code="active_shell_expansion_denied",
+        )
+
+    if _reference_route_argv(parsed) is not None:
+        return CommandDecision(
+            action="reference",
+            parsed=parsed,
+            route_code="reference_expand",
         )
 
     wrapper = classify_incoming_wrapper(parsed)
@@ -2853,12 +2900,15 @@ def neutralize_git_config_execution(command: str, parsed: MiniShellParse) -> str
     return " | ".join(guarded_segments) if changed else command
 
 
-def build_wrapped_command(wrapper: str, command: str) -> str:
+def build_wrapped_command(wrapper: str, command: str, *, bash_reference_v1: bool = False) -> str:
     if wrapper.endswith(".py"):
         prefix = ["python3", wrapper]
     else:
         prefix = [wrapper]
-    wrapped_argv = prefix + ["--max-lines", CGW1_MAX_LINES, "--", *CGW1_SHELL_ARGV, command]
+    wrapped_argv = prefix + ["--max-lines", CGW1_MAX_LINES]
+    if bash_reference_v1:
+        wrapped_argv += ["--digest", "json", BASH_REFERENCE_FLAG]
+    wrapped_argv += ["--", *CGW1_SHELL_ARGV, command]
     return shell_join(wrapped_argv)
 
 
@@ -2902,6 +2952,7 @@ def main() -> int:
     if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
         print("ContextGuard helper: context-guard-rewrite-bash")
         return 0
+    bash_reference_v1 = BASH_REFERENCE_FLAG in sys.argv[1:]
     try:
         payload = load_hook_payload()
         tool_input = select_tool_input(payload)
@@ -2934,7 +2985,7 @@ def main() -> int:
                 f"{FAIL_OPEN_ENV}=1 to run untrimmed intentionally."
             )
             return 0
-        wrapped = build_wrapped_command(wrapper, command)
+        wrapped = build_wrapped_command(wrapper, command, bash_reference_v1=bash_reference_v1)
     elif decision.action == "sanitize":
         wrapper = find_wrapper("sanitize")
         if wrapper is None:
@@ -2947,6 +2998,21 @@ def main() -> int:
             return 0
         guarded_command = neutralize_git_config_execution(command, decision.parsed)
         wrapped = build_sanitized_command(wrapper, guarded_command)
+    elif decision.action == "reference":
+        wrapper = find_wrapper("trim")
+        if wrapper is None:
+            deny(
+                "Reference expansion blocked because the package-local trim helper "
+                "is unavailable. Reinstall ContextGuard."
+            )
+            return 0
+        reference_argv = _reference_route_argv(decision.parsed)
+        if reference_argv is None:
+            raise AssertionError("reference route lost its closed grammar")
+        prefix = ["python3", wrapper] if wrapper.endswith(".py") else [wrapper]
+        wrapped = shell_join(
+            [*prefix, "--expand-bash-reference", *reference_argv[2:]]
+        )
     else:
         raise AssertionError(f"unknown command action: {decision.action}")
 

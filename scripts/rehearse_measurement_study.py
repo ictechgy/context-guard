@@ -654,12 +654,85 @@ def collect_validation_problems(report: dict) -> list[str]:
     return problems
 
 
+def run_v2_offline_rehearsal(*, suite: Path, output_root: Path, runner) -> dict:
+    """Exercise only v2 planning/identity code; it never invokes a provider.
+
+    This deliberately produces no empirical outcome data, so its report is
+    descriptive and cannot satisfy the v2 provider-provenance or claim gates.
+    """
+    task_entries = json.loads((suite / "tasks.json").read_text(encoding="utf-8"))
+    task_ids = [str(task["id"]) for task in task_entries]
+    plan = runner.load_benchmark_study_v2_plan(suite / "study-plan-v2.json")
+    corpus_bytes = (suite / "tasks.json").read_bytes()
+    checker_binding = runner.benchmark_study_v2_checker_binding(
+        suite / "checkers",
+    )
+    runner.validate_benchmark_study_v2_bindings(
+        plan, corpus_bytes=corpus_bytes, checker_binding=checker_binding,
+    )
+    schedule_seed = plan["schedule_seed"]
+    schedule = runner.generate_benchmark_study_v2_schedule(
+        task_ids, repetitions=3, schedule_seed=schedule_seed,
+    )
+    slots = runner.generate_benchmark_study_v2_slots(
+        task_ids, schedule,
+        candidate_hash=hashlib.sha256(CANONICAL_RUNNER.read_bytes()).hexdigest(),
+        namespace="ts12-suite-v2",
+    )
+    readiness = runner.evaluate_benchmark_study_v2_claim_readiness(
+        plan=plan, task_ids=task_ids,
+        binary_inference={
+            "method": "not_run_offline", "degenerate_all_success": False,
+            "noninferiority_pass": False,
+        },
+        effects={
+            "quality_gate": False, "failure_gate": False,
+            "correction_gate": False, "retrieval_gate": False,
+            "shifted_cost_gate": False,
+        },
+        provenance={
+            "source": "offline_fake", "complete_provider_export": False,
+            "contaminated": False, "missing_primary_data": True,
+        },
+    )
+    report = {
+        "schema_version": "contextguard.bench.rehearsal-report.v2",
+        "study_version": "v2",
+        "arms": list(runner.BENCHMARK_STUDY_V2_ARMS),
+        "schedule": {
+            "algorithm": runner.BENCHMARK_STUDY_V2_SCHEDULE_ALGORITHM,
+            "blocks": len(schedule), "slots": len(slots),
+            "schedule_sha256": hashlib.sha256(json.dumps(
+                schedule, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+        },
+        "claim_ready": readiness["claim_ready"],
+        "descriptive_only": readiness["descriptive_only"],
+        "unmet_gates": readiness["unmet_gates"],
+        "backend_revision": "unavailable",
+        "model_revision": "unavailable",
+        "zero_cost_evidence": {
+            "provider_calls": 0, "network_calls": 0, "usd_spent": 0.0,
+            "credential_access": "none",
+        },
+    }
+    report_path = output_root / "rehearsal-report.json"
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(report_path, 0o600)
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output-root", required=True, type=Path,
                         help="private rehearsal output directory (must be new or empty)")
     parser.add_argument("--suite", default=DEFAULT_SUITE, type=Path,
                         help="real 12-task suite directory")
+    parser.add_argument("--study-version", choices=("v1", "v2"), default="v1",
+                        help="frozen study surface to rehearse (default: v1)")
     parser.add_argument("--json", action="store_true", help="print the report to stdout")
     args = parser.parse_args(argv)
 
@@ -673,6 +746,16 @@ def main(argv: list[str] | None = None) -> int:
     os.chmod(output_root, 0o700)
 
     runner = load_runner_module()
+    if args.study_version == "v2":
+        report = run_v2_offline_rehearsal(
+            suite=suite, output_root=output_root, runner=runner,
+        )
+        if args.json:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True, indent=2))
+        else:
+            print(f"rehearsal report: {output_root / 'rehearsal-report.json'}")
+            print("claim ready: False (offline rehearsal)")
+        return 0
     started_at = time.time()
     prepared = prepare_inputs(suite=suite, output_root=output_root, runner=runner)
     study_root = output_root / "study"

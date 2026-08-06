@@ -13365,7 +13365,11 @@ class ClaudeTokenKitTests(unittest.TestCase):
 
     def test_release_smoke_launch_plan_covers_every_packaged_entrypoint(self):
         smoke = load_module_from_path(ROOT / "scripts" / "release_smoke.py", "release_smoke_entrypoint_plan")
-        expected = {path.name for path in PLUGIN_BIN.iterdir() if path.is_file()}
+        expected = {
+            path.name
+            for path in PLUGIN_BIN.iterdir()
+            if path.is_file() and stat.S_IMODE(path.stat().st_mode) & stat.S_IXUSR
+        }
         plan = smoke.entrypoint_smoke_plan(PLUGIN_BIN)
         self.assertEqual(set(smoke.ENTRYPOINT_SMOKE_COMMANDS), expected)
         self.assertEqual(set(plan), expected)

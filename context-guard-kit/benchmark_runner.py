@@ -10467,10 +10467,961 @@ def run_measurement_study_action(
     return 0
 
 
+# V2 is a separately-versioned analytical surface.  It intentionally does not
+# alter the frozen S001--S003 runner, manifest, or report contracts above.
+BENCHMARK_STUDY_V2_PLAN_SCHEMA_VERSION = "contextguard.bench.study-plan.v2"
+BENCHMARK_STUDY_V2_SCHEDULE_ALGORITHM = "splitmix64-blocked-three-arm-v1"
+BENCHMARK_STUDY_V2_ARMS = (
+    "host_unmodified", "legacy_trim", "bash_reference_v1",
+)
+BENCHMARK_STUDY_V2_PRIMARY_CONTRAST = ("host_unmodified", "bash_reference_v1")
+BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST = ("legacy_trim", "bash_reference_v1")
+BENCHMARK_STUDY_V2_RETRY_POLICY = "retain_valid_unfavorable_attempts_v1"
+BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS = frozenset({
+    "prompt", "output", "command", "command_hash", "command_sha256", "path",
+    "project_id", "capabilities", "credential", "credentials", "token", "secret",
+})
+BENCHMARK_STUDY_V2_HANDLE_RE = re.compile(r"(?i)\bcgr1p(?:[_-]|\b)")
+BENCHMARK_STUDY_V2_REVISION_KEYS = frozenset({
+    "backend_revision", "model_revision", "cli_version",
+})
+BENCHMARK_STUDY_V2_REVISION_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,127}"
+)
+BENCHMARK_STUDY_V2_SECRET_SHAPE_RE = re.compile(
+    r"(?i)(?:"
+    r"\bsk-[A-Za-z0-9_-]{16,}"
+    r"|\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{16,}"
+    r"|\bgh[pousr]_[A-Za-z0-9]{16,}"
+    r"|\bnpm_[A-Za-z0-9]{16,}"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{16,}"
+    r"|\bA[KS]IA[0-9A-Z]{16}\b"
+    r"|\bAIza[0-9A-Za-z_-]{20,}"
+    r"|\bya29\.[0-9A-Za-z_-]{16,}"
+    r"|\bbearer\s+[0-9A-Za-z._~+/-]+=*"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r")"
+)
+BENCHMARK_STUDY_V2_CHECKER_BINDING_DOMAIN = (
+    "contextguard.bench.v2.checker-binding.v1"
+)
+BENCHMARK_STUDY_V2_CORPUS_TASK_ORDER_DOMAIN = (
+    "contextguard.bench.v2.corpus-task-order.v1"
+)
+
+
+def _benchmark_study_v2_seed(seed: int | str) -> int:
+    if isinstance(seed, str):
+        if re.fullmatch(r"0x[0-9A-F]{16}", seed) is None:
+            raise ValueError("v2 schedule seed must be frozen uppercase 64-bit hex")
+        return int(seed, 16)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= SPLITMIX64_MASK:
+        raise ValueError("v2 schedule seed must be an unsigned 64-bit integer")
+    return seed
+
+
+def _benchmark_study_v2_task_ids(task_ids: Sequence[str]) -> list[str]:
+    normalized = list(task_ids)
+    if len(normalized) != 12 or len(set(normalized)) != 12:
+        raise ValueError("v2 study requires exactly 12 unique ordered task ids")
+    if any(not isinstance(task_id, str) or not task_id for task_id in normalized):
+        raise ValueError("v2 study task ids must be non-empty strings")
+    return normalized
+
+
+def generate_benchmark_study_v2_schedule(
+    task_ids: Sequence[str], *, repetitions: int, schedule_seed: int | str,
+) -> list[dict[str, Any]]:
+    """Create the pre-randomized 3-arm order for each task/repetition block."""
+    tasks = _benchmark_study_v2_task_ids(task_ids)
+    if repetitions != 3:
+        raise ValueError("v2 study requires exactly three repetitions")
+    state = _benchmark_study_v2_seed(schedule_seed)
+    schedule: list[dict[str, Any]] = []
+    for task_id in tasks:
+        for repetition in range(repetitions):
+            arm_order = list(BENCHMARK_STUDY_V2_ARMS)
+            for index in range(len(arm_order) - 1, 0, -1):
+                state, selected = splitmix64_bounded(state, index + 1)
+                arm_order[index], arm_order[selected] = arm_order[selected], arm_order[index]
+            schedule.append({
+                "block_id": _study_domain_hash(
+                    "contextguard.bench.v2.block-id.v1", [task_id, repetition],
+                ),
+                "task_id": task_id,
+                "repetition": repetition,
+                "arm_order": arm_order,
+            })
+    return schedule
+
+
+def generate_benchmark_study_v2_slots(
+    task_ids: Sequence[str], schedule: Sequence[Mapping[str, Any]], *,
+    candidate_hash: str, namespace: str,
+) -> list[dict[str, Any]]:
+    """Materialize immutable initial/retry identities without replacement."""
+    tasks = _benchmark_study_v2_task_ids(task_ids)
+    if SHA256_HEX_PATTERN.fullmatch(candidate_hash) is None:
+        raise ValueError("v2 candidate hash is invalid")
+    if not isinstance(namespace, str) or not MEASUREMENT_ID_NAMESPACE_RE.fullmatch(namespace):
+        raise ValueError("v2 namespace is invalid")
+    expected_blocks = [(task, repetition) for task in tasks for repetition in range(3)]
+    if [(row.get("task_id"), row.get("repetition")) for row in schedule] != expected_blocks:
+        raise ValueError("v2 schedule task/repetition order drift")
+    initial: list[dict[str, Any]] = []
+    retry: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for block in schedule:
+        arm_order = block.get("arm_order")
+        if not isinstance(arm_order, list) or set(arm_order) != set(BENCHMARK_STUDY_V2_ARMS) or len(arm_order) != 3:
+            raise ValueError("v2 block arm order is invalid")
+        for arm in arm_order:
+            for attempt, state, destination in ((0, "planned", initial), (1, "conditional", retry)):
+                run_id = MeasurementIdentity(
+                    candidate_hash=candidate_hash, repetition=int(block["repetition"]),
+                    arm=arm, attempt=attempt, namespace=namespace,
+                ).run_id(str(block["task_id"]))
+                if run_id in seen:
+                    raise ValueError("v2 run identity collision")
+                seen.add(run_id)
+                destination.append({
+                    "block_id": block["block_id"], "task_id": block["task_id"],
+                    "repetition": block["repetition"], "arm": arm, "attempt": attempt,
+                    "run_id": run_id, "state": state,
+                })
+    slots = initial + retry
+    validate_benchmark_study_v2_slots(slots, task_ids=tasks)
+    return slots
+
+
+def validate_benchmark_study_v2_slots(
+    slots: Sequence[Mapping[str, Any]], *, task_ids: Sequence[str],
+) -> None:
+    tasks = _benchmark_study_v2_task_ids(task_ids)
+    if len(slots) != 216:
+        raise ValueError("v2 study requires exactly 216 immutable slots")
+    expected = {
+        (task, repetition, arm, attempt)
+        for task in tasks for repetition in range(3)
+        for arm in BENCHMARK_STUDY_V2_ARMS for attempt in (0, 1)
+    }
+    observed: set[tuple[str, int, str, int]] = set()
+    run_ids: set[str] = set()
+    required = {"block_id", "task_id", "repetition", "arm", "attempt", "run_id", "state"}
+    for slot in slots:
+        if set(slot) != required:
+            raise ValueError("v2 slot schema mismatch")
+        key = (slot["task_id"], slot["repetition"], slot["arm"], slot["attempt"])
+        if key in observed or key not in expected or slot["run_id"] in run_ids:
+            raise ValueError("v2 slot identity mismatch")
+        if slot["state"] != ("planned" if slot["attempt"] == 0 else "conditional"):
+            raise ValueError("v2 slot state mismatch")
+        if not isinstance(slot["run_id"], str) or SHA256_HEX_PATTERN.fullmatch(slot["run_id"]) is None:
+            raise ValueError("v2 slot run id is invalid")
+        observed.add(key)
+        run_ids.add(slot["run_id"])
+    if observed != expected:
+        raise ValueError("v2 slot coverage mismatch")
+
+
+def benchmark_study_v2_contrasts(_values: Mapping[str, Any] | None = None) -> dict[str, list[str]]:
+    """Expose the single product contrast separately from its diagnostic control."""
+    return {
+        "primary": list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST),
+        "diagnostic": list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST),
+    }
+
+
+def _benchmark_study_v2_cluster_interval(values_by_task: Sequence[Sequence[float]]) -> dict[str, Any]:
+    task_count = len(values_by_task)
+    if task_count < 2 or any(len(row) != 3 for row in values_by_task):
+        raise ValueError("v2 task-cluster interval requires task x 3 values")
+    task_means = [sum(float(value) for value in row) / 3.0 for row in values_by_task]
+    state = MEASUREMENT_STUDY_INFERENCE_SEED
+    estimates: list[float] = []
+    for _ in range(MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES):
+        total = 0.0
+        for _ in range(task_count):
+            state, index = splitmix64_bounded(state, task_count)
+            total += task_means[index]
+        estimates.append(total / task_count)
+    return {
+        "method": "task_cluster_bootstrap_v2",
+        "point": sum(task_means) / task_count,
+        "q025": float(type7_quantile(estimates, 0.025)),
+        "q975": float(type7_quantile(estimates, 0.975)),
+        "task_count": task_count,
+        "resamples": MEASUREMENT_STUDY_BOOTSTRAP_RESAMPLES,
+    }
+
+
+def infer_benchmark_study_v2_binary(
+    rows: Sequence[Mapping[str, Any]], *, task_order: Sequence[str], ni_margin: float = 0.10,
+) -> dict[str, Any]:
+    """Exact task-cluster sign-permutation inference for the product contrast."""
+    tasks = _benchmark_study_v2_task_ids(task_order)
+    if not isinstance(ni_margin, (int, float)) or isinstance(ni_margin, bool) or not 0 <= ni_margin < 1:
+        raise ValueError("v2 non-inferiority margin is invalid")
+    units: dict[tuple[str, int, str], bool] = {}
+    for row in rows:
+        task_id, repetition, arm, success = row.get("task_id"), row.get("repetition"), row.get("arm"), row.get("success")
+        if task_id not in tasks or repetition not in (0, 1, 2) or arm not in BENCHMARK_STUDY_V2_PRIMARY_CONTRAST or not isinstance(success, bool):
+            raise ValueError("v2 binary outcome identity is invalid")
+        key = (str(task_id), int(repetition), str(arm))
+        if key in units:
+            raise ValueError("duplicate v2 binary outcome")
+        units[key] = success
+    expected = {
+        (task, repetition, arm) for task in tasks for repetition in range(3)
+        for arm in BENCHMARK_STUDY_V2_PRIMARY_CONTRAST
+    }
+    if set(units) != expected:
+        raise ValueError("v2 binary outcome coverage is incomplete")
+    task_deltas = [
+        sum(
+            int(units[(task, repetition, "bash_reference_v1")])
+            - int(units[(task, repetition, "host_unmodified")])
+            for repetition in range(3)
+        ) / 3.0
+        for task in tasks
+    ]
+    point = sum(task_deltas) / len(tasks)
+    all_success = all(units.values())
+    # At the NI boundary, reference-minus-host plus the frozen margin has mean
+    # zero. Sign-flip that centered task effect, never the nested run rows.
+    centered_deltas = [value + float(ni_margin) for value in task_deltas]
+    outcomes = []
+    for mask in range(1 << len(tasks)):
+        outcomes.append(sum(
+            (-value if mask & (1 << index) else value)
+            for index, value in enumerate(centered_deltas)
+        ) / len(tasks))
+    observed_statistic = point + float(ni_margin)
+    p_value = (
+        sum(value >= observed_statistic for value in outcomes) + 1
+    ) / (len(outcomes) + 1)
+    return {
+        "method": "exact_task_cluster_sign_permutation_v1",
+        "contrast": list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST),
+        "task_ids_sha256": _study_domain_hash(
+            "contextguard.bench.v2.task-order.v1", tasks,
+        ),
+        "point": point,
+        "ni_margin": float(ni_margin),
+        "p_value": p_value,
+        "task_count": len(tasks),
+        "degenerate_all_success": all_success,
+        "noninferiority_pass": bool(not all_success and point > -float(ni_margin) and p_value < 0.05),
+    }
+
+
+def compute_benchmark_study_v2_effects(
+    records: Sequence[Mapping[str, Any]], *, task_order: Sequence[str],
+) -> dict[str, Any]:
+    """Retain every valid terminal attempt and derive task-clustered effects."""
+    tasks = _benchmark_study_v2_task_ids(task_order)
+    grouped: dict[tuple[str, int, str], list[Mapping[str, Any]]] = collections.defaultdict(list)
+    for record in records:
+        task_id, repetition, arm = record.get("task_id"), record.get("repetition"), record.get("arm")
+        if task_id not in tasks or repetition not in (0, 1, 2) or arm not in BENCHMARK_STUDY_V2_ARMS:
+            raise ValueError("v2 effect record identity is invalid")
+        grouped[(str(task_id), int(repetition), str(arm))].append(record)
+    token_deltas: list[list[float]] = []
+    diagnostic_token_deltas: list[list[float]] = []
+    metric_deltas: dict[str, list[list[float]]] = {"correction": [], "retrieval": []}
+    diagnostic_metric_deltas: dict[str, list[list[float]]] = {
+        "correction": [], "retrieval": [],
+    }
+    metric_available = {"correction": True, "retrieval": True}
+    retained_unfavorable = 0
+    for task in tasks:
+        per_task: list[float] = []
+        diagnostic_per_task: list[float] = []
+        per_task_metrics: dict[str, list[float]] = {"correction": [], "retrieval": []}
+        diagnostic_per_task_metrics: dict[str, list[float]] = {
+            "correction": [], "retrieval": [],
+        }
+        for repetition in range(3):
+            costs: dict[str, float] = {}
+            metrics: dict[str, dict[str, float]] = {"correction": {}, "retrieval": {}}
+            for arm in BENCHMARK_STUDY_V2_ARMS:
+                attempts = sorted(grouped.get((task, repetition, arm), ()), key=lambda row: int(row.get("attempt", -1)))
+                if not attempts or [row.get("attempt") for row in attempts] not in ([0], [0, 1]):
+                    raise ValueError("v2 attempts are incomplete or replaced")
+                values = []
+                for row in attempts:
+                    token = row.get("tokens")
+                    if (
+                        isinstance(token, bool)
+                        or not isinstance(token, (int, float))
+                        or not math.isfinite(float(token))
+                        or token < 0
+                    ):
+                        raise ValueError("v2 token value is invalid")
+                    if row.get("terminal_status") != "success" or row.get("success") is not True:
+                        retained_unfavorable += 1
+                    values.append(float(token))
+                costs[arm] = sum(values)
+                for metric in metrics:
+                    attempt_values = [row.get(metric) for row in attempts]
+                    if any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        or value < 0
+                        for value in attempt_values
+                    ):
+                        metric_available[metric] = False
+                        continue
+                    metrics[metric][arm] = sum(
+                        float(value) for value in attempt_values
+                    )
+            per_task.append(costs["host_unmodified"] - costs["bash_reference_v1"])
+            diagnostic_per_task.append(
+                costs["legacy_trim"] - costs["bash_reference_v1"]
+            )
+            for metric, values in metrics.items():
+                if set(values) == set(BENCHMARK_STUDY_V2_ARMS):
+                    per_task_metrics[metric].append(
+                        values["host_unmodified"] - values["bash_reference_v1"]
+                    )
+                    diagnostic_per_task_metrics[metric].append(
+                        values["legacy_trim"] - values["bash_reference_v1"]
+                    )
+        token_deltas.append(per_task)
+        diagnostic_token_deltas.append(diagnostic_per_task)
+        for metric in metric_deltas:
+            if len(per_task_metrics[metric]) == 3:
+                metric_deltas[metric].append(per_task_metrics[metric])
+                diagnostic_metric_deltas[metric].append(
+                    diagnostic_per_task_metrics[metric]
+                )
+            else:
+                metric_available[metric] = False
+    metric_effects = {
+        f"{metric}_effect": (
+            _benchmark_study_v2_cluster_interval(metric_deltas[metric])
+            if metric_available[metric] and len(metric_deltas[metric]) == len(tasks)
+            else {"method": "unavailable", "point": None, "q025": None, "q975": None}
+        )
+        for metric in metric_deltas
+    }
+    diagnostic_metric_effects = {
+        f"diagnostic_{metric}_effect": (
+            _benchmark_study_v2_cluster_interval(diagnostic_metric_deltas[metric])
+            if metric_available[metric]
+            and len(diagnostic_metric_deltas[metric]) == len(tasks)
+            else {"method": "unavailable", "point": None, "q025": None, "q975": None}
+        )
+        for metric in diagnostic_metric_deltas
+    }
+    return {
+        "primary_contrast": list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST),
+        "diagnostic_contrast": list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST),
+        "task_ids_sha256": _study_domain_hash(
+            "contextguard.bench.v2.task-order.v1", tasks,
+        ),
+        "retained_unfavorable_runs": retained_unfavorable,
+        "token_effect": _benchmark_study_v2_cluster_interval(token_deltas),
+        "diagnostic_token_effect": _benchmark_study_v2_cluster_interval(
+            diagnostic_token_deltas
+        ),
+        "quality_gate": False,
+        "failure_gate": False,
+        "correction_gate": False,
+        "retrieval_gate": False,
+        "shifted_cost_gate": False,
+        **metric_effects,
+        **diagnostic_metric_effects,
+    }
+
+
+def make_benchmark_study_v2_plan(
+    *, schedule_seed: str, required_task_count: int, corpus_sha256: str = "0" * 64,
+    checker_sha256: str = "0" * 64, task_ids_sha256: str = "0" * 64,
+    ni_margin: float = 0.10,
+) -> dict[str, Any]:
+    """Build the immutable, a-priori v2 analysis plan for a frozen corpus."""
+    plan = {
+        "schema_version": BENCHMARK_STUDY_V2_PLAN_SCHEMA_VERSION,
+        "arms": list(BENCHMARK_STUDY_V2_ARMS), "schedule_seed": schedule_seed,
+        "repetitions": 3, "max_attempts_per_arm_unit": 2,
+        "retry_policy": BENCHMARK_STUDY_V2_RETRY_POLICY,
+        "corpus_sha256": corpus_sha256, "checker_sha256": checker_sha256,
+        "task_ids_sha256": task_ids_sha256,
+        "primary_contrast": list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST),
+        "diagnostic_contrast": list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST),
+        "noninferiority_margin": ni_margin,
+        "power": {
+            "claim_capable": False,
+            "method": "not_estimated_without_independent_effect_model_v1",
+            "reason": "fixed_12_task_corpus_is_descriptive_only",
+            "required_task_count": required_task_count,
+        },
+        "exclusions": "none_after_schedule_except_prelaunch_refusal_v1",
+        "missing_data": "incomplete_primary_pair_is_descriptive_only_v1",
+        "contamination": "any_contamination_blocks_claim_v1",
+        "stopping": "fixed_task_count_no_optional_stopping_v1",
+        "model_cli_fields": ["model_revision", "backend_revision", "cli_version"],
+        "gates": ["quality", "failure", "correction", "retrieval", "shifted_cost"],
+    }
+    validate_benchmark_study_v2_plan(plan)
+    return plan
+
+
+def validate_benchmark_study_v2_plan(plan: Mapping[str, Any]) -> None:
+    required = {
+        "schema_version", "arms", "schedule_seed", "repetitions", "max_attempts_per_arm_unit", "retry_policy",
+        "corpus_sha256", "checker_sha256", "task_ids_sha256", "primary_contrast", "diagnostic_contrast", "noninferiority_margin",
+        "power", "exclusions", "missing_data", "contamination", "stopping", "model_cli_fields", "gates",
+    }
+    if set(plan) != required or plan.get("schema_version") != BENCHMARK_STUDY_V2_PLAN_SCHEMA_VERSION:
+        raise ValueError("v2 study plan schema mismatch")
+    _benchmark_study_v2_seed(plan["schedule_seed"])
+    if plan["arms"] != list(BENCHMARK_STUDY_V2_ARMS) or plan["primary_contrast"] != list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST) or plan["diagnostic_contrast"] != list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST):
+        raise ValueError("v2 study arms or contrasts drifted")
+    if plan["repetitions"] != 3 or plan["max_attempts_per_arm_unit"] != 2 or plan["retry_policy"] != BENCHMARK_STUDY_V2_RETRY_POLICY:
+        raise ValueError("v2 study retry contract drifted")
+    if any(not isinstance(plan[key], str) or SHA256_HEX_PATTERN.fullmatch(plan[key]) is None for key in ("corpus_sha256", "checker_sha256", "task_ids_sha256")):
+        raise ValueError("v2 corpus/checker/task-order binding is invalid")
+    if not isinstance(plan["noninferiority_margin"], (int, float)) or isinstance(plan["noninferiority_margin"], bool) or not 0 <= plan["noninferiority_margin"] < 1:
+        raise ValueError("v2 non-inferiority margin is invalid")
+    power = plan["power"]
+    if (
+        not isinstance(power, Mapping)
+        or set(power) != {"claim_capable", "method", "reason", "required_task_count"}
+        or power.get("claim_capable") is not False
+        or power.get("method") != "not_estimated_without_independent_effect_model_v1"
+        or power.get("reason") != "fixed_12_task_corpus_is_descriptive_only"
+        or power.get("required_task_count") != 12
+    ):
+        raise ValueError("v2 descriptive sample-size contract is unavailable or invalid")
+    if plan["model_cli_fields"] != ["model_revision", "backend_revision", "cli_version"] or plan["gates"] != ["quality", "failure", "correction", "retrieval", "shifted_cost"]:
+        raise ValueError("v2 provenance or gate contract drifted")
+    frozen_text = {
+        "exclusions": "none_after_schedule_except_prelaunch_refusal_v1",
+        "missing_data": "incomplete_primary_pair_is_descriptive_only_v1",
+        "contamination": "any_contamination_blocks_claim_v1",
+        "stopping": "fixed_task_count_no_optional_stopping_v1",
+    }
+    if any(plan[key] != expected for key, expected in frozen_text.items()):
+        raise ValueError("v2 study plan operational rule drifted")
+
+
+def load_benchmark_study_v2_plan(path: Path) -> dict[str, Any]:
+    """Load only canonical JSON so a plan's signed-by-bytes form is stable."""
+    raw = _read_bytes_no_follow(path, max_bytes=100_000)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("v2 study plan is invalid JSON") from exc
+    if not isinstance(value, dict) or raw != _study_canonical_json_bytes(value):
+        raise ValueError("v2 study plan must be canonical JSON")
+    validate_benchmark_study_v2_plan(value)
+    return value
+
+
+def validate_benchmark_study_v2_bindings(
+    plan: Mapping[str, Any], *, corpus_bytes: bytes,
+    checker_binding: Mapping[str, Any],
+) -> None:
+    """Bind the raw corpus and domain-separated ordered checker inventory."""
+    validate_benchmark_study_v2_plan(plan)
+    if not isinstance(corpus_bytes, bytes):
+        raise ValueError("v2 corpus/checker binding bytes are invalid")
+    validate_benchmark_study_v2_checker_binding(checker_binding)
+    try:
+        task_ids = _benchmark_study_v2_task_ids_from_corpus(corpus_bytes)
+    except ValueError as exc:
+        raise ValueError("v2 corpus/checker/task-order binding drift") from exc
+    if (
+        _study_sha256_bytes(corpus_bytes) != plan["corpus_sha256"]
+        or checker_binding["sha256"] != plan["checker_sha256"]
+        or _benchmark_study_v2_task_ids_sha256(task_ids)
+        != plan["task_ids_sha256"]
+    ):
+        raise ValueError("v2 corpus/checker/task-order binding drift")
+
+
+def validate_benchmark_study_v2_checker_binding(
+    binding: Mapping[str, Any],
+) -> None:
+    """Validate the filename/size/content inventory before trusting its digest."""
+    if not isinstance(binding, Mapping) or set(binding) != {
+        "domain", "files", "sha256",
+    }:
+        raise ValueError("v2 checker binding schema is invalid")
+    files = binding["files"]
+    if (
+        binding["domain"] != BENCHMARK_STUDY_V2_CHECKER_BINDING_DOMAIN
+        or not isinstance(files, list)
+        or len(files) != 12
+    ):
+        raise ValueError("v2 checker binding inventory is invalid")
+    filenames: list[str] = []
+    for entry in files:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "filename", "size", "sha256",
+        }:
+            raise ValueError("v2 checker binding entry is invalid")
+        filename, size, digest = (
+            entry["filename"], entry["size"], entry["sha256"],
+        )
+        if (
+            not isinstance(filename, str)
+            or not filename.endswith(".py")
+            or Path(filename).name != filename
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 0 <= size <= MAX_FIXTURE_FILE_BYTES
+            or not isinstance(digest, str)
+            or SHA256_HEX_PATTERN.fullmatch(digest) is None
+        ):
+            raise ValueError("v2 checker binding entry is invalid")
+        filenames.append(filename)
+    if filenames != sorted(filenames) or len(set(filenames)) != len(filenames):
+        raise ValueError("v2 checker binding order is invalid")
+    expected = _study_domain_hash(
+        BENCHMARK_STUDY_V2_CHECKER_BINDING_DOMAIN, files,
+    )
+    if binding["sha256"] != expected:
+        raise ValueError("v2 checker binding digest is invalid")
+
+
+def validate_benchmark_study_v2_evidence_metadata(metadata: Mapping[str, Any]) -> None:
+    """Fail closed before potentially sensitive execution evidence reaches a report."""
+    def visit(value: Any, key: str = "") -> None:
+        key_lower = key.lower()
+        # `tokens` is the aggregate study metric, not a credential-shaped token.
+        # All other token-bearing field names remain forbidden.
+        if key_lower == "tokens" and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            raise ValueError("unsafe evidence token metric is invalid")
+        if (
+            key_lower != "tokens"
+            and any(forbidden in key_lower for forbidden in BENCHMARK_STUDY_V2_EVIDENCE_FORBIDDEN_KEYS)
+        ):
+            raise ValueError("unsafe evidence field is forbidden")
+        if isinstance(value, str):
+            if (
+                BENCHMARK_STUDY_V2_HANDLE_RE.search(value)
+                or BENCHMARK_STUDY_V2_SECRET_SHAPE_RE.search(value)
+            ):
+                raise ValueError("unsafe evidence secret-shaped value is forbidden")
+            if (
+                key_lower in BENCHMARK_STUDY_V2_REVISION_KEYS
+                and BENCHMARK_STUDY_V2_REVISION_RE.fullmatch(value) is None
+            ):
+                raise ValueError("unsafe evidence revision format is invalid")
+        if isinstance(value, Mapping):
+            for child_key, child in value.items():
+                if not isinstance(child_key, str):
+                    raise ValueError("unsafe evidence key is invalid")
+                visit(child, child_key)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, key)
+    visit(metadata)
+
+
+def redact_benchmark_study_v2_evidence(value: str) -> str:
+    """Safe display helper for planted/accidental cgr1p handles; reports still reject them."""
+    return BENCHMARK_STUDY_V2_HANDLE_RE.sub("[REDACTED_HANDLE]", value)
+
+
+def evaluate_benchmark_study_v2_claim_readiness(
+    *, plan: Mapping[str, Any], task_ids: Sequence[str], binary_inference: Mapping[str, Any],
+    effects: Mapping[str, Any], provenance: Mapping[str, Any],
+    binary_rows: Sequence[Mapping[str, Any]] | None = None,
+    effect_records: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return a fail-closed product-claim gate; diagnostic results are ignored."""
+    validate_benchmark_study_v2_plan(plan)
+    unique_tasks = list(dict.fromkeys(task_ids))
+    task_order: list[str] | None = None
+    try:
+        task_order = _benchmark_study_v2_task_ids(task_ids)
+    except (TypeError, ValueError):
+        pass
+    power_ready = bool(
+        plan["power"].get("claim_capable") is True
+        and len(unique_tasks) >= int(plan["power"]["required_task_count"])
+    )
+    provenance_safe = True
+    try:
+        validate_benchmark_study_v2_evidence_metadata(provenance)
+    except (TypeError, ValueError):
+        provenance_safe = False
+    provider_ready = bool(
+        provenance_safe
+        and provenance.get("source") == "provider_export"
+        and provenance.get("complete_provider_export") is True
+        and isinstance(provenance.get("backend_revision"), str) and provenance["backend_revision"]
+        and isinstance(provenance.get("model_revision"), str) and provenance["model_revision"]
+        and isinstance(provenance.get("cli_version"), str) and provenance["cli_version"]
+    )
+    recomputed_inference: dict[str, Any] | None = None
+    if task_order is not None and binary_rows is not None:
+        try:
+            recomputed_inference = infer_benchmark_study_v2_binary(
+                binary_rows,
+                task_order=task_order,
+                ni_margin=float(plan["noninferiority_margin"]),
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+    binary_ready = bool(
+        recomputed_inference is not None
+        and dict(binary_inference) == recomputed_inference
+        and recomputed_inference["degenerate_all_success"] is False
+        and recomputed_inference["noninferiority_pass"] is True
+    )
+
+    recomputed_effects: dict[str, Any] | None = None
+    if task_order is not None and effect_records is not None:
+        try:
+            recomputed_effects = compute_benchmark_study_v2_effects(
+                effect_records, task_order=task_order,
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+    bound_effect_fields = (
+        "primary_contrast", "diagnostic_contrast", "task_ids_sha256",
+        "retained_unfavorable_runs", "token_effect", "diagnostic_token_effect",
+        "correction_effect", "diagnostic_correction_effect",
+        "retrieval_effect", "diagnostic_retrieval_effect",
+    )
+    effects_bound = bool(
+        recomputed_effects is not None
+        and all(
+            effects.get(field) == recomputed_effects.get(field)
+            for field in bound_effect_fields
+        )
+    )
+
+    def interval_gate(field: str, *, strict: bool) -> bool:
+        if recomputed_effects is None:
+            return False
+        interval = recomputed_effects.get(field)
+        if not isinstance(interval, Mapping) or interval.get("method") != "task_cluster_bootstrap_v2":
+            return False
+        lower = interval.get("q025")
+        if isinstance(lower, bool) or not isinstance(lower, (int, float)) or not math.isfinite(float(lower)):
+            return False
+        return bool(lower > 0 if strict else lower >= 0)
+
+    derived_gates = {
+        "quality": binary_ready,
+        "failure": binary_ready,
+        "correction": interval_gate("correction_effect", strict=False),
+        "retrieval": interval_gate("retrieval_effect", strict=False),
+        "shifted_cost": interval_gate("token_effect", strict=True),
+    }
+    effect_ready = bool(effects_bound and all(derived_gates.values()))
+    contamination_ready = provenance.get("contaminated") is False
+    mixed_versions_ready = provenance.get("mixed_versions") is False
+    missing_data_ready = provenance.get("missing_primary_data") is False
+    unmet = []
+    for name, value in (("power", power_ready), ("provider_provenance", provider_ready), ("binary_inference", binary_ready), ("effect_gates", effect_ready), ("contamination", contamination_ready), ("mixed_versions", mixed_versions_ready), ("missing_data", missing_data_ready)):
+        if not value:
+            unmet.append(name)
+    return {
+        "claim_ready": not unmet,
+        "descriptive_only": bool(unmet),
+        "unmet_gates": unmet,
+        "primary_contrast": list(BENCHMARK_STUDY_V2_PRIMARY_CONTRAST),
+        "diagnostic_contrast": list(BENCHMARK_STUDY_V2_DIAGNOSTIC_CONTRAST),
+        "derived_gates": derived_gates,
+        "backend_revision": provenance.get("backend_revision") if provider_ready else "unavailable",
+        "model_revision": provenance.get("model_revision") if provider_ready else "unavailable",
+    }
+
+
+BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION = "contextguard.bench.provider-export-manifest.v2"
+BENCHMARK_STUDY_V2_PROVIDER_EXPORT_SCHEMA_VERSION = "contextguard.bench.provider-export.v2"
+BENCHMARK_STUDY_V2_PRIVATE_REPORT_SCHEMA_VERSION = "contextguard.bench.provider-export-report.v2"
+BENCHMARK_STUDY_V2_NAMESPACE = "contextguard.bench.v2"
+BENCHMARK_STUDY_V2_EVIDENCE_KEYS = frozenset({
+    "schema_version", "manifest_sha256", "run_id", "task_id", "repetition", "arm", "attempt",
+    "candidate_hash", "terminal_status", "success", "tokens", "correction", "retrieval", "source",
+    "backend_revision", "model_revision", "cli_version",
+})
+
+
+def _benchmark_study_v2_task_ids_from_corpus(corpus_bytes: bytes) -> list[str]:
+    try:
+        corpus = json.loads(corpus_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("v2 task corpus is invalid JSON") from exc
+    if not isinstance(corpus, list):
+        raise ValueError("v2 task corpus is not a list")
+    return _benchmark_study_v2_task_ids([
+        row.get("id") if isinstance(row, Mapping) else None for row in corpus
+    ])
+
+
+def _benchmark_study_v2_task_ids_sha256(task_ids: Sequence[str]) -> str:
+    return _study_domain_hash(
+        BENCHMARK_STUDY_V2_CORPUS_TASK_ORDER_DOMAIN,
+        _benchmark_study_v2_task_ids(task_ids),
+    )
+
+
+def benchmark_study_v2_checker_binding(checkers_dir: Path) -> dict[str, Any]:
+    """Hash an ordered relative filename/size/content-digest checker inventory."""
+    directory_fd = _ensure_directory_no_symlink(checkers_dir, create=False)
+    try:
+        names = sorted(
+            entry.name for entry in checkers_dir.iterdir()
+            if entry.name.endswith(".py") and entry.is_file() and not entry.is_symlink()
+        )
+    finally:
+        os.close(directory_fd)
+    if len(names) != 12:
+        raise ValueError("v2 checker directory must contain exactly 12 regular Python files")
+    files = []
+    for name in names:
+        raw = _read_bytes_no_follow(
+            checkers_dir / name, max_bytes=MAX_FIXTURE_FILE_BYTES,
+        )
+        files.append({
+            "filename": name,
+            "size": len(raw),
+            "sha256": _study_sha256_bytes(raw),
+        })
+    binding = {
+        "domain": BENCHMARK_STUDY_V2_CHECKER_BINDING_DOMAIN,
+        "files": files,
+        "sha256": _study_domain_hash(
+            BENCHMARK_STUDY_V2_CHECKER_BINDING_DOMAIN, files,
+        ),
+    }
+    validate_benchmark_study_v2_checker_binding(binding)
+    return binding
+
+
+def prepare_benchmark_study_v2_provider_export(
+    *, plan_path: Path, tasks_path: Path, checkers_dir: Path, candidate_hash: str,
+) -> dict[str, Any]:
+    """Build the private, immutable handoff for an operator-run provider study."""
+    if SHA256_HEX_PATTERN.fullmatch(candidate_hash) is None:
+        raise ValueError("v2 candidate hash is invalid")
+    plan = load_benchmark_study_v2_plan(plan_path)
+    corpus_bytes = _read_bytes_no_follow(tasks_path, max_bytes=MAX_FIXTURE_FILE_BYTES)
+    checker_binding = benchmark_study_v2_checker_binding(checkers_dir)
+    validate_benchmark_study_v2_bindings(
+        plan, corpus_bytes=corpus_bytes, checker_binding=checker_binding,
+    )
+    task_ids = _benchmark_study_v2_task_ids_from_corpus(corpus_bytes)
+    schedule = generate_benchmark_study_v2_schedule(
+        task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
+    )
+    slots = generate_benchmark_study_v2_slots(
+        task_ids, schedule, candidate_hash=candidate_hash,
+        namespace=BENCHMARK_STUDY_V2_NAMESPACE,
+    )
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION,
+        "plan": plan,
+        "plan_sha256": _study_sha256_bytes(_study_canonical_json_bytes(plan)),
+        "inputs": {
+            "candidate_hash": candidate_hash,
+            "checker_sha256": checker_binding["sha256"],
+            "corpus_sha256": _study_sha256_bytes(corpus_bytes),
+            "namespace": BENCHMARK_STUDY_V2_NAMESPACE,
+            "task_ids": task_ids,
+            "task_ids_sha256": _benchmark_study_v2_task_ids_sha256(task_ids),
+        },
+        "schedule": schedule,
+        "slots": slots,
+    }
+
+
+def load_benchmark_study_v2_provider_manifest(path: Path) -> dict[str, Any]:
+    raw = _measurement_read_private_file(path, maximum=1_000_000)
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("v2 provider manifest is invalid JSON") from exc
+    if not isinstance(manifest, dict) or raw != _study_canonical_json_bytes(manifest):
+        raise ValueError("v2 provider manifest must be canonical private JSON")
+    required = {"schema_version", "plan", "plan_sha256", "inputs", "schedule", "slots"}
+    if set(manifest) != required or manifest.get("schema_version") != BENCHMARK_STUDY_V2_PROVIDER_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("v2 provider manifest schema mismatch")
+    plan = manifest["plan"]
+    validate_benchmark_study_v2_plan(plan)
+    if manifest["plan_sha256"] != _study_sha256_bytes(_study_canonical_json_bytes(plan)):
+        raise ValueError("v2 provider manifest plan binding mismatch")
+    inputs = manifest["inputs"]
+    if not isinstance(inputs, Mapping) or set(inputs) != {
+        "candidate_hash", "checker_sha256", "corpus_sha256", "namespace", "task_ids",
+        "task_ids_sha256",
+    }:
+        raise ValueError("v2 provider manifest inputs schema mismatch")
+    task_ids = _benchmark_study_v2_task_ids(inputs["task_ids"])
+    if (
+        SHA256_HEX_PATTERN.fullmatch(inputs["candidate_hash"]) is None
+        or inputs["checker_sha256"] != plan["checker_sha256"]
+        or inputs["corpus_sha256"] != plan["corpus_sha256"]
+        or inputs["task_ids_sha256"] != plan["task_ids_sha256"]
+        or inputs["task_ids_sha256"]
+        != _benchmark_study_v2_task_ids_sha256(task_ids)
+        or inputs["namespace"] != BENCHMARK_STUDY_V2_NAMESPACE
+    ):
+        raise ValueError("v2 provider manifest task-order binding mismatch")
+    schedule = generate_benchmark_study_v2_schedule(
+        task_ids, repetitions=3, schedule_seed=plan["schedule_seed"],
+    )
+    slots = generate_benchmark_study_v2_slots(
+        task_ids, schedule, candidate_hash=inputs["candidate_hash"],
+        namespace=inputs["namespace"],
+    )
+    if manifest["schedule"] != schedule or manifest["slots"] != slots:
+        raise ValueError("v2 provider manifest schedule or slot binding mismatch")
+    return manifest
+
+
+def _benchmark_study_v2_load_provider_export(
+    path: Path, *, manifest: Mapping[str, Any], manifest_sha256: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    raw = _read_bytes_no_follow(path, max_bytes=1_000_000)
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError("v2 provider export must be non-empty newline-delimited JSON")
+    rows: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("v2 provider export row is invalid JSON") from exc
+        if not isinstance(row, dict) or line + b"\n" != _study_canonical_json_bytes(row):
+            raise ValueError("v2 provider export rows must be canonical JSON")
+        validate_benchmark_study_v2_evidence_metadata(row)
+        if set(row) != BENCHMARK_STUDY_V2_EVIDENCE_KEYS:
+            raise ValueError("v2 provider export row schema mismatch")
+        rows.append(row)
+    if len(rows) > 216:
+        raise ValueError("v2 provider export has too many rows")
+    slots_by_run_id = {slot["run_id"]: slot for slot in manifest["slots"]}
+    seen: set[str] = set()
+    revisions: dict[str, set[str]] = {key: set() for key in ("backend_revision", "model_revision", "cli_version")}
+    initial_success: dict[tuple[str, int, str], bool] = {}
+    for row in rows:
+        run_id = row["run_id"]
+        slot = slots_by_run_id.get(run_id)
+        if run_id in seen or slot is None:
+            raise ValueError("v2 provider export has duplicate or unknown slot")
+        seen.add(run_id)
+        if any(row[key] != slot[key] for key in ("task_id", "repetition", "arm", "attempt")):
+            raise ValueError("v2 provider export slot identity mismatch")
+        if row["schema_version"] != BENCHMARK_STUDY_V2_PROVIDER_EXPORT_SCHEMA_VERSION or row["manifest_sha256"] != manifest_sha256:
+            raise ValueError("v2 provider export manifest binding mismatch")
+        if row["candidate_hash"] != manifest["inputs"]["candidate_hash"] or row["source"] != "provider_export":
+            raise ValueError("v2 provider export provenance binding mismatch")
+        if not isinstance(row["success"], bool) or row["terminal_status"] != ("success" if row["success"] else "valid_task_failure_v1"):
+            raise ValueError("v2 provider export terminal outcome is invalid")
+        for field in ("tokens", "correction", "retrieval"):
+            value = row[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or value < 0:
+                raise ValueError("v2 provider export metric is invalid")
+        for field in revisions:
+            value = row[field]
+            if (
+                not isinstance(value, str)
+                or BENCHMARK_STUDY_V2_REVISION_RE.fullmatch(value) is None
+            ):
+                raise ValueError("v2 provider export revision is invalid")
+            revisions[field].add(value)
+        key = (row["task_id"], row["repetition"], row["arm"])
+        if row["attempt"] == 0:
+            initial_success[key] = row["success"]
+    expected_initial = {
+        (slot["task_id"], slot["repetition"], slot["arm"])
+        for slot in manifest["slots"] if slot["attempt"] == 0
+    }
+    if set(initial_success) != expected_initial:
+        raise ValueError("v2 provider export initial slot coverage is incomplete")
+    expected_run_ids = {
+        slot["run_id"] for slot in manifest["slots"]
+        if slot["attempt"] == 0
+        or not initial_success[(slot["task_id"], slot["repetition"], slot["arm"])]
+    }
+    if seen != expected_run_ids:
+        raise ValueError("v2 provider export retry coverage is incomplete or replaced")
+    if any(len(values) != 1 for values in revisions.values()):
+        raise ValueError("v2 provider export has mixed revisions")
+    provenance = {
+        "source": "provider_export", "complete_provider_export": True,
+        "backend_revision": next(iter(revisions["backend_revision"])),
+        "model_revision": next(iter(revisions["model_revision"])),
+        "cli_version": next(iter(revisions["cli_version"])),
+        "contaminated": False, "mixed_versions": False, "missing_primary_data": False,
+    }
+    return rows, provenance
+
+
+def analyze_benchmark_study_v2_provider_export(
+    *, manifest_path: Path, evidence_path: Path,
+) -> dict[str, Any]:
+    """Validate a complete provider export locally; never calls a provider or CLI."""
+    manifest = load_benchmark_study_v2_provider_manifest(manifest_path)
+    manifest_sha256 = _study_sha256_bytes(_study_canonical_json_bytes(manifest))
+    rows, provenance = _benchmark_study_v2_load_provider_export(
+        evidence_path, manifest=manifest, manifest_sha256=manifest_sha256,
+    )
+    task_ids = manifest["inputs"]["task_ids"]
+    terminal_by_unit: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["task_id"], row["repetition"], row["arm"])
+        if row["attempt"] == 1 or key not in terminal_by_unit:
+            terminal_by_unit[key] = row
+    binary_rows = [
+        {key: row[key] for key in ("task_id", "repetition", "arm", "success")}
+        for row in terminal_by_unit.values()
+        if row["arm"] in BENCHMARK_STUDY_V2_PRIMARY_CONTRAST
+    ]
+    inference = infer_benchmark_study_v2_binary(
+        binary_rows, task_order=task_ids,
+        ni_margin=float(manifest["plan"]["noninferiority_margin"]),
+    )
+    effects = compute_benchmark_study_v2_effects(rows, task_order=task_ids)
+    readiness = evaluate_benchmark_study_v2_claim_readiness(
+        plan=manifest["plan"], task_ids=task_ids, binary_inference=inference,
+        binary_rows=binary_rows, effects=effects, effect_records=rows, provenance=provenance,
+    )
+    return {
+        "schema_version": BENCHMARK_STUDY_V2_PRIVATE_REPORT_SCHEMA_VERSION,
+        "study_version": "v2", "manifest_sha256": manifest_sha256,
+        "record_count": len(rows), "binary_inference": inference,
+        "effects": effects, "claim_readiness": readiness, "provenance": provenance,
+    }
+
+
+def run_benchmark_study_v2_provider_export_action(args: argparse.Namespace) -> int:
+    if args.study_v2_action == "prepare":
+        manifest = prepare_benchmark_study_v2_provider_export(
+            plan_path=args.study_v2_plan, tasks_path=args.study_v2_tasks,
+            checkers_dir=args.study_v2_checkers_dir, candidate_hash=args.study_v2_candidate_hash,
+        )
+        _study_write_private(args.study_v2_manifest, manifest)
+        print(f"prepared v2 provider-export manifest: {args.study_v2_manifest}")
+        return 0
+    report = analyze_benchmark_study_v2_provider_export(
+        manifest_path=args.study_v2_manifest, evidence_path=args.study_v2_evidence_jsonl,
+    )
+    _study_write_private(args.study_v2_report, report)
+    print(f"analyzed v2 provider export: {args.study_v2_report}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tasks", required=True, type=Path, help="task fixture JSON")
-    parser.add_argument("--variants", required=True, type=Path, help="variant fixture JSON")
+    parser.add_argument("--tasks", default=None, type=Path, help="task fixture JSON")
+    parser.add_argument("--variants", default=None, type=Path, help="variant fixture JSON")
     parser.add_argument("--csv", default=None, type=Path,
                         help="results CSV path (header is added on first write)")
     parser.add_argument("--task-id", default=None, help="run only the named task id")
@@ -10503,9 +11454,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--measurement-study-output-root", default=None, type=Path,
                         help="private S002 measurement study artifact directory")
+    parser.add_argument(
+        "--study-v2-action", default=None, choices=("prepare", "analyze"),
+        help="prepare or locally analyze the additive v2 provider-export study; never invokes a provider",
+    )
+    parser.add_argument("--study-v2-plan", default=None, type=Path,
+                        help="canonical v2 study plan used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-tasks", default=None, type=Path,
+                        help="frozen v2 task corpus used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-checkers-dir", default=None, type=Path,
+                        help="frozen v2 checker directory used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-candidate-hash", default=None,
+                        help="exact candidate SHA-256 used only by --study-v2-action prepare")
+    parser.add_argument("--study-v2-manifest", default=None, type=Path,
+                        help="private v2 provider-export manifest")
+    parser.add_argument("--study-v2-evidence-jsonl", default=None, type=Path,
+                        help="canonical provider-export JSONL used only by --study-v2-action analyze")
+    parser.add_argument("--study-v2-report", default=None, type=Path,
+                        help="new private v2 analysis report used only by --study-v2-action analyze")
     args = parser.parse_args(argv)
 
     require_no_follow_file_ops_supported()
+    v2_values = (
+        args.study_v2_action, args.study_v2_plan, args.study_v2_tasks,
+        args.study_v2_checkers_dir, args.study_v2_candidate_hash,
+        args.study_v2_manifest, args.study_v2_evidence_jsonl, args.study_v2_report,
+    )
+    if any(value is not None for value in v2_values):
+        if args.study_v2_action is None:
+            parser.error("--study-v2-action is required when any --study-v2-* option is used")
+        conflicts = [
+            name for name, active in (
+                ("--tasks", args.tasks is not None), ("--variants", args.variants is not None),
+                ("--csv", args.csv is not None), ("--task-id", args.task_id is not None),
+                ("--variant", args.variant is not None), ("--dry-run", args.dry_run),
+                ("--resume", args.resume), ("--ledger-jsonl", args.ledger_jsonl is not None),
+                ("--report-json", args.report_json is not None),
+                ("--dashboard-md", args.dashboard_md is not None),
+                ("--evidence-jsonl", args.evidence_jsonl is not None),
+                ("--measurement-study-plan", args.measurement_study_plan is not None),
+                ("--measurement-study-action", args.measurement_study_action is not None),
+                ("--measurement-study-output-root", args.measurement_study_output_root is not None),
+            ) if active
+        ]
+        if conflicts:
+            parser.error(f"v2 provider-export mode conflicts with {', '.join(conflicts)}")
+        if args.study_v2_action == "prepare":
+            required = (
+                args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
+                args.study_v2_candidate_hash, args.study_v2_manifest,
+            )
+            forbidden = (args.study_v2_evidence_jsonl, args.study_v2_report)
+        else:
+            required = (
+                args.study_v2_manifest, args.study_v2_evidence_jsonl, args.study_v2_report,
+            )
+            forbidden = (
+                args.study_v2_plan, args.study_v2_tasks, args.study_v2_checkers_dir,
+                args.study_v2_candidate_hash,
+            )
+        if not all(value is not None for value in required) or any(value is not None for value in forbidden):
+            parser.error("v2 provider-export action has incomplete or conflicting arguments")
+        try:
+            return run_benchmark_study_v2_provider_export_action(args)
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"v2 provider-export study refused: {exc}", file=sys.stderr)
+            return 2
+    if args.tasks is None or args.variants is None:
+        parser.error("--tasks and --variants are required outside v2 provider-export mode")
     study_values = (
         args.measurement_study_plan,
         args.measurement_study_action,

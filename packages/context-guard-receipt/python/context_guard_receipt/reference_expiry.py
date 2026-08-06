@@ -45,6 +45,7 @@ _AUXILIARY_METADATA_NAME: Final = "metadata.json"
 _DIAGNOSTICS_NAME: Final = "diagnostics-v1"
 _TWIN_NAME: Final = "twin-v1"
 _REGISTRY_NAME: Final = "reference-expiry-v1"
+_IMPORT_TRANSACTIONS_NAME: Final = "import-transactions-v1"
 _KEY_NAME: Final = "key"
 _METADATA_NAME: Final = "metadata.json"
 _RECORDS_NAME: Final = "records"
@@ -432,6 +433,7 @@ class ReferenceExpiryRegistry:
 
     def __init__(self) -> None:
         self._closed = True
+        self._descriptor_boundary_retained = False
         self._close_requested = False
         self._active_operations = 0
         self._opener_pid = os.getpid()
@@ -778,12 +780,22 @@ class ReferenceExpiryRegistry:
         names = set(
             _call_filesystem(lambda: _filesystem._bounded_names(self._axis_fd, 5))
         )
-        if names != {_KEY_NAME, _METADATA_NAME, _RECORDS_NAME, _TEMP_NAME}:
+        required_names = {_KEY_NAME, _METADATA_NAME, _RECORDS_NAME, _TEMP_NAME}
+        if not required_names.issubset(names) or names - (
+            required_names | {_IMPORT_TRANSACTIONS_NAME}
+        ):
             _raise(
                 ReferenceExpiryErrorCode.RECOVERY_REQUIRED
                 if any(_METADATA_TEMP_PATTERN.fullmatch(name) for name in names)
                 else ReferenceExpiryErrorCode.REGISTRY_CORRUPT
             )
+        if _IMPORT_TRANSACTIONS_NAME in names:
+            import_fd = _call_filesystem(
+                lambda: _filesystem._open_directory_at(
+                    self._axis_fd, _IMPORT_TRANSACTIONS_NAME
+                )
+            )
+            os.close(import_fd)
         key = _call_filesystem(
             lambda: _filesystem._read_named_file(self._axis_fd, _KEY_NAME, 33)
         )
@@ -969,6 +981,23 @@ class ReferenceExpiryRegistry:
         return status.st_dev, status.st_ino
 
     def _revalidate_anchors(self) -> None:
+        if self._descriptor_boundary_retained:
+            retained = (
+                (self._state_fd, self._state_anchor),
+                (self._root_fd, self._root_anchor),
+                (self._top_lock_fd, self._top_lock_anchor),
+                (self._store_fd, self._store_anchor),
+                (self._auxiliary_fd, self._auxiliary_anchor),
+                (self._axis_fd, self._axis_anchor),
+                (self._records_fd, self._records_anchor),
+                (self._temp_fd, self._temp_anchor),
+            )
+            if any(
+                self._identity(descriptor) != anchor
+                for descriptor, anchor in retained
+            ):
+                _raise(ReferenceExpiryErrorCode.UNSAFE_STATE)
+            return
         opened: list[int] = []
         try:
             state_fd = _call_filesystem(
@@ -1035,10 +1064,25 @@ class ReferenceExpiryRegistry:
             if self._identity(axis_fd) != self._axis_anchor:
                 _raise(ReferenceExpiryErrorCode.UNSAFE_STATE)
             axis_names = set(
-                _call_filesystem(lambda: _filesystem._bounded_names(axis_fd, 4))
+                _call_filesystem(lambda: _filesystem._bounded_names(axis_fd, 5))
             )
-            if axis_names != {_KEY_NAME, _METADATA_NAME, _RECORDS_NAME, _TEMP_NAME}:
+            required_axis_names = {
+                _KEY_NAME,
+                _METADATA_NAME,
+                _RECORDS_NAME,
+                _TEMP_NAME,
+            }
+            if not required_axis_names.issubset(axis_names) or axis_names - (
+                required_axis_names | {_IMPORT_TRANSACTIONS_NAME}
+            ):
                 _raise(ReferenceExpiryErrorCode.RECOVERY_REQUIRED)
+            if _IMPORT_TRANSACTIONS_NAME in axis_names:
+                import_fd = _call_filesystem(
+                    lambda: _filesystem._open_directory_at(
+                        axis_fd, _IMPORT_TRANSACTIONS_NAME
+                    )
+                )
+                opened.append(import_fd)
             key = _call_filesystem(
                 lambda: _filesystem._read_named_file(axis_fd, _KEY_NAME, 33)
             )
@@ -1066,6 +1110,15 @@ class ReferenceExpiryRegistry:
                     os.close(descriptor)
                 except OSError:
                     pass
+
+    def _retain_descriptor_boundary(self) -> None:
+        """Stop reopening repository/state paths after one full validation."""
+
+        with self._thread_lock:
+            if self._closed or self._close_requested:
+                _raise(ReferenceExpiryErrorCode.INVALID_ARGUMENT)
+            self._revalidate_anchors()
+            self._descriptor_boundary_retained = True
 
     def _metadata_bytes(self, scan: _Scan) -> bytes:
         document = {
@@ -1215,6 +1268,19 @@ class ReferenceExpiryRegistry:
                 if store.namespace_id != self._store_namespace_id:
                     _raise(ReferenceExpiryErrorCode.STORE_NAMESPACE_MISMATCH)
                 stored = store._resolve_for_auxiliary_control(capability)
+                if stored.artifact_type is _filesystem.ArtifactType.COMMAND_CAPTURE_BYTES:
+                    try:
+                        from .merged_capture import valid_merged_artifact
+                    except (ImportError, ModuleNotFoundError):
+                        valid_merged_artifact = None
+                    if callable(valid_merged_artifact) and valid_merged_artifact(stored):
+                        snapshot = snapshot_repository(self._repository_root)
+                        if (
+                            snapshot["instance"]["identity_sha256"]
+                            != stored.root_identity_sha256
+                        ):
+                            _raise(ReferenceExpiryErrorCode.INVALID_ARGUMENT)
+                        return
                 if stored.artifact_type in {
                     _filesystem.ArtifactType.TOOL_SCHEMA_SET_BYTES,
                     _filesystem.ArtifactType.TOOL_SCHEMA_BYTES,
@@ -1293,6 +1359,94 @@ class ReferenceExpiryRegistry:
                 self._publish_record(reference_id, record, scan)
                 return self._result("register", record)
 
+    def ensure_registered(
+        self,
+        capability: str,
+        *,
+        expires_at_unix_ms: int,
+        observed_at_unix_ms: int,
+    ) -> dict[str, object]:
+        """Register once, accepting only an exact immutable-deadline retry."""
+
+        capability_raw = _capability_bytes(capability)
+        expires = _validate_time(expires_at_unix_ms)
+        observed = _validate_time(observed_at_unix_ms)
+        with self._operation():
+            self._validate_store_membership(capability)
+            return self._ensure_registered_record(
+                capability_raw, expires=expires, observed=observed
+            )
+
+    def _ensure_registered_prevalidated_merged_capture(
+        self,
+        capability: str,
+        *,
+        expires_at_unix_ms: int,
+        observed_at_unix_ms: int,
+        store: object,
+        expected_root_identity_sha256: str,
+        artifact_validator: object,
+    ) -> dict[str, object]:
+        """Register one retained-store merged artifact without pathname work."""
+
+        capability_raw = _capability_bytes(capability)
+        expires = _validate_time(expires_at_unix_ms)
+        observed = _validate_time(observed_at_unix_ms)
+        if (
+            type(expected_root_identity_sha256) is not str
+            or _HEX_256.fullmatch(expected_root_identity_sha256) is None
+            or not callable(artifact_validator)
+        ):
+            _raise(ReferenceExpiryErrorCode.INVALID_ARGUMENT)
+        with self._operation():
+            try:
+                if store.namespace_id != self._store_namespace_id:
+                    _raise(ReferenceExpiryErrorCode.STORE_NAMESPACE_MISMATCH)
+                stored = store._resolve_for_auxiliary_control(capability)
+            except _filesystem.StoreError as error:
+                if error.code is _filesystem.StoreErrorCode.CAPABILITY_REJECTED:
+                    _raise(ReferenceExpiryErrorCode.INVALID_ARGUMENT)
+                _translate_store_error(error)
+            if (
+                stored.artifact_type
+                is not _filesystem.ArtifactType.COMMAND_CAPTURE_BYTES
+                or stored.root_identity_sha256 != expected_root_identity_sha256
+                or not artifact_validator(stored)
+            ):
+                _raise(ReferenceExpiryErrorCode.INVALID_ARGUMENT)
+            return self._ensure_registered_record(
+                capability_raw, expires=expires, observed=observed
+            )
+
+    def _ensure_registered_record(
+        self, capability_raw: bytes, *, expires: int, observed: int
+    ) -> dict[str, object]:
+        with self._locked(exclusive=True):
+            scan = self._read_consistent()
+            reference_id = _selector(
+                self._key, self._store_namespace_id, capability_raw
+            )
+            current = scan.records.get(reference_id)
+            if current is not None:
+                if current["expires_at_unix_ms"] != expires:
+                    _raise(ReferenceExpiryErrorCode.REFERENCE_ALREADY_REGISTERED)
+                return self._result("ensure_registered", current)
+            if len(scan.records) >= self._limits.max_references:
+                _raise(ReferenceExpiryErrorCode.REFERENCE_COUNT_QUOTA_EXCEEDED)
+            record = {
+                "evidence_boundary": evidence_boundary(),
+                "expires_at_unix_ms": expires,
+                "generation": 1,
+                "integrity_hmac_sha256": "",
+                "reference_hmac_sha256": reference_id,
+                "registered_at_unix_ms": observed,
+                "schema_version": _RECORD_SCHEMA_VERSION,
+                "status": "expired" if observed >= expires else "active",
+                "updated_at_unix_ms": observed,
+            }
+            self._publish_record(reference_id, record, scan)
+            return self._result("ensure_registered", record)
+
     def revoke(
         self,
         capability: str,
@@ -1368,6 +1522,48 @@ class ReferenceExpiryRegistry:
                 )
                 self._publish_record(reference_id, record, scan)
             return False
+
+    def is_registered_and_accessible(
+        self, capability: str, *, observed_at_unix_ms: int
+    ) -> bool:
+        """Require positive registration in addition to normal expiry checks."""
+
+        capability_raw = _capability_bytes(capability)
+        observed = _validate_time(observed_at_unix_ms)
+        with self._operation(), self._locked(exclusive=True):
+            scan = self._read_consistent()
+            reference_id = _selector(
+                self._key, self._store_namespace_id, capability_raw
+            )
+            current = scan.records.get(reference_id)
+            if current is None or current["status"] != "active":
+                return False
+            previous_observed = int(current["updated_at_unix_ms"])
+            effective_observed = max(observed, previous_observed)
+            if observed < previous_observed or effective_observed >= current[
+                "expires_at_unix_ms"
+            ]:
+                record = dict(current)
+                record.update(
+                    {
+                        "generation": int(current["generation"]) + 1,
+                        "integrity_hmac_sha256": "",
+                        "status": "expired",
+                        "updated_at_unix_ms": effective_observed,
+                    }
+                )
+                self._publish_record(reference_id, record, scan)
+                return False
+            if effective_observed > current["updated_at_unix_ms"]:
+                record = dict(current)
+                record.update(
+                    {
+                        "integrity_hmac_sha256": "",
+                        "updated_at_unix_ms": effective_observed,
+                    }
+                )
+                self._publish_record(reference_id, record, scan)
+            return True
 
     def inspect(
         self, *, observed_at_unix_ms: int, limit: int = 256

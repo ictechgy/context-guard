@@ -221,6 +221,62 @@ npm exec @ictechgy/context-guard -- --version
 
 `--scope project`는 `AGENTS.md`, `.agents/skills/...`처럼 저장소 안 파일에 적용합니다. `--scope user`는 전체 사용자 환경에 적용하려는 경우에만 의도적으로 사용하세요. 실제 적용에는 `--yes`와 명시적인 `--agent`가 필요하며, 지원되는 쓰기는 되돌리기 기록을 남깁니다.
 
+### Claude Code용 선택적 Bash reference
+
+`bash_reference_v1` 경로는 정확한 프로젝트 로컬 npm 설치에서만 사용할 수
+있습니다. 루트 패키지는 `@ictechgy/context-guard-receipt@0.2.0`을 정확히
+고정합니다. global npm, `npx`, 소스 체크아웃, Homebrew, Claude marketplace
+plugin 배치에서는 기존 Bash trim 동작을 유지하고 setup이 reference 경로를
+사용할 수 없다고 알립니다.
+
+```bash
+npm install --save-exact @ictechgy/context-guard@0.5.0
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --plan
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --bash-reference-v1 --yes
+```
+
+기본 비활성인 이 `PreToolUse:Bash` 모드는 강하게 가림 처리된 긴 명령 출력을
+프로젝트의 비공개 Receipt 저장소에 두고 digest에는 짧은 조회 handle만
+넣습니다. Handle은 bearer와 비슷하고 Claude/provider에 보일 수 있으며 발급
+후 정확히 7일 뒤 만료됩니다. Bash 실행 전에 wrapper는 소유자 전용 익명 캡처
+descriptor와 검증된 Receipt broker 하나를 준비합니다. Broker는 코드 로드와
+repository/store/expiry/journal 경계 고정을 끝낸 뒤에만 준비 완료를 알립니다.
+따라서 8,192바이트 공개 임계값보다 작은 출력도 로컬 상태 축을 초기화할 수
+있지만, 이 경우 `ABORT`하고 handle은 내보내지 않습니다. Strong sanitizer,
+정확한 패키지 pin, 절대 Node runtime, broker 준비 또는 최종 등록을 사용할 수
+없으면 감싼 명령의 exit status를 바꾸지 않고 legacy trim으로 돌아갑니다.
+기존 `--artifact-receipt` 캡처와는 동시에 사용할 수 없습니다.
+
+Digest는 handle을 실행 가능한 프로젝트 로컬 조회 명령으로 표시합니다.
+
+```bash
+./node_modules/.bin/context-guard reference <cgr1p-handle>
+```
+
+Handle을 발급한 동일한 물리 프로젝트 root에서 실행하세요. 명령은 비공개
+sibling state 위치를 내부에서 계산하고, 정확한 sanitized UTF-8 출력 중 최대
+20,000바이트 한 페이지만 반환합니다. 남은 바이트가 있으면 diagnostic에 다음
+연속 조회용 `--offset`을 표시하므로 전체 보관 출력을 한 번에 transcript로 쏟지
+않습니다. 잘못되었거나 만료된 handle, 다른 root, stale source, 변경된 패키지,
+잘못된 응답은 payload를 전혀 반환하지 않습니다.
+
+패키지를 제거하기 전에 reference 경로를 먼저 끄세요.
+
+```bash
+./node_modules/.bin/context-guard setup --root . --agent claude --scope project --no-bash-reference-v1 --yes --no-diet-scan
+npm uninstall @ictechgy/context-guard
+```
+
+Receipt 상태는 저장소 밖의 비공개 sibling 디렉터리
+`.context-guard-receipt-state-<root-selector-sha256>`에 둡니다. Selector는
+정규화한 root 경로와 device/inode identity를 묶으므로 나란한 저장소끼리
+authority를 공유하지 않습니다. 비활성화와 패키지 제거는 나중의 정확한 재설치나
+별도 사용자 승인 artifact 정리를 위해 이 디렉터리를 보존합니다. 다만 `npm
+uninstall`은 검증된 package-local code와 `node_modules/.bin/context-guard`를
+제거하므로, 정확한 프로젝트 로컬 pair를 다시 설치하기 전에는 reference 조회를
+할 수 없습니다. 이 메커니즘은 큰 Bash 출력의 transcript 입력을 줄일 수 있지만
+고정된 provider token 또는 비용 절감을 보장하지 않습니다.
+
 ## Homebrew 배포 경로
 
 Homebrew는 공유 `ictechgy/tap` tap을 통해 macOS 배포 경로로 사용할 수 있습니다.

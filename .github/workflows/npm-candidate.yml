@@ -1,0 +1,183 @@
+name: Build immutable npm candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Exact 40-character commit SHA to build"
+        required: true
+        type: string
+      confirm_build:
+        description: "Confirm building and attesting this exact commit"
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: npm-candidate-${{ github.event.inputs.commit_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Refuse an unconfirmed or malformed candidate request
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.confirm_build }}" != "true" ]; then
+            echo "::error::candidate builds require confirm_build=true"
+            exit 1
+          fi
+          if [[ ! "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::commit_sha must be 40 lowercase hexadecimal characters"
+            exit 1
+          fi
+          test "$WORKFLOW_COMMIT" = "$CANDIDATE_COMMIT"
+
+      - name: Checkout the exact candidate commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.inputs.commit_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the checked-out commit
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          test -z "$(git status --short)"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Verify synchronized package sources
+        run: python3 scripts/sync_plugin_copies.py --check
+
+      - name: Verify root package release gates
+        timeout-minutes: 20
+        run: python3 scripts/prepublish_check.py
+
+      - name: Verify Receipt package release gates
+        timeout-minutes: 12
+        run: |
+          python3 packages/context-guard-receipt/dev/package_check.py
+          python3 packages/context-guard-receipt/dev/packaged_acceptance.py
+
+      - name: Refuse package-input drift after verification
+        run: test -z "$(git status --short)"
+
+      - name: Build each npm candidate exactly once
+        env:
+          CANDIDATE_COMMIT: ${{ github.event.inputs.commit_sha }}
+        run: >-
+          python3 scripts/build_npm_candidates.py
+          --output-dir "$RUNNER_TEMP/npm-candidates"
+          --commit-sha "$CANDIDATE_COMMIT"
+
+      - name: Resolve closed candidate filenames
+        id: candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          candidate_dir = Path(os.environ["RUNNER_TEMP"]) / "npm-candidates"
+          manifest = json.loads((candidate_dir / "candidate-manifest.json").read_text(encoding="ascii"))
+          packages = manifest.get("packages")
+          if not isinstance(packages, list) or len(packages) != 2:
+              raise SystemExit("candidate manifest does not contain exactly two packages")
+          expected = {
+              "@ictechgy/context-guard-receipt": "receipt",
+              "@ictechgy/context-guard": "root",
+          }
+          resolved = {}
+          for package in packages:
+              if not isinstance(package, dict) or package.get("name") not in expected:
+                  raise SystemExit("candidate manifest contains an unexpected package")
+              filename = package.get("filename")
+              version = package.get("version")
+              if not isinstance(filename, str) or Path(filename).name != filename:
+                  raise SystemExit("candidate filename is unsafe")
+              if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version) is None:
+                  raise SystemExit("candidate version is invalid")
+              label = expected[package["name"]]
+              resolved[f"{label}_path"] = str(candidate_dir / filename)
+              resolved[f"{label}_version"] = version
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as stream:
+              for key, value in sorted(resolved.items()):
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Exercise the exact paired candidates without repacking
+        timeout-minutes: 8
+        run: >-
+          python3 scripts/release_smoke.py
+          --timeout 30
+          --npm-root-tarball "${{ steps.candidates.outputs.root_path }}"
+          --npm-receipt-tarball "${{ steps.candidates.outputs.receipt_path }}"
+
+      - name: Attest the exact candidate manifest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ runner.temp }}/npm-candidates/candidate-manifest.json
+
+      - name: Attest the exact Receipt tarball
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.candidates.outputs.receipt_path }}
+
+      - name: Attest the exact root tarball
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ steps.candidates.outputs.root_path }}
+
+      - name: Upload immutable Receipt candidate asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: context-guard-receipt-${{ steps.candidates.outputs.receipt_version }}-${{ github.event.inputs.commit_sha }}
+          path: |
+            ${{ steps.candidates.outputs.receipt_path }}
+            ${{ runner.temp }}/npm-candidates/candidate-manifest.json
+            ${{ runner.temp }}/npm-candidates/candidate-sha256sums.txt
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload immutable root candidate asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: context-guard-${{ steps.candidates.outputs.root_version }}-${{ github.event.inputs.commit_sha }}
+          path: |
+            ${{ steps.candidates.outputs.root_path }}
+            ${{ runner.temp }}/npm-candidates/candidate-manifest.json
+            ${{ runner.temp }}/npm-candidates/candidate-sha256sums.txt
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

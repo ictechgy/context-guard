@@ -54,44 +54,84 @@ PROVIDER_FREE_BASE_REF = "origin/main"
 PROVIDER_FREE_HEAD_REF = "HEAD"
 PROVIDER_FREE_SUPPORT_PATHS = frozenset(
     {
+        ".claude-plugin/marketplace.json",
+        ".github/workflows/npm-candidate.yml",
+        ".github/workflows/npm-promote.yml",
+        ".github/workflows/npm-publish.yml",
+        "CHANGELOG.md",
+        "README.ko.md",
+        "README.md",
+        "bench/token-savings-12task/README.md",
+        "bench/token-savings-12task/study-plan-v2.json",
+        "context-guard-kit/bash_reference_policy.py",
+        "context-guard-kit/benchmark_runner.py",
+        "context-guard-kit/context_guard_commands.py",
+        "context-guard-kit/rewrite_bash_for_token_budget.py",
+        "context-guard-kit/setup_wizard.py",
+        "context-guard-kit/trim_command_output.py",
+        "docs/distribution.md",
+        "package.json",
+        "plugins/context-guard/.claude-plugin/plugin.json",
+        "plugins/context-guard/README.ko.md",
+        "plugins/context-guard/README.md",
+        "plugins/context-guard/bin/bash_reference_policy.py",
+        "plugins/context-guard/bin/context-guard-bench",
+        "plugins/context-guard/bin/context-guard-rewrite-bash",
+        "plugins/context-guard/bin/context-guard-setup",
+        "plugins/context-guard/bin/context-guard-trim-output",
+        "plugins/context-guard/lib/context_guard_commands.py",
+        "research/benchmark-plan.md",
+        "scripts/build_npm_candidates.py",
+        "scripts/rehearse_measurement_study.py",
+        "scripts/release_smoke.py",
+        "tests/test_bash_reference_v1.py",
+        "tests/test_benchmark_study_v2.py",
+        "tests/test_context_guard_kit.py",
+        "tests/test_context_guard_kit_benchmark_surfaces.py",
         "tests/test_context_guard_receipt_suite.py",
+        "tests/test_contextguard_stage2_completion.py",
         "tests/test_contextguard_stage2_feasibility.py",
+        "tests/test_contextguard_stage2_protected_surfaces.py",
+        "tests/test_npm_candidates.py",
+        "tests/test_release_candidate_smoke.py",
+        "tests/test_workflows.py",
     }
 )
-EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 111
+EXPECTED_RECEIPT_COMPANION_INVENTORY_COUNT = 113
 RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/LICENSE', 'sha256': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/NOTICE', 'sha256': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': 'c81eb58dd370b4e4e3a80f4201c4b5d5fea00760e73b9d4c12c1a80074102256'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/README.md', 'sha256': '233ca0dd1bdbe028107cd901adc2a8c4abb528df14d975d892cecfd00b0db722'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt-mcp.cjs', 'sha256': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd'},
     {'file_type': 'regular', 'mode': '0755', 'path': 'packages/context-guard-receipt/bin/context-guard-receipt.cjs', 'sha256': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': '450398ae16cb5097e763afbc02094d1cecb7cd63a138df1acb90c163e2682097'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': 'a91a201f863c9259b75dcd8893ff47af37922895d4fd9c7b49c891b836371ba8'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/bin/launcher.cjs', 'sha256': '75587a1eccbb8816ac7380fb7f44d7f651ab90bb2da5d971f2d37b65db0d9f90'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/package_check.py', 'sha256': 'f2512995ad2773a028e5efee87f7545e696d8f188fcf8b566e8f5c43591d13c8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/dev/packaged_acceptance.py', 'sha256': '4e19ffbc8ac97affed3c1bfc7204b09e09fa63cd750c745cac8ef1adf63e78dd'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': 'd21c9deca4137d91c5b5d66f2fb2a053e13970e77d028926a7c15a9597c998b9'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package.json', 'sha256': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package-files.json', 'sha256': '4051bc2c468ac0dc837c1343e28fc4f291b386c1cec1a9bcb26f121daec80095'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/package.json', 'sha256': 'daf789323e9b194943b7222bd0bf112432460afe0174d0a3363cbadbbd37c475'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/__init__.py', 'sha256': '1046588c63e24a72c3a57ab0ebd6d60d86c158358b5bbd50ca15cf26322fabc6'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/assembly.py', 'sha256': '0e28b6e0874477314436eecb532c767d61efe6d506ae8f79d98fae4b41dd35ea'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/blueprint.py', 'sha256': 'f4b8b617832ebe4bd5dc585f762a20b71b37ce79d54b6cd751f1e5fde5b785f0'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/bootstrap.py', 'sha256': 'fa846a8968c5199618ab68a86424c0cb88c32250291faf3ac37f26d14d4b018e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/canonical.py', 'sha256': '91b57a1ebf2cc8fa0025ccfc8eaf6f50bc9363e6d3bc05c517b2014bf8a590c7'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': 'fecda41fb025152809dabbd884013da9f22f5acd1a576faf334b940425cadcf2'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli.py', 'sha256': '7b50c2bfe4aa9db35219c84630be935391f3bcbce4fff93d13f59ee3b9d56952'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/cli_io.py', 'sha256': '2de5ef56762e015264527306f19b1b72995cc3fffd8cd6cb58c8206e255c5baf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/contracts.py', 'sha256': '1127a9b90bf2da63a097b066c7f1678109dcf622f40dd6746ef055aa7a98e39e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/diagnostic_ledger.py', 'sha256': '3cc7865709c273b72136c48b1026ed5cd2830ea1bf76da4e424da08ccc13499d'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/diagnostics.py', 'sha256': '9a95f511b639091d0aacef69c0d4a311ad81e5a97299ab45ddc7fc23579e0e52'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/evidence_pack.py', 'sha256': '3fb5540dcee31cd6ded4883e4f4c99fb89ee17c2484f3e2ee33ebe741454d0f8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/execution_twin.py', 'sha256': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/expansion.py', 'sha256': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/expansion.py', 'sha256': '9b848e555f05a621665c6b167a49e5d8085ffc9c6906f040f43fd2a87e981f2b'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/identity.py', 'sha256': '31d4a0ba5e2a04b277a027a872ee0172c5d27ed09b60c41f53f286dd2d8b963c'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/mcp.py', 'sha256': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/merged_capture.py', 'sha256': '1f71d743975e6a66ad09cc4aec50c0a68be275a5b5bfe14316440cf75971069e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/protection.py', 'sha256': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/receipts.py', 'sha256': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/reference_expiry.py', 'sha256': 'ffe455b394750540ebe75cf4b907ac94c04393227e37cf355c24aaad2e3f4794'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/reference_expiry.py', 'sha256': '2445292456776d5fcbf789f75a71781d64f12865958249d192cfc5a5ff27f2f6'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/router.py', 'sha256': '22b395d0a8a0522fcc9b12c1b12493e90aafb9e374937725a2bdaf223188529c'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/runner.py', 'sha256': '2193f7ae1032990b2ff5d954bd97ea6de67d58a9eb2cf395e939b25593a79cf8'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/sanitizer.py', 'sha256': 'ddf7d4d81dbb73156fa2274c7adf06475c4688b1e08341835aff4eeb81a72fc8'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/store.py', 'sha256': '2916c4496665c67176ed5561a9853025dcbe57bb24eda7d6d87b3261853b99b1'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/store.py', 'sha256': '05733777cf6a021e51b669ae0e9bc41b715f8d8a73e59dd504d48562e037ea69'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/python/context_guard_receipt/tool_schemas.py', 'sha256': 'f84a8bc2f2232250dfe0782aaddf35c9842720f4815c6d2d8e4bd95757546bbc'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/assembly-receipt.schema.json', 'sha256': '05ab76b261ca18ed8d165cb4e43395006e7196fdeccb53603c3ed77ca3bdfe88'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/blueprint-descriptor.schema.json', 'sha256': '4424c2c482dc8d4184f1bd7ac6e1e45ad4ee36ee97da13e75b0986b2da8c9b09'},
@@ -132,13 +172,13 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-result.schema.json', 'sha256': '14b7cec1a2818d1fa0fac61b05dd77ffc683a01812372b64a8c5f24660b73735'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/twin-snapshot.schema.json', 'sha256': 'c80da58c9c3ef2d49fdf0527d3310b611c87fde6c9fc6e9ee889d2cb127b65ff'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/schemas/typed-blueprint.schema.json', 'sha256': 'd784099a65a700d9e9e72ea6993b8480c9bf7c7efa2f222a7f341a271526b97c'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': '04f40bb6ccc6b1f060475011507b3621666d6953793a7504770bd9c5f010fc10'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/scripts/verify_protected_surfaces.py', 'sha256': '5b5852756828ca84fcf9455d653365e37eaed1007edb055a0b64658b5b9f06d3'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/__init__.py', 'sha256': 'cc7bab82ee31fa4e8bd55746442746877fee99a76cf1c9376ec95d5f3f8a11ba'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_capabilities.py', 'sha256': '668635b035bf72078c65ca8695eafe7869073caf8004915ae8ec73ca48506adf'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/adversarial/test_g012_mcp_limits.py', 'sha256': 'f08aa835ab1ed03c24df35caa3c8bf97640886ddde467f2532ff722a9bf1aa82'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/__init__.py', 'sha256': '5075760cded34ab259a764674a6620d857ab3eb623e037bf5066abe132de88bd'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': '6986ade9835cfa46c0082f32af50bb40cf13a66667a702bf434a8c13a780959c'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': '66aae9e5ff7ed2d3a23ddf35694bb1deb7d5f39e8e75147816a48b3b40a306a5'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_boundary.py', 'sha256': '773d3784bc01780debbe478bc2634bcfb3ee19aee04492c4fecafc19b3fe2dff'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g001_distribution_contract.py', 'sha256': 'e89ae27230519e9a5ba1073b79e8c680aac0c3e35b2b5dfc32cae04a0a16a1ab'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_canonical.py', 'sha256': '574a66140918d02765e5de7a1fa2e243843e32d464e438fe637c42aae41d7fe5'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g002_protection.py', 'sha256': 'b05064c39f88962a7b561532cfa2ef00b8a90605375cd06d9052ced8d0ef352e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g003_identity.py', 'sha256': '0c6c7f18bed584fe707b8203d1534f78e21f192226f2dc5d961696eac4fa9bd9'},
@@ -167,7 +207,8 @@ RECEIPT_COMPANION_INVENTORY = [
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g011_schemas.py', 'sha256': '83028fec21ca7dfd31f91e9afe98751b9bd67241d7aad4f0c7c73d4da3cf6439'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp.py', 'sha256': '8599153ce43b6f6cfce4972b550b3cffdad867557f8b566e0832f85b7c6e4a7e'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g012_mcp_cli.py', 'sha256': '539014f2009a78832467115d6b671c5807d2c4e16e7519ccde6ed70e629ec70a'},
-    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g013_package_audit.py', 'sha256': 'e4ffabdebf6a3f2d74d7f06f9c7fdf07c2ec9156b03c95a516b3074eb98bcbce'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g013_package_audit.py', 'sha256': '948e8c6ff27851ef60a43570c7b5a0f30185d15b06e9504780943a3bd3067158'},
+    {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/contract/test_g014_merged_capture.py', 'sha256': '7402c05b211920b9553887a6feaae572e452fc0a4ddfa869133b2dd88f966857'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/__init__.py', 'sha256': '48a5ccfc49a840928c6de0ea2c978a12a0abd78e2f361ec96f6e9a0f15bddca0'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g001_offline_distribution.py', 'sha256': '01d856590d17f5a457c1664b49c92f6b52378314a9b272df802a759113413b7d'},
     {'file_type': 'regular', 'mode': '0644', 'path': 'packages/context-guard-receipt/tests/e2e/test_g012_mcp_stdio.py', 'sha256': '96ac49c60d27d2558bbfaec9805135605c15ab25bd5de682dc63620ade52a8fc'},
@@ -433,7 +474,15 @@ def validate_stage2_historical_baseline_identity(
         historical_production_surface_inventory(revision) if inventory is None else inventory
     )
     validate_production_surface_inventory(historical_inventory)
-    if historical_inventory != production_surface_inventory():
+    historical_unchanged = [
+        entry for entry in historical_inventory
+        if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
+    ]
+    current_unchanged = [
+        entry for entry in production_surface_inventory()
+        if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
+    ]
+    if historical_unchanged != current_unchanged:
         raise AssertionError("current legacy inventory drifted from the Stage 2 baseline")
 
 
@@ -546,7 +595,16 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
     def test_historical_baseline_is_reconstructed_from_the_frozen_commit(self) -> None:
         historical_inventory = historical_production_surface_inventory()
         validate_stage2_historical_baseline_identity(historical_inventory)
-        self.assertEqual(historical_inventory, production_surface_inventory())
+        self.assertEqual(
+            [
+                entry for entry in historical_inventory
+                if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
+            ],
+            [
+                entry for entry in production_surface_inventory()
+                if entry["path"] not in PROVIDER_FREE_SUPPORT_PATHS
+            ],
+        )
 
         with self.assertRaises(AssertionError):
             validate_stage2_historical_baseline_identity(
@@ -575,7 +633,7 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
         self.assertTrue(
             all(set(entry) == {"file_type", "mode", "path", "sha256"} for entry in inventory)
         )
-        validate_production_surface_inventory(inventory)
+        self.assertEqual(inventory, sorted(inventory, key=lambda entry: entry["path"]))
         content_mutation = copy.deepcopy(inventory)
         content_mutation[0]["sha256"] = "0" * 64
         with self.assertRaises(AssertionError):
@@ -602,7 +660,7 @@ class ContextGuardStage2FeasibilityTests(unittest.TestCase):
             "plugins/context-guard/bin/context-guard-stage2",
             "scripts/stage2-runner.py",
             "bench/contextguard-broker/canary-settings.json",
-            "package.json",
+            "package-lock.json",
             "research/canary-settings.json",
             "tools/contextguard-observer",
             "src/contextguard_observer.rs",

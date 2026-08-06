@@ -5874,20 +5874,24 @@ class CrossAgentAdapterTests(unittest.TestCase):
                     self.assertIn("--yes and explicit --agent", " ".join(data["warnings"]))
                     self.assertIn("Read(./custom/**)", json.loads(settings.read_text(encoding="utf-8"))["permissions"]["deny"])
 
-    def test_npm_publish_workflow_dispatch_verifies_release_tag_and_sha(self):
+    def test_npm_publish_workflow_dispatch_verifies_immutable_candidate_identity(self):
         workflow = (ROOT / ".github" / "workflows" / "npm-publish.yml").read_text(encoding="utf-8")
-        self.assertIn("release_sha:", workflow)
-        self.assertIn("Expected 40-character commit SHA", workflow)
-        self.assertIn("EXPECTED_RELEASE_SHA", workflow)
-        self.assertIn("workflow_dispatch requires release_sha to be a 40-character commit SHA", workflow)
-        self.assertIn("git", workflow)
-        self.assertIn("ls-remote", workflow)
-        self.assertIn("refs/tags/{tag_name}^{{}}", workflow)
-        self.assertIn("checked-out HEAD", workflow)
-        self.assertIn("origin tag", workflow)
-        self.assertIn("https://api.github.com/repos/{repo}/releases/tags/{url_tag}", workflow)
-        self.assertIn("published GitHub release not found", workflow)
-        self.assertLess(workflow.index("Verify publish target and OIDC toolchain"), workflow.index("Publish npm package with trusted publishing"))
+        for required in (
+            "candidate_run_id:",
+            "candidate_artifact_id:",
+            "candidate_commit_sha:",
+            "expected_sha256:",
+            "candidate source identity mismatch",
+            "candidate package binding mismatch",
+            "gh attestation verify",
+        ):
+            self.assertIn(required, workflow)
+        self.assertNotIn("actions/checkout", workflow)
+        self.assertNotRegex(workflow, r"(?m)^\s*(?:run:\s*)?npm pack\b")
+        self.assertLess(
+            workflow.index("Verify Receipt candidate manifest and digest"),
+            workflow.index("Publish exact Receipt candidate with trusted publishing"),
+        )
 
     def test_user_scope_existing_claude_settings_rejects_no_backup(self):
         for script in SETUP_SCRIPTS:
