@@ -132,7 +132,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'schemas/capability-record.schema.json': '86df8398c5199a0d4e3d58ee7d8e2a4171e0103a5ea05644f00f1c343889c114',
   'schemas/command-capture-receipt.schema.json': '7bcdaeb52fdfa4cbb3dc57b8d4b3b1cfa318bb7d8af11574ae0e23126ffa954b',
   'schemas/diagnostic-ledger-entry.schema.json': '8ea3ee4db48fb6d54b1bb613253f3313a38d33516ff328887feb6dfcc5c6c2ef',
-  'schemas/diagnostic-ledger-inspection.schema.json': 'c6c3f2edc9ccdbaacc4b6b4076d8eb13c1e86f9753336b28e78f2b282bd320f3',
+  'schemas/diagnostic-ledger-inspection.schema.json': '2258c63aba7ada14949fe7db2e757d42551009d026d3152e3d95191c934b110f',
   'schemas/diagnostic-ledger-metadata.schema.json': '2ab1092790c97e0aa9439dd6f1f59004368a9e71e9b7dc1d849a2d2f59369e2a',
   'schemas/diagnostics-report.schema.json': 'b779475abbfdd76c9b6fca8f39b9b0c4e058f8e65a0ff9d7f583a1b8b01db38c',
   'schemas/diagnostics-request.schema.json': '7779d364170db90b8e7b71a342156d0b5bb0fe8ff8b423c21df29005d7efa2b4',
