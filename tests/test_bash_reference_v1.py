@@ -250,8 +250,8 @@ class BashReferenceV1Tests(unittest.TestCase):
             self.assertIn("context-guard-rewrite-bash", settings)
             self.assertNotIn("--bash-reference-v1", settings)
 
-    def test_setup_disable_removes_reference_flag_but_keeps_bash_hook(self):
-        """The supported paired npm topology can enable and later remove only the flag."""
+    def test_setup_package_json_only_receipt_never_enables_reference_mode(self):
+        """Missing pinned Receipt files must retain the ordinary Bash hook."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             package = root / "node_modules" / "@ictechgy" / "context-guard"
@@ -259,6 +259,10 @@ class BashReferenceV1Tests(unittest.TestCase):
             setup.parent.mkdir(parents=True)
             shutil.copy2(SETUP, setup)
             setup.chmod(0o700)
+            shutil.copy2(
+                ROOT / "context-guard-kit" / "bash_reference_policy.py",
+                setup.parent / "bash_reference_policy.py",
+            )
             rewrite = setup.parent / "context-guard-rewrite-bash"
             rewrite.write_text("#!/bin/sh\n", encoding="utf-8")
             rewrite.chmod(0o700)
@@ -272,6 +276,60 @@ class BashReferenceV1Tests(unittest.TestCase):
                 "name": "@ictechgy/context-guard-receipt",
                 "version": "0.2.0",
             }), encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    sys.executable, str(setup), "--root", str(root), "--yes",
+                    "--no-backup", "--no-diet-scan", "--no-denies", "--no-statusline",
+                    "--no-read-guard", "--no-model-defaults", "--no-failed-attempt-nudge",
+                    "--bash-reference-v1", "--json",
+                ],
+                text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            settings = (root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            self.assertFalse(data["choices"]["bash_reference_v1"])
+            self.assertIn("context-guard-rewrite-bash", settings)
+            self.assertNotIn("--bash-reference-v1", settings)
+            self.assertTrue(any(
+                "reason=receipt_npm_package_integrity_invalid" in item
+                and "recovery=" in item
+                for item in data["warnings"]
+            ))
+
+    def test_setup_verified_installed_layout_enables_then_disable_removes_reference_flag(self):
+        """A pinned installed pair enables, then disable keeps the ordinary Bash hook."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            package = root / "node_modules" / "@ictechgy" / "context-guard"
+            setup = package / "plugins" / "context-guard" / "bin" / "context-guard-setup"
+            setup.parent.mkdir(parents=True)
+            shutil.copy2(SETUP, setup)
+            setup.chmod(0o700)
+            shutil.copy2(
+                ROOT / "context-guard-kit" / "bash_reference_policy.py",
+                setup.parent / "bash_reference_policy.py",
+            )
+            rewrite = setup.parent / "context-guard-rewrite-bash"
+            rewrite.write_text("#!/bin/sh\n", encoding="utf-8")
+            rewrite.chmod(0o700)
+            (package / "package.json").write_text(json.dumps({
+                "name": "@ictechgy/context-guard",
+                "version": "0.5.0",
+                "dependencies": {"@ictechgy/context-guard-receipt": "0.2.0"},
+            }), encoding="utf-8")
+            receipt = root / "node_modules" / "@ictechgy" / "context-guard-receipt"
+            (receipt / "bin").mkdir(parents=True)
+            receipt_source = ROOT / "packages" / "context-guard-receipt"
+            for relative in (
+                "package.json",
+                "package-files.json",
+                "bin/context-guard-receipt.cjs",
+                "bin/launcher.cjs",
+            ):
+                shutil.copy2(receipt_source / relative, receipt / relative)
             common = [
                 sys.executable, str(setup), "--root", str(root), "--yes",
                 "--no-backup", "--no-diet-scan", "--no-denies", "--no-statusline",
@@ -282,7 +340,10 @@ class BashReferenceV1Tests(unittest.TestCase):
                 text=True, capture_output=True, check=False,
             )
             self.assertEqual(enable.returncode, 0, enable.stderr)
+            enable_data = json.loads(enable.stdout)
             enabled_settings = (root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            self.assertTrue(enable_data["choices"]["bash_reference_v1"])
+            self.assertTrue(any("enabled bash_reference_v1" in item for item in enable_data["actions"]))
             self.assertIn("--bash-reference-v1", enabled_settings)
             disable = subprocess.run(
                 [*common, "--no-bash-reference-v1", "--json"],

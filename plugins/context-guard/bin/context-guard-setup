@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,12 +68,14 @@ HELPER_FAILED_NUDGE = "context-guard-failed-nudge"
 HELPER_DIET = "context-guard-diet"
 ROOT_PACKAGE_NAME = "@ictechgy/context-guard"
 RECEIPT_PACKAGE_NAME = "@ictechgy/context-guard-receipt"
-_EXACT_NPM_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _BASH_REFERENCE_UNAVAILABLE = (
-    "bash_reference_v1 reference unavailable: requires an exact paired npm install "
-    "of @ictechgy/context-guard and @ictechgy/context-guard-receipt; "
-    "source/plugin-only setup keeps legacy Bash trimming"
+    "bash_reference_v1 reference unavailable"
 )
+_BASH_REFERENCE_RECOVERY = (
+    "repair or reinstall the exact paired npm packages in the target project, "
+    "ensure a trusted system Node interpreter is available, then rerun setup"
+)
+BASH_REFERENCE_POLICY_MAX_BYTES = 512 * 1024
 HELPER_EQUIVALENT_BASENAMES = {
     "context-guard-rewrite-bash": {
         "context-guard-rewrite-bash",
@@ -1998,64 +2001,91 @@ def bash_hook_setting(*, allow_path_fallback: bool = False, bash_reference_v1: b
     }
 
 
-def bash_reference_npm_install_available() -> bool:
-    """Recognize only the npm topology accepted by the runtime policy."""
-    script_path = Path(__file__).absolute()
-    suffix = ("plugins", "context-guard", "bin", "context-guard-setup")
-    if tuple(script_path.parts[-4:]) != suffix:
-        return False
-    package_root = script_path.parents[3]
-    if (
-        package_root.name != "context-guard"
-        or package_root.parent.name != "@ictechgy"
-        or package_root.parent.parent.name != "node_modules"
-    ):
-        return False
+def load_bash_reference_policy() -> object | None:
+    """Load only the package-local runtime policy, never an import from PATH."""
+    path = Path(__file__).resolve().parent / "bash_reference_policy.py"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        return None
+    flags |= os.O_NOFOLLOW
+    fd = -1
     try:
-        script_status = script_path.lstat()
-        if not stat.S_ISREG(script_status.st_mode) or script_status.st_nlink != 1:
-            return False
-        context_guard_package = json.loads(
-            _read_text_no_follow(package_root / "package.json")
-        )
-        dependencies = context_guard_package.get("dependencies")
-        requested = dependencies.get(RECEIPT_PACKAGE_NAME) if isinstance(dependencies, dict) else None
+        fd = os.open(path, flags)
+        metadata = os.fstat(fd)
         if (
-            context_guard_package.get("name") != ROOT_PACKAGE_NAME
-            or not isinstance(requested, str)
-            or _EXACT_NPM_VERSION_RE.fullmatch(requested) is None
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > BASH_REFERENCE_POLICY_MAX_BYTES
         ):
-            return False
-        nested = package_root / "node_modules" / "@ictechgy" / "context-guard-receipt"
-        hoisted = package_root.parents[2] / "node_modules" / "@ictechgy" / "context-guard-receipt"
-        try:
-            (nested / "package.json").lstat()
-        except FileNotFoundError:
-            receipt_root = hoisted
-        else:
-            receipt_root = nested
-        receipt_package = json.loads(
-            _read_text_no_follow(receipt_root / "package.json")
-        )
-        return bool(
-            isinstance(receipt_package, dict)
-            and receipt_package.get("name") == RECEIPT_PACKAGE_NAME
-            and receipt_package.get("version") == requested
-        )
-    except (IndexError, OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
-        return False
+            return None
+        source = os.read(fd, BASH_REFERENCE_POLICY_MAX_BYTES + 1)
+        if len(source) > BASH_REFERENCE_POLICY_MAX_BYTES:
+            return None
+        source_text = source.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    module_name = f"_context_guard_setup_reference_policy_{os.getpid()}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    sys.modules[module_name] = module
+    try:
+        exec(compile(source_text, str(path), "exec"), module.__dict__)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        return None
+    return module
+
+
+def bash_reference_adapter_readiness(root: Path) -> tuple[bool, str]:
+    """Return the runtime adapter verdict for the effective setup project."""
+    policy = load_bash_reference_policy()
+    discover = getattr(policy, "discover_adapter", None)
+    if policy is None:
+        return False, "receipt_policy_unavailable"
+    if not callable(discover):
+        return False, "receipt_policy_invalid"
+    try:
+        discovered = discover(root)
+    except Exception:
+        return False, "receipt_policy_load_failed"
+    if not isinstance(discovered, tuple) or len(discovered) != 2:
+        return False, "receipt_policy_invalid"
+    adapter, reason = discovered
+    if adapter is not None and reason == "receipt_adapter_available":
+        return True, reason
+    if not isinstance(reason, str) or re.fullmatch(r"[a-z0-9_]{1,96}", reason) is None:
+        return False, "receipt_policy_invalid"
+    return False, reason
+
+
+def bash_reference_unavailable_message(reason: str) -> str:
+    return (
+        f"{_BASH_REFERENCE_UNAVAILABLE}: reason={reason}; requires an exact paired npm install "
+        f"of {ROOT_PACKAGE_NAME} and {RECEIPT_PACKAGE_NAME}; "
+        f"recovery={_BASH_REFERENCE_RECOVERY}; ordinary Bash trimming remains enabled"
+    )
 
 
 def disable_unavailable_bash_reference(
     choices: Choices,
     warnings: list[str],
+    *,
+    root: Path,
 ) -> list[str]:
     """Fail closed without removing the ordinary Bash trimming choice."""
-    if not choices.bash_reference_v1 or bash_reference_npm_install_available():
+    if not choices.bash_reference_v1:
+        return []
+    available, reason = bash_reference_adapter_readiness(root)
+    if available:
         return []
     choices.bash_reference_v1 = False
-    warnings.append(_BASH_REFERENCE_UNAVAILABLE)
-    return [_BASH_REFERENCE_UNAVAILABLE]
+    warning = bash_reference_unavailable_message(reason)
+    warnings.append(warning)
+    return [warning]
 
 
 def read_hook_setting(*, allow_path_fallback: bool = False) -> dict[str, Any]:
@@ -2513,14 +2543,18 @@ def run_doctor(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     choices = choices_from_args(args)
-    reference_actions = disable_unavailable_bash_reference(choices, warnings)
+    reference_actions = disable_unavailable_bash_reference(
+        choices,
+        warnings,
+        root=root,
+    )
     if reference_actions:
         checks.append(doctor_check(
             "bash-reference-distribution",
             "warning",
             "medium",
-            _BASH_REFERENCE_UNAVAILABLE,
-            next_action="Install the exact paired npm packages before enabling --bash-reference-v1.",
+            reference_actions[0],
+            next_action=_BASH_REFERENCE_RECOVERY + ".",
         ))
     actions = reference_actions + (
         apply_choices(
@@ -3429,7 +3463,11 @@ def run(args: argparse.Namespace) -> SetupResult:
     if interactive:
         choices = interactive_choices(choices)
 
-    reference_actions = disable_unavailable_bash_reference(choices, warnings)
+    reference_actions = disable_unavailable_bash_reference(
+        choices,
+        warnings,
+        root=root,
+    )
     actions = reference_actions + (
         apply_choices(
             settings,
