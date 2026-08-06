@@ -644,7 +644,7 @@ class G001DistributionContractTests(unittest.TestCase):
             temporary_root = Path(temporary_directory)
             fallback_bin = temporary_root / "fallback-bin"
             fallback_bin.mkdir()
-            (fallback_bin / "python3").symlink_to(Path(sys.executable).resolve())
+            (fallback_bin / "python3").symlink_to(Path("/usr/bin/true"))
             fallback_environment = launcher_environment(PATH=str(fallback_bin))
             fallback_environment.pop(PYTHON_ENV)
             fallback = run_node(
@@ -653,7 +653,14 @@ class G001DistributionContractTests(unittest.TestCase):
                 "boundary",
                 environment=fallback_environment,
             )
-            self.assertEqual(fallback.returncode, 0, fallback.stderr)
+            assert_json_error(
+                self,
+                fallback,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
 
             unavailable_environment = launcher_environment(PATH=str(temporary_root / "empty"))
             unavailable_environment.pop(PYTHON_ENV)
@@ -711,6 +718,44 @@ class G001DistributionContractTests(unittest.TestCase):
                 operation="launcher",
                 status="error",
                 reason="protocol_incompatible",
+            )
+
+            writable_native = temporary_root / "caller-selected-writable-native"
+            shutil.copyfile("/usr/bin/true", writable_native)
+            writable_native.chmod(0o777)
+            explicit_writable = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=launcher_environment(**{PYTHON_ENV: str(writable_native)}),
+            )
+            assert_json_error(
+                self,
+                explicit_writable,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
+
+            writable_bin = temporary_root / "writable-bin"
+            writable_bin.mkdir()
+            (writable_bin / "python3").symlink_to(writable_native)
+            writable_path_environment = launcher_environment(PATH=str(writable_bin))
+            writable_path_environment.pop(PYTHON_ENV)
+            automatic_writable = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=writable_path_environment,
+            )
+            assert_json_error(
+                self,
+                automatic_writable,
+                code=69,
+                operation="launcher",
+                status="error",
+                reason="runtime_unavailable",
             )
 
             relative_bin = temporary_root / "relative-bin"
@@ -773,6 +818,46 @@ class G001DistributionContractTests(unittest.TestCase):
                 reason="runtime_unavailable",
             )
             self.assertFalse(spoof_sentinel.exists())
+
+    def test_explicit_runtime_trust_does_not_weaken_automatic_discovery(self) -> None:
+        """Break caught: managed tool-cache metadata is rejected or PATH trust is widened."""
+
+        launcher_source = (PACKAGE_ROOT / "bin/launcher.cjs").read_text(encoding="utf-8")
+        function_start = launcher_source.index("function nativeExecutableRegularFile(")
+        function_end = launcher_source.index("\n}\n\nasync function waitForShutdown", function_start) + 2
+        function_source = launcher_source[function_start:function_end]
+        script = f"""
+const functionSource = {json.dumps(function_source)};
+const metadata = {{ isFile: () => true, mode: 0o100777, uid: 4242 }};
+const fakeFs = {{
+  constants: {{ X_OK: 1 }},
+  statSync: () => metadata,
+  lstatSync: () => ({{ isSymbolicLink: () => false }}),
+  accessSync: () => undefined,
+  openSync: () => 3,
+  readSync: (_descriptor, buffer) => {{ buffer.writeUInt32BE(0x7f454c46, 0); return 4; }},
+  closeSync: () => undefined,
+}};
+const fakeProcess = {{ getuid: () => 1000 }};
+const predicate = new Function(
+  'fs', 'process', 'Buffer', 'Set',
+  `${{functionSource}}; return nativeExecutableRegularFile;`,
+)(fakeFs, fakeProcess, Buffer, Set);
+process.stdout.write(JSON.stringify({{
+  automatic: predicate('/managed/runtime', false),
+  explicit: predicate('/managed/runtime', true),
+}}));
+"""
+        result = subprocess.run(
+            [str(Path(NODE).resolve()), "-e", script],
+            cwd=PACKAGE_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"automatic": False, "explicit": True})
 
     def test_runtime_checks_reject_rewritten_payload_manifest_and_extra_files(self) -> None:
         """Break caught: treating a mutable manifest or an open tree as authenticity."""

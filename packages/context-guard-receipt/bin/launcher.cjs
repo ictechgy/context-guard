@@ -99,7 +99,7 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': '30c552c72c1f1cabed18b4b6fed67f92cef5a2e30e98dc67ae8a6d3a85ced0fd',
+  'README.md': '10dde21f89879c394c06f96642813cb0ec091fa38b04ead68dd311d686344274',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
@@ -435,14 +435,18 @@ function isPortablePackageMode(observedMode, archiveMode) {
   return false;
 }
 
-function nativeExecutableRegularFile(candidate) {
+function nativeExecutableRegularFile(candidate, allowCallerSelectedMetadata = false) {
   try {
     const metadata = fs.statSync(candidate);
     if (!metadata.isFile() || fs.lstatSync(candidate).isSymbolicLink()
-        || (metadata.mode & 0o111) === 0 || (metadata.mode & 0o022) !== 0) {
+        || (metadata.mode & 0o111) === 0
+        || (!allowCallerSelectedMetadata && (metadata.mode & 0o022) !== 0)) {
       return false;
     }
-    if (typeof process.getuid === 'function' && metadata.uid !== 0 && metadata.uid !== process.getuid()) {
+    if (!allowCallerSelectedMetadata
+        && typeof process.getuid === 'function'
+        && metadata.uid !== 0
+        && metadata.uid !== process.getuid()) {
       return false;
     }
     fs.accessSync(candidate, fs.constants.X_OK);
@@ -492,10 +496,10 @@ async function stopInterruptedChild(child, signalName, childClosed) {
   await waitForShutdown(childClosed, INTERRUPT_KILL_WAIT_MILLISECONDS);
 }
 
-function resolveExecutable(candidate) {
+function resolveExecutable(candidate, allowCallerSelectedMetadata = false) {
   try {
     const resolved = fs.realpathSync(candidate);
-    return nativeExecutableRegularFile(resolved) ? resolved : null;
+    return nativeExecutableRegularFile(resolved, allowCallerSelectedMetadata) ? resolved : null;
   } catch (_) {
     return null;
   }
@@ -504,7 +508,10 @@ function resolveExecutable(candidate) {
 function resolvePython() {
   const explicit = process.env[PYTHON_ENV];
   if (typeof explicit === 'string' && explicit.length > 0) {
-    return path.isAbsolute(explicit) ? resolveExecutable(explicit) : null;
+    // An absolute override is an explicit caller trust decision. Managed tool
+    // caches can expose trusted native runtimes with different ownership or
+    // writable mode bits; automatic PATH discovery stays strict below.
+    return path.isAbsolute(explicit) ? resolveExecutable(explicit, true) : null;
   }
   const pathValue = process.env.PATH || '';
   for (const directory of pathValue.split(path.delimiter)) {

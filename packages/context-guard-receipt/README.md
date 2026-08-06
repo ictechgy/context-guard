@@ -266,8 +266,12 @@ no-network statement. The package requires Node.js 18+ and a trusted CPython
 executable from 3.11 through 3.14. Set `CONTEXT_GUARD_RECEIPT_PYTHON` to an
 absolute path to the actual native CPython executable, or ensure an absolute
 `PATH` directory contains `python3`. Relative `PATH` entries and script-based
-interpreter shims are rejected. The selected executable remains part of the
-caller's trust boundary; the compatibility probe is not interpreter
+interpreter shims are rejected. The absolute override is an explicit caller
+trust decision and may select a caller-trusted managed tool-cache executable
+with different ownership or writable mode bits. Automatic `PATH` discovery
+still requires root or effective-user ownership and rejects group- or
+world-writable candidates. The selected executable remains part of the
+caller's trust boundary, and the compatibility probe is not interpreter
 authentication.
 
 `run --escrow` also requires the root-owned `/bin/ps` process-table interface
