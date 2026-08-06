@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {
+      "const": "tool_schema_reference"
+    },
+    "byte_length": {
+      "maximum": 900000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "capability": {
+      "pattern": "^cgr1p_[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    },
+    "catalog_identity_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "input_index": {
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "name": {
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "namespace_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "raw_range": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {
+          "maximum": 900000,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "start_byte": {
+          "maximum": 899999,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "end_byte",
+        "start_byte"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "contextguard-receipt-tool-schema-reference/v1"
+    },
+    "subject_identity_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact_kind",
+    "byte_length",
+    "capability",
+    "catalog_identity_sha256",
+    "content_sha256",
+    "input_index",
+    "name",
+    "namespace_id",
+    "raw_range",
+    "schema_version",
+    "subject_identity_sha256"
+  ],
+  "title": "Context Guard Receipt tool-schema item reference",
+  "type": "object"
+}

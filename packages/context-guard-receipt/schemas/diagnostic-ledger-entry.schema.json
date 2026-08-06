@@ -1,0 +1,207 @@
+{
+  "$id": "https://context-guard.local/schemas/diagnostic-ledger-entry-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "hash": {"maxLength": 64, "minLength": 64, "pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "sampleBytes": {"maximum": 65536, "minimum": 0, "type": "integer"},
+    "unsignedBytes": {"maximum": 900000, "minimum": 0, "type": "integer"},
+    "windowCount": {"maximum": 1024, "minimum": 0, "type": "integer"}
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "advisory_lane": {"const": "none"},
+        "advisory_reason": {"enum": ["protection_refused", "exact_path_required"]}
+      },
+      "required": ["advisory_lane", "advisory_reason", "firewall_reason"],
+      "oneOf": [
+        {
+          "properties": {
+            "advisory_reason": {"const": "protection_refused"},
+            "firewall_reason": {"enum": ["secret", "refuse"]}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "exact_path_required"},
+            "firewall_reason": {"enum": ["exact_required", "protected", "unknown", "ambiguous", "security_sensitive"]}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        }
+      ]
+    },
+    {
+      "properties": {
+        "advisory_lane": {"const": "scout"},
+        "advisory_reason": {"enum": ["input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "prefix_evidence_empty", "prior_prefix_missing", "rolling_sample_partial", "prefix_churn_high"]}
+      },
+      "required": ["advisory_lane", "advisory_reason", "firewall_reason"],
+      "oneOf": [
+        {
+          "properties": {
+            "advisory_reason": {"const": "input_too_small"},
+            "firewall_reason": {"const": "input_too_small"},
+            "input_bytes": {"maximum": 511}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "savings_too_small"},
+            "firewall_reason": {"const": "savings_too_small"},
+            "input_bytes": {"minimum": 512}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "savings_ratio_too_small"},
+            "firewall_reason": {"const": "savings_ratio_too_small"},
+            "input_bytes": {"minimum": 512}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "mandatory_expansion_cost"},
+            "firewall_reason": {"const": "mandatory_expansion_cost"},
+            "input_bytes": {"minimum": 512},
+            "mandatory_expansion_bytes": {"minimum": 1}
+          },
+          "required": ["advisory_reason", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "prefix_evidence_empty"},
+            "current_prefix_bytes": {"const": 0},
+            "firewall_reason": {"const": "beneficial"},
+            "input_bytes": {"minimum": 512}
+          },
+          "required": ["advisory_reason", "current_prefix_bytes", "firewall_reason"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "prior_prefix_missing"},
+            "current_prefix_bytes": {"minimum": 1},
+            "firewall_reason": {"const": "beneficial"},
+            "input_bytes": {"minimum": 512},
+            "previous_prefix_present": {"const": false}
+          },
+          "required": ["advisory_reason", "current_prefix_bytes", "firewall_reason", "previous_prefix_present"]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "rolling_sample_partial"},
+            "current_prefix_bytes": {"minimum": 1},
+            "firewall_reason": {"const": "beneficial"},
+            "input_bytes": {"minimum": 512},
+            "previous_prefix_present": {"const": true}
+          },
+          "required": ["advisory_reason", "current_prefix_bytes", "firewall_reason", "previous_prefix_present"],
+          "anyOf": [
+            {"properties": {"current_truncated": {"const": true}}},
+            {"properties": {"previous_truncated": {"const": true}}}
+          ]
+        },
+        {
+          "properties": {
+            "advisory_reason": {"const": "prefix_churn_high"},
+            "current_prefix_bytes": {"minimum": 1},
+            "current_truncated": {"const": false},
+            "firewall_reason": {"const": "beneficial"},
+            "input_bytes": {"minimum": 512},
+            "previous_prefix_present": {"const": true},
+            "previous_truncated": {"const": false}
+          },
+          "required": ["advisory_reason", "current_prefix_bytes", "current_truncated", "firewall_reason", "previous_prefix_present", "previous_truncated"],
+          "anyOf": [
+            {"properties": {"current_sample_bytes": {"maximum": 63}}},
+            {"properties": {"previous_sample_bytes": {"maximum": 63}}},
+            {"properties": {"current_reuse_basis_points": {"maximum": 8999}}},
+            {"properties": {"previous_retention_basis_points": {"maximum": 8999}}}
+          ]
+        }
+      ]
+    },
+    {
+      "properties": {
+        "advisory_lane": {"const": "surgeon"},
+        "advisory_reason": {"const": "bounded_stable_benefit"},
+        "current_reuse_basis_points": {"minimum": 9000},
+        "current_sample_bytes": {"minimum": 64},
+        "current_truncated": {"const": false},
+        "firewall_reason": {"const": "beneficial"},
+        "input_bytes": {"minimum": 512},
+        "previous_prefix_present": {"const": true},
+        "previous_retention_basis_points": {"minimum": 9000},
+        "previous_sample_bytes": {"minimum": 64},
+        "previous_truncated": {"const": false}
+      },
+      "required": ["advisory_lane", "advisory_reason", "current_reuse_basis_points", "current_sample_bytes", "current_truncated", "firewall_reason", "input_bytes", "previous_prefix_present", "previous_retention_basis_points", "previous_sample_bytes", "previous_truncated"]
+    }
+  ],
+  "properties": {
+    "advisory_lane": {"enum": ["none", "scout", "surgeon"]},
+    "advisory_only": {"const": true},
+    "advisory_reason": {"enum": ["protection_refused", "exact_path_required", "input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "prefix_evidence_empty", "prior_prefix_missing", "rolling_sample_partial", "prefix_churn_high", "bounded_stable_benefit"]},
+    "applied": {"const": false},
+    "blueprint_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "current_prefix_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "current_prefix_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "current_reuse_basis_points": {"maximum": 10000, "minimum": 0, "type": "integer"},
+    "current_sample_bytes": {"$ref": "#/$defs/sampleBytes"},
+    "current_truncated": {"type": "boolean"},
+    "current_window_count": {"$ref": "#/$defs/windowCount"},
+    "efficacy_claim_authority": {"const": false},
+    "entry_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "evidence_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "firewall_reason": {"enum": ["beneficial", "input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "secret", "refuse"]},
+    "handle_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "input_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "live_observation_authority": {"const": false},
+    "mandatory_expansion_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "matched_window_count": {"$ref": "#/$defs/windowCount"},
+    "observed_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+    "policy_sha256": {"const": "a6e00501858586d80afcd465c5a0fe65c85d2c6d74089cfe14bf347b670eb5cf"},
+    "predicted_cost_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "predicted_savings_bytes": {"maximum": 900000, "minimum": -900000, "type": "integer"},
+    "previous_entry_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "previous_prefix_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "previous_prefix_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "previous_prefix_present": {"type": "boolean"},
+    "previous_retention_basis_points": {"maximum": 10000, "minimum": 0, "type": "integer"},
+    "previous_sample_bytes": {"$ref": "#/$defs/sampleBytes"},
+    "previous_truncated": {"type": "boolean"},
+    "previous_window_count": {"$ref": "#/$defs/windowCount"},
+    "provider_claim_authority": {"const": false},
+    "provider_routing_authority": {"const": false},
+    "retained_wire_bytes": {"$ref": "#/$defs/unsignedBytes"},
+    "rolling_status": {"enum": ["unavailable", "partial", "complete"]},
+    "savings_basis_points": {"maximum": 10000, "minimum": -9000000000, "type": "integer"},
+    "schema_version": {"const": "contextguard-receipt-diagnostic-ledger-entry/v1"},
+    "sequence": {"maximum": 1024, "minimum": 1, "type": "integer"},
+    "state_scope": {"const": "durable"},
+    "subject_kind": {"enum": ["evidence", "evidence_pack", "blueprint", "tool_schema_catalog", "command_capture"]},
+    "prefix_delta_bytes": {"maximum": 900000, "minimum": -900000, "type": "integer"},
+    "would_block": {"type": "boolean"},
+    "wrapper_bytes": {"$ref": "#/$defs/unsignedBytes"}
+  },
+  "required": [
+    "advisory_lane", "advisory_only", "advisory_reason", "applied", "blueprint_bytes",
+    "current_prefix_bytes", "current_prefix_hmac_sha256", "current_reuse_basis_points",
+    "current_sample_bytes", "current_truncated", "current_window_count",
+    "efficacy_claim_authority", "entry_hmac_sha256", "evidence_hmac_sha256",
+    "firewall_reason", "handle_bytes", "input_bytes", "live_observation_authority",
+    "mandatory_expansion_bytes", "matched_window_count", "observed_at_unix_ms", "policy_sha256",
+    "predicted_cost_bytes", "predicted_savings_bytes", "previous_entry_hmac_sha256",
+    "previous_prefix_bytes", "previous_prefix_hmac_sha256", "previous_prefix_present",
+    "previous_retention_basis_points", "previous_sample_bytes", "previous_truncated",
+    "previous_window_count", "provider_claim_authority", "provider_routing_authority",
+    "retained_wire_bytes", "rolling_status", "savings_basis_points", "schema_version",
+    "sequence", "state_scope", "subject_kind", "prefix_delta_bytes", "would_block", "wrapper_bytes"
+  ],
+  "title": "Context Guard Receipt diagnostic ledger entry",
+  "type": "object"
+}

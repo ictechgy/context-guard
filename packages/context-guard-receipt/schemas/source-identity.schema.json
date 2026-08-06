@@ -1,0 +1,448 @@
+{
+  "$id": "https://context-guard.local/schemas/source-identity-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"disposition": {"const": "exact_file"}}},
+      "then": {
+        "not": {"required": ["symbol"]},
+        "properties": {
+          "reason": {"const": "raw_file_identity"},
+          "selection": {"properties": {"kind": {"const": "raw_file"}}}
+        },
+        "required": ["selection", "source"]
+      }
+    },
+    {
+      "if": {"properties": {"disposition": {"const": "range_candidate"}}},
+      "then": {
+        "not": {"required": ["symbol"]},
+        "properties": {
+          "reason": {
+            "enum": [
+              "raw_range_without_symbol_authority",
+              "symbol_evidence_incomplete",
+              "symbol_evidence_mismatch",
+              "symbol_source_unsupported"
+            ]
+          },
+          "selection": {"properties": {"kind": {"const": "raw_range"}}}
+        },
+        "required": ["selection", "source"]
+      }
+    },
+    {
+      "if": {"properties": {"disposition": {"const": "exact_symbol"}}},
+      "then": {
+        "properties": {
+          "reason": {"const": "caller_complete_deterministic_symbol_evidence"},
+          "selection": {"properties": {"kind": {"const": "raw_range"}}}
+        },
+        "required": ["selection", "source", "symbol"]
+      }
+    },
+    {
+      "if": {"properties": {"disposition": {"const": "pass_through"}}},
+      "then": {
+        "not": {"anyOf": [{"required": ["selection"]}, {"required": ["symbol"]}]},
+        "properties": {
+          "reason": {
+            "enum": [
+              "bare_repository",
+              "git_index_unavailable",
+              "repository_state_unresolved",
+              "repository_state_changed",
+              "source_changed_during_read",
+              "source_missing",
+              "source_not_regular",
+              "source_symlink",
+              "sparse_path",
+              "symbol_evidence_incomplete",
+              "symbol_evidence_mismatch",
+              "symbol_source_unsupported",
+              "unmerged_path"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "artifact_kind": {"const": "source_identity"},
+    "disposition": {
+      "enum": ["exact_file", "range_candidate", "exact_symbol", "pass_through"],
+      "type": "string"
+    },
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "path_b64u": {
+      "maxLength": 5462,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "bare_repository",
+        "caller_complete_deterministic_symbol_evidence",
+        "git_index_unavailable",
+        "raw_file_identity",
+        "raw_range_without_symbol_authority",
+        "repository_state_unresolved",
+        "repository_state_changed",
+        "source_changed_during_read",
+        "source_missing",
+        "source_not_regular",
+        "source_symlink",
+        "sparse_path",
+        "symbol_evidence_incomplete",
+        "symbol_evidence_mismatch",
+        "symbol_source_unsupported",
+        "unmerged_path"
+      ],
+      "type": "string"
+    },
+    "repository": {"$ref": "#/$defs/repository_snapshot"},
+    "schema_version": {"const": "contextguard-receipt-source-identity/v1"},
+    "selection": {"$ref": "#/$defs/selection"},
+    "source": {"$ref": "#/$defs/source"},
+    "symbol": {"$ref": "#/$defs/symbol"}
+  },
+  "required": [
+    "artifact_kind",
+    "disposition",
+    "evidence_boundary",
+    "path_b64u",
+    "reason",
+    "repository",
+    "schema_version"
+  ],
+  "title": "Context Guard Receipt source identity",
+  "type": "object",
+  "$defs": {
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": [
+        "evidence_class",
+        "host_request_owned",
+        "provider_claim_authority",
+        "provider_join_status",
+        "runtime_observer_present",
+        "schema_version",
+        "selected_branch",
+        "selected_transport",
+        "stage1_evidence",
+        "stage2_evidence"
+      ],
+      "type": "object"
+    },
+    "repository_snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_kind": {"const": "repository_snapshot"},
+        "disposition": {"enum": ["captured", "pass_through"], "type": "string"},
+        "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+        "instance": {"$ref": "#/$defs/repository_instance"},
+        "logical_state": {"$ref": "#/$defs/logical_state"},
+        "reason": {
+          "enum": [
+            "git_bare_state",
+            "git_command_failed",
+            "git_output_limit",
+            "git_state_malformed",
+            "git_state_changed",
+            "git_timeout",
+            "git_unavailable",
+            "git_unborn_worktree_state",
+            "git_worktree_state",
+            "non_git_directory"
+          ],
+          "type": "string"
+        },
+        "schema_version": {"const": "contextguard-receipt-repository-snapshot/v1"}
+      },
+      "required": [
+        "artifact_kind",
+        "disposition",
+        "evidence_boundary",
+        "instance",
+        "logical_state",
+        "reason",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    "repository_instance": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "kind": {
+          "enum": ["bare_repository", "directory", "linked_worktree", "worktree"],
+          "type": "string"
+        }
+      },
+      "required": ["identity_sha256", "kind"],
+      "type": "object"
+    },
+    "logical_state": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "non_git"}}},
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["head_oid_b64u"]},
+                {"required": ["head_ref_b64u"]},
+                {"required": ["head_state"]},
+                {"required": ["index_format"]},
+                {"required": ["index_nul_records"]},
+                {"required": ["index_sha256"]},
+                {"required": ["reason"]},
+                {"required": ["status_format"]},
+                {"required": ["status_nul_fields"]},
+                {"required": ["status_sha256"]},
+                {"required": ["worktree_diff_sha256"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "unresolved"}}},
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["head_oid_b64u"]},
+                {"required": ["head_ref_b64u"]},
+                {"required": ["head_state"]},
+                {"required": ["index_format"]},
+                {"required": ["index_nul_records"]},
+                {"required": ["index_sha256"]},
+                {"required": ["status_format"]},
+                {"required": ["status_nul_fields"]},
+                {"required": ["status_sha256"]},
+                {"required": ["worktree_diff_sha256"]}
+              ]
+            },
+            "required": ["reason"]
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "git_bare"}}},
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["reason"]},
+                {"required": ["index_format"]},
+                {"required": ["index_nul_records"]},
+                {"required": ["index_sha256"]},
+                {"required": ["status_format"]},
+                {"required": ["status_nul_fields"]},
+                {"required": ["status_sha256"]},
+                {"required": ["worktree_diff_sha256"]}
+              ]
+            },
+            "required": ["head_state"]
+          }
+        },
+        {
+          "if": {"properties": {"kind": {"const": "git_worktree"}}},
+          "then": {
+            "not": {"required": ["reason"]},
+            "required": [
+              "head_state",
+              "index_format",
+              "index_nul_records",
+              "index_sha256",
+              "status_format",
+              "status_nul_fields",
+              "status_sha256",
+              "worktree_diff_sha256"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {"head_state": {"const": "attached"}},
+            "required": ["head_state"]
+          },
+          "then": {"required": ["head_oid_b64u", "head_ref_b64u"]}
+        },
+        {
+          "if": {
+            "properties": {"head_state": {"const": "detached"}},
+            "required": ["head_state"]
+          },
+          "then": {
+            "not": {"required": ["head_ref_b64u"]},
+            "required": ["head_oid_b64u"]
+          }
+        },
+        {
+          "if": {
+            "properties": {"head_state": {"const": "unborn"}},
+            "required": ["head_state"]
+          },
+          "then": {
+            "not": {"required": ["head_oid_b64u"]},
+            "required": ["head_ref_b64u"]
+          }
+        }
+      ],
+      "properties": {
+        "head_oid_b64u": {
+          "maxLength": 86,
+          "minLength": 54,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "head_ref_b64u": {
+          "maxLength": 5462,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "head_state": {
+          "enum": ["attached", "detached", "unborn"],
+          "type": "string"
+        },
+        "kind": {
+          "enum": ["git_bare", "git_worktree", "non_git", "unresolved"],
+          "type": "string"
+        },
+        "index_format": {"const": "git-ls-files-stage-z"},
+        "index_nul_records": {"maximum": 4096, "minimum": 0, "type": "integer"},
+        "index_sha256": {"$ref": "#/$defs/sha256"},
+        "reason": {
+          "enum": [
+            "git_command_failed",
+            "git_output_limit",
+            "git_state_malformed",
+            "git_state_changed",
+            "git_timeout",
+            "git_unavailable"
+          ],
+          "type": "string"
+        },
+        "state_sha256": {"$ref": "#/$defs/sha256"},
+        "status_format": {"const": "git-status-porcelain-v1-z"},
+        "status_nul_fields": {"maximum": 4096, "minimum": 0, "type": "integer"},
+        "status_sha256": {"$ref": "#/$defs/sha256"},
+        "worktree_diff_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["kind", "state_sha256"],
+      "type": "object"
+    },
+    "selection": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 1048576, "minimum": 0, "type": "integer"},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "end_byte": {"maximum": 1048576, "minimum": 0, "type": "integer"},
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "kind": {"enum": ["raw_file", "raw_range"], "type": "string"},
+        "start_byte": {"maximum": 1048576, "minimum": 0, "type": "integer"}
+      },
+      "required": [
+        "byte_length",
+        "content_sha256",
+        "end_byte",
+        "identity_sha256",
+        "kind",
+        "start_byte"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 1048576, "minimum": 0, "type": "integer"},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "file_type": {"const": "regular"},
+        "git_index": {"$ref": "#/$defs/git_index"},
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "mode": {"pattern": "^[0-7]{4}$", "type": "string"}
+      },
+      "required": [
+        "byte_length",
+        "content_sha256",
+        "file_type",
+        "git_index",
+        "identity_sha256",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "git_index": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "tracked"}}},
+          "then": {
+            "required": ["index_mode", "object_id_b64u", "record_sha256", "stage"]
+          }
+        },
+        {
+          "if": {
+            "properties": {"status": {"enum": ["not_applicable", "untracked"]}}
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["index_mode"]},
+                {"required": ["object_id_b64u"]},
+                {"required": ["record_sha256"]},
+                {"required": ["stage"]}
+              ]
+            }
+          }
+        }
+      ],
+      "properties": {
+        "index_mode": {"enum": ["100644", "100755"], "type": "string"},
+        "object_id_b64u": {
+          "maxLength": 86,
+          "minLength": 54,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        "record_sha256": {"$ref": "#/$defs/sha256"},
+        "stage": {"const": 0},
+        "status": {
+          "enum": ["not_applicable", "tracked", "untracked"],
+          "type": "string"
+        }
+      },
+      "required": ["status"],
+      "type": "object"
+    },
+    "symbol": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {"const": "caller_supplied"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "identity_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["authority", "evidence_sha256", "identity_sha256"],
+      "type": "object"
+    },
+    "sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  }
+}

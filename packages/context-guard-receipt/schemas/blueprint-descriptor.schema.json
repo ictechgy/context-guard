@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "caller_classification": {
+      "enum": ["eligible", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "refuse"],
+      "type": "string"
+    },
+    "detector_signals": {
+      "items": {"enum": ["exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "secret"], "type": "string"},
+      "maxItems": 64,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "item": {
+      "additionalProperties": false,
+      "properties": {
+        "caller_classification": {"$ref": "#/$defs/caller_classification"},
+        "detector_signals": {"$ref": "#/$defs/detector_signals"},
+        "payload_end_byte": {"maximum": 900000, "minimum": 1, "type": "integer"},
+        "payload_start_byte": {"maximum": 899999, "minimum": 0, "type": "integer"},
+        "source": {"$ref": "#/$defs/source"}
+      },
+      "required": ["caller_classification", "detector_signals", "payload_end_byte", "payload_start_byte", "source"],
+      "type": "object"
+    },
+    "obligation": {
+      "additionalProperties": false,
+      "properties": {
+        "item_index": {"maximum": 63, "minimum": 0, "type": "integer"},
+        "phase": {"enum": ["required_before_edit", "required_before_claim", "optional_evidence"], "type": "string"}
+      },
+      "required": ["item_index", "phase"],
+      "type": "object"
+    },
+    "selection": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {"kind": {"const": "file"}},
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "end_byte": {"minimum": 0, "type": "integer"},
+            "kind": {"const": "range"},
+            "start_byte": {"minimum": 0, "type": "integer"}
+          },
+          "required": ["end_byte", "kind", "start_byte"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {"$ref": "#/$defs/symbol_evidence"},
+            "kind": {"const": "symbol"}
+          },
+          "required": ["evidence", "kind"],
+          "type": "object"
+        }
+      ]
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "relative_path": {"maxLength": 4096, "minLength": 1, "type": "string"},
+        "selection": {"$ref": "#/$defs/selection"}
+      },
+      "required": ["relative_path", "selection"],
+      "type": "object"
+    },
+    "symbol_candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {"minimum": 0, "type": "integer"},
+        "occurrence": {"minimum": 0, "type": "integer"},
+        "qualified_name": {"maxLength": 1024, "minLength": 1, "type": "string"},
+        "raw_range_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "start_byte": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["end_byte", "occurrence", "qualified_name", "raw_range_sha256", "start_byte"],
+      "type": "object"
+    },
+    "symbol_evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {"items": {"$ref": "#/$defs/symbol_candidate"}, "maxItems": 16, "type": "array"},
+        "capped": {"const": false},
+        "complete": {"const": true},
+        "deterministic": {"const": true},
+        "end_byte": {"minimum": 0, "type": "integer"},
+        "evidence_kind": {"const": "caller_supplied_symbol_range"},
+        "fallback_used": {"const": false},
+        "language_id": {"maxLength": 64, "minLength": 1, "type": "string"},
+        "occurrence": {"minimum": 0, "type": "integer"},
+        "parser_error": {"const": false},
+        "producer_id": {"maxLength": 128, "minLength": 1, "type": "string"},
+        "qualified_name": {"maxLength": 1024, "minLength": 1, "type": "string"},
+        "raw_range_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "scan_complete": {"const": true},
+        "schema_version": {"const": "contextguard-receipt-caller-symbol-evidence/v1"},
+        "source_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "start_byte": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["candidates", "capped", "complete", "deterministic", "end_byte", "evidence_kind", "fallback_used", "language_id", "occurrence", "parser_error", "producer_id", "qualified_name", "raw_range_sha256", "scan_complete", "schema_version", "source_sha256", "start_byte"],
+      "type": "object"
+    }
+  },
+  "$id": "https://context-guard.local/schemas/blueprint-descriptor-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "items": {"items": {"$ref": "#/$defs/item"}, "maxItems": 64, "minItems": 1, "type": "array"},
+    "obligations": {"items": {"$ref": "#/$defs/obligation"}, "maxItems": 64, "minItems": 1, "type": "array"},
+    "payload_b64u": {"maxLength": 1200000, "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$", "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-blueprint-descriptor/v1"}
+  },
+  "required": ["items", "obligations", "payload_b64u", "schema_version"],
+  "title": "Context Guard Receipt typed-blueprint descriptor",
+  "type": "object"
+}

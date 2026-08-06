@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "committed_event_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "committed_head_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "committed_log_bytes": {"maximum": 8388608, "minimum": 0, "type": "integer"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "genesis_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "integrity_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "max_committed_log_bytes": {"const": 8388608},
+    "max_event_bytes": {"const": 16384},
+    "max_event_count": {"const": 1024},
+    "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "repository_instance_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-twin-metadata/v1"}
+  },
+  "required": ["committed_event_count", "committed_head_hmac_sha256", "committed_log_bytes", "evidence_boundary", "genesis_hmac_sha256", "integrity_hmac_sha256", "max_committed_log_bytes", "max_event_bytes", "max_event_count", "namespace_id", "repository_instance_sha256", "schema_version"],
+  "title": "Context Guard Receipt execution twin metadata",
+  "type": "object"
+}

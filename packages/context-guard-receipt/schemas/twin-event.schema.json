@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "predicate_result": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["git_logical_state_equals", "path_absent", "regular_file_equals", "repository_instance_equals"]},
+        "matched": {"type": "boolean"},
+        "observation_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "ordinal": {"maximum": 31, "minimum": 0, "type": "integer"}
+      },
+      "required": ["kind", "matched", "observation_hmac_sha256", "ordinal"],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "declared_next_action_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "event_sequence": {"maximum": 1024, "minimum": 1, "type": "integer"},
+    "event_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "matched_predicate_count": {"maximum": 32, "minimum": 0, "type": "integer"},
+    "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "observed_at_unix_ms": {"maximum": 4102444800000, "minimum": 0, "type": "integer"},
+    "predicate_count": {"maximum": 32, "minimum": 1, "type": "integer"},
+    "predicate_results": {"items": {"$ref": "#/$defs/predicate_result"}, "maxItems": 32, "minItems": 1, "type": "array"},
+    "previous_event_hmac_sha256": {
+      "oneOf": [
+        {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "repository_instance_sha256_after": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "repository_instance_sha256_before": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "repository_state_sha256_after": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "repository_state_sha256_before": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-twin-event/v1"},
+    "verified": {"type": "boolean"}
+  },
+  "required": ["declared_next_action_sha256", "event_hmac_sha256", "event_id", "event_sequence", "event_sha256", "matched_predicate_count", "namespace_id", "observed_at_unix_ms", "predicate_count", "predicate_results", "previous_event_hmac_sha256", "repository_instance_sha256_after", "repository_instance_sha256_before", "repository_state_sha256_after", "repository_state_sha256_before", "schema_version", "verified"],
+  "title": "Context Guard Receipt execution twin event",
+  "type": "object"
+}

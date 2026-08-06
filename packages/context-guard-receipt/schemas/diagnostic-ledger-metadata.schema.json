@@ -1,0 +1,37 @@
+{
+  "$id": "https://context-guard.local/schemas/diagnostic-ledger-metadata-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "evidenceBoundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    },
+    "hash": {"maxLength": 64, "minLength": 64, "pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "committed_entry_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "committed_head_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "committed_total_canonical_bytes": {"maximum": 4194304, "minimum": 0, "type": "integer"},
+    "evidence_boundary": {"$ref": "#/$defs/evidenceBoundary"},
+    "genesis_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "integrity_hmac_sha256": {"$ref": "#/$defs/hash"},
+    "schema_version": {"const": "contextguard-receipt-diagnostic-ledger-metadata/v1"}
+  },
+  "required": ["committed_entry_count", "committed_head_hmac_sha256", "committed_total_canonical_bytes", "evidence_boundary", "genesis_hmac_sha256", "integrity_hmac_sha256", "schema_version"],
+  "title": "Context Guard Receipt diagnostic ledger metadata",
+  "type": "object"
+}

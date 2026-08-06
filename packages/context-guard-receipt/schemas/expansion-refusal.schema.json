@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    }
+  },
+  "$id": "https://context-guard.local/schemas/expansion-refusal-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "expansion_refusal"},
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "reason": {"enum": ["capability_rejected", "store_unavailable", "artifact_invalid", "root_unavailable", "root_state_changed", "source_changed"], "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-expansion-refusal/v1"},
+    "status": {"enum": ["refused", "stale"], "type": "string"}
+  },
+  "required": ["artifact_kind", "evidence_boundary", "reason", "schema_version", "status"],
+  "title": "Context Guard Receipt expansion refusal",
+  "type": "object"
+}

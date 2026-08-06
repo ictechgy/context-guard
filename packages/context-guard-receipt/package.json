@@ -1,0 +1,27 @@
+{
+  "name": "@ictechgy/context-guard-receipt",
+  "version": "0.1.0",
+  "description": "Explicit local receipt workflows for bounded ContextGuard evidence.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "bin": {
+    "context-guard-receipt": "bin/context-guard-receipt.cjs",
+    "context-guard-receipt-mcp": "bin/context-guard-receipt-mcp.cjs"
+  },
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "package-files.json",
+    "bin/*.cjs",
+    "python/**/*.py",
+    "schemas/*.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ]
+}

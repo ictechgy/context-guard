@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "advisory_only": {"const": true},
+    "applied": {"const": false},
+    "committed_event_count": {"maximum": 1024, "minimum": 0, "type": "integer"},
+    "committed_head_hmac_sha256": {
+      "oneOf": [
+        {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "committed_log_bytes": {"maximum": 8388608, "minimum": 0, "type": "integer"},
+    "evidence_boundary": {"$ref": "evidence-boundary.schema.json"},
+    "execution_authority": {"const": false},
+    "global_completeness_authority": {"const": false},
+    "latest_events": {"items": {"$ref": "twin-event.schema.json"}, "maxItems": 256, "type": "array"},
+    "namespace_id": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "provider_claim_authority": {"const": false},
+    "recovery_required": {"type": "boolean"},
+    "schema_version": {"const": "contextguard-receipt-twin-snapshot/v1"}
+  },
+  "required": ["advisory_only", "applied", "committed_event_count", "committed_head_hmac_sha256", "committed_log_bytes", "evidence_boundary", "execution_authority", "global_completeness_authority", "latest_events", "namespace_id", "provider_claim_authority", "recovery_required", "schema_version"],
+  "title": "Context Guard Receipt execution twin snapshot",
+  "type": "object"
+}

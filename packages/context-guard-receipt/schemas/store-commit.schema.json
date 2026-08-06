@@ -1,0 +1,62 @@
+{
+  "$id": "https://context-guard.local/schemas/receipt-store-commit-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "capability_lookup_sha256": {
+      "items": {
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 1024,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": [
+        "evidence_class",
+        "host_request_owned",
+        "provider_claim_authority",
+        "provider_join_status",
+        "runtime_observer_present",
+        "schema_version",
+        "selected_branch",
+        "selected_transport",
+        "stage1_evidence",
+        "stage2_evidence"
+      ],
+      "type": "object"
+    },
+    "integrity_hmac_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {"const": "contextguard-receipt-store-commit/v1"}
+  },
+  "required": [
+    "capability_lookup_sha256",
+    "evidence_boundary",
+    "integrity_hmac_sha256",
+    "schema_version"
+  ],
+  "title": "Context Guard Receipt atomic store commit",
+  "type": "object"
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_format": {
+      "enum": [
+        "anthropic_tools/v1",
+        "openai_functions/v1"
+      ]
+    },
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "caller_classification": {
+            "enum": [
+              "eligible",
+              "exact_required",
+              "protected",
+              "unknown",
+              "ambiguous",
+              "security_sensitive",
+              "refuse"
+            ]
+          },
+          "detector_signals": {
+            "items": {
+              "enum": [
+                "exact_required",
+                "protected",
+                "unknown",
+                "ambiguous",
+                "security_sensitive",
+                "secret"
+              ]
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "priority": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "caller_classification",
+          "detector_signals",
+          "priority",
+          "required"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "payload_b64u": {
+      "maxLength": 1300000,
+      "pattern": "^[A-Za-z0-9_-]*$",
+      "type": "string"
+    },
+    "retain_count": {
+      "maximum": 256,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "contextguard-receipt-tool-schema-descriptor/v1"
+    }
+  },
+  "required": [
+    "catalog_format",
+    "items",
+    "payload_b64u",
+    "retain_count",
+    "schema_version"
+  ],
+  "title": "Context Guard Receipt tool-schema descriptor",
+  "type": "object"
+}

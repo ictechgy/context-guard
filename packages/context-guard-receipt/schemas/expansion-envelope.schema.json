@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    },
+    "symbol_candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "end_byte": {"minimum": 0, "type": "integer"},
+        "occurrence": {"minimum": 0, "type": "integer"},
+        "qualified_name": {"maxLength": 1024, "minLength": 1, "type": "string"},
+        "raw_range_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "start_byte": {"minimum": 0, "type": "integer"}
+      },
+      "required": ["end_byte", "occurrence", "qualified_name", "raw_range_sha256", "start_byte"],
+      "type": "object"
+    },
+    "selection": {
+      "oneOf": [
+        {"additionalProperties": false, "properties": {"kind": {"const": "file"}}, "required": ["kind"], "type": "object"},
+        {"additionalProperties": false, "properties": {"end_byte": {"minimum": 0, "type": "integer"}, "kind": {"const": "range"}, "start_byte": {"minimum": 0, "type": "integer"}}, "required": ["end_byte", "kind", "start_byte"], "type": "object"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "additionalProperties": false,
+              "properties": {
+                "candidates": {"items": {"$ref": "#/$defs/symbol_candidate"}, "maxItems": 16, "type": "array"},
+                "capped": {"const": false},
+                "complete": {"const": true},
+                "deterministic": {"const": true},
+                "end_byte": {"minimum": 0, "type": "integer"},
+                "evidence_kind": {"const": "caller_supplied_symbol_range"},
+                "fallback_used": {"const": false},
+                "language_id": {"maxLength": 64, "minLength": 1, "type": "string"},
+                "occurrence": {"minimum": 0, "type": "integer"},
+                "parser_error": {"const": false},
+                "producer_id": {"maxLength": 128, "minLength": 1, "type": "string"},
+                "qualified_name": {"maxLength": 1024, "minLength": 1, "type": "string"},
+                "raw_range_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+                "scan_complete": {"const": true},
+                "schema_version": {"const": "contextguard-receipt-caller-symbol-evidence/v1"},
+                "source_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+                "start_byte": {"minimum": 0, "type": "integer"}
+              },
+              "required": ["candidates", "capped", "complete", "deterministic", "end_byte", "evidence_kind", "fallback_used", "language_id", "occurrence", "parser_error", "producer_id", "qualified_name", "raw_range_sha256", "scan_complete", "schema_version", "source_sha256", "start_byte"],
+              "type": "object"
+            },
+            "kind": {"const": "symbol"}
+          },
+          "required": ["evidence", "kind"],
+          "type": "object"
+        }
+      ]
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "relative_path": {"maxLength": 4096, "minLength": 1, "type": "string"},
+        "selection": {"$ref": "#/$defs/selection"}
+      },
+      "required": ["relative_path", "selection"],
+      "type": "object"
+    }
+  },
+  "$id": "https://context-guard.local/schemas/expansion-envelope-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "expansion_envelope"},
+    "artifact_type": {"enum": ["raw_evidence_bytes", "blueprint_whole_bytes", "blueprint_item_bytes"], "type": "string"},
+    "binding_kind": {"const": "source_current"},
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "payload": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 900000, "minimum": 0, "type": "integer"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["byte_length", "content_sha256"],
+      "type": "object"
+    },
+    "revalidation": {
+      "oneOf": [
+        {"additionalProperties": false, "properties": {"kind": {"const": "source"}, "source": {"$ref": "#/$defs/source"}}, "required": ["kind", "source"], "type": "object"},
+        {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "payload_end_byte": {"minimum": 1, "type": "integer"},
+                  "payload_start_byte": {"minimum": 0, "type": "integer"},
+                  "source": {"$ref": "#/$defs/source"},
+                  "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+                },
+                "required": ["payload_end_byte", "payload_start_byte", "source", "subject_identity_sha256"],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "minItems": 1,
+              "type": "array"
+            },
+            "kind": {"const": "aggregate"}
+          },
+          "required": ["items", "kind"],
+          "type": "object"
+        }
+      ]
+    },
+    "root_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "root_state_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-expansion-envelope/v1"},
+    "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": ["artifact_kind", "artifact_type", "binding_kind", "evidence_boundary", "payload", "revalidation", "root_identity_sha256", "root_state_sha256", "schema_version", "subject_identity_sha256"],
+  "title": "Context Guard Receipt private expansion envelope metadata",
+  "type": "object"
+}

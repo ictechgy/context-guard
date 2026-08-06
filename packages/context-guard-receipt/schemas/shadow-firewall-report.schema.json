@@ -1,0 +1,21 @@
+{
+  "$id": "https://context-guard.local/schemas/receipt-shadow-firewall-report-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {"properties": {"reason": {"const": "beneficial"}, "would_block": {"const": false}}},
+    {"properties": {"reason": {"enum": ["input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "secret", "refuse"]}, "would_block": {"const": true}}}
+  ],
+  "properties": {
+    "applied": {"const": false},
+    "evidence_boundary": {"$ref": "receipt-evidence-boundary-v1.json"},
+    "evidence_hmac_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "reason": {"enum": ["beneficial", "input_too_small", "savings_too_small", "savings_ratio_too_small", "mandatory_expansion_cost", "exact_required", "protected", "unknown", "ambiguous", "security_sensitive", "secret", "refuse"], "type": "string"},
+    "schema_version": {"const": "contextguard-receipt-shadow-firewall-finding/v1"},
+    "subject_kind": {"enum": ["evidence", "evidence_pack", "blueprint", "tool_schema_catalog", "command_capture"], "type": "string"},
+    "would_block": {"type": "boolean"}
+  },
+  "required": ["applied", "evidence_boundary", "evidence_hmac_sha256", "reason", "schema_version", "subject_kind", "would_block"],
+  "title": "Context Guard Receipt shadow firewall report",
+  "type": "object"
+}

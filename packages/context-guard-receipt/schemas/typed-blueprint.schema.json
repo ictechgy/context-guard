@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "evidence_boundary": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_class": {"const": "companion_local_receipt_only"},
+        "host_request_owned": {"const": false},
+        "provider_claim_authority": {"const": false},
+        "provider_join_status": {"const": "missing"},
+        "runtime_observer_present": {"const": false},
+        "schema_version": {"const": "contextguard-receipt-evidence-boundary/v1"},
+        "selected_branch": {"const": "S2-UNSUPPORTED"},
+        "selected_transport": {"const": "NONE"},
+        "stage1_evidence": {"const": false},
+        "stage2_evidence": {"const": false}
+      },
+      "required": ["evidence_class", "host_request_owned", "provider_claim_authority", "provider_join_status", "runtime_observer_present", "schema_version", "selected_branch", "selected_transport", "stage1_evidence", "stage2_evidence"],
+      "type": "object"
+    },
+    "reference": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_length": {"maximum": 900000, "minimum": 1, "type": "integer"},
+        "capability": {"pattern": "^cgr1p_[A-Za-z0-9_-]{43}$", "type": "string"},
+        "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+        "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+      },
+      "required": ["byte_length", "capability", "content_sha256", "subject_identity_sha256"],
+      "type": "object"
+    }
+  },
+  "$id": "https://context-guard.local/schemas/typed-blueprint-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_kind": {"const": "typed_blueprint"},
+    "blueprint": {
+      "additionalProperties": false,
+      "properties": {
+        "bypass": {"$ref": "#/$defs/reference"},
+        "obligations": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bypass": {"const": "emit_original_payload"},
+              "byte_length": {"maximum": 900000, "minimum": 1, "type": "integer"},
+              "capability": {"pattern": "^cgr1p_[A-Za-z0-9_-]{43}$", "type": "string"},
+              "content_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "invariants": {"const": ["artifact_type_matches", "repository_binding_current", "subject_identity_current"]},
+              "item_index": {"maximum": 63, "minimum": 0, "type": "integer"},
+              "phase": {"enum": ["required_before_edit", "required_before_claim", "optional_evidence"], "type": "string"},
+              "rollback": {"const": "expand_whole_payload"},
+              "subject_identity_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+              "tests": {"const": ["capability_only_authority", "exact_byte_round_trip", "stale_state_refusal"]}
+            },
+            "required": ["bypass", "byte_length", "capability", "content_sha256", "invariants", "item_index", "phase", "rollback", "subject_identity_sha256", "tests"],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": ["bypass", "obligations"],
+      "type": "object"
+    },
+    "evidence_boundary": {"$ref": "#/$defs/evidence_boundary"},
+    "router_policy_version": {"const": "contextguard-receipt-router/v1"},
+    "schema_version": {"const": "contextguard-receipt-typed-blueprint/v1"}
+  },
+  "required": ["artifact_kind", "blueprint", "evidence_boundary", "router_policy_version", "schema_version"],
+  "title": "Context Guard Receipt typed blueprint",
+  "type": "object"
+}
