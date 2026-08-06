@@ -13,6 +13,11 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def workflow_job_blocks(workflow: str) -> dict[str, str]:
+    jobs = workflow.split("\njobs:\n", 1)[1]
+    return dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", jobs))
+
+
 class WorkflowSecurityTests(unittest.TestCase):
     def test_pages_workflow_uses_pages_deployment_permissions_not_repo_write_token(self):
         pages = read(".github/workflows/pages.yml")
@@ -72,6 +77,7 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_npm_publish_workflow_uses_oidc_trusted_publishing_without_environment(self):
         workflow = read(".github/workflows/npm-publish.yml")
+        publish_job = workflow_job_blocks(workflow)["publish"]
 
         self.assertIn("name: Publish npm package", workflow)
         self.assertIn("types: [published]", workflow)
@@ -89,6 +95,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("python3 scripts/verify_gate_b_rollback.py --json", workflow)
         self.assertIn("python3 scripts/prepublish_check.py", workflow)
         self.assertIn("python3 scripts/release_smoke.py", workflow)
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python3 scripts/prepublish_check.py", publish_job)
         self.assertIn('npm publish --dry-run --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn('npm publish --access public --tag "$NPM_DIST_TAG"', workflow)
         self.assertIn("confirm_publish=true", workflow)
@@ -104,10 +111,7 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")
-        jobs = ci.split("\njobs:\n", 1)[1]
-        job_blocks = dict(
-            re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", jobs)
-        )
+        job_blocks = workflow_job_blocks(ci)
         ubuntu_job = job_blocks["test-and-prepublish"]
         macos_job = job_blocks["test-and-prepublish-macos"]
 
