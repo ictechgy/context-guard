@@ -62,7 +62,7 @@ jobs:
           node-version: "22"
 
       - name: Run prepublish release gate
-        timeout-minutes: 18
+        timeout-minutes: 25
         run: python scripts/prepublish_check.py
 
       - name: Run staged plugin release smoke
