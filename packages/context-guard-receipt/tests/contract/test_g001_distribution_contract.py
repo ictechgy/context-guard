@@ -820,32 +820,111 @@ class G001DistributionContractTests(unittest.TestCase):
             self.assertFalse(spoof_sentinel.exists())
 
     def test_explicit_runtime_trust_does_not_weaken_automatic_discovery(self) -> None:
-        """Break caught: managed tool-cache metadata is rejected or PATH trust is widened."""
+        """Break caught: real-UID access widens PATH trust or rejects an effective-UID runtime."""
 
         launcher_source = (PACKAGE_ROOT / "bin/launcher.cjs").read_text(encoding="utf-8")
-        function_start = launcher_source.index("function nativeExecutableRegularFile(")
-        function_end = launcher_source.index("\n}\n\nasync function waitForShutdown", function_start) + 2
+        function_start = launcher_source.index("function effectiveCredentials(")
+        function_end = launcher_source.index(
+            "\n}\n\nfunction trustedRuntimeAncestry", function_start
+        ) + 2
         function_source = launcher_source[function_start:function_end]
         script = f"""
 const functionSource = {json.dumps(function_source)};
-const metadata = {{ isFile: () => true, mode: 0o100777, uid: 4242 }};
+let metadata;
 const fakeFs = {{
-  constants: {{ X_OK: 1 }},
-  statSync: () => metadata,
-  lstatSync: () => ({{ isSymbolicLink: () => false }}),
-  accessSync: () => undefined,
+  constants: {{ O_NOFOLLOW: 0x100, O_RDONLY: 0 }},
+  fstatSync: () => metadata,
+  accessSync: () => {{ throw new Error('real uid cannot execute'); }},
   openSync: () => 3,
   readSync: (_descriptor, buffer) => {{ buffer.writeUInt32BE(0x7f454c46, 0); return 4; }},
   closeSync: () => undefined,
 }};
-const fakeProcess = {{ getuid: () => 1000 }};
-const predicate = new Function(
+const fakeProcess = {{
+  getuid: () => 1000,
+  geteuid: () => 2000,
+  getegid: () => 3000,
+  getgroups: () => [3000, 4000],
+}};
+const predicateFor = (candidateProcess) => new Function(
   'fs', 'process', 'Buffer', 'Set',
   `${{functionSource}}; return nativeExecutableRegularFile;`,
-)(fakeFs, fakeProcess, Buffer, Set);
+)(fakeFs, candidateProcess, Buffer, Set);
+const evaluate = (uid, gid, mode, explicit = false, candidateProcess = fakeProcess) => {{
+  metadata = {{
+    isFile: () => true,
+    dev: 1n,
+    ino: 2n,
+    mode: BigInt(mode),
+    uid: BigInt(uid),
+    gid: BigInt(gid),
+    nlink: 1n,
+    size: 4096n,
+    mtimeNs: 4n,
+    ctimeNs: 5n,
+  }};
+  return Boolean(predicateFor(candidateProcess)('/managed/runtime', explicit));
+}};
 process.stdout.write(JSON.stringify({{
-  automatic: predicate('/managed/runtime', false),
-  explicit: predicate('/managed/runtime', true),
+  effective_uid_owner: evaluate(2000, 3000, 0o100755),
+  effective_uid_wrong_class: evaluate(2000, 3000, 0o100401),
+  real_uid_owner: evaluate(1000, 3000, 0o100755),
+  root_owner: evaluate(0, 5000, 0o100755),
+  root_supplementary_group: evaluate(0, 4000, 0o100410),
+  root_non_group_wrong_class: evaluate(0, 5000, 0o100410),
+  foreign_owner: evaluate(4242, 5000, 0o100755),
+  explicit_foreign_writable: evaluate(4242, 5000, 0o100777, true),
+  explicit_foreign_non_group_wrong_class: evaluate(4242, 5000, 0o100410, true),
+  explicit_foreign_other_execute: evaluate(4242, 5000, 0o100401, true),
+  root_effective_uid_any_execute: evaluate(
+    0,
+    5000,
+    0o100001,
+    false,
+    {{ geteuid: () => 0, getegid: () => 0, getgroups: () => [0] }},
+  ),
+  missing_geteuid: (() => {{
+    metadata = {{
+      isFile: () => true,
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100755n,
+      uid: 1000n,
+      gid: 3n,
+      nlink: 1n,
+      size: 4096n,
+      mtimeNs: 4n,
+      ctimeNs: 5n,
+    }};
+    return Boolean(predicateFor({{ getuid: () => 1000 }})('/managed/runtime', false));
+  }})(),
+  missing_getegid: evaluate(
+    4242,
+    5000,
+    0o100401,
+    true,
+    {{ geteuid: () => 2000, getgroups: () => [4000] }},
+  ),
+  missing_getgroups: evaluate(
+    4242,
+    5000,
+    0o100401,
+    true,
+    {{ geteuid: () => 2000, getegid: () => 3000 }},
+  ),
+  invalid_effective_uid: evaluate(
+    4242,
+    5000,
+    0o100401,
+    true,
+    {{ geteuid: () => -1, getegid: () => 3000, getgroups: () => [4000] }},
+  ),
+  invalid_supplementary_group: evaluate(
+    4242,
+    5000,
+    0o100401,
+    true,
+    {{ geteuid: () => 2000, getegid: () => 3000, getgroups: () => [-1] }},
+  ),
 }}));
 """
         result = subprocess.run(
@@ -857,7 +936,406 @@ process.stdout.write(JSON.stringify({{
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"automatic": False, "explicit": True})
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "effective_uid_owner": True,
+                "effective_uid_wrong_class": False,
+                "real_uid_owner": False,
+                "root_owner": True,
+                "root_supplementary_group": True,
+                "root_non_group_wrong_class": False,
+                "foreign_owner": False,
+                "explicit_foreign_writable": True,
+                "explicit_foreign_non_group_wrong_class": False,
+                "explicit_foreign_other_execute": True,
+                "root_effective_uid_any_execute": True,
+                "missing_geteuid": False,
+                "missing_getegid": False,
+                "missing_getgroups": False,
+                "invalid_effective_uid": False,
+                "invalid_supplementary_group": False,
+            },
+        )
+
+    def test_wrong_execute_class_is_runtime_unavailable_before_probe(self) -> None:
+        """Break caught: an inapplicable execute bit reaches the compatibility probe."""
+
+        require_distribution()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(temporary_root / "distribution")
+            runtime_bin = temporary_root / "wrong-class" / "bin"
+            runtime_bin.mkdir(parents=True)
+            runtime_bin.parent.chmod(0o755)
+            runtime_bin.chmod(0o755)
+            runtime = runtime_bin / "python3"
+            shutil.copyfile(Path(sys.executable).resolve(), runtime)
+            runtime.chmod(0o401)
+
+            explicit_environment = launcher_environment(**{PYTHON_ENV: str(runtime)})
+            automatic_environment = launcher_environment(PATH=str(runtime_bin))
+            automatic_environment.pop(PYTHON_ENV)
+            for selection, environment in (
+                ("explicit", explicit_environment),
+                ("automatic", automatic_environment),
+            ):
+                with self.subTest(selection=selection):
+                    response = run_node(
+                        "bin/context-guard-receipt.cjs",
+                        "inspect",
+                        "boundary",
+                        environment=environment,
+                        package_root=distribution,
+                    )
+                    assert_json_error(
+                        self,
+                        response,
+                        code=69,
+                        operation="launcher",
+                        status="error",
+                        reason="runtime_unavailable",
+                    )
+
+    def test_automatic_runtime_path_requires_trusted_physical_ancestry(self) -> None:
+        """Break caught: a native PATH runtime beneath a writable non-sticky ancestor launches."""
+
+        require_distribution()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(temporary_root / "distribution")
+
+            safe_bin = temporary_root / "safe" / "bin"
+            safe_bin.mkdir(parents=True)
+            safe_bin.parent.chmod(0o1777)
+            safe_bin.chmod(0o755)
+            safe_python = safe_bin / "python3"
+            native_fixture = Path("/usr/bin/true")
+            if not native_fixture.is_file():
+                native_fixture = Path("/bin/true")
+            self.assertTrue(native_fixture.is_file())
+            shutil.copyfile(native_fixture, safe_python)
+            safe_python.chmod(0o755)
+            safe_environment = launcher_environment(PATH=str(safe_bin))
+            safe_environment.pop(PYTHON_ENV)
+            safe = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=safe_environment,
+                package_root=distribution,
+            )
+            assert_json_error(
+                self,
+                safe,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
+
+            unsafe_parent = temporary_root / "unsafe"
+            unsafe_bin = unsafe_parent / "bin"
+            unsafe_bin.mkdir(parents=True)
+            unsafe_parent.chmod(0o777)
+            unsafe_bin.chmod(0o755)
+            unsafe_python = unsafe_bin / "python3"
+            shutil.copyfile(native_fixture, unsafe_python)
+            unsafe_python.chmod(0o755)
+            unsafe_environment = launcher_environment(PATH=str(unsafe_bin))
+            unsafe_environment.pop(PYTHON_ENV)
+            unsafe = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=unsafe_environment,
+                package_root=distribution,
+            )
+            assert_json_error(
+                self,
+                unsafe,
+                code=69,
+                operation="launcher",
+                status="error",
+                reason="runtime_unavailable",
+            )
+
+    def test_automatic_runtime_path_preserves_a_trusted_interpreter_symlink(self) -> None:
+        """Break caught: canonicalization rejects a symlink to a trusted physical CPython target."""
+
+        require_distribution()
+        effective_uid = os.geteuid()
+        interpreter = Path(sys.executable).resolve()
+        leaf = interpreter.stat()
+        if leaf.st_uid not in {0, effective_uid} or stat.S_IMODE(leaf.st_mode) & 0o022:
+            self.skipTest("the current interpreter leaf is outside automatic PATH policy")
+        for ancestor in (interpreter.parent, *interpreter.parents[1:]):
+            metadata = ancestor.stat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not ancestor.is_dir()
+                or metadata.st_uid not in {0, effective_uid}
+                or ((mode & 0o022) != 0 and (mode & stat.S_ISVTX) == 0)
+            ):
+                self.skipTest("the current interpreter ancestry is outside automatic PATH policy")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(temporary_root / "distribution")
+            runtime_bin = temporary_root / "symlink" / "bin"
+            runtime_bin.mkdir(parents=True)
+            runtime_bin.parent.chmod(0o755)
+            runtime_bin.chmod(0o755)
+            (runtime_bin / "python3").symlink_to(interpreter)
+            environment = launcher_environment(PATH=str(runtime_bin))
+            environment.pop(PYTHON_ENV)
+            response = run_node(
+                "bin/context-guard-receipt.cjs",
+                "inspect",
+                "boundary",
+                environment=environment,
+                package_root=distribution,
+            )
+            self.assertEqual(response.returncode, 0, response.stderr)
+            self.assertEqual(response.stderr, "")
+            self.assertEqual(response.stdout, canonical_json(EXPECTED_BOUNDARY_RESPONSE))
+
+    def test_probe_is_bounded_with_sigkill_and_retains_its_output_limit(self) -> None:
+        """Break caught: a selected native runtime can block the synchronous probe indefinitely."""
+
+        launcher_path = PACKAGE_ROOT / "bin/launcher.cjs"
+        script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const launcherPath = process.argv[1];
+const source = fs.readFileSync(launcherPath, 'utf8').replace(
+  'module.exports = { launch };',
+  'module.exports = { compatibleProbe };',
+);
+let captured;
+const fakeChildProcess = {
+  spawnSync: (...arguments_) => {
+    captured = arguments_;
+    return {
+      error: undefined,
+      status: 0,
+      stderr: '',
+      stdout: '{"implementation":"CPython","package_protocol":' +
+        '"contextguard-receipt-launch/v1","python_version":[3,11]}\n',
+    };
+  },
+};
+const context = {
+  Buffer,
+  clearTimeout,
+  console,
+  module: { exports: {} },
+  process,
+  require: (identifier) => identifier === 'child_process'
+    ? fakeChildProcess
+    : require(identifier),
+  setImmediate,
+  setTimeout,
+};
+vm.runInNewContext(source, context, { filename: launcherPath });
+const compatible = context.module.exports.compatibleProbe('/runtime/python3', '/package/bootstrap.py');
+process.stdout.write(JSON.stringify({ compatible, options: captured[2] }));
+"""
+        result = subprocess.run(
+            [str(Path(NODE).resolve()), "-e", script, str(launcher_path)],
+            cwd=PACKAGE_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = json.loads(result.stdout)
+        self.assertTrue(captured["compatible"])
+        self.assertEqual(
+            captured["options"],
+            {
+                "encoding": "utf8",
+                "killSignal": "SIGKILL",
+                "maxBuffer": 16 * 1024,
+                "timeout": 5000,
+                "windowsHide": True,
+            },
+        )
+
+    def test_runtime_identity_replacement_after_probe_is_rejected_before_launch(self) -> None:
+        """Break caught: probe success authorizes a different pathname identity for launch."""
+
+        launcher_path = PACKAGE_ROOT / "bin/launcher.cjs"
+        script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const launcherPath = process.argv[1];
+const source = fs.readFileSync(launcherPath, 'utf8').replace(
+  '  if (!validatePackage(packageRoot)) {',
+  '  if (false) {',
+);
+const initial = {
+  isFile: () => true,
+  dev: 10n,
+  ino: 20n,
+  mode: 0o100755n,
+  uid: 2000n,
+  gid: 2000n,
+  nlink: 1n,
+  size: 4096n,
+  mtimeNs: 30n,
+  ctimeNs: 40n,
+};
+const replacement = { ...initial, ino: 21n, ctimeNs: 41n };
+let fstatCalls = 0;
+const openFlags = [];
+const fakeFs = {
+  constants: { O_NOFOLLOW: 0x100, O_RDONLY: 0, X_OK: 1 },
+  realpathSync: (candidate) => candidate,
+  statSync: () => ({ isFile: () => true, mode: 0o100755, uid: 2000 }),
+  lstatSync: () => ({ isSymbolicLink: () => false }),
+  accessSync: () => undefined,
+  openSync: (_candidate, flags) => { openFlags.push(flags); return openFlags.length; },
+  fstatSync: () => (++fstatCalls < 3 ? initial : replacement),
+  readSync: (_descriptor, buffer) => { buffer.writeUInt32BE(0x7f454c46, 0); return 4; },
+  closeSync: () => undefined,
+};
+let spawnCalls = 0;
+const fakeChildProcess = {
+  spawnSync: () => ({
+    error: undefined,
+    status: 0,
+    stderr: '',
+    stdout: '{"implementation":"CPython","package_protocol":' +
+      '"contextguard-receipt-launch/v1","python_version":[3,11]}\n',
+  }),
+  spawn: () => {
+    spawnCalls += 1;
+    const stream = { on: () => undefined };
+    return { kill: () => undefined, on: () => undefined, stderr: stream, stdout: stream };
+  },
+};
+let stderr = '';
+const fakeProcess = {
+  env: { CONTEXT_GUARD_RECEIPT_PYTHON: '/runtime/python3' },
+  geteuid: () => 2000,
+  getegid: () => 2000,
+  getgroups: () => [2000],
+  getuid: () => 1000,
+  on: () => undefined,
+  removeListener: () => undefined,
+  stderr: {
+    once: () => undefined,
+    removeListener: () => undefined,
+    write: (payload, callback) => { stderr += payload.toString('ascii'); callback(); },
+  },
+};
+const context = {
+  Buffer,
+  clearTimeout,
+  console,
+  module: { exports: {} },
+  process: fakeProcess,
+  require: (identifier) => {
+    if (identifier === 'child_process') return fakeChildProcess;
+    if (identifier === 'fs') return fakeFs;
+    return require(identifier);
+  },
+  setImmediate,
+  setTimeout,
+};
+vm.runInNewContext(source, context, { filename: launcherPath });
+const result = context.module.exports.launch(
+  'cli',
+  ['inspect', 'boundary'],
+  '/package/bin/context-guard-receipt.cjs',
+);
+process.stdout.write(JSON.stringify({ openFlags, result, spawnCalls, stderr }));
+"""
+        result = subprocess.run(
+            [str(Path(NODE).resolve()), "-e", script, str(launcher_path)],
+            cwd=PACKAGE_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["openFlags"], [0x100, 0x100, 0x100])
+        self.assertEqual(observed["result"], 69)
+        self.assertEqual(observed["spawnCalls"], 0)
+        self.assertEqual(
+            observed["stderr"],
+            canonical_json(
+                {
+                    "evidence_boundary": EVIDENCE_BOUNDARY,
+                    "operation": "launcher",
+                    "reason": "runtime_unavailable",
+                    "schema_version": "contextguard-receipt-cli-response/v1",
+                    "status": "error",
+                }
+            ),
+        )
+
+    @unittest.skipUnless(shutil.which("cc"), "a native compiler is required")
+    def test_hanging_native_probe_is_killed_within_the_compatibility_bound(self) -> None:
+        """Break caught: a native executable that hangs during probing can hang the launcher."""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory).resolve()
+            distribution = copy_runtime_with_current_launcher(temporary_root / "distribution")
+            source = temporary_root / "hanging-runtime.c"
+            runtime = temporary_root / "hanging-runtime"
+            source.write_text(
+                "#include <time.h>\n"
+                "int main(void) {\n"
+                "  struct timespec delay = {7, 0};\n"
+                "  nanosleep(&delay, 0);\n"
+                "  return 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compilation = subprocess.run(
+                [str(shutil.which("cc")), str(source), "-o", str(runtime)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(compilation.returncode, 0, compilation.stderr)
+            runtime.chmod(0o755)
+
+            started = time.monotonic()
+            try:
+                response = subprocess.run(
+                    [
+                        str(Path(NODE).resolve()),
+                        str(distribution / "bin/context-guard-receipt.cjs"),
+                        "inspect",
+                        "boundary",
+                    ],
+                    cwd=distribution,
+                    env=launcher_environment(**{PYTHON_ENV: str(runtime)}),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=10.0,
+                )
+            except subprocess.TimeoutExpired as error:
+                self.fail(f"launcher exceeded the outer {error.timeout}-second test bound")
+            elapsed = time.monotonic() - started
+            assert_json_error(
+                self,
+                response,
+                code=78,
+                operation="launcher",
+                status="error",
+                reason="protocol_incompatible",
+            )
+            self.assertLess(elapsed, 6.5)
 
     def test_runtime_checks_reject_rewritten_payload_manifest_and_extra_files(self) -> None:
         """Break caught: treating a mutable manifest or an open tree as authenticity."""

@@ -268,11 +268,27 @@ absolute path to the actual native CPython executable, or ensure an absolute
 `PATH` directory contains `python3`. Relative `PATH` entries and script-based
 interpreter shims are rejected. The absolute override is an explicit caller
 trust decision and may select a caller-trusted managed tool-cache executable
-with different ownership or writable mode bits. Automatic `PATH` discovery
-still requires root or effective-user ownership and rejects group- or
-world-writable candidates. The selected executable remains part of the
-caller's trust boundary, and the compatibility probe is not interpreter
-authentication.
+with different ownership or writable mode bits. Both selection modes require
+the execute bit applicable to the effective UID, effective GID, and
+supplementary groups; effective UID 0 requires at least one execute bit.
+Discovery fails closed if those effective credentials are unavailable or
+invalid. Automatic `PATH` discovery resolves symlinks to their physical native
+target, then requires the target and every physical parent directory to be
+owned by root or the effective UID. Group- or world-writable targets are
+rejected; writable parent directories are rejected unless they carry the
+sticky bit. The launcher opens the target with no-follow semantics, snapshots
+its device, inode, mode, owner, group, link count, size, and nanosecond change
+times, and revalidates that identity, the credentials, and execute permission
+before and after the bounded five-second compatibility probe and immediately
+before launch. Probe timeout is `protocol_incompatible` and the stuck probe is
+killed with `SIGKILL`.
+
+Pure Node.js on the supported platforms cannot atomically execute the validated
+file descriptor as `fexecve` would, so path replacement remains possible in
+the final interval between revalidation and spawn. The selected executable is
+therefore part of the caller's trust boundary, and same-effective-UID, root,
+debug/tracing, and equivalent filesystem authority are trusted and out of
+scope. The compatibility probe is not interpreter authentication.
 
 `run --escrow` also requires the root-owned `/bin/ps` process-table interface
 and an exact local process-identity and signaling backend. macOS brackets each

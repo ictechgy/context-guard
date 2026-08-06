@@ -79,6 +79,11 @@ _OID_PATTERN: Final = re.compile(rb"[0-9a-f]{40,64}\Z")
 _INDEX_RECORD_PATTERN: Final = re.compile(
     rb"(?P<mode>[0-7]{6}) (?P<oid>[0-9a-f]{40,64}) (?P<stage>[0-3])\t"
 )
+_GIT_FILTER_CONFIG_KEY_PATTERN: Final = re.compile(
+    rb"filter\.(?P<driver>[A-Za-z0-9][A-Za-z0-9._/+:-]{0,127})\."
+    rb"(?:clean|smudge|process|required)\Z",
+    re.IGNORECASE,
+)
 _SAFE_IDENTIFIER_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/+:-]*\Z")
 _FROZEN_UNICODE_DATABASE = unicodedata.ucd_3_2_0
 
@@ -88,6 +93,10 @@ _GIT_CONFIG_ARGUMENTS: Final[tuple[str, ...]] = (
     "-c",
     "core.hooksPath=/dev/null",
 )
+_GIT_FILTER_CONFIG_QUERY: Final = (
+    r"^filter\..*\.(clean|smudge|process|required)$"
+)
+_MAX_GIT_FILTER_DRIVERS: Final = 64
 _DEFAULT_GIT_CANDIDATES: Final[tuple[str, ...]] = (
     "/usr/bin/git",
     "/usr/local/bin/git",
@@ -536,6 +545,7 @@ def _run_git(
     executable: _GitExecutable,
     limits: IdentityLimits,
     arguments: tuple[str, ...],
+    config_overrides: tuple[tuple[str, str], ...] = (),
 ) -> _GitResult:
     try:
         current_executable = os.lstat(executable.path)
@@ -549,6 +559,7 @@ def _run_git(
         raise _GitFailure("git_command_failed")
 
     environment = {
+        "GIT_CONFIG_COUNT": str(len(config_overrides)),
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_SYSTEM": "/dev/null",
@@ -558,6 +569,9 @@ def _run_git(
         "LC_ALL": "C",
         "PATH": "/usr/bin:/bin",
     }
+    for index, (key, value) in enumerate(config_overrides):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
     command = [executable.path, *_GIT_CONFIG_ARGUMENTS, *arguments]
     try:
         process = subprocess.Popen(
@@ -625,6 +639,59 @@ def _single_git_value(result: _GitResult) -> bytes:
     if result.returncode != 0 or not result.stdout.endswith(b"\n"):
         raise _GitFailure("git_state_malformed")
     return result.stdout[:-1]
+
+
+def _discover_git_filter_overrides(
+    root_path: str,
+    executable: _GitExecutable,
+    limits: IdentityLimits,
+) -> tuple[tuple[str, str], ...]:
+    result = _run_git(
+        root_path,
+        executable,
+        limits,
+        (
+            "config",
+            "--null",
+            "--name-only",
+            "--includes",
+            "--get-regexp",
+            _GIT_FILTER_CONFIG_QUERY,
+        ),
+    )
+    if result.returncode == 1 and not result.stdout:
+        return ()
+    if result.returncode != 0:
+        raise _GitFailure("git_command_failed")
+    if not result.stdout:
+        raise _GitFailure("git_state_malformed")
+
+    raw_keys = _nul_records(result.stdout, limits)
+    drivers: list[str] = []
+    seen_drivers: set[str] = set()
+    for raw_key in raw_keys:
+        match = _GIT_FILTER_CONFIG_KEY_PATTERN.fullmatch(raw_key)
+        if match is None:
+            raise _GitFailure("git_state_malformed")
+        driver = match.group("driver").decode("ascii")
+        if driver in seen_drivers:
+            continue
+        if len(drivers) >= _MAX_GIT_FILTER_DRIVERS:
+            raise _GitFailure("git_output_limit")
+        seen_drivers.add(driver)
+        drivers.append(driver)
+
+    overrides: list[tuple[str, str]] = []
+    for driver in drivers:
+        overrides.extend(
+            (
+                (f"filter.{driver}.clean", "cat"),
+                (f"filter.{driver}.smudge", "cat"),
+                (f"filter.{driver}.process", ""),
+                (f"filter.{driver}.required", "false"),
+            )
+        )
+    return tuple(overrides)
 
 
 def _logical_state_digest(core: dict[str, object]) -> str:
@@ -711,11 +778,13 @@ def _snapshot_once(
     if executable is None:
         return _unresolved_snapshot(root_path, root_status, "git_unavailable")
 
-    def run(*arguments: str) -> _GitResult:
+    def run_without_filter_overrides(*arguments: str) -> _GitResult:
         return _run_git(root_path, executable, limits, tuple(arguments))
 
     try:
-        inside_result = run("rev-parse", "--is-inside-work-tree")
+        inside_result = run_without_filter_overrides(
+            "rev-parse", "--is-inside-work-tree"
+        )
         if inside_result.returncode == 128:
             if _has_structural_git_marker(root_path):
                 raise _GitFailure("git_command_failed")
@@ -723,6 +792,19 @@ def _snapshot_once(
         inside = _single_git_value(inside_result)
         if inside not in (b"true", b"false"):
             raise _GitFailure("git_state_malformed")
+
+        filter_overrides = _discover_git_filter_overrides(
+            root_path, executable, limits
+        )
+
+        def run(*arguments: str) -> _GitResult:
+            return _run_git(
+                root_path,
+                executable,
+                limits,
+                tuple(arguments),
+                filter_overrides,
+            )
 
         bare = _single_git_value(run("rev-parse", "--is-bare-repository"))
         if bare not in (b"true", b"false"):
@@ -778,7 +860,7 @@ def _snapshot_once(
                 "--porcelain=v1",
                 "-z",
                 "--untracked-files=all",
-                "--ignore-submodules=none",
+                "--ignore-submodules=dirty",
             )
             if status_result.returncode != 0:
                 raise _GitFailure("git_command_failed")
@@ -803,6 +885,7 @@ def _snapshot_once(
                 "--full-index",
                 "--no-ext-diff",
                 "--no-textconv",
+                "--ignore-submodules=dirty",
                 "--",
             )
             if diff_result.returncode != 0:
@@ -948,17 +1031,32 @@ def _repository_exclusion_snapshot(
         if executable is None:
             raise IdentityError("repository_exclusion_unavailable")
 
-        def run(*arguments: str) -> _GitResult:
+        def run_without_filter_overrides(*arguments: str) -> _GitResult:
             return _run_git(root_path, executable, checked_limits, tuple(arguments))
 
         try:
-            inside_result = run("rev-parse", "--is-inside-work-tree")
+            inside_result = run_without_filter_overrides(
+                "rev-parse", "--is-inside-work-tree"
+            )
             if inside_result.returncode == 128:
                 if _has_structural_git_marker(root_path):
                     raise _GitFailure("git_command_failed")
                 _root_is_unchanged(root_path, root_status)
                 return tuple(result)
             inside = _single_git_value(inside_result)
+            filter_overrides = _discover_git_filter_overrides(
+                root_path, executable, checked_limits
+            )
+
+            def run(*arguments: str) -> _GitResult:
+                return _run_git(
+                    root_path,
+                    executable,
+                    checked_limits,
+                    tuple(arguments),
+                    filter_overrides,
+                )
+
             bare = _single_git_value(run("rev-parse", "--is-bare-repository"))
             if inside not in (b"true", b"false") or bare not in (b"true", b"false"):
                 raise _GitFailure("git_state_malformed")
@@ -1042,10 +1140,20 @@ def _observe_source_index(
     if executable is None:
         return _IndexObservation("unavailable", None)
 
-    def run(*arguments: str) -> _GitResult:
-        return _run_git(root_path, executable, limits, tuple(arguments))
-
     try:
+        filter_overrides = _discover_git_filter_overrides(
+            root_path, executable, limits
+        )
+
+        def run(*arguments: str) -> _GitResult:
+            return _run_git(
+                root_path,
+                executable,
+                limits,
+                tuple(arguments),
+                filter_overrides,
+            )
+
         stage_result = run("ls-files", "--stage", "-z", "--", relative_path)
         if stage_result.returncode != 0:
             raise _GitFailure("git_command_failed")

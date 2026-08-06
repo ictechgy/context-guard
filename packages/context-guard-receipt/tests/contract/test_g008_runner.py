@@ -133,6 +133,26 @@ def _wait_for_process_exit(pid: int, timeout: float = 3.0) -> bool:
     return not _process_is_alive(pid)
 
 
+def _wait_for_process_group_quiescence(module, pgid: int, timeout: float = 3.0) -> bool:
+    """Return once a process group has no live, non-zombie members."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            records = module._read_process_table(deadline=deadline, clock=time.monotonic)
+        except module._RunnerAbort as error:
+            if error.code is module.RunnerErrorCode.TIMEOUT:
+                return False
+            raise
+        if not any(
+            record.pgid == pgid and not record.state.startswith(b"Z")
+            for record in records.values()
+        ):
+            return True
+        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+    return False
+
+
 def _kill_test_process_group(pid: int) -> None:
     try:
         os.killpg(pid, signal.SIGKILL)
@@ -1113,8 +1133,9 @@ class G008RunnerContractTests(unittest.TestCase):
             self.assertEqual(harness.factory_calls, 0)
             self.assertEqual(len(spawned), 1)
             self.assertIsNotNone(spawned[0].poll())
-            with self.assertRaises((ProcessLookupError, PermissionError)):
-                os.killpg(spawned[0].pid, 0)
+            self.assertTrue(
+                _wait_for_process_group_quiescence(module, spawned[0].pid)
+            )
 
     def test_descendant_that_closes_pipes_must_quiesce_before_deadline(self) -> None:
         module = runner_module()

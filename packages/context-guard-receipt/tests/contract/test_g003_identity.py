@@ -615,7 +615,7 @@ class G003IdentityTests(unittest.TestCase):
                 "--porcelain=v1",
                 "-z",
                 "--untracked-files=all",
-                "--ignore-submodules=none",
+                "--ignore-submodules=dirty",
             ).stdout
         finally:
             repository.close()
@@ -933,6 +933,290 @@ class G003IdentityTests(unittest.TestCase):
                     os.environ["CONTEXT_GUARD_SECRET_SENTINEL"] = previous
         self.assertEqual(snapshot["disposition"], "pass_through")
         self.assertEqual(snapshot["reason"], "non_git_directory")
+
+    def test_repository_filter_commands_never_run_during_snapshot(self) -> None:
+        """Break caught: repository-local clean or process filters execute during evidence capture."""
+        identity = identity_module()
+        filter_commands = {
+            "clean": "sh -c 'touch .clean-filter-ran; cat'",
+            "process": "sh -c 'touch .process-filter-ran; exit 1'",
+        }
+        for operation, command in filter_commands.items():
+            with self.subTest(operation=operation):
+                repository = TemporaryRepository()
+                try:
+                    repository.run_git("init", "-q")
+                    source = repository.root / "tracked.txt"
+                    source.write_bytes(b"one\n")
+                    (repository.root / ".gitattributes").write_text(
+                        "tracked.txt filter=hostile\n", encoding="utf-8"
+                    )
+                    repository.run_git("add", ".gitattributes", "tracked.txt")
+                    repository.run_git(
+                        "-c",
+                        "user.name=Receipt Test",
+                        "-c",
+                        "user.email=receipt@example.invalid",
+                        "commit",
+                        "-qm",
+                        "initial",
+                    )
+                    repository.run_git(
+                        "config", f"filter.hostile.{operation}", command
+                    )
+                    repository.run_git("config", "filter.hostile.required", "true")
+                    source.write_bytes(b"two\n")
+                    sentinel = repository.root / f".{operation}-filter-ran"
+
+                    snapshot = identity.snapshot_repository(
+                        repository.root, git_executable=repository.git
+                    )
+
+                    self.assertFalse(sentinel.exists())
+                    self.assertEqual(snapshot["disposition"], "captured")
+                    self.assertEqual(snapshot["logical_state"]["kind"], "git_worktree")
+                finally:
+                    repository.close()
+
+    def test_populated_submodule_filters_never_run_during_parent_snapshot(self) -> None:
+        """Break caught: parent status recursively executes filters in a populated submodule."""
+        identity = identity_module()
+        child = TemporaryRepository()
+        parent = TemporaryRepository()
+        try:
+            child.run_git("init", "-q")
+            (child.root / "tracked.txt").write_bytes(b"one\n")
+            (child.root / ".gitattributes").write_text(
+                "tracked.txt filter=hostile\n", encoding="utf-8"
+            )
+            child.run_git("add", ".gitattributes", "tracked.txt")
+            child.run_git(
+                "-c",
+                "user.name=Receipt Test",
+                "-c",
+                "user.email=receipt@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            )
+
+            parent.run_git("init", "-q")
+            parent.run_git(
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                str(child.root),
+                "nested",
+            )
+            parent.run_git("add", ".gitmodules", "nested")
+            parent.run_git(
+                "-c",
+                "user.name=Receipt Test",
+                "-c",
+                "user.email=receipt@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            )
+            populated = parent.root / "nested"
+            parent.run_git(
+                "config",
+                "filter.hostile.clean",
+                "sh -c 'touch .submodule-filter-ran; cat'",
+                cwd=populated,
+            )
+            (populated / "tracked.txt").write_bytes(b"two\n")
+            sentinel = populated / ".submodule-filter-ran"
+
+            snapshot = identity.snapshot_repository(
+                parent.root, git_executable=parent.git
+            )
+
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(snapshot["disposition"], "captured")
+            self.assertEqual(snapshot["logical_state"]["kind"], "git_worktree")
+        finally:
+            parent.close()
+            child.close()
+
+    def test_parent_snapshot_preserves_staged_gitlink_commit_evidence(self) -> None:
+        """Break caught: blocking submodule dirty scans also hides a staged gitlink update."""
+        identity = identity_module()
+        child = TemporaryRepository()
+        parent = TemporaryRepository()
+        try:
+            child.run_git("init", "-q")
+            (child.root / "tracked.txt").write_bytes(b"one\n")
+            child.run_git("add", "tracked.txt")
+            child.run_git(
+                "-c",
+                "user.name=Receipt Test",
+                "-c",
+                "user.email=receipt@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            )
+
+            parent.run_git("init", "-q")
+            parent.run_git(
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                str(child.root),
+                "nested",
+            )
+            parent.run_git("add", ".gitmodules", "nested")
+            parent.run_git(
+                "-c",
+                "user.name=Receipt Test",
+                "-c",
+                "user.email=receipt@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            )
+            baseline = identity.snapshot_repository(
+                parent.root, git_executable=parent.git
+            )
+
+            populated = parent.root / "nested"
+            (populated / "tracked.txt").write_bytes(b"two\n")
+            parent.run_git("add", "tracked.txt", cwd=populated)
+            parent.run_git(
+                "-c",
+                "user.name=Receipt Test",
+                "-c",
+                "user.email=receipt@example.invalid",
+                "commit",
+                "-qm",
+                "second",
+                cwd=populated,
+            )
+            parent.run_git("add", "nested")
+            staged = identity.snapshot_repository(
+                parent.root, git_executable=parent.git
+            )
+        finally:
+            parent.close()
+            child.close()
+
+        self.assertEqual(baseline["disposition"], "captured")
+        self.assertEqual(staged["disposition"], "captured")
+        self.assertNotEqual(
+            baseline["logical_state"]["index_sha256"],
+            staged["logical_state"]["index_sha256"],
+        )
+        self.assertNotEqual(
+            baseline["logical_state"]["state_sha256"],
+            staged["logical_state"]["state_sha256"],
+        )
+
+    def test_filter_discovery_malformed_overflow_or_error_fails_closed(self) -> None:
+        """Break caught: incomplete filter discovery permits later worktree commands."""
+        identity = identity_module()
+        cases = {
+            "empty-success": ("exit 0", "git_state_malformed"),
+            "malformed": (
+                "printf 'filter.hostile.clean'; exit 0",
+                "git_state_malformed",
+            ),
+            "invalid-key": (
+                "printf 'filter.hostile.clean.extra\\000'; exit 0",
+                "git_state_malformed",
+            ),
+            "overflow": (
+                "i=0; while [ \"$i\" -lt 65 ]; do "
+                "printf 'filter.hostile%s.clean\\000' \"$i\"; "
+                "i=$((i+1)); done; exit 0",
+                "git_output_limit",
+            ),
+            "error": ("exit 2", "git_command_failed"),
+        }
+        for case, (discovery_action, expected_reason) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executable = root / "fake-git"
+                executable.write_text(
+                    "#!/bin/sh\n"
+                    "case \"$5\" in\n"
+                    f"  config) {discovery_action} ;;\n"
+                    "  rev-parse)\n"
+                    "    case \"$6\" in\n"
+                    "      --is-inside-work-tree) printf 'true\\n' ;;\n"
+                    "      --is-bare-repository) printf 'false\\n' ;;\n"
+                    "      --git-dir|--git-common-dir) printf '.git\\n' ;;\n"
+                    "      --verify) exit 128 ;;\n"
+                    "      *) exit 2 ;;\n"
+                    "    esac ;;\n"
+                    "  symbolic-ref) printf 'refs/heads/main\\n' ;;\n"
+                    "  status|ls-files|diff) exit 0 ;;\n"
+                    "  *) exit 2 ;;\n"
+                    "esac\n",
+                    encoding="utf-8",
+                )
+                executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+                snapshot = identity.snapshot_repository(
+                    root, git_executable=str(executable)
+                )
+
+                self.assertEqual(snapshot["disposition"], "pass_through")
+                self.assertEqual(snapshot["reason"], expected_reason)
+                self.assertEqual(snapshot["logical_state"]["kind"], "unresolved")
+
+    def test_filter_overrides_are_normalized_deduplicated_and_child_inherited(self) -> None:
+        """Break caught: unsafe or duplicate config keys escape command-scoped overrides."""
+        identity = identity_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "fake-git"
+            executable.write_text(
+                "#!/bin/sh\n"
+                "case \"$5\" in\n"
+                "  config)\n"
+                "    printf 'FILTER.Hostile.CLEAN\\000'\n"
+                "    printf 'filter.Hostile.clean\\000'\n"
+                "    printf 'filter.Hostile.smudge\\000'\n"
+                "    printf 'filter.Hostile.process\\000'\n"
+                "    printf 'filter.Hostile.required\\000' ;;\n"
+                "  rev-parse)\n"
+                "    case \"$6\" in\n"
+                "      --is-inside-work-tree) printf 'true\\n' ;;\n"
+                "      --is-bare-repository) printf 'false\\n' ;;\n"
+                "      --git-dir|--git-common-dir) printf '.git\\n' ;;\n"
+                "      --verify) exit 128 ;;\n"
+                "      *) exit 2 ;;\n"
+                "    esac ;;\n"
+                "  symbolic-ref) printf 'refs/heads/main\\n' ;;\n"
+                "  status)\n"
+                "    [ \"$GIT_CONFIG_COUNT\" = 4 ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_KEY_0\" = filter.Hostile.clean ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_VALUE_0\" = cat ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_KEY_1\" = filter.Hostile.smudge ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_VALUE_1\" = cat ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_KEY_2\" = filter.Hostile.process ] || exit 2\n"
+                "    [ \"${GIT_CONFIG_VALUE_2+x}\" = x ] || exit 2\n"
+                "    [ -z \"$GIT_CONFIG_VALUE_2\" ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_KEY_3\" = filter.Hostile.required ] || exit 2\n"
+                "    [ \"$GIT_CONFIG_VALUE_3\" = false ] || exit 2 ;;\n"
+                "  ls-files|diff) exit 0 ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            executable.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+            snapshot = identity.snapshot_repository(
+                root, git_executable=str(executable)
+            )
+
+        self.assertEqual(snapshot["disposition"], "captured")
+        self.assertEqual(snapshot["logical_state"]["kind"], "git_worktree")
 
     def test_schema_is_recursively_closed_and_freezes_companion_boundary(self) -> None:
         """Break caught: nested extension points or weakened evidence claims enter receipts."""

@@ -14,6 +14,7 @@ const PYTHON_ISOLATION_FLAGS = [
 const MAX_MANIFEST_BYTES = 128 * 1024;
 const MAX_PACKAGE_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_CHILD_STREAM_BYTES = 2 * 1024 * 1024;
+const PROBE_TIMEOUT_MILLISECONDS = 5000;
 const INTERRUPT_GRACE_MILLISECONDS = 750;
 const INTERRUPT_KILL_WAIT_MILLISECONDS = 750;
 const RUNTIME_DIRECTORIES = new Set(['bin', 'python', 'schemas']);
@@ -99,7 +100,7 @@ const TRUSTED_EXECUTABLE_FILES = new Set([
 const TRUSTED_PAYLOAD_DIGESTS = {
   'LICENSE': 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4',
   'NOTICE': '40978c42e96a7b452cb77ef41f28961ca880e46ee7fa7c9589afa4d532655779',
-  'README.md': '10dde21f89879c394c06f96642813cb0ec091fa38b04ead68dd311d686344274',
+  'README.md': 'ce7e19bbab4097262d19a307e44c69ad64053a4792f9b6bbdbd6b1ac7399a649',
   'bin/context-guard-receipt-mcp.cjs': '883b893d5ee484d63b78174ace60e171dc26e032d05dd19298fb6d6c5229cffd',
   'bin/context-guard-receipt.cjs': 'bdab50b0476e40024ea64f1f6cd0a46260b4707e2297d212bf5034cfd5a87ff8',
   'package.json': 'b585d49acb0d92ca1b3365c2546260b0773a4ed6c969f8557ad6f5dd49f28ecf',
@@ -116,7 +117,7 @@ const TRUSTED_PAYLOAD_DIGESTS = {
   'python/context_guard_receipt/evidence_pack.py': '3fb5540dcee31cd6ded4883e4f4c99fb89ee17c2484f3e2ee33ebe741454d0f8',
   'python/context_guard_receipt/execution_twin.py': '510239b13c37ef15dcc838222b07ada49877e5540c351a51a121983b1fe031af',
   'python/context_guard_receipt/expansion.py': '5885030a1dec6fa16cd15a6046f5e413a5b74560b0a13bbbcbbc75a4aeacb444',
-  'python/context_guard_receipt/identity.py': 'fc41f17612d75a4e9a37971e274d7e071bc144062ebb2011df4450ccac890a54',
+  'python/context_guard_receipt/identity.py': '41ffa946aa2e67f38dff9b33c731a3607bef3aea0fe0c17fc4e19e48bb7c9653',
   'python/context_guard_receipt/mcp.py': 'db251fdd3e3d98cd83fd9a29ee0b90cb308c1bfa3fbed9122a217c80e75fe4c2',
   'python/context_guard_receipt/protection.py': '67ae06abb102292b3db09a6731a4aab90b3bc6ceb6dbe836fc636f82f783c347',
   'python/context_guard_receipt/receipts.py': '11c02d9df36be0dec2316594fd083ec39a1284325ded440de075081d2e56ddb0',
@@ -435,37 +436,138 @@ function isPortablePackageMode(observedMode, archiveMode) {
   return false;
 }
 
-function nativeExecutableRegularFile(candidate, allowCallerSelectedMetadata = false) {
+function effectiveCredentials() {
   try {
-    const metadata = fs.statSync(candidate);
-    if (!metadata.isFile() || fs.lstatSync(candidate).isSymbolicLink()
-        || (metadata.mode & 0o111) === 0
-        || (!allowCallerSelectedMetadata && (metadata.mode & 0o022) !== 0)) {
-      return false;
+    if (typeof process.geteuid !== 'function'
+        || typeof process.getegid !== 'function'
+        || typeof process.getgroups !== 'function') {
+      return null;
     }
-    if (!allowCallerSelectedMetadata
-        && typeof process.getuid === 'function'
-        && metadata.uid !== 0
-        && metadata.uid !== process.getuid()) {
-      return false;
+    const effectiveUid = process.geteuid();
+    const effectiveGid = process.getegid();
+    const groups = process.getgroups();
+    if (!Number.isSafeInteger(effectiveUid) || effectiveUid < 0
+        || !Number.isSafeInteger(effectiveGid) || effectiveGid < 0
+        || !Array.isArray(groups)
+        || groups.some((group) => !Number.isSafeInteger(group) || group < 0)) {
+      return null;
     }
-    fs.accessSync(candidate, fs.constants.X_OK);
-    const descriptor = fs.openSync(candidate, 'r');
-    const magic = Buffer.alloc(4);
-    try {
-      if (fs.readSync(descriptor, magic, 0, magic.length, 0) !== magic.length) return false;
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    const signature = magic.readUInt32BE(0);
-    return signature === 0x7f454c46
-      || new Set([
-        0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe,
-        0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca,
-      ]).has(signature);
+    const supplementaryGroups = [...new Set(groups.map((group) => BigInt(group)))]
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    return Object.freeze({
+      effectiveGid: BigInt(effectiveGid),
+      effectiveUid: BigInt(effectiveUid),
+      supplementaryGroups: Object.freeze(supplementaryGroups),
+    });
   } catch (_) {
-    return false;
+    return null;
   }
+}
+
+function sameEffectiveCredentials(expected, observed) {
+  return observed !== null
+    && observed.effectiveUid === expected.effectiveUid
+    && observed.effectiveGid === expected.effectiveGid
+    && observed.supplementaryGroups.length === expected.supplementaryGroups.length
+    && observed.supplementaryGroups.every(
+      (group, index) => group === expected.supplementaryGroups[index],
+    );
+}
+
+function executableByEffectiveCredentials(metadata, credentials) {
+  if (credentials.effectiveUid === 0n) return (metadata.mode & 0o111n) !== 0n;
+  if (metadata.uid === credentials.effectiveUid) return (metadata.mode & 0o100n) !== 0n;
+  if (metadata.gid === credentials.effectiveGid
+      || credentials.supplementaryGroups.includes(metadata.gid)) {
+    return (metadata.mode & 0o010n) !== 0n;
+  }
+  return (metadata.mode & 0o001n) !== 0n;
+}
+
+function nativeExecutableRegularFile(
+  candidate,
+  allowCallerSelectedMetadata = false,
+  expectedCredentials = undefined,
+) {
+  const credentials = expectedCredentials === undefined
+    ? effectiveCredentials()
+    : expectedCredentials;
+  if (credentials === null) return null;
+  if (!Number.isInteger(fs.constants.O_NOFOLLOW)) return null;
+
+  let descriptor = null;
+  let snapshot = null;
+  let closed = false;
+  try {
+    descriptor = fs.openSync(
+      candidate,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    const metadata = fs.fstatSync(descriptor, { bigint: true });
+    if (!metadata.isFile()
+        || !executableByEffectiveCredentials(metadata, credentials)
+        || (!allowCallerSelectedMetadata && (metadata.mode & 0o022n) !== 0n)
+        || (!allowCallerSelectedMetadata
+          && metadata.uid !== 0n
+          && metadata.uid !== credentials.effectiveUid)) {
+      return null;
+    }
+    const magic = Buffer.alloc(4);
+    if (fs.readSync(descriptor, magic, 0, magic.length, 0) !== magic.length) return null;
+    const signature = magic.readUInt32BE(0);
+    if (signature !== 0x7f454c46
+        && !new Set([
+          0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe,
+          0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca,
+        ]).has(signature)) {
+      return null;
+    }
+    const fields = [
+      'dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'size', 'mtimeNs', 'ctimeNs',
+    ];
+    if (fields.some((field) => typeof metadata[field] !== 'bigint')) return null;
+    snapshot = Object.freeze(Object.fromEntries(
+      fields.map((field) => [field, metadata[field]]),
+    ));
+  } catch (_) {
+    return null;
+  } finally {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+        closed = true;
+      } catch (_) {
+        closed = false;
+      }
+    }
+  }
+  return closed ? snapshot : null;
+}
+
+function trustedRuntimeAncestry(executablePath, effectiveUid) {
+  let current = path.dirname(executablePath);
+  for (;;) {
+    let metadata;
+    try {
+      metadata = fs.lstatSync(current, { bigint: true });
+    } catch (_) {
+      return false;
+    }
+    if (!metadata.isDirectory()
+        || (metadata.uid !== 0n && metadata.uid !== effectiveUid)
+        || ((metadata.mode & 0o022n) !== 0n && (metadata.mode & 0o1000n) === 0n)) {
+      return false;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return true;
+    current = parent;
+  }
+}
+
+function sameRuntimeSnapshot(expected, observed) {
+  return [
+    'dev', 'ino', 'mode', 'uid', 'gid', 'nlink', 'size', 'mtimeNs', 'ctimeNs',
+  ].every((field) => observed[field] === expected[field]);
 }
 
 async function waitForShutdown(childClosed, milliseconds) {
@@ -499,10 +601,47 @@ async function stopInterruptedChild(child, signalName, childClosed) {
 function resolveExecutable(candidate, allowCallerSelectedMetadata = false) {
   try {
     const resolved = fs.realpathSync(candidate);
-    return nativeExecutableRegularFile(resolved, allowCallerSelectedMetadata) ? resolved : null;
+    const credentials = effectiveCredentials();
+    if (credentials === null) return null;
+    const snapshot = nativeExecutableRegularFile(
+      resolved,
+      allowCallerSelectedMetadata,
+      credentials,
+    );
+    if (snapshot === null
+        || (!allowCallerSelectedMetadata
+          && !trustedRuntimeAncestry(resolved, credentials.effectiveUid))) {
+      return null;
+    }
+    return Object.freeze({
+      credentials,
+      executablePath: resolved,
+      explicit: allowCallerSelectedMetadata,
+      snapshot,
+    });
   } catch (_) {
     return null;
   }
+}
+
+function runtimeSelectionCurrent(selection) {
+  const observedCredentials = effectiveCredentials();
+  if (!sameEffectiveCredentials(selection.credentials, observedCredentials)) {
+    return false;
+  }
+  if (!selection.explicit
+      && !trustedRuntimeAncestry(
+        selection.executablePath,
+        observedCredentials.effectiveUid,
+      )) {
+    return false;
+  }
+  const observed = nativeExecutableRegularFile(
+    selection.executablePath,
+    selection.explicit,
+    observedCredentials,
+  );
+  return observed !== null && sameRuntimeSnapshot(selection.snapshot, observed);
 }
 
 function resolvePython() {
@@ -533,7 +672,9 @@ function compatibleProbe(python, bootstrap) {
     [...PYTHON_ISOLATION_FLAGS, bootstrap, '--launcher-probe'],
     {
       encoding: 'utf8',
+      killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024,
+      timeout: PROBE_TIMEOUT_MILLISECONDS,
       windowsHide: true,
     },
   );
@@ -625,13 +766,16 @@ function launch(kind, argv, entryFilename) {
   if (!validatePackage(packageRoot)) {
     return launcherError('integrity_failure', 70);
   }
-  const python = resolvePython();
-  if (!python) {
+  const runtime = resolvePython();
+  if (!runtime || !runtimeSelectionCurrent(runtime)) {
     return launcherError('runtime_unavailable', 69);
   }
   const bootstrap = path.join(packageRoot, 'python', 'context_guard_receipt', 'bootstrap.py');
-  if (!compatibleProbe(python, bootstrap)) {
+  if (!compatibleProbe(runtime.executablePath, bootstrap)) {
     return launcherError('protocol_incompatible', 78);
+  }
+  if (!runtimeSelectionCurrent(runtime)) {
+    return launcherError('runtime_unavailable', 69);
   }
   if (kind === 'mcp') {
     const rootInvocation = argv.length === 2
@@ -645,10 +789,13 @@ function launch(kind, argv, entryFilename) {
       return mcpUsageError();
     }
   }
+  if (!runtimeSelectionCurrent(runtime)) {
+    return launcherError('runtime_unavailable', 69);
+  }
   let child;
   try {
     child = childProcess.spawn(
-      python,
+      runtime.executablePath,
       [...PYTHON_ISOLATION_FLAGS, bootstrap, kind, ...argv],
       {
         stdio: kind === 'mcp'
