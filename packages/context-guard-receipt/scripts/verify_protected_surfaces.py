@@ -70,11 +70,11 @@ POST_STAGE2_PROTECTED_SHA256 = {
     ".claude-plugin/marketplace.json": "b156a2430e651d25ea9c5471a4d3f347fc4beba8e6689bf566d6b253ed4b0706",
     "context-guard-kit/benchmark_runner.py": "57360aa6739c9109ccf54dce094bb9c9f11835df698d68b52ab5b0ea1d1aa8f0",
     "context-guard-kit/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
-    "context-guard-kit/setup_wizard.py": "7d30c424b8b96553cb6b1db83728a913bb1e6bb87087fe90c217d98c2340427d",
+    "context-guard-kit/setup_wizard.py": "8c30c243a0f586b7926d1ffecefa13195debf1a2e6f5251f9a47d8a43dd9bfaa",
     "package.json": "d9c9d0911384785bbaa90f64308f01f1c036671d5ce6d14eaba20b2070d987ef",
     "plugins/context-guard/.claude-plugin/plugin.json": "8490efa682eac87a7d6ed74e38bf80a8973dcdabc1beb6efc41ec7ec49c01619",
     "plugins/context-guard/bin/context-guard-bench": "57360aa6739c9109ccf54dce094bb9c9f11835df698d68b52ab5b0ea1d1aa8f0",
-    "plugins/context-guard/bin/context-guard-setup": "7d30c424b8b96553cb6b1db83728a913bb1e6bb87087fe90c217d98c2340427d",
+    "plugins/context-guard/bin/context-guard-setup": "8c30c243a0f586b7926d1ffecefa13195debf1a2e6f5251f9a47d8a43dd9bfaa",
     "plugins/context-guard/lib/context_guard_commands.py": "4fd1e83394787523eb1f3d946bf053c5b5a0fdd0b360be0d20839851edc21d70",
     "scripts/release_smoke.py": "f575a301a3863b918cdbcd70d5fad5da9ab674358b7f5f82054512a30216ee6c",
 }

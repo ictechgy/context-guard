@@ -250,6 +250,77 @@ class BashReferenceV1Tests(unittest.TestCase):
             self.assertIn("context-guard-rewrite-bash", settings)
             self.assertNotIn("--bash-reference-v1", settings)
 
+    def test_setup_reference_policy_fifo_fails_closed_without_blocking(self):
+        """A non-regular adjacent policy must not hang setup before type validation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            package = root / "node_modules" / "@ictechgy" / "context-guard"
+            setup = package / "plugins" / "context-guard" / "bin" / "context-guard-setup"
+            setup.parent.mkdir(parents=True)
+            shutil.copy2(SETUP, setup)
+            setup.chmod(0o700)
+            os.mkfifo(setup.parent / "bash_reference_policy.py", mode=0o600)
+            rewrite = setup.parent / "context-guard-rewrite-bash"
+            rewrite.write_text("#!/bin/sh\n", encoding="utf-8")
+            rewrite.chmod(0o700)
+
+            try:
+                proc = subprocess.run(
+                    [
+                        sys.executable, str(setup), "--root", str(root), "--plan",
+                        "--no-diet-scan", "--no-denies", "--no-statusline",
+                        "--no-read-guard", "--no-model-defaults",
+                        "--no-failed-attempt-nudge", "--bash-reference-v1", "--json",
+                    ],
+                    text=True, capture_output=True, check=False, timeout=2,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self.fail(f"setup blocked while opening a policy FIFO: {exc}")
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertFalse(data["choices"]["bash_reference_v1"])
+            self.assertTrue(any(
+                "reason=receipt_policy_unavailable" in item
+                for item in data["warnings"]
+            ))
+
+    def test_setup_rejects_adapter_without_runtime_protocol(self):
+        """Setup must not enable an adapter that trim/runtime would reject."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            package = root / "node_modules" / "@ictechgy" / "context-guard"
+            setup = package / "plugins" / "context-guard" / "bin" / "context-guard-setup"
+            setup.parent.mkdir(parents=True)
+            shutil.copy2(SETUP, setup)
+            setup.chmod(0o700)
+            (setup.parent / "bash_reference_policy.py").write_text(
+                "def discover_adapter(root):\n"
+                "    return object(), 'receipt_adapter_available'\n",
+                encoding="utf-8",
+            )
+            rewrite = setup.parent / "context-guard-rewrite-bash"
+            rewrite.write_text("#!/bin/sh\n", encoding="utf-8")
+            rewrite.chmod(0o700)
+
+            proc = subprocess.run(
+                [
+                    sys.executable, str(setup), "--root", str(root), "--plan",
+                    "--no-diet-scan", "--no-denies", "--no-statusline",
+                    "--no-read-guard", "--no-model-defaults",
+                    "--no-failed-attempt-nudge", "--bash-reference-v1", "--json",
+                ],
+                text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertFalse(data["choices"]["bash_reference_v1"])
+            self.assertTrue(any(
+                "reason=receipt_adapter_invalid" in item
+                for item in data["warnings"]
+            ))
+
     def test_setup_package_json_only_receipt_never_enables_reference_mode(self):
         """Missing pinned Receipt files must retain the ordinary Bash hook."""
         with tempfile.TemporaryDirectory() as tmp:

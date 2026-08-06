@@ -2004,7 +2004,12 @@ def bash_hook_setting(*, allow_path_fallback: bool = False, bash_reference_v1: b
 def load_bash_reference_policy() -> object | None:
     """Load only the package-local runtime policy, never an import from PATH."""
     path = Path(__file__).resolve().parent / "bash_reference_policy.py"
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOCTTY", 0)
+    )
     if not hasattr(os, "O_NOFOLLOW"):
         return None
     flags |= os.O_NOFOLLOW
@@ -2055,8 +2060,15 @@ def bash_reference_adapter_readiness(root: Path) -> tuple[bool, str]:
     if not isinstance(discovered, tuple) or len(discovered) != 2:
         return False, "receipt_policy_invalid"
     adapter, reason = discovered
-    if adapter is not None and reason == "receipt_adapter_available":
+    adapter_methods = ("start_broker", "query_reference")
+    if (
+        adapter is not None
+        and reason == "receipt_adapter_available"
+        and all(callable(getattr(adapter, name, None)) for name in adapter_methods)
+    ):
         return True, reason
+    if adapter is not None and reason == "receipt_adapter_available":
+        return False, "receipt_adapter_invalid"
     if not isinstance(reason, str) or re.fullmatch(r"[a-z0-9_]{1,96}", reason) is None:
         return False, "receipt_policy_invalid"
     return False, reason
