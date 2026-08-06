@@ -104,10 +104,12 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_ci_release_gates_have_explicit_timeouts(self):
         ci = read(".github/workflows/ci.yml")
-        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 15\n        run: python scripts/prepublish_check.py", ci)
-        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ci)
-        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python scripts/prepublish_check.py", ci)
-        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 8\n        run: python scripts/release_smoke.py", ci)
+        ubuntu_job, macos_job = ci.split("  test-and-prepublish-macos:", 1)
+
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python scripts/prepublish_check.py", ubuntu_job)
+        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 5\n        run: python scripts/release_smoke.py", ubuntu_job)
+        self.assertIn("name: Run prepublish release gate\n        timeout-minutes: 18\n        run: python scripts/prepublish_check.py", macos_job)
+        self.assertIn("name: Run staged plugin release smoke\n        timeout-minutes: 8\n        run: python scripts/release_smoke.py", macos_job)
 
 
     def test_ci_release_gates_install_node_before_npm_checks(self):
