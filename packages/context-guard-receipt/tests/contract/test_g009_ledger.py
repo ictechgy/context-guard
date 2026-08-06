@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urljoin
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -1160,6 +1161,15 @@ class G009DiagnosticLedgerTests(unittest.TestCase):
             )
             self.assertEqual(retrieved.payload, b"independent")
             reopened.close()
+
+    def test_inspection_entry_reference_resolves_to_packaged_schema_id(self) -> None:
+        """Break caught: a packaged cross-schema ref resolves to an absent URI."""
+
+        entry = json.loads(ENTRY_SCHEMA_PATH.read_text(encoding="utf-8"))
+        inspection = json.loads(INSPECTION_SCHEMA_PATH.read_text(encoding="utf-8"))
+        entry_reference = inspection["properties"]["entries"]["items"]["$ref"]
+
+        self.assertEqual(urljoin(inspection["$id"], entry_reference), entry["$id"])
 
     def test_schemas_are_closed_exact_and_forbid_sensitive_vocabulary(self) -> None:
         """Break caught: durable/inspection schemas drift open or acquire identifying fields."""
