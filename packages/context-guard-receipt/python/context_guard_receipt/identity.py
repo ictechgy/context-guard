@@ -12,6 +12,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 from dataclasses import dataclass, fields
@@ -95,6 +96,16 @@ _GIT_CONFIG_ARGUMENTS: Final[tuple[str, ...]] = (
 )
 _GIT_FILTER_CONFIG_QUERY: Final = (
     r"^filter\..*\.(clean|smudge|process|required)$"
+)
+_GIT_TRAMPOLINE: Final = (
+    "import os,sys\n"
+    "root_fd=int(sys.argv[1]); target=tuple(sys.argv[2:])\n"
+    "try:\n"
+    " os.fchdir(root_fd)\n"
+    " os.close(root_fd)\n"
+    " os.execv(target[0],target)\n"
+    "except BaseException:\n"
+    " os._exit(127)\n"
 )
 _MAX_GIT_FILTER_DRIVERS: Final = 64
 _DEFAULT_GIT_CANDIDATES: Final[tuple[str, ...]] = (
@@ -254,6 +265,20 @@ def _open_root(root_path: str) -> int:
     return descriptor
 
 
+def _duplicate_root(root_fd: object) -> int:
+    if type(root_fd) is not int or root_fd < 0:
+        raise IdentityError("invalid_root")
+    try:
+        descriptor = os.dup(root_fd)
+    except (OSError, OverflowError):
+        raise IdentityError("invalid_root") from None
+    root_status = _fstat_owned_descriptor(descriptor, "invalid_root")
+    if not stat.S_ISDIR(root_status.st_mode):
+        os.close(descriptor)
+        raise IdentityError("invalid_root")
+    return descriptor
+
+
 def _root_is_unchanged(root_path: str, expected: os.stat_result) -> None:
     try:
         current = os.stat(root_path, follow_symlinks=False)
@@ -267,27 +292,68 @@ def _root_is_unchanged(root_path: str, expected: os.stat_result) -> None:
         raise IdentityError("root_changed")
 
 
-def _has_structural_git_marker(root_path: str) -> bool:
-    current = root_path
-    while True:
-        marker = os.path.join(current, ".git")
+def _has_structural_git_marker(root_descriptor: int) -> bool:
+    """Conservatively inspect Git markers without reopening the root path."""
+
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        current = os.dup(root_descriptor)
+    except OSError:
+        return True
+    visited: set[tuple[int, int]] = set()
+    try:
+        while True:
+            try:
+                current_status = os.fstat(current)
+            except OSError:
+                return True
+            current_identity = (current_status.st_dev, current_status.st_ino)
+            if current_identity in visited or not stat.S_ISDIR(current_status.st_mode):
+                return True
+            visited.add(current_identity)
+            try:
+                os.stat(".git", dir_fd=current, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return True
+            else:
+                return True
+            parent = -1
+            try:
+                parent = os.open("..", directory_flags, dir_fd=current)
+                parent_status = os.fstat(parent)
+            except OSError:
+                if parent >= 0:
+                    try:
+                        os.close(parent)
+                    except OSError:
+                        pass
+                return True
+            parent_identity = (parent_status.st_dev, parent_status.st_ino)
+            if not stat.S_ISDIR(parent_status.st_mode):
+                os.close(parent)
+                return True
+            if parent_identity == current_identity:
+                os.close(parent)
+                break
+            os.close(current)
+            current = parent
+    finally:
         try:
-            os.lstat(marker)
-        except FileNotFoundError:
-            pass
+            os.close(current)
         except OSError:
-            return True
-        else:
-            return True
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
+            pass
 
     try:
-        head = os.lstat(os.path.join(root_path, "HEAD"))
-        objects = os.lstat(os.path.join(root_path, "objects"))
-        refs = os.lstat(os.path.join(root_path, "refs"))
+        head = os.stat("HEAD", dir_fd=root_descriptor, follow_symlinks=False)
+        objects = os.stat("objects", dir_fd=root_descriptor, follow_symlinks=False)
+        refs = os.stat("refs", dir_fd=root_descriptor, follow_symlinks=False)
     except FileNotFoundError:
         return False
     except OSError:
@@ -541,7 +607,7 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
 
 
 def _run_git(
-    root_path: str,
+    root_descriptor: int,
     executable: _GitExecutable,
     limits: IdentityLimits,
     arguments: tuple[str, ...],
@@ -572,16 +638,39 @@ def _run_git(
     for index, (key, value) in enumerate(config_overrides):
         environment[f"GIT_CONFIG_KEY_{index}"] = key
         environment[f"GIT_CONFIG_VALUE_{index}"] = value
-    command = [executable.path, *_GIT_CONFIG_ARGUMENTS, *arguments]
+    trampoline_python = os.path.realpath(sys.executable)
+    try:
+        trampoline_status = os.lstat(trampoline_python)
+    except OSError:
+        raise _GitFailure("git_command_failed") from None
+    if (
+        not os.path.isabs(trampoline_python)
+        or os.path.normpath(trampoline_python) != trampoline_python
+        or not stat.S_ISREG(trampoline_status.st_mode)
+        or not os.access(trampoline_python, os.X_OK)
+    ):
+        raise _GitFailure("git_command_failed")
+    target = (executable.path, *_GIT_CONFIG_ARGUMENTS, *arguments)
+    command = [
+        trampoline_python,
+        "-I",
+        "-S",
+        "-B",
+        "-c",
+        _GIT_TRAMPOLINE,
+        str(root_descriptor),
+        *target,
+    ]
     try:
         process = subprocess.Popen(
             command,
-            cwd=root_path,
+            cwd="/",
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
+            pass_fds=(root_descriptor,),
             start_new_session=True,
         )
     except OSError:
@@ -642,12 +731,12 @@ def _single_git_value(result: _GitResult) -> bytes:
 
 
 def _discover_git_filter_overrides(
-    root_path: str,
+    root_descriptor: int,
     executable: _GitExecutable,
     limits: IdentityLimits,
 ) -> tuple[tuple[str, str], ...]:
     result = _run_git(
-        root_path,
+        root_descriptor,
         executable,
         limits,
         (
@@ -770,6 +859,7 @@ def _unresolved_snapshot(
 
 def _snapshot_once(
     root_path: str,
+    root_descriptor: int,
     root_status: os.stat_result,
     git_executable: object,
     limits: IdentityLimits,
@@ -779,14 +869,14 @@ def _snapshot_once(
         return _unresolved_snapshot(root_path, root_status, "git_unavailable")
 
     def run_without_filter_overrides(*arguments: str) -> _GitResult:
-        return _run_git(root_path, executable, limits, tuple(arguments))
+        return _run_git(root_descriptor, executable, limits, tuple(arguments))
 
     try:
         inside_result = run_without_filter_overrides(
             "rev-parse", "--is-inside-work-tree"
         )
         if inside_result.returncode == 128:
-            if _has_structural_git_marker(root_path):
+            if _has_structural_git_marker(root_descriptor):
                 raise _GitFailure("git_command_failed")
             return _non_git_snapshot(root_path, root_status)
         inside = _single_git_value(inside_result)
@@ -794,12 +884,12 @@ def _snapshot_once(
             raise _GitFailure("git_state_malformed")
 
         filter_overrides = _discover_git_filter_overrides(
-            root_path, executable, limits
+            root_descriptor, executable, limits
         )
 
         def run(*arguments: str) -> _GitResult:
             return _run_git(
-                root_path,
+                root_descriptor,
                 executable,
                 limits,
                 tuple(arguments),
@@ -942,12 +1032,17 @@ def _snapshot_once(
 
 def _snapshot_with_open_root(
     root_path: str,
+    root_descriptor: int,
     root_status: os.stat_result,
     git_executable: object,
     limits: IdentityLimits,
 ) -> dict[str, object]:
-    first = _snapshot_once(root_path, root_status, git_executable, limits)
-    second = _snapshot_once(root_path, root_status, git_executable, limits)
+    first = _snapshot_once(
+        root_path, root_descriptor, root_status, git_executable, limits
+    )
+    second = _snapshot_once(
+        root_path, root_descriptor, root_status, git_executable, limits
+    )
     if (
         first["instance"] != second["instance"]
         or first["logical_state"] != second["logical_state"]
@@ -960,18 +1055,28 @@ def snapshot_repository(
     root: object,
     git_executable: object = None,
     limits: IdentityLimits = _DEFAULT_LIMITS,
+    *,
+    root_fd: object = None,
 ) -> dict[str, object]:
     """Capture bounded Git metadata plus a local repository instance identity."""
 
     checked_limits = _require_limits(limits)
     root_path = _root_path(root)
-    root_descriptor = _open_root(root_path)
+    borrowed_root = root_fd is not None
+    root_descriptor = (
+        _duplicate_root(root_fd) if borrowed_root else _open_root(root_path)
+    )
     try:
         root_status = os.fstat(root_descriptor)
         result = _snapshot_with_open_root(
-            root_path, root_status, git_executable, checked_limits
+            root_path,
+            root_descriptor,
+            root_status,
+            git_executable,
+            checked_limits,
         )
-        _root_is_unchanged(root_path, root_status)
+        if not borrowed_root:
+            _root_is_unchanged(root_path, root_status)
         return result
     finally:
         os.close(root_descriptor)
@@ -1032,25 +1137,27 @@ def _repository_exclusion_snapshot(
             raise IdentityError("repository_exclusion_unavailable")
 
         def run_without_filter_overrides(*arguments: str) -> _GitResult:
-            return _run_git(root_path, executable, checked_limits, tuple(arguments))
+            return _run_git(
+                root_descriptor, executable, checked_limits, tuple(arguments)
+            )
 
         try:
             inside_result = run_without_filter_overrides(
                 "rev-parse", "--is-inside-work-tree"
             )
             if inside_result.returncode == 128:
-                if _has_structural_git_marker(root_path):
+                if _has_structural_git_marker(root_descriptor):
                     raise _GitFailure("git_command_failed")
                 _root_is_unchanged(root_path, root_status)
                 return tuple(result)
             inside = _single_git_value(inside_result)
             filter_overrides = _discover_git_filter_overrides(
-                root_path, executable, checked_limits
+                root_descriptor, executable, checked_limits
             )
 
             def run(*arguments: str) -> _GitResult:
                 return _run_git(
-                    root_path,
+                    root_descriptor,
                     executable,
                     checked_limits,
                     tuple(arguments),
@@ -1130,7 +1237,7 @@ def _nul_records(raw: bytes, limits: IdentityLimits) -> list[bytes]:
 
 
 def _observe_source_index(
-    root_path: str,
+    root_descriptor: int,
     relative_path: str,
     path_bytes: bytes,
     git_executable: object,
@@ -1142,12 +1249,12 @@ def _observe_source_index(
 
     try:
         filter_overrides = _discover_git_filter_overrides(
-            root_path, executable, limits
+            root_descriptor, executable, limits
         )
 
         def run(*arguments: str) -> _GitResult:
             return _run_git(
-                root_path,
+                root_descriptor,
                 executable,
                 limits,
                 tuple(arguments),
@@ -1432,7 +1539,11 @@ def identify_source(
     try:
         root_status = os.fstat(root_descriptor)
         repository = _snapshot_with_open_root(
-            root_path, root_status, git_executable, checked_limits
+            root_path,
+            root_descriptor,
+            root_status,
+            git_executable,
+            checked_limits,
         )
         _root_is_unchanged(root_path, root_status)
         repository_kind = repository["logical_state"]["kind"]  # type: ignore[index]
@@ -1453,7 +1564,7 @@ def identify_source(
 
         if repository_kind == "git_worktree":
             index_before = _observe_source_index(
-                root_path,
+                root_descriptor,
                 checked_relative_path,
                 path_bytes,
                 git_executable,
@@ -1499,7 +1610,11 @@ def identify_source(
         _root_is_unchanged(root_path, root_status)
 
         repository_after = _snapshot_with_open_root(
-            root_path, root_status, git_executable, checked_limits
+            root_path,
+            root_descriptor,
+            root_status,
+            git_executable,
+            checked_limits,
         )
         before_repository_key = (
             repository["logical_state"]["state_sha256"],  # type: ignore[index]
@@ -1518,7 +1633,7 @@ def identify_source(
             )
         if repository_kind == "git_worktree":
             index_after = _observe_source_index(
-                root_path,
+                root_descriptor,
                 checked_relative_path,
                 path_bytes,
                 git_executable,

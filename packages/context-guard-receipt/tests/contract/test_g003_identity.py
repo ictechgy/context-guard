@@ -707,6 +707,78 @@ class G003IdentityTests(unittest.TestCase):
         self.assertEqual(snapshot["reason"], "git_state_changed")
         self.assertEqual(snapshot["logical_state"]["kind"], "unresolved")
 
+    def test_snapshot_root_fd_remains_authoritative_after_ancestor_retarget(self) -> None:
+        """Break caught: a borrowed root capability is reopened through its path label."""
+
+        identity = identity_module()
+        git = find_git()
+        if git is None:
+            self.skipTest("git is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory)
+            original_parent = sandbox / "original-parent"
+            alternate_parent = sandbox / "alternate-parent"
+            original_root = original_parent / "repo"
+            alternate_root = alternate_parent / "repo"
+            original_root.mkdir(parents=True)
+            alternate_root.mkdir(parents=True)
+            subprocess.run(
+                [git, "init", "-q"],
+                cwd=original_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            subprocess.run(
+                [git, "init", "-q"],
+                cwd=alternate_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            (original_root / "a-only").write_bytes(b"A")
+            (alternate_root / "b-only").write_bytes(b"B")
+            original_inode = os.stat(original_root).st_ino
+            route = sandbox / "route"
+            route.symlink_to(original_parent, target_is_directory=True)
+            routed_root = str(route / "repo")
+            expected = identity.snapshot_repository(routed_root, git_executable=git)
+            root_fd = os.open(
+                routed_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+
+            replacement = sandbox / "route-next"
+            replacement.symlink_to(alternate_parent, target_is_directory=True)
+            os.replace(replacement, route)
+            try:
+                alternate = identity.snapshot_repository(
+                    routed_root, git_executable=git
+                )
+                observed = identity.snapshot_repository(
+                    routed_root,
+                    git_executable=git,
+                    root_fd=root_fd,
+                )
+                borrowed_descriptor_status = os.fstat(root_fd)
+            finally:
+                os.close(root_fd)
+
+        self.assertEqual(expected["disposition"], "captured")
+        self.assertEqual(observed["disposition"], "captured")
+        self.assertEqual(observed["instance"], expected["instance"])
+        self.assertEqual(observed["logical_state"], expected["logical_state"])
+        self.assertNotEqual(observed["logical_state"], alternate["logical_state"])
+        self.assertEqual(
+            borrowed_descriptor_status.st_ino,
+            original_inode,
+        )
+
     def test_git_attached_detached_bare_and_linked_worktree_states_are_explicit(self) -> None:
         """Break caught: distinct Git topologies collapse into an invented normal worktree."""
         identity = identity_module()

@@ -59,7 +59,7 @@ class Snapshotter:
         self.snapshots = list(snapshots or (captured_snapshot(), captured_snapshot()))
         self.calls = []
 
-    def __call__(self, root):
+    def __call__(self, root, *, root_fd=None):
         self.calls.append(root)
         return self.snapshots.pop(0)
 
@@ -362,6 +362,105 @@ class G008RunnerContractTests(unittest.TestCase):
             stdout = b"".join(frame.payload for frame in frames if frame.channel == 1)
             self.assertEqual(stdout, b"ORIGINAL")
             self.assertNotIn(b"ALTERNATE", stdout)
+
+    def test_ancestor_symlink_swap_cannot_split_snapshot_from_pinned_cwd(self) -> None:
+        """Break caught: snapshots bind B while the command executes in pinned A."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            sandbox = Path(harness.root)
+            original_parent = sandbox / "original-parent"
+            alternate_parent = sandbox / "alternate-parent"
+            original_root = original_parent / "repo"
+            alternate_root = alternate_parent / "repo"
+            original_root.mkdir(parents=True)
+            alternate_root.mkdir(parents=True)
+            (original_root / "marker.bin").write_bytes(b"ORIGINAL")
+            (alternate_root / "marker.bin").write_bytes(b"ALTERNATE")
+
+            route = sandbox / "route"
+            route.symlink_to(original_parent, target_is_directory=True)
+            routed_root = str(route / "repo")
+            original_key = (os.stat(original_root).st_dev, os.stat(original_root).st_ino)
+            alternate_key = (
+                os.stat(alternate_root).st_dev,
+                os.stat(alternate_root).st_ino,
+            )
+            original_identity = "a" * 64
+            alternate_identity = "c" * 64
+            identities = {
+                original_key: original_identity,
+                alternate_key: alternate_identity,
+            }
+            observations = []
+
+            def retarget(target: Path) -> None:
+                replacement = sandbox / "route-next"
+                replacement.symlink_to(target, target_is_directory=True)
+                os.replace(replacement, route)
+
+            def adversarial_snapshotter(root, *, root_fd=None):
+                retarget(alternate_parent)
+                try:
+                    if root_fd is None:
+                        status = os.stat(root, follow_symlinks=False)
+                        source = "path"
+                    else:
+                        status = os.fstat(root_fd)
+                        source = "fd"
+                    observed_key = (status.st_dev, status.st_ino)
+                    observations.append((source, observed_key))
+                    return captured_snapshot(identity=identities[observed_key])
+                finally:
+                    retarget(original_parent)
+
+            result = module.run_command(
+                (
+                    str(Path(sys.executable).resolve()),
+                    "-c",
+                    "import os; os.write(1,open('marker.bin','rb').read())",
+                ),
+                routed_root,
+                store_factory=harness.factory,
+                snapshotter=adversarial_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(
+                observations,
+                [("fd", original_key), ("fd", original_key)],
+            )
+            request = harness.store.calls[0][0]
+            self.assertEqual(request.root_identity_sha256, original_identity)
+            frames = module.validate_framed_capture(request.payload)
+            stdout = b"".join(frame.payload for frame in frames if frame.channel == 1)
+            self.assertEqual(stdout, b"ORIGINAL")
+            self.assertEqual(
+                (os.stat(routed_root).st_dev, os.stat(routed_root).st_ino),
+                original_key,
+            )
+
+    def test_legacy_one_argument_snapshotter_remains_supported(self) -> None:
+        """Break caught: the FD-aware seam silently rejects existing callbacks."""
+
+        module = runner_module()
+        with Harness(self) as harness:
+            calls = []
+            snapshots = [captured_snapshot(), captured_snapshot()]
+
+            def legacy_snapshotter(root):
+                calls.append(root)
+                return snapshots.pop(0)
+
+            result = module.run_command(
+                (str(Path(sys.executable).resolve()), "-c", "pass"),
+                harness.root,
+                store_factory=harness.factory,
+                snapshotter=legacy_snapshotter,
+            )
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(calls, [harness.root, harness.root])
 
     def test_unrestored_root_replacement_refuses_before_store(self) -> None:
         """Break caught: a pinned run publishes after the pathname stays replaced."""
@@ -890,7 +989,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "from context_guard_receipt.runner import run_command\n"
                 f"snapshot={captured_snapshot()!r}\n"
                 "run_command((sys.argv[2],'-c',sys.argv[3],sys.argv[4]),sys.argv[5],"
-                "store_factory=lambda:None,snapshotter=lambda _root:snapshot)\n"
+                "store_factory=lambda:None,snapshotter=lambda _root,root_fd=None:snapshot)\n"
             )
             wrapper = subprocess.Popen(
                 (
@@ -1245,7 +1344,7 @@ class G008RunnerContractTests(unittest.TestCase):
                 "from context_guard_receipt.runner import run_command\n"
                 f"snapshot={captured_snapshot()!r}\n"
                 "run_command((sys.argv[2],'-c',sys.argv[3],sys.argv[4]),sys.argv[5],"
-                "store_factory=lambda:None,snapshotter=lambda _root:snapshot)\n"
+                "store_factory=lambda:None,snapshotter=lambda _root,root_fd=None:snapshot)\n"
             )
             wrapper = subprocess.Popen(
                 (
