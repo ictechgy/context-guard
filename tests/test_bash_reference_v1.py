@@ -271,11 +271,18 @@ class BashReferenceV1Tests(unittest.TestCase):
         self.assertIsNotNone(identity, json.dumps(details, sort_keys=True))
         binding = policy._trusted_node_interpreter(ROOT)
         self.assertIsNotNone(binding, json.dumps(details, sort_keys=True))
-        self.assertEqual(binding, (executable, identity))
+        bound_path, bound_identity = binding
+        self.assertEqual(
+            policy._executable_identity(bound_path),
+            bound_identity,
+            json.dumps(details, sort_keys=True),
+        )
         if policy._path_is_under(executable, roots):
             with mock.patch.object(policy, "_TRUSTED_NODE_CANDIDATES", ()):
                 fallback_binding = policy._trusted_node_interpreter(ROOT)
             self.assertEqual(fallback_binding, (executable, identity))
+        else:
+            self.assertEqual(binding, (executable, identity))
 
     def test_executable_identity_rejects_hardlinks_outside_trusted_github_toolcache(self):
         """Local and prefix-external hardlinks retain the single-link policy."""
