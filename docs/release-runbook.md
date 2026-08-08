@@ -145,11 +145,12 @@ The proof anchor is an append-only `GENERATIONS` list in `scripts/verify_gate_b_
 
 **Re-blessing is not an automatic re-anchor.** It is an explicit, human-reviewed commit that appends one new generation record. The new generation's `bless` commit is the review artifact: its diff against the previous generation's `bless` is exactly "this is the Gate-B-free residual content we are blessing now," scoped to the component paths declared for that generation.
 
-The active `gen4` record is the Bash-reference and exact-candidate re-bless. It
-preserves S006 `gen2` and S007 `gen3`; its declared residual edits are the six
-shared-integration paths changed by the opt-in reference activation work. The
-next routine re-bless must append `gen5` rather than rewriting or reusing an
-existing generation.
+The active `gen5` record re-blesses the normalized GitHub Actions marker needed
+by nested release-smoke hooks on Linux hosted runners. It preserves S006 `gen2`,
+S007 `gen3`, and the Bash-reference/exact-candidate `gen4`; its declared
+residual edits are exactly `scripts/release_smoke.py` and
+`tests/test_context_guard_kit.py`. The next routine re-bless must append `gen6`
+rather than rewriting or reusing an existing generation.
 
 Re-blessing procedure:
 

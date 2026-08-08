@@ -1166,13 +1166,13 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
     상속하면 그 클래스의 test_*가 이 클래스 이름으로 한 번 더 실행되기 때문이다.
     """
 
-    def test_shipped_generations_pin_s006_gen2_s007_gen3_and_gen4(self) -> None:
-        """운영 레코드는 gen2/gen3와 Bash-reference gen4를 순서대로 보존한다."""
+    def test_shipped_generations_pin_s006_gen2_s007_gen3_gen4_and_gen5(self) -> None:
+        """운영 레코드는 gen2~gen5를 append-only 순서로 보존한다."""
         self.assertEqual(
             tuple(generation.name for generation in rollback_proof.GENERATIONS),
-            ("gen1", "gen2", "gen3", "gen4"),
+            ("gen1", "gen2", "gen3", "gen4", "gen5"),
         )
-        gen1, gen2, gen3, gen4 = rollback_proof.GENERATIONS
+        gen1, gen2, gen3, gen4, gen5 = rollback_proof.GENERATIONS
         self.assertEqual(gen2.b1_paths, gen1.b1_paths)
         self.assertEqual(gen2.b2_paths, gen1.b2_paths)
         self.assertEqual(gen2.shared_paths, gen1.shared_paths)
@@ -1273,6 +1273,42 @@ class GateBGenerationRecordTests(SyntheticGenerationHelpers, unittest.TestCase):
                 gen4.shared_subject,
             ),
             gen4_subjects,
+        )
+
+        self.assertEqual(gen5.b1_paths, gen4.b1_paths)
+        self.assertEqual(gen5.b2_paths, gen4.b2_paths)
+        self.assertEqual(gen5.shared_paths, gen4.shared_paths)
+        self.assertEqual(gen5.residual_markers, gen4.residual_markers)
+        self.assertEqual(gen5.gate_b_markers, gen4.gate_b_markers)
+        self.assertEqual(
+            gen5.residual_edits,
+            frozenset(
+                {"scripts/release_smoke.py", "tests/test_context_guard_kit.py"}
+            ),
+        )
+        gen5_subjects = (
+            rollback_proof.GEN5_BLESS_SUBJECT,
+            rollback_proof.GEN5_B1_SUBJECT,
+            rollback_proof.GEN5_B2_SUBJECT,
+            rollback_proof.GEN5_SHARED_SUBJECT,
+        )
+        self.assertEqual(
+            gen5_subjects,
+            (
+                "proof: establish Gate-B-free residual gen5 release smoke CI marker",
+                "proof: reapply Gate-B nudge component gen5 release smoke CI marker",
+                "proof: reapply Gate-B usage component gen5 release smoke CI marker",
+                "proof: reapply Gate-B integration component gen5 release smoke CI marker",
+            ),
+        )
+        self.assertEqual(
+            (
+                gen5.bless_subject,
+                gen5.b1_subject,
+                gen5.b2_subject,
+                gen5.shared_subject,
+            ),
+            gen5_subjects,
         )
 
     def test_run_proof_rejects_mutation_of_shipped_generation_record(self) -> None:
