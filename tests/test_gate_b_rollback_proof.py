@@ -80,19 +80,24 @@ class GateBRollbackProofTests(unittest.TestCase):
             "base",
         )
         active_commits: dict[str, str] | None = None
+        residual_bodies: dict[str, str] = {}
         for generation in rollback_proof.GENERATIONS:
-            bless_contents = {
-                path: (
-                    f"# residual edit[{generation.name}]: {path}\n"
-                    if path in generation.residual_edits
-                    else f"# gate-b residual placeholder: {path}\n"
+            for path in generation.all_component_paths:
+                residual_bodies.setdefault(
+                    path, f"# gate-b residual placeholder: {path}\n"
                 )
+            for path in generation.residual_edits:
+                residual_bodies[path] = (
+                    f"# residual edit[{generation.name}]: {path}\n"
+                )
+            bless_contents = {
+                path: residual_bodies[path]
                 for path in generation.all_component_paths
             }
             for path, needles in generation.residual_markers.items():
                 bless_contents[path] = "".join(
                     f"# {needle}\n" for needle in needles
-                ) + bless_contents[path]
+                ) + residual_bodies[path]
             bless = commit_paths_for_test(repo, bless_contents, generation.bless_subject)
 
             b1 = commit_paths_for_test(
