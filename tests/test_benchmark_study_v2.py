@@ -918,6 +918,15 @@ class BenchmarkStudyV2Tests(unittest.TestCase):
             "prepare` → `canary` → `run`/`resume` → `analyze",
             normalized_release_notes,
         )
+        self.assertIn(
+            "`prepare` binds the CLI and runs local `--version`/`--help` probes "
+            "without a model request",
+            normalized_release_notes,
+        )
+        self.assertIn(
+            "Provider/model requests occur only during canary and analytic execution",
+            normalized_release_notes,
+        )
         self.assertIn("provider-free offline rehearsal", normalized_release_notes)
 
     def test_v2_cli_exposes_canary_run_and_resume_lifecycle_actions(self) -> None:

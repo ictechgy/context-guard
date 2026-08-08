@@ -27,11 +27,13 @@ All notable changes for the ContextGuard plugin are documented here.
   stored artifacts automatically.
 - Added an executable three-arm study across `host_unmodified`, `legacy_trim`,
   and `bash_reference_v1`, with an explicit `prepare` → `canary` → `run`/`resume`
-  → `analyze` lifecycle that invokes the bound Claude CLI only during canary and
-  analytic execution. A separate provider-free offline rehearsal exercises the
-  lifecycle with a native fake CLI. The study binds a fixed 12-task corpus and
-  reports the legacy contrast diagnostically; without an independent power
-  model the result is descriptive-only and cannot authorize a savings claim.
+  → `analyze` lifecycle. `prepare` binds the CLI and runs local
+  `--version`/`--help` probes without a model request. Provider/model requests
+  occur only during canary and analytic execution. A separate provider-free
+  offline rehearsal exercises the lifecycle with a native fake CLI. The study
+  binds a fixed 12-task corpus and reports the legacy contrast diagnostically;
+  without an independent power model the result is descriptive-only and cannot
+  authorize a savings claim.
 - Added build-once npm candidate manifests, exact cross-package hashes/SRI,
   paired clean-install discovery smoke, separate trusted publication to
   `next`, and preflight/rollback-aware promotion to `latest`. No package is
